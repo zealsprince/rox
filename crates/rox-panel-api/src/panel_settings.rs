@@ -241,8 +241,18 @@ pub fn pending_shader(
                 .flex_row()
                 .items_center()
                 .gap(tokens::SPACE_SM)
-                .child(small_button("Approve", icons::CHECK, false, approve))
-                .child(small_button("Turn Off", icons::CLOSE, false, turn_off)),
+                .child(small_button(
+                    rox_i18n::t!("panel-approve"),
+                    icons::CHECK,
+                    false,
+                    approve,
+                ))
+                .child(small_button(
+                    rox_i18n::t!("panel-turn-off"),
+                    icons::CLOSE,
+                    false,
+                    turn_off,
+                )),
         )
 }
 
@@ -495,7 +505,7 @@ impl<P: 'static> ShaderSource<'_, P> {
                 let host = host.clone();
                 menu = menu
                     .item(
-                        PopupMenuItem::new("From File...")
+                        PopupMenuItem::new(rox_i18n::t!("shader-from-file"))
                             .icon(Icon::default().path(icons::FOLDER))
                             .on_click(move |_, window, cx| {
                                 if let Some(host) = host.upgrade() {
@@ -798,7 +808,7 @@ impl<P: PanelSettings> RenameWindow<P> {
                         cx.listener(|_, _, window, _| window.remove_window()),
                     ))
                     .child(small_button(
-                        "Cancel",
+                        rox_i18n::t!("bake-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|_, _, window, _| window.remove_window()),
@@ -1028,7 +1038,7 @@ impl<P: PanelSettings> SavePresetWindow<P> {
                         cx.listener(|this, _, window, cx| this.commit(window, cx)),
                     ))
                     .child(small_button(
-                        "Cancel",
+                        rox_i18n::t!("bake-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|_, _, window, _| window.remove_window()),
@@ -1171,6 +1181,9 @@ struct PanelSettingsWindow<P: PanelSettings> {
     /// The page body's scroll position, shared with the scrollbar so it
     /// can show how much page hangs below the fold.
     scroll: ScrollHandle,
+    /// The sidebar nav's own scroll position, for a window too short to
+    /// stand every page at once.
+    nav_scroll: ScrollHandle,
     /// The shared state, for the window's own backdrop.
     state: AppState,
     backdrop: WindowBackdrop,
@@ -1294,6 +1307,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             _max_height_events,
             swatch_resolve: None,
             scroll: ScrollHandle::new(),
+            nav_scroll: ScrollHandle::new(),
             state,
             backdrop: WindowBackdrop::default(),
             _picker_changes,
@@ -2818,8 +2832,8 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                     if !surface_shader && picked == 2 {
                         picked = 0;
                     }
-                    let mut nav = sidebar()
-                        .child(settings_ui::nav_item(
+                    let mut rows: Vec<AnyElement> = vec![
+                        settings_ui::nav_item(
                             rox_i18n::t!("panel-page-appearance"),
                             icons::PALETTE,
                             picked == 0,
@@ -2828,8 +2842,9 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                                 cx.notify();
                             },
                             cx,
-                        ))
-                        .child(settings_ui::nav_item(
+                        )
+                        .into_any_element(),
+                        settings_ui::nav_item(
                             rox_i18n::t!("panel-page-behavior"),
                             icons::SLIDERS,
                             picked == 1,
@@ -2838,32 +2853,48 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                                 cx.notify();
                             },
                             cx,
-                        ));
+                        )
+                        .into_any_element(),
+                    ];
                     if surface_shader {
-                        nav = nav.child(settings_ui::nav_item(
-                            rox_i18n::t!("panel-page-shader"),
-                            icons::BLEND,
-                            picked == 2,
-                            move |this: &mut Self, _window, cx| {
-                                this.page = 2;
-                                cx.notify();
-                            },
-                            cx,
-                        ));
+                        rows.push(
+                            settings_ui::nav_item(
+                                rox_i18n::t!("panel-page-shader"),
+                                icons::BLEND,
+                                picked == 2,
+                                move |this: &mut Self, _window, cx| {
+                                    this.page = 2;
+                                    cx.notify();
+                                },
+                                cx,
+                            )
+                            .into_any_element(),
+                        );
                     }
                     for (i, &(label, icon)) in pages.iter().enumerate() {
                         let page = i + 3;
-                        nav = nav.child(settings_ui::nav_item(
-                            panel::page_label(label),
-                            icon,
-                            picked == page,
-                            move |this: &mut Self, _window, cx| {
-                                this.page = page;
-                                cx.notify();
-                            },
-                            cx,
-                        ));
+                        rows.push(
+                            settings_ui::nav_item(
+                                panel::page_label(label),
+                                icon,
+                                picked == page,
+                                move |this: &mut Self, _window, cx| {
+                                    this.page = page;
+                                    cx.notify();
+                                },
+                                cx,
+                            )
+                            .into_any_element(),
+                        );
                     }
+                    // A panel that brings a long list of its own pages
+                    // outruns a short window; the nav scrolls rather than
+                    // hiding its tail below the edge.
+                    let nav = sidebar().child(settings_ui::nav_scroll(
+                        "panel-settings-nav",
+                        &self.nav_scroll,
+                        move |col| col.children(rows),
+                    ));
                     let body = match picked {
                         0 => {
                             let theme = panel.read(cx).theme();

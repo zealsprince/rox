@@ -16,7 +16,7 @@ use std::time::Instant;
 use gpui::{
     canvas, div, fill, point, prelude::*, px, relative, size, App, Bounds, Context, Div, Global,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, Point,
-    ScrollWheelEvent, Subscription, WeakEntity, Window, WindowHandle,
+    ScrollWheelEvent, SharedString, Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::Root;
 
@@ -197,7 +197,7 @@ fn open_now(cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        "rox - Equalizer",
+        rox_i18n::t!("eq-window-title"),
         bounds,
         Some(min),
         move |window, cx| cx.new(|cx| EqWindow::new(state, window, cx)),
@@ -481,13 +481,13 @@ impl EqWindow {
             .items_center()
             .gap(tokens::SPACE_SM)
             .child(small_button(
-                "Flatten",
+                rox_i18n::t!("eq-flatten"),
                 icons::MINUS,
                 false,
                 cx.listener(|_, _, _, cx| player::flatten_eq(cx)),
             ))
             .child(small_button(
-                "Reset Bands",
+                rox_i18n::t!("eq-reset-bands"),
                 icons::REFRESH_CW,
                 false,
                 cx.listener(|_, _, _, cx| player::reset_eq_shape(cx)),
@@ -496,9 +496,9 @@ impl EqWindow {
                 "eq-analyzer",
                 self.analyzer_style,
                 vec![
-                    (AnalyzerStyle::Wave, "Wave".into()),
-                    (AnalyzerStyle::Bars, "Bars".into()),
-                    (AnalyzerStyle::Off, "No analyzer".into()),
+                    (AnalyzerStyle::Wave, rox_i18n::t!("eq-analyzer-wave")),
+                    (AnalyzerStyle::Bars, rox_i18n::t!("eq-analyzer-bars")),
+                    (AnalyzerStyle::Off, rox_i18n::t!("eq-analyzer-off")),
                 ],
                 false,
                 |this: &mut Self, style, cx| {
@@ -828,12 +828,12 @@ impl EqWindow {
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(format!("Band {}", band + 1)),
+                    .child(rox_i18n::t!("eq-band-label", number = (band + 1) as u64).to_string()),
             )
             .child(self.freq_row(band, cx))
             .child(
                 self.readout_row(
-                    "Gain",
+                    rox_i18n::t!("eq-gain-label"),
                     band,
                     player::eq_gain(band),
                     settings_ui::span(-GAIN_MAX_DB, GAIN_MAX_DB, " dB")
@@ -845,7 +845,7 @@ impl EqWindow {
                 ),
             )
             .child(self.readout_row(
-                "Width",
+                rox_i18n::t!("eq-width-label"),
                 band,
                 player::eq_q(band),
                 settings_ui::span(Q_MIN, Q_MAX, " Q").decimals(2).hard(),
@@ -861,12 +861,12 @@ impl EqWindow {
     fn freq_row(&self, band: usize, cx: &mut Context<Self>) -> Div {
         let hz = player::eq_freq(band);
         labelled(
-            "Freq",
+            rox_i18n::t!("eq-freq-label"),
             panel::value_slider_edit_sized(
                 &self.scrubs[0],
                 &self.value_edit,
                 freq_frac(hz),
-                format!("{hz:.0} Hz"),
+                rox_i18n::format::format_unit(hz as f64, 0, "Hz"),
                 format!("{hz:.0}"),
                 1.0,
                 panel::SliderWidth::Fill,
@@ -886,7 +886,7 @@ impl EqWindow {
     #[allow(clippy::too_many_arguments)]
     fn readout_row(
         &self,
-        label: &'static str,
+        label: impl Into<SharedString>,
         band: usize,
         value: f32,
         span: settings_ui::Span,
@@ -916,7 +916,7 @@ impl EqWindow {
 /// The strip takes the rest of the window: there's no settings-page control
 /// column to line up with here, and a short slider under a full-width plot
 /// reads as a mistake.
-fn labelled(label: &'static str, control: Div) -> Div {
+fn labelled(label: impl Into<SharedString>, control: Div) -> Div {
     div()
         .flex()
         .flex_row()
@@ -929,7 +929,7 @@ fn labelled(label: &'static str, control: Div) -> Div {
                 .flex_none()
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child(label),
+                .child(label.into()),
         )
         .child(div().flex_1().min_w_0().child(control))
 }
@@ -1009,14 +1009,15 @@ impl Render for EqWindow {
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .child(div().child("Equalizer"))
+                        .child(div().child(rox_i18n::t!("eq-heading")))
                         .child(self.controls(cx)),
                 )
-                .child(div().text_xs().text_color(palette::text_muted()).child(
-                    "Drag a band to move it, scroll over one to widen or narrow it. The \
-                         processing sits ahead of the buffer that feeds the sound card, so a \
-                         move takes up to half a second to reach the speakers.",
-                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(rox_i18n::t!("eq-help-text")),
+                )
                 // The scale belongs to the plot, so they share a column and
                 // the gap between them stays tighter than the window's own.
                 .child(

@@ -150,6 +150,13 @@ pub fn clean_leftovers() {
     if let Ok(target) = install_target() {
         remove_any(&sibling(&target, "new"));
         remove_any(&sibling(&target, "old"));
+        // The rox-mcp swap beside the app leaves the same remains.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let helper = target.with_file_name(helper_name());
+            remove_any(&sibling(&helper, "new"));
+            remove_any(&sibling(&helper, "old"));
+        }
     }
 }
 
@@ -164,7 +171,7 @@ fn download_and_apply(release: &Release, progress: &Progress) -> Result<String, 
         release.clone()
     };
     if !release.is_new() {
-        return Err("already on the latest version".into());
+        return Err(rox_i18n::t!("updater-already-latest").to_string());
     }
     let archive = fetch_verified(&release, progress)?;
     let applied = apply(&archive);
@@ -178,24 +185,27 @@ fn download_and_apply(release: &Release, progress: &Progress) -> Result<String, 
 /// matches the release's manifest. The download half of the journey, with
 /// no writes anywhere near the install.
 fn fetch_verified(release: &Release, progress: &Progress) -> Result<PathBuf, String> {
-    let platform = PLATFORM.ok_or("no release build for this platform")?;
+    let platform = PLATFORM.ok_or_else(|| rox_i18n::t_static("updater-no-release-build"))?;
     let name = format!("rox-v{}-{platform}", release.version);
     let asset = release
         .assets
         .iter()
         .find(|a| a.name == name)
-        .ok_or_else(|| format!("the release carries no {name}"))?;
+        .ok_or_else(|| rox_i18n::t!("updater-no-asset", name = name.clone()).to_string())?;
     let sums = release
         .assets
         .iter()
         .find(|a| a.name == SUMS)
-        .ok_or_else(|| {
-            format!("the release carries no {SUMS}; refusing an unverifiable download")
-        })?;
+        .ok_or_else(|| rox_i18n::t!("updater-no-checksums", sums = SUMS.to_string()).to_string())?;
 
     let manifest = fetch_sums(&sums.url)?;
     let expected = expected_sum(&manifest, &name).ok_or_else(|| {
-        format!("{SUMS} has no entry for {name}; refusing an unverifiable download")
+        rox_i18n::t!(
+            "updater-checksum-missing-entry",
+            sums = SUMS.to_string(),
+            name = name.clone()
+        )
+        .to_string()
     })?;
 
     let dir = work_dir();
@@ -271,9 +281,9 @@ fn download(
         .and_then(|v| v.parse::<u64>().ok())
     {
         if claimed != bytes {
-            return Err(format!(
-                "the server offered {claimed} bytes, the release states {bytes}"
-            ));
+            return Err(
+                rox_i18n::t!("updater-size-mismatch", claimed = claimed, bytes = bytes).to_string(),
+            );
         }
     }
     let part = path.with_extension("part");
@@ -312,7 +322,7 @@ fn stream(
         // forever can't fill the disk.
         done += read as u64;
         if done > bytes {
-            return Err("the download ran past the size the release states".into());
+            return Err(rox_i18n::t!("updater-overran").to_string());
         }
         hasher.update(&buffer[..read]);
         out.write_all(&buffer[..read])
@@ -321,13 +331,16 @@ fn stream(
     }
     out.flush().map_err(|e| e.to_string())?;
     if done != bytes {
-        return Err(format!("the download stopped at {done} of {bytes} bytes"));
+        return Err(rox_i18n::t!("updater-short", done = done, bytes = bytes).to_string());
     }
     let digest = hex(&hasher.finalize());
     if digest != expected {
-        return Err(format!(
-            "the download's checksum is {digest}, not the {expected} the release states"
-        ));
+        return Err(rox_i18n::t!(
+            "updater-checksum-mismatch",
+            digest = digest,
+            expected = expected.to_string()
+        )
+        .to_string());
     }
     Ok(())
 }
@@ -406,7 +419,9 @@ fn install_writable() -> bool {
 
 /// Stage the verified archive's build beside the running one and swap it
 /// into place. The stage is the last thing that can fail big; the swap is
-/// renames within one folder.
+/// renames within one folder. On macOS the bundle carries rox-mcp inside,
+/// so the one swap covers both.
+#[cfg(target_os = "macos")]
 fn apply(archive: &Path) -> Result<(), String> {
     let target = install_target()?;
     let staged = sibling(&target, "new");
@@ -415,10 +430,43 @@ fn apply(archive: &Path) -> Result<(), String> {
     swap(&staged, &target)
 }
 
-/// Pull the new build out of the Linux tarball: the one file named `rox`,
-/// written out executable and synced before the caller renames it live.
+/// The bare-binary flavor: the app and the rox-mcp proxy beside it, each
+/// staged then swapped. Both stages land before anything moves, and the
+/// helper swaps first: if it can't, the app hasn't moved and a retry
+/// starts clean. The reverse partial - new helper under an old app - the
+/// socket's generation check turns into a plain error rather than silence.
+#[cfg(not(target_os = "macos"))]
+fn apply(archive: &Path) -> Result<(), String> {
+    let target = install_target()?;
+    let binary = format!("rox{}", std::env::consts::EXE_SUFFIX);
+    let helper_target = target.with_file_name(helper_name());
+    let staged = sibling(&target, "new");
+    let helper_staged = sibling(&helper_target, "new");
+    remove_any(&staged);
+    remove_any(&helper_staged);
+    if !stage(archive, &binary, &staged)? {
+        return Err(format!("the archive holds no {binary}"));
+    }
+    // Absent only in archives from before the proxy shipped; nothing to
+    // deliver then, and the app still updates.
+    if stage(archive, &helper_name(), &helper_staged)? {
+        swap(&helper_staged, &helper_target)?;
+    }
+    swap(&staged, &target)
+}
+
+/// The proxy's file name beside the executable, the same shape the MCP
+/// settings page hands out.
+#[cfg(not(target_os = "macos"))]
+fn helper_name() -> String {
+    format!("rox-mcp{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// Pull one file out of the Linux tarball by name, written out executable
+/// and synced before the caller renames it live. False when the archive
+/// doesn't carry it.
 #[cfg(target_os = "linux")]
-fn stage(archive: &Path, staged: &Path) -> Result<(), String> {
+fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
     use std::os::unix::fs::PermissionsExt;
     let file = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
@@ -427,7 +475,7 @@ fn stage(archive: &Path, staged: &Path) -> Result<(), String> {
         let is_binary = entry.header().entry_type().is_file()
             && entry
                 .path()
-                .is_ok_and(|p| p.file_name().is_some_and(|n| n == "rox"));
+                .is_ok_and(|p| p.file_name().is_some_and(|n| n == name));
         if !is_binary {
             continue;
         }
@@ -437,23 +485,25 @@ fn stage(archive: &Path, staged: &Path) -> Result<(), String> {
         out.sync_all().map_err(|e| e.to_string())?;
         std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| e.to_string())?;
-        return Ok(());
+        return Ok(true);
     }
-    Err("the archive holds no rox binary".into())
+    Ok(false)
 }
 
 /// The same out of the Windows zip.
 #[cfg(windows)]
-fn stage(archive: &Path, staged: &Path) -> Result<(), String> {
+fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    let mut entry = zip
-        .by_name("rox.exe")
-        .map_err(|_| "the archive holds no rox.exe")?;
+    let mut entry = match zip.by_name(name) {
+        Ok(entry) => entry,
+        Err(_) => return Ok(false),
+    };
     let mut out =
         std::fs::File::create(staged).map_err(|e| format!("{}: {e}", staged.display()))?;
     std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-    out.sync_all().map_err(|e| e.to_string())
+    out.sync_all().map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// And the whole bundle out of the macOS disk image: mount read-only, copy
@@ -592,14 +642,33 @@ mod tests {
         assert!(stream(&b"abc"[..], &part, 3, sum, &progress).is_ok());
         assert_eq!(progress.done.load(Ordering::Relaxed), 3);
 
+        // Against the resolved message, not an English fragment of it: the
+        // active locale comes from the OS, so a German machine would fail a
+        // substring check for "stopped at" while the code was working fine.
         let short = stream(&b"ab"[..], &part, 3, sum, &progress).unwrap_err();
-        assert!(short.contains("stopped at 2"), "{short}");
+        assert_eq!(
+            short,
+            rox_i18n::t!("updater-short", done = 2u64, bytes = 3u64).to_string(),
+            "{short}"
+        );
 
+        // A body of the right length but the wrong bytes is refused for the
+        // checksum, not for a length: the digest is in the message so the
+        // whole string can't be predicted, but it is neither of these two.
         let wrong = stream(&b"abd"[..], &part, 3, sum, &progress).unwrap_err();
-        assert!(wrong.contains("checksum"), "{wrong}");
+        assert_ne!(wrong, short, "{wrong}");
+        assert_ne!(
+            wrong,
+            rox_i18n::t!("updater-overran").to_string(),
+            "{wrong}"
+        );
 
         let flood = stream(&b"abcdefgh"[..], &part, 3, sum, &progress).unwrap_err();
-        assert!(flood.contains("ran past"), "{flood}");
+        assert_eq!(
+            flood,
+            rox_i18n::t!("updater-overran").to_string(),
+            "{flood}"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

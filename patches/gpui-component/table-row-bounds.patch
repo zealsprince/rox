@@ -1,0 +1,23 @@
+--- a/src/table/state.rs
++++ b/src/table/state.rs
+@@ -218,6 +218,20 @@
+         cx.notify();
+     }
+ 
++    /// rox patch: a row's y offset and height in the scroll content,
++    /// summed from the cached per-row sizes, for callers aiming a scroll
++    /// at a row exactly (the follow-playing glide). None until a paint
++    /// builds the cache or when the row is out of range.
++    pub fn row_bounds(&self, row_ix: usize) -> Option<(Pixels, Pixels)> {
++        if row_ix >= self.row_sizes.len() {
++            return None;
++        }
++        let y = self.row_sizes[..row_ix]
++            .iter()
++            .fold(px(0.), |y, s| y + s.height);
++        Some((y, self.row_sizes[row_ix].height))
++    }
++
+     // Scroll to the column at the given index.
+     pub fn scroll_to_col(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+         let col_ix = col_ix.saturating_sub(self.fixed_left_cols_count());

@@ -508,7 +508,7 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
                     div()
                         .text_xs()
                         .text_color(palette::text_faint())
-                        .child("Add Row"),
+                        .child(rox_i18n::t!("arrange-add-row")),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let mut rows = add_rows.clone();

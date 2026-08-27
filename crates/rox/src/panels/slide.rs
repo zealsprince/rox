@@ -303,9 +303,10 @@ impl SlidePanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // Let the slides reach this host from their own menus; the dock
         // never sees a hosted panel, so nothing else offers it.
+        let slide_title = rox_i18n::t!("slide-title");
         composite::report_hosted(
             self.slides.iter(),
-            self.config.chrome.title.as_deref().unwrap_or("Slide"),
+            self.config.chrome.title.as_deref().unwrap_or(&slide_title),
             cx,
         );
         let active = self.config.active;
@@ -332,7 +333,7 @@ impl SlidePanel {
             if self.config.chrome.controls_hidden() {
                 return root.child(empty);
             }
-            let parent = composite::parent_button("Slide", cx);
+            let parent = composite::parent_button(rox_i18n::t!("slide-title"), cx);
             return root
                 .child(empty)
                 .child(composite::parent_controls().child(parent));
@@ -531,7 +532,7 @@ impl SlidePanel {
                     .icon(Icon::default().path(icons::PLUS))
                     .small()
                     .ghost()
-                    .tooltip("Add Slide")
+                    .tooltip(rox_i18n::t!("slide-add"))
                     .dropdown_menu({
                         let state = self.state.clone();
                         let workspace = self.workspace.clone();
@@ -564,7 +565,7 @@ impl SlidePanel {
                         let left = weak.clone();
                         let right = weak;
                         menu.item(
-                            PopupMenuItem::new("Move Left")
+                            PopupMenuItem::new(rox_i18n::t!("composite-move-left"))
                                 .icon(Icon::default().path(icons::CHEVRON_LEFT))
                                 .disabled(active == 0)
                                 .on_click(move |_, _, cx| {
@@ -574,7 +575,7 @@ impl SlidePanel {
                                 }),
                         )
                         .item(
-                            PopupMenuItem::new("Move Right")
+                            PopupMenuItem::new(rox_i18n::t!("composite-move-right"))
                                 .icon(Icon::default().path(icons::CHEVRON_RIGHT))
                                 .disabled(active + 1 >= count)
                                 .on_click(move |_, _, cx| {
@@ -588,7 +589,7 @@ impl SlidePanel {
                     cx,
                 )
             }));
-        let parent = composite::parent_button("Slide", cx);
+        let parent = composite::parent_button(rox_i18n::t!("slide-title"), cx);
         root.child(controls)
             .child(composite::parent_controls().child(parent))
     }
@@ -700,7 +701,10 @@ impl Panel for SlidePanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Slide")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("slide-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -780,7 +784,7 @@ impl Panel for SlidePanel {
         let next = cx.entity().downgrade();
         let menu = menu
             .item(
-                PopupMenuItem::new("Previous Slide")
+                PopupMenuItem::new(rox_i18n::t!("slide-previous"))
                     .icon(Icon::default().path(icons::CHEVRON_LEFT))
                     .disabled(self.config.active == 0)
                     .on_click(move |_, window, cx| {
@@ -793,7 +797,7 @@ impl Panel for SlidePanel {
                     }),
             )
             .item(
-                PopupMenuItem::new("Next Slide")
+                PopupMenuItem::new(rox_i18n::t!("slide-next"))
                     .icon(Icon::default().path(icons::CHEVRON_RIGHT))
                     .disabled(self.config.active + 1 >= self.slides.len())
                     .on_click(move |_, window, cx| {

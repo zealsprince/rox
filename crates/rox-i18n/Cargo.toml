@@ -24,6 +24,10 @@ icu_calendar = "2.3.0"
 icu_datetime = "2.3.0"
 icu_decimal = "2.3.0"
 icu_locale_core = "2.3.0"
+# Search folding decomposes to strip accents, so a French row is findable
+# by someone typing without them.
+icu_normalizer = "2.3.0"
+icu_properties = "2.3.0"
 icu_provider = { version = "2", features = ["sync"] }
 icu_time = "2.3.0"
 # The concurrent memoizer type FluentBundle's formatter hook names.
@@ -36,3 +40,7 @@ unic-langid = "0.9.6"
 [dev-dependencies]
 # The parity test walks the ftl ASTs to compare key inventories.
 fluent-syntax = "0.12.0"
+# CLDR plural categories, so the plural test can ask what a locale
+# actually needs rather than trusting each file to know. Already in the
+# tree underneath fluent-bundle, which selects plurals with it.
+intl_pluralrules = "7.0.2"

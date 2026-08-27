@@ -83,7 +83,7 @@ pub fn open(state: AppState, path: PathBuf, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                "rox - Edit Lyrics",
+                rox_i18n::t!("lyrics-edit-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| LyricsEdit::new(state, path, window, cx)),
@@ -292,11 +292,11 @@ impl LyricsEdit {
         // playing, since there is nothing to stamp with otherwise.
         let position = self.playback_position(cx);
         let stamp_label = match position {
-            Some(secs) => format!("Stamp {}", fmt_time(secs)),
-            None => "Stamp".to_owned(),
+            Some(secs) => rox_i18n::t!("lyrics-edit-stamp-time", time = fmt_time(secs)),
+            None => rox_i18n::t!("lyrics-edit-stamp"),
         };
         let stamp = settings_ui::small_button(
-            SharedString::from(stamp_label),
+            stamp_label,
             icons::CLOCK,
             !ready || position.is_none(),
             cx.listener(|this, _, window, cx| this.stamp_line(window, cx)),
@@ -304,9 +304,9 @@ impl LyricsEdit {
         // What's holding the save up, when something is, in place of the
         // shortcut it would otherwise spell out.
         let reason = if self.baseline.is_none() {
-            Some("Loading the sheet...")
+            Some(rox_i18n::t!("lyrics-edit-loading"))
         } else if self.saving {
-            Some("Saving...")
+            Some(rox_i18n::t!("lyrics-edit-saving"))
         } else {
             None
         };
@@ -325,9 +325,9 @@ impl LyricsEdit {
                 // The stamp chord only earns a mention while there's a
                 // position to stamp with.
                 if position.is_some() {
-                    segs.push(Seg::Text("or".into()));
+                    segs.push(Seg::Text(rox_i18n::t!("lyrics-edit-hint-or")));
                     segs.push(Seg::Key("Shift+Enter".into()));
-                    segs.push(Seg::Text("to stamp".into()));
+                    segs.push(Seg::Text(rox_i18n::t!("lyrics-edit-hint-after-stamp")));
                 }
                 kbd_line(segs).text_xs().into_any_element()
             }
@@ -420,7 +420,7 @@ impl Render for LyricsEdit {
                     .p(tokens::SPACE_MD)
                     .child(
                         section(
-                            "Lyrics",
+                            rox_i18n::t!("lyrics-edit-section"),
                             None,
                             div()
                                 .flex_1()

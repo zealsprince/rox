@@ -85,9 +85,9 @@ impl MiniTogglePanel {
         // The inert glyph says nothing about why it's inert, so its tip
         // names the missing piece rather than the click it won't take.
         let tip = match (assigned, on_mini) {
-            (false, _) => "No mini layout assigned",
-            (true, true) => "Back to the full layout",
-            (true, false) => "Shrink to the mini player",
+            (false, _) => rox_i18n::t!("mini-tip-none"),
+            (true, true) => rox_i18n::t!("mini-tip-back"),
+            (true, false) => rox_i18n::t!("mini-tip-shrink"),
         };
 
         let button = panel::Tip::keyed("mini-toggle", tip).apply(
@@ -199,7 +199,10 @@ impl Panel for MiniTogglePanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Mini Toggle")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("mini-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<gpui::SharedString> {

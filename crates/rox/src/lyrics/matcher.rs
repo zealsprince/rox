@@ -76,7 +76,7 @@ pub fn open(state: AppState, path: PathBuf, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                "rox - Find Lyrics",
+                rox_i18n::t!("lyrics-matcher-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| LyricsMatch::new(state, path, window, cx)),
@@ -146,7 +146,7 @@ impl LyricsMatch {
         // a search that comes back empty for the wrong reason.
         if query.artist.is_empty() || query.title.is_empty() {
             let mut this = this;
-            this.phase = Phase::Failed("This track has no artist and title to match on".into());
+            this.phase = Phase::Failed(rox_i18n::t!("lyrics-matcher-no-query"));
             return this;
         }
         this.search(query, cx);
@@ -169,7 +169,8 @@ impl LyricsMatch {
                     }
                     Err(e) => {
                         log::warn!("lyrics search: {e}");
-                        this.phase = Phase::Failed(format!("Search failed: {e}").into());
+                        this.phase =
+                            Phase::Failed(rox_i18n::t!("lyrics-matcher-search-failed", error = e));
                     }
                 }
                 cx.notify();
@@ -311,11 +312,14 @@ impl LyricsMatch {
                                     .flex_none()
                                     .text_xs()
                                     .text_color(palette::text_muted())
-                                    .child(SharedString::from(if candidate.synced {
-                                        format!("{}  synced", candidate.provider)
+                                    .child(if candidate.synced {
+                                        rox_i18n::t!(
+                                            "lyrics-matcher-synced-tag",
+                                            provider = candidate.provider
+                                        )
                                     } else {
-                                        candidate.provider.to_string()
-                                    })),
+                                        SharedString::from(candidate.provider)
+                                    }),
                             )
                             .child(confidence_badge(candidate.confidence)),
                     )
@@ -363,7 +367,7 @@ impl LyricsMatch {
                 .items_center()
                 .justify_center()
                 .text_color(palette::text_faint())
-                .child("Pick a match to preview")
+                .child(rox_i18n::t!("lyrics-matcher-pick-preview"))
                 .into_any_element(),
         };
         div()
@@ -381,18 +385,18 @@ impl LyricsMatch {
     /// The clauses run in the order a search clears them, so the footer
     /// names the one step that is actually next, and Apply is live
     /// exactly when nothing is left.
-    fn blocker(&self) -> Option<&'static str> {
+    fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...",
-                _ => "No match to apply",
+                Phase::Searching => "Searching...".into(),
+                _ => rox_i18n::t!("lyrics-matcher-blocked-no-match"),
             });
         }
         if self.selected.is_none() {
-            return Some("Pick a match to apply");
+            return Some(rox_i18n::t!("lyrics-matcher-blocked-pick"));
         }
         if self.saving {
-            return Some("Saving the words...");
+            return Some(rox_i18n::t!("lyrics-matcher-blocked-saving"));
         }
         None
     }
@@ -457,10 +461,10 @@ impl Render for LyricsMatch {
                 div()
                     .text_xs()
                     .text_color(palette::text())
-                    .child(SharedString::from(match found.len() {
-                        1 => "1 match".to_string(),
-                        n => format!("{n} matches"),
-                    }))
+                    .child(rox_i18n::t!(
+                        "lyrics-matcher-match-count",
+                        count = found.len() as u64
+                    ))
                     .into_any_element(),
             ),
             _ => None,

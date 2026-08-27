@@ -33,14 +33,23 @@ use rox_panel_kit::ui::{self as settings_ui, kbd_line, section, Seg, SECTION_GAP
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 
-/// The picture slots the editor exposes, in display order: the label each
-/// wears over its preview.
-const SLOTS: &[(PicKind, &str)] = &[
-    (PicKind::Front, "Front Cover"),
-    (PicKind::Back, "Back Cover"),
-    (PicKind::Media, "Media"),
-    (PicKind::Artist, "Artist"),
+/// The picture slots the editor exposes, in display order.
+const SLOTS: &[PicKind] = &[
+    PicKind::Front,
+    PicKind::Back,
+    PicKind::Media,
+    PicKind::Artist,
 ];
+
+/// The label a slot wears over its preview.
+fn slot_label(kind: PicKind) -> SharedString {
+    match kind {
+        PicKind::Front => rox_i18n::t!("cover-editor-slot-front"),
+        PicKind::Back => rox_i18n::t!("cover-editor-slot-back"),
+        PicKind::Media => rox_i18n::t!("cover-editor-slot-media"),
+        PicKind::Artist => "Artist".into(),
+    }
+}
 
 /// The default window size; wide enough for the four slot cards to sit two
 /// across without scrolling.
@@ -93,7 +102,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                "rox - Cover Art",
+                rox_i18n::t!("cover-editor-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| CoverEditor::new(state, ids, window, cx)),
@@ -298,7 +307,7 @@ impl CoverEditor {
     /// carrying the same bytes shows that image, a split shows the mixed
     /// note, all-empty shows nothing.
     fn fill(&mut self, baselines: Vec<FilePictures>, cx: &mut Context<Self>) {
-        for (i, (kind, _)) in SLOTS.iter().enumerate() {
+        for (i, kind) in SLOTS.iter().enumerate() {
             let mut present = baselines.iter().map(|pictures| {
                 pictures
                     .iter()
@@ -331,7 +340,7 @@ impl CoverEditor {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Choose Image".into()),
+            prompt: Some(rox_i18n::t!("cover-editor-choose-image")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = rx.await else {
@@ -362,7 +371,9 @@ impl CoverEditor {
                         };
                         this.error = None;
                     }
-                    None => this.error = Some("That file is not an image rox can embed".into()),
+                    None => {
+                        this.error = Some(rox_i18n::t!("cover-editor-not-an-image"));
+                    }
                 }
                 cx.notify();
             })
@@ -403,7 +414,7 @@ impl CoverEditor {
     /// the cover picker on its own apply. An image that will not decode
     /// leaves the slot alone and shows why.
     pub fn set_front(&mut self, bytes: Vec<u8>, mime: String, cx: &mut Context<Self>) {
-        let Some(front) = SLOTS.iter().position(|(kind, _)| *kind == PicKind::Front) else {
+        let Some(front) = SLOTS.iter().position(|kind| *kind == PicKind::Front) else {
             return;
         };
         match decode(&bytes, &mime) {
@@ -415,7 +426,7 @@ impl CoverEditor {
                 };
                 self.error = None;
             }
-            None => self.error = Some("That image could not be decoded".into()),
+            None => self.error = Some(rox_i18n::t!("cover-editor-not-decoded")),
         }
         cx.notify();
     }
@@ -440,7 +451,7 @@ impl CoverEditor {
         let mut edits = Vec::new();
         for (track, baseline) in self.tracks.iter().zip(baselines) {
             let mut pictures = Vec::new();
-            for (i, (kind, _)) in SLOTS.iter().enumerate() {
+            for (i, kind) in SLOTS.iter().enumerate() {
                 let current = baseline
                     .iter()
                     .find(|(k, _, _)| k == kind)
@@ -576,7 +587,11 @@ impl CoverEditor {
                     Some(e) => {
                         this.saving = false;
                         this.error = Some(if failures > 1 {
-                            format!("{failures} files failed; {e}").into()
+                            rox_i18n::t!(
+                                "cover-editor-save-errors",
+                                count = failures as u64,
+                                error = e
+                            )
                         } else {
                             e.into()
                         });
@@ -631,7 +646,7 @@ impl CoverEditor {
         // cover on apply.
         let search = providers::art_online().then(|| {
             settings_ui::small_button(
-                "Search Online",
+                rox_i18n::t!("cover-editor-search-online"),
                 icons::DOWNLOAD,
                 self.saving || self.baselines.is_none(),
                 cx.listener(|this, _, _, cx| this.search_online(cx)),
@@ -657,7 +672,7 @@ impl CoverEditor {
             }),
         );
         section(
-            "Cover Art",
+            rox_i18n::t!("cover-editor-section"),
             search,
             // The cards lock while a commit is in flight: a transparent
             // occluder over them swallows clicks so no slot edits out from
@@ -677,14 +692,16 @@ impl CoverEditor {
         } else if self.saving {
             // A commit runs off the UI thread and a file at a time, so say
             // where the batch is rather than sitting mute.
-            Some(if self.save_total > 1 {
+            Some({
                 let at = (self.save_done + 1).min(self.save_total);
-                format!("Saving {}/{}...", at, self.save_total).into()
-            } else {
-                "Saving...".into()
+                rox_i18n::t!(
+                    "cover-editor-saving-progress",
+                    done = at as u64,
+                    total = self.save_total as u64
+                )
             })
         } else if self.baselines.is_none() {
-            Some("Reading current art...".into())
+            Some(rox_i18n::t!("cover-editor-reading"))
         } else {
             None
         };
@@ -744,14 +761,18 @@ impl CoverEditor {
     /// click, with an upload prompt fading in on hover, and remove and
     /// revert actions under the slot label.
     fn slot_card(&self, slot: usize, cx: &mut Context<Self>) -> Div {
-        let (_, label) = SLOTS[slot];
+        let label = slot_label(SLOTS[slot]);
         let content: gpui::AnyElement = match &self.slots[slot].action {
             Action::Set { image, .. } => art(image.clone()).into_any_element(),
-            Action::Remove => placeholder(icons::TRASH, "Will remove").into_any_element(),
+            Action::Remove => placeholder(icons::TRASH, rox_i18n::t!("cover-editor-will-remove"))
+                .into_any_element(),
             Action::Keep => match &self.slots[slot].current {
                 Current::Image(image) => art(image.clone()).into_any_element(),
-                Current::Mixed => placeholder(icons::IMAGE, "Multiple").into_any_element(),
-                Current::None => placeholder(icons::IMAGE, "None").into_any_element(),
+                Current::Mixed => placeholder(icons::IMAGE, rox_i18n::t!("cover-editor-multiple"))
+                    .into_any_element(),
+                Current::None => {
+                    placeholder(icons::IMAGE, rox_i18n::t!("cover-editor-none")).into_any_element()
+                }
             },
         };
         let mut preview = div()
@@ -794,7 +815,7 @@ impl CoverEditor {
                         .opacity(0.)
                         .group_hover(SLOT_GROUP, |s| s.opacity(1.))
                         .child(gpui::svg().path(icons::UPLOAD).size(px(24.)))
-                        .child(div().text_xs().child("Replace")),
+                        .child(div().text_xs().child(rox_i18n::t!("cover-editor-replace"))),
                 )
         });
         let actions = div()
@@ -803,7 +824,7 @@ impl CoverEditor {
             .gap(tokens::SPACE_XS)
             .when(self.removable(slot), |d| {
                 d.child(settings_ui::small_button(
-                    "Remove",
+                    rox_i18n::t!("cover-editor-remove"),
                     icons::TRASH,
                     self.saving,
                     cx.listener(move |this, _, _, cx| {
@@ -814,7 +835,7 @@ impl CoverEditor {
             })
             .when(!matches!(self.slots[slot].action, Action::Keep), |d| {
                 d.child(settings_ui::small_button(
-                    "Revert",
+                    rox_i18n::t!("cover-editor-revert"),
                     icons::CLOSE,
                     self.saving,
                     cx.listener(move |this, _, _, cx| {
@@ -849,7 +870,7 @@ fn art(image: Arc<Image>) -> Div {
 }
 
 /// The empty preview stand-in: a faint glyph over a one-word note.
-fn placeholder(icon: &'static str, note: &'static str) -> Div {
+fn placeholder(icon: &'static str, note: impl Into<SharedString>) -> Div {
     div()
         .flex()
         .flex_col()
@@ -857,7 +878,7 @@ fn placeholder(icon: &'static str, note: &'static str) -> Div {
         .gap(tokens::SPACE_XS)
         .text_color(palette::text_faint())
         .child(gpui::svg().path(icon).size(px(28.)))
-        .child(div().text_xs().child(note))
+        .child(div().text_xs().child(note.into()))
 }
 
 /// The image texture for a preview, decoded from the encoded bytes; None

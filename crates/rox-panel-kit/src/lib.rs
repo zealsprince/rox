@@ -147,11 +147,24 @@ pub fn title_text(custom: Option<&str>, default: impl Into<SharedString>) -> Sha
     }
 }
 
-/// Title-case a panel's built-in name for display. The name is a
-/// serialized identifier (lowercase, space separated); tab and window
-/// titles want it capitalized. No panel name contains "rox" or an
-/// acronym, so a plain per-word capitalize is right here.
+/// A panel's built-in name as it should be read, not as it is stored.
+///
+/// `panel_name()` is a serialization identifier and stays English forever,
+/// so a tree or a tab that title-cased it read "Cover Art" in a German
+/// build. The identifier maps to a `panel-title-<kebab>` message, which is
+/// where the vanity name lives; a panel with no such message falls back to
+/// title-casing, which is what the identifier already looked like.
 pub fn display_name(name: &str) -> String {
+    let key = format!("panel-title-{}", name.replace(' ', "-"));
+    if let Some(title) = rox_i18n::try_translate(&key) {
+        return title.to_string();
+    }
+    title_case(name)
+}
+
+/// The fallback: title-case a serialized identifier. No panel name
+/// contains "rox" or an acronym, so a plain per-word capitalize is right.
+fn title_case(name: &str) -> String {
     name.split(' ')
         .map(|word| {
             let mut chars = word.chars();
@@ -1223,7 +1236,13 @@ pub fn choices<P: 'static, V: PartialEq + Copy + 'static>(
     on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    choices_gated(options, current, |_| true, on_pick, cx)
+    // The last literal call sites are still migrating; adapt them onto the
+    // owned-label path rather than keeping two copies of the body.
+    let owned: Vec<(SharedString, V)> = options
+        .iter()
+        .map(|(label, value)| (SharedString::from(*label), *value))
+        .collect();
+    choices_gated(&owned, current, |_| true, on_pick, cx)
 }
 
 /// [`choices`] with owned labels, for options translated at render time
@@ -1263,7 +1282,7 @@ pub fn choices_shared<P: 'static, V: PartialEq + Copy + 'static>(
 /// description beside it is what explains why; this only stops the press
 /// that would otherwise land and appear to do nothing.
 pub fn choices_gated<P: 'static, V: PartialEq + Copy + 'static>(
-    options: &'static [(&'static str, V)],
+    options: &[(SharedString, V)],
     current: V,
     available: impl Fn(V) -> bool,
     on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,

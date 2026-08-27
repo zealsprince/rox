@@ -115,45 +115,60 @@ impl OutputPanel {
             return match player.error() {
                 Some(error) => (
                     Tone::Bad,
-                    "No output".into(),
-                    vec![error, "Pick another device, or turn exclusive off".into()],
+                    rox_i18n::t!("output-no-output"),
+                    vec![error, rox_i18n::t!("output-pick-another-device")],
                 ),
                 None => (
                     Tone::Info,
-                    "Nothing playing".into(),
-                    vec!["Start a track and this says what the device agreed to".into()],
+                    rox_i18n::t!("output-nothing-playing"),
+                    vec![rox_i18n::t!("output-start-track-hint")],
                 ),
             };
         };
         let negotiated = &status.negotiated;
         let (tone, _) = tone_for(&status);
         let mode = match negotiated.mode {
-            Mode::Exclusive => "Exclusive",
-            Mode::Shared => "Shared",
+            Mode::Exclusive => rox_i18n::t_static("output-mode-exclusive"),
+            Mode::Shared => rox_i18n::t_static("output-mode-shared"),
         };
-        let numbers = format!(
-            "{} Hz, {} ch, {}",
-            negotiated.sample_rate, negotiated.channels, negotiated.format
-        );
         let headline = if self.config.device {
-            format!("{mode} on {}, {numbers}", negotiated.device)
+            rox_i18n::t!(
+                "output-headline-device",
+                mode = mode,
+                device = negotiated.device.clone(),
+                rate = negotiated.sample_rate,
+                channels = negotiated.channels,
+                format = negotiated.format.to_string()
+            )
         } else {
-            format!("{mode}, {numbers}")
+            rox_i18n::t!(
+                "output-headline",
+                mode = mode,
+                rate = negotiated.sample_rate,
+                channels = negotiated.channels,
+                format = negotiated.format.to_string()
+            )
         };
         // The compact register: the reasons folded into one comma line, so
         // the expanded callout stays two lines tall in a docked slot. The
         // settings window's status block asks for the full sentences.
         let lines = status.lines(false, self.config.source_rate);
-        (tone, headline.into(), lines)
+        (tone, headline, lines)
     }
 
     /// The labelled detail modes, the settings row's and the flyout's one
-    /// list.
-    const DETAIL_PICKS: [(&'static str, OutputDetail); 3] = [
-        ("Badge", OutputDetail::Badge),
-        ("Compact", OutputDetail::Compact),
-        ("Expanded", OutputDetail::Expanded),
-    ];
+    /// list. A function rather than a `const` array of `&'static str`
+    /// labels, since the labels are translated at call time.
+    fn detail_picks() -> [(SharedString, OutputDetail); 3] {
+        [
+            (rox_i18n::t!("output-detail-badge"), OutputDetail::Badge),
+            (rox_i18n::t!("output-detail-compact"), OutputDetail::Compact),
+            (
+                rox_i18n::t!("output-detail-expanded"),
+                OutputDetail::Expanded,
+            ),
+        ]
+    }
 
     /// The panel's own dropdown entries: the detail pick and the two line
     /// toggles the settings window also carries, for a quick flip.
@@ -170,7 +185,7 @@ impl OutputPanel {
             // source flyout's rule.
             panel::follow_panel(&panel, cx);
             let mut submenu = submenu.check_side(gpui_component::Side::Right);
-            for (label, detail) in Self::DETAIL_PICKS {
+            for (label, detail) in Self::detail_picks() {
                 submenu = submenu.item(panel::check_row(
                     label,
                     None,
@@ -184,8 +199,11 @@ impl OutputPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Detail", submenu));
-        let toggle = |menu: PopupMenu, label: &'static str, checked, set: fn(&mut OutputConfig)| {
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("output-detail-label"),
+            submenu,
+        ));
+        let toggle = |menu: PopupMenu, label: SharedString, checked, set: fn(&mut OutputConfig)| {
             let weak = entity.downgrade();
             menu.item(
                 PopupMenuItem::new(label)
@@ -199,12 +217,18 @@ impl OutputPanel {
                     }),
             )
         };
-        let menu = toggle(menu, "Device Name", self.config.device, |c| {
-            c.device = !c.device
-        });
-        toggle(menu, "File Rate", self.config.source_rate, |c| {
-            c.source_rate = !c.source_rate
-        })
+        let menu = toggle(
+            menu,
+            rox_i18n::t!("output-device-name"),
+            self.config.device,
+            |c| c.device = !c.device,
+        );
+        toggle(
+            menu,
+            rox_i18n::t!("output-file-rate"),
+            self.config.source_rate,
+            |c| c.source_rate = !c.source_rate,
+        )
     }
 }
 
@@ -276,15 +300,10 @@ impl PanelSettings for OutputPanel {
                 .flex_col()
                 .gap(tokens::SPACE_MD)
                 .child(panel::setting_row(
-                    "Detail",
-                    Some(
-                        "Badge keeps it to a chip with the rest on hover; compact gives the \
-                         headline a line of its own, for a strip along an edge; expanded adds \
-                         the reasons beside it, or under it when the panel is too narrow"
-                            .into(),
-                    ),
-                    panel::choices(
-                        &Self::DETAIL_PICKS,
+                    rox_i18n::t!("output-detail-label"),
+                    Some(rox_i18n::t!("output-detail-label.description")),
+                    panel::choices_shared(
+                        &Self::detail_picks(),
                         self.config.detail,
                         |this: &mut Self, detail, cx| {
                             this.config.detail = detail;
@@ -294,12 +313,8 @@ impl PanelSettings for OutputPanel {
                     ),
                 ))
                 .child(panel::setting_row(
-                    "Device Name",
-                    Some(
-                        "Name the running device in the headline; off keeps the line to the \
-                         mode, the rate, and the format"
-                            .into(),
-                    ),
+                    rox_i18n::t!("output-device-name"),
+                    Some(rox_i18n::t!("output-device-name.description")),
                     panel::toggle(
                         self.config.device,
                         |this: &mut Self, on, cx| {
@@ -310,12 +325,8 @@ impl PanelSettings for OutputPanel {
                     ),
                 ))
                 .child(panel::setting_row(
-                    "File Rate",
-                    Some(
-                        "Confirm the playing file's own rate when nothing is converting it. A \
-                         conversion says so either way, since that's what the warning is about"
-                            .into(),
-                    ),
+                    rox_i18n::t!("output-file-rate"),
+                    Some(rox_i18n::t!("output-file-rate.description")),
                     panel::toggle(
                         self.config.source_rate,
                         |this: &mut Self, on, cx| {
@@ -344,7 +355,10 @@ impl Panel for OutputPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Output")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("output-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -503,12 +517,12 @@ impl OutputPanel {
 /// glance and all three are a hover away.
 fn badge_label(negotiated: &Negotiated) -> SharedString {
     let mode = match negotiated.mode {
-        Mode::Exclusive => "Exclusive",
-        Mode::Shared => "Shared",
+        Mode::Exclusive => rox_i18n::t_static("output-mode-exclusive"),
+        Mode::Shared => rox_i18n::t_static("output-mode-shared"),
     };
     format!(
-        "{mode} {:.1} kHz {}",
-        negotiated.sample_rate as f32 / 1000.0,
+        "{mode} {} {}",
+        rox_i18n::format::format_unit(f64::from(negotiated.sample_rate) / 1000.0, 1, "kHz"),
         negotiated.format
     )
     .into()

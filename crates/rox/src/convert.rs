@@ -160,7 +160,10 @@ fn version(binary: &str) -> Result<String, String> {
                 .unwrap_or("")
                 .trim();
             if line.is_empty() {
-                Ok(format!("{binary} answered"))
+                Ok(
+                    rox_i18n::t!("convert-version-answered", binary = binary.to_owned())
+                        .to_string(),
+                )
             } else {
                 Ok(line.to_string())
             }
@@ -229,13 +232,13 @@ impl Preset {
         Preset::ALL.into_iter().find(|p| p.key() == key)
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> gpui::SharedString {
         match self {
-            Preset::Flac => "FLAC",
-            Preset::Mp3320 => "MP3 320 kbps",
-            Preset::Mp3V0 => "MP3 V0",
-            Preset::Opus192 => "Opus 192 kbps",
-            Preset::Wav => "WAV",
+            Preset::Flac => rox_i18n::t!("convert-preset-flac"),
+            Preset::Mp3320 => rox_i18n::t!("convert-preset-mp3-320"),
+            Preset::Mp3V0 => rox_i18n::t!("convert-preset-mp3-v0"),
+            Preset::Opus192 => rox_i18n::t!("convert-preset-opus-192"),
+            Preset::Wav => rox_i18n::t!("convert-preset-wav"),
         }
     }
 
@@ -286,12 +289,12 @@ impl Custom {
     pub fn parse(ext: &str, args: &str) -> Result<Custom, String> {
         let ext = ext.trim().trim_start_matches('.').trim();
         if ext.is_empty() {
-            return Err("The extension is what picks the container, so it needs one".into());
+            return Err(rox_i18n::t!("convert-custom-ext-empty").to_string());
         }
         if !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(format!(
-                "\"{ext}\" isn't a container name; letters and digits, no dot"
-            ));
+            return Err(
+                rox_i18n::t!("convert-custom-ext-invalid", ext = ext.to_owned()).to_string(),
+            );
         }
         Ok(Custom {
             ext: ext.to_ascii_lowercase(),
@@ -304,25 +307,15 @@ impl Custom {
 /// argument list. Refused rather than stripped: someone who typed `-y`
 /// meant it, and a silent removal would leave them believing the opposite
 /// of what runs.
-const OWNED_FLAGS: [(&str, &str); 5] = [
-    (
-        "-y",
-        "Nothing here overwrites, so -y isn't available; a destination that exists is skipped",
-    ),
-    ("-n", "-n is already on every run"),
-    (
-        "-i",
-        "The input is the track you picked, so -i isn't yours to set",
-    ),
-    (
-        "-f",
-        "The extension picks the container, so -f isn't yours to set",
-    ),
-    (
-        "-attach",
-        "-attach reads a file of its own, which this doesn't allow",
-    ),
-];
+fn owned_flags() -> [(&'static str, gpui::SharedString); 5] {
+    [
+        ("-y", rox_i18n::t!("convert-flag-y")),
+        ("-n", rox_i18n::t!("convert-flag-n")),
+        ("-i", rox_i18n::t!("convert-flag-i")),
+        ("-f", rox_i18n::t!("convert-flag-f")),
+        ("-attach", rox_i18n::t!("convert-flag-attach")),
+    ]
+}
 
 /// Whether a token reads as a file name rather than a value. Slashes and a
 /// short alphabetic tail after a dot are what a path looks like; a value
@@ -355,14 +348,15 @@ fn looks_like_a_file(token: &str) -> bool {
 ///
 /// What comes back never reaches a shell, so the refusals aren't about
 /// escaping. They're about the parts of the command line [`args`] owns:
-/// the flags in [`OWNED_FLAGS`], and any bare token that reads as a file,
+/// the flags in [`owned_flags`], and any bare token that reads as a file,
 /// which in this position could only be a second output.
 pub fn parse_args(text: &str) -> Result<Vec<String>, String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut after_flag = false;
+    let owned_flags = owned_flags();
     for token in text.split_whitespace() {
-        if let Some((_, reason)) = OWNED_FLAGS.iter().find(|(flag, _)| *flag == token) {
-            return Err((*reason).to_owned());
+        if let Some((_, reason)) = owned_flags.iter().find(|(flag, _)| *flag == token) {
+            return Err(reason.to_string());
         }
         // A negative number is a value, not a flag: -1 after -map_metadata
         // is the clearest case and it reads as a flag on a naive check.
@@ -370,12 +364,14 @@ pub fn parse_args(text: &str) -> Result<Vec<String>, String> {
             && token.len() > 1
             && !token[1..].starts_with(|c: char| c.is_ascii_digit());
         if !flag && looks_like_a_file(token) {
-            return Err(format!(
-                "\"{token}\" names a file; the destination comes from the folder and the pattern"
-            ));
+            return Err(
+                rox_i18n::t!("convert-arg-names-file", token = token.to_owned()).to_string(),
+            );
         }
         if !flag && !after_flag {
-            return Err(format!("\"{token}\" isn't a flag or a value for one"));
+            return Err(
+                rox_i18n::t!("convert-arg-not-flag-or-value", token = token.to_owned()).to_string(),
+            );
         }
         after_flag = flag;
         tokens.push(token.to_owned());
@@ -521,7 +517,7 @@ fn run_check(custom: &Custom, binary: &str) -> Result<(), String> {
     // A clean exit over an empty folder means `-n` refused a name that was
     // somehow taken, which says nothing about the arguments.
     if !wrote {
-        return Err("ffmpeg exited clean but wrote nothing".into());
+        return Err(rox_i18n::t!("convert-check-wrote-nothing").to_string());
     }
     Ok(())
 }
@@ -662,8 +658,8 @@ pub enum Skip {
 impl Skip {
     pub fn label(&self) -> String {
         match self {
-            Skip::Exists => "already there".into(),
-            Skip::Duplicate => "two tracks want this name".into(),
+            Skip::Exists => rox_i18n::t!("convert-skip-exists").to_string(),
+            Skip::Duplicate => rox_i18n::t!("convert-skip-duplicate").to_string(),
             Skip::Render(e) => e.clone(),
         }
     }
@@ -813,22 +809,34 @@ pub struct Summary {
 impl Summary {
     /// The one-line report, the same sentence wherever it's shown.
     pub fn line(&self) -> String {
-        let files = if self.converted == 1 {
-            "1 file".to_string()
+        let files = rox_i18n::t!("convert-summary-files", count = self.converted as u64);
+        let dest = self.dest.display().to_string();
+        let mut line = if self.stopped {
+            rox_i18n::t!(
+                "convert-summary-stopped",
+                files = files.to_string(),
+                dest = dest
+            )
+            .to_string()
         } else {
-            format!("{} files", self.converted)
+            rox_i18n::t!(
+                "convert-summary-line",
+                files = files.to_string(),
+                dest = dest
+            )
+            .to_string()
         };
-        let head = if self.stopped {
-            format!("Stopped after {files} to {}", self.dest.display())
-        } else {
-            format!("{files} to {}", self.dest.display())
-        };
-        let mut line = head;
         if self.skipped > 0 {
-            line.push_str(&format!(", {} skipped", self.skipped));
+            line.push_str(&rox_i18n::t!(
+                "convert-summary-skipped",
+                count = self.skipped as u64
+            ));
         }
         if self.failed > 0 {
-            line.push_str(&format!(", {} failed", self.failed));
+            line.push_str(&rox_i18n::t!(
+                "convert-summary-failed",
+                count = self.failed as u64
+            ));
         }
         line
     }
@@ -1092,7 +1100,7 @@ fn wait(child: &mut Child, progress: &Progress) -> Option<std::process::ExitStat
 fn tail(stderr: &str) -> String {
     let text = stderr.trim();
     if text.is_empty() {
-        return "ffmpeg failed without saying why".into();
+        return rox_i18n::t!("convert-ffmpeg-silent-failure").to_string();
     }
     let start = text.len().saturating_sub(STDERR_TAIL);
     let cut = text

@@ -343,9 +343,9 @@ fn remember(measured: &Result<Measured, String>) {
 /// Everything about the dialog that depends on which pass it's offering,
 /// resolved once so the dialog itself is built one way.
 struct Copy {
-    title: String,
-    body: String,
-    action: &'static str,
+    title: SharedString,
+    body: SharedString,
+    action: SharedString,
 }
 
 fn copy(prompt: &Prompt) -> Copy {
@@ -355,24 +355,17 @@ fn copy(prompt: &Prompt) -> Copy {
             // learn about afterwards, and it can't reach every format, which
             // is not something to work out from a coverage number.
             let lands = match prompt.acoustic_save {
-                AcousticSave::Database => {
-                    "The results go in the library database and your files are left alone."
-                }
-                AcousticSave::Tags => {
-                    "The results go in the library database and, for MP3 and FLAC, into each \
-                     file's own tags as well, so they survive the database being rebuilt. \
-                     Other formats keep the database copy only."
-                }
+                AcousticSave::Database => rox_i18n::t!("pass-acoustic-lands-database"),
+                AcousticSave::Tags => rox_i18n::t!("pass-acoustic-lands-tags"),
             };
             Copy {
-                title: format!("Analyze {} tracks?", prompt.missing),
-                body: format!(
-                    "{} works out what each one sounds like, so the library can find \
-                     music that resembles what's playing. Everything runs on this \
-                     machine, and what's described already is left alone. {lands}",
-                    prompt.model
+                title: rox_i18n::t!("pass-acoustic-title", count = prompt.missing),
+                body: rox_i18n::t!(
+                    "pass-acoustic-body",
+                    model = prompt.model.clone(),
+                    lands = lands.to_string(),
                 ),
-                action: "Analyze",
+                action: rox_i18n::t!("pass-analyze"),
             }
         }
         Pass::ReplayGain => {
@@ -380,32 +373,19 @@ fn copy(prompt: &Prompt) -> Copy {
             // the audio files, which is not something to learn about
             // afterwards.
             let lands = match prompt.save {
-                ReplayGainSave::Database => {
-                    "The numbers go in the library database and your files are left alone."
-                }
-                ReplayGainSave::Tags => {
-                    "The numbers are written back into each file's tags, where every \
-                     other player reads them."
-                }
+                ReplayGainSave::Database => rox_i18n::t!("pass-replaygain-lands-database"),
+                ReplayGainSave::Tags => rox_i18n::t!("pass-replaygain-lands-tags"),
             };
             Copy {
-                title: format!("Measure {} tracks?", prompt.missing),
-                body: format!(
-                    "Each file is decoded and metered so it can play at the loudness \
-                     it was mastered to. Albums are measured whole where every one of \
-                     their tracks is missing a gain. {lands}"
-                ),
-                action: "Measure",
+                title: rox_i18n::t!("pass-replaygain-title", count = prompt.missing),
+                body: rox_i18n::t!("pass-replaygain-body", lands = lands.to_string()),
+                action: rox_i18n::t!("pass-measure"),
             }
         }
         Pass::Tempo => Copy {
-            title: format!("Find the tempo of {} tracks?", prompt.missing),
-            body: "Two half-minute windows of each file are decoded and the beats counted, \
-                   so the library can say what a track runs at. It works best on music \
-                   recorded to a click and skips anything it can't call. The numbers go in \
-                   the library database and your files are left alone."
-                .to_string(),
-            action: "Analyze",
+            title: rox_i18n::t!("pass-tempo-title", count = prompt.missing),
+            body: rox_i18n::t!("pass-tempo-body"),
+            action: rox_i18n::t!("pass-analyze"),
         },
     }
 }
@@ -424,15 +404,14 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
     // either way: the number, why there isn't one yet, or what went wrong
     // reaching for it.
     let timing = match (&estimate, prompt.probing, &prompt.error) {
-        (_, true, _) => "Timing a few tracks...".to_string(),
-        (Some(estimate), _, _) => format!(
-            "{estimate} at {}.",
-            rox_core::pace::workers_phrase(prompt.workers)
+        (_, true, _) => rox_i18n::t!("pass-timing"),
+        (Some(estimate), _, _) => rox_i18n::t!(
+            "pass-estimate-at",
+            estimate = estimate.clone(),
+            workers_phrase = rox_core::pace::workers_phrase(prompt.workers),
         ),
-        (None, _, Some(error)) => format!("Couldn't time this library: {error}"),
-        (None, _, None) => "Nothing has run on this machine yet, so there's no estimate. \
-                            Estimate times a few tracks and works the rest out from there."
-            .to_string(),
+        (None, _, Some(error)) => rox_i18n::t!("pass-timing-failed", error = error.clone()),
+        (None, _, None) => rox_i18n::t!("pass-no-estimate"),
     };
     // A probe that came back with nothing is the one case the line carries
     // bad news, so it reads as a warning rather than as the estimate it
@@ -444,7 +423,11 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
     let probing = prompt.probing;
     let probe_button = estimate.is_none().then(|| {
         dialog_icon_button(
-            if probing { "Estimating..." } else { "Estimate" },
+            if probing {
+                rox_i18n::t!("pass-estimating")
+            } else {
+                rox_i18n::t!("pass-estimate-button")
+            },
             icons::GAUGE,
             probing,
             cx.listener(|this: &mut V, _, _, cx| probe(this, cx)),
@@ -479,12 +462,12 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
                             .flex_col()
                             .gap(tokens::SPACE_MD)
                             .p(tokens::SPACE_MD)
-                            .child(div().child(SharedString::from(copy.title)))
+                            .child(div().child(copy.title))
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(palette::text_muted())
-                                    .child(SharedString::from(copy.body)),
+                                    .child(copy.body),
                             )
                             .child(
                                 div()
@@ -493,7 +476,12 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
                                     .items_center()
                                     .justify_between()
                                     .gap(tokens::SPACE_MD)
-                                    .child(div().flex_none().text_xs().child("Workers"))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_xs()
+                                            .child(rox_i18n::t!("pass-workers")),
+                                    )
                                     .child(div().flex_1().child(settings_ui::scalar_sized(
                                         &prompt.scrub,
                                         this.value_edit(),
@@ -527,7 +515,7 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
                                     } else {
                                         palette::text_muted()
                                     })
-                                    .child(SharedString::from(timing)),
+                                    .child(timing),
                             )
                             .child(
                                 div()

@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, px, size, svg, App, Bounds, Context, Div, Entity, Global, MouseButton,
-    ScrollHandle, Subscription, Window, WindowHandle,
+    ScrollHandle, SharedString, Subscription, Window, WindowHandle,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
@@ -87,10 +87,13 @@ fn open_now(cx: &mut App) {
     // Open on a first run, folded away for anyone who has folded it once.
     let about = saved.map(|s| s.about).unwrap_or(true);
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let handle =
-        panel::open_child_window(cx, "rox - Signals", bounds, Some(MIN), move |window, cx| {
-            cx.new(|cx| SignalsWindow::new(state, about, window, cx))
-        });
+    let handle = panel::open_child_window(
+        cx,
+        rox_i18n::t!("signals-window-title"),
+        bounds,
+        Some(MIN),
+        move |window, cx| cx.new(|cx| SignalsWindow::new(state, about, window, cx)),
+    );
     cx.set_global(OpenSignals(handle));
 }
 
@@ -244,7 +247,7 @@ impl SignalsWindow {
                                     .size(px(12.))
                                     .flex_none(),
                             )
-                            .child("About Signals"),
+                            .child(rox_i18n::t!("signals-about-toggle")),
                     ),
             )
             .when(open, |d| d.child(blurb()))
@@ -422,10 +425,7 @@ impl Render for SignalsWindow {
                             .border_color(palette::border())
                             .text_xs()
                             .text_color(palette::tone_warn())
-                            .child(
-                                "No library window is open, so these show no audio. Edits still \
-                                 save.",
-                            ),
+                            .child(rox_i18n::t!("signals-no-library")),
                     )
                 })
                 .into_any_element()
@@ -437,7 +437,7 @@ impl Render for SignalsWindow {
 /// a list of bands: the page under this is all bounds and percentages, and
 /// the binding it serves happens in another window entirely.
 fn blurb() -> Div {
-    let line = |text: &'static str| {
+    let line = |text: SharedString| {
         div()
             .flex_none()
             .text_xs()
@@ -464,31 +464,19 @@ fn blurb() -> Div {
                 .mt(px(2.))
                 .text_color(palette::text()),
         )
-        .child(div().flex_1().min_w_0().child(
-            "Panels marked with this in the menus can have most of their parameters \
-             bound: right-click a parameter in the panel's settings and pick a signal, \
-             or add one from there.",
-        ));
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(rox_i18n::t!("signals-blurb-marked")),
+        );
     div()
         .flex()
         .flex_col()
         .flex_none()
         .gap(tokens::SPACE_XS)
-        .child(line(
-            "A signal turns what's playing into one number between 0 and 1: the \
-             energy in a frequency band, the level of the whole mix, or a pulse on \
-             every hit inside a band. Response sets how fast it follows, Threshold \
-             silences it under a level you pick.",
-        ))
-        .child(line(
-            "A Total is the fourth kind: it adds another signal up over time and \
-             wraps at 1, so it climbs while the music is loud and stalls while it \
-             isn't. That's the one to reach for when a shader wants a phase that \
-             moves with the song rather than with the clock.",
-        ))
+        .child(line(rox_i18n::t!("signals-blurb-what")))
+        .child(line(rox_i18n::t!("signals-blurb-total")))
         .child(marked)
-        .child(line(
-            "What's tuned here is shared, so a change lands on every parameter \
-             routed to that signal, in every panel and window.",
-        ))
+        .child(line(rox_i18n::t!("signals-blurb-shared")))
 }

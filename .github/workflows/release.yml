@@ -111,8 +111,10 @@ jobs:
         shell: bash
         run: scripts/vendor-gpui.sh
 
+      # rox-mcp ships beside the app: the MCP settings page hands out a
+      # config pointing at it, so every artifact has to carry it.
       - name: Build
-        run: cargo build --release --package rox
+        run: cargo build --release --package rox --package rox-mcp
 
       # codesign only finds an identity in a keychain, and the runner starts
       # with none, so import the Developer ID .p12 (stored base64-encoded in
@@ -142,6 +144,7 @@ jobs:
           staging="rox-v$VERSION-${{ matrix.artifact }}"
           mkdir -p "$staging"
           cp target/release/rox "$staging/"
+          cp target/release/rox-mcp "$staging/"
           cp crates/rox/assets/app/rox.desktop "$staging/"
           cp crates/rox/assets/app/rox-music.svg "$staging/rox.svg"
           cp crates/rox/assets/app/rox.png "$staging/"
@@ -153,6 +156,8 @@ jobs:
         run: |
           mkdir -p rox.app/Contents/MacOS rox.app/Contents/Resources
           cp target/release/rox rox.app/Contents/MacOS/
+          # Beside the app binary, where the MCP settings page says it is.
+          cp target/release/rox-mcp rox.app/Contents/MacOS/
           cp crates/rox/assets/app/rox.icns rox.app/Contents/Resources/
           sed "s/__VERSION__/$VERSION/" crates/rox/assets/app/Info.plist \
             > rox.app/Contents/Info.plist
@@ -164,7 +169,12 @@ jobs:
           df -h /
           if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
             # Hardened runtime and a timestamp are what notarization checks
-            # for, so they have to go on before the submit step below.
+            # for, so they have to go on before the submit step below. Signing
+            # the bundle only covers the main executable, and notarization
+            # rejects any unsigned Mach-O inside, so rox-mcp gets its own
+            # signature first (inside-out order, or the outer seal breaks).
+            codesign --force --timestamp --options runtime \
+              -s "$APPLE_SIGNING_IDENTITY" rox.app/Contents/MacOS/rox-mcp
             codesign --force --timestamp --options runtime \
               -s "$APPLE_SIGNING_IDENTITY" rox.app
             codesign --verify --strict --verbose=2 rox.app
@@ -206,7 +216,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/release/rox.exe, LICENSE `
+          Compress-Archive -Path target/release/rox.exe, target/release/rox-mcp.exe, LICENSE `
             -DestinationPath "rox-v$env:VERSION-${{ matrix.artifact }}.zip"
 
       - uses: actions/upload-artifact@v7

@@ -116,14 +116,21 @@ pub enum Aim {
     Outward,
 }
 
-const SHAPE_CHOICES: &[(&str, Shape)] = &[
-    ("Point", Shape::Point),
-    ("Line", Shape::Line),
-    ("Box", Shape::Box),
-    ("Ring", Shape::Ring),
-];
+fn shape_choices() -> [(SharedString, Shape); 4] {
+    [
+        (rox_i18n::t!("particles-shape-point"), Shape::Point),
+        (rox_i18n::t!("particles-shape-line"), Shape::Line),
+        (rox_i18n::t!("particles-shape-box"), Shape::Box),
+        (rox_i18n::t!("particles-shape-ring"), Shape::Ring),
+    ]
+}
 
-const AIM_CHOICES: &[(&str, Aim)] = &[("Fixed", Aim::Fixed), ("Outward", Aim::Outward)];
+fn aim_choices() -> [(SharedString, Aim); 2] {
+    [
+        (rox_i18n::t!("particles-aim-fixed"), Aim::Fixed),
+        (rox_i18n::t!("particles-aim-outward"), Aim::Outward),
+    ]
+}
 
 /// How an emitter turns activation into spawns: a steady stream scaled by
 /// how hard it fires, or a burst on each onset so a kick pops in one puff
@@ -136,10 +143,15 @@ pub enum Trigger {
     Burst,
 }
 
-const TRIGGER_CHOICES: &[(&str, Trigger)] = &[
-    ("Continuous", Trigger::Continuous),
-    ("Burst", Trigger::Burst),
-];
+fn trigger_choices() -> [(SharedString, Trigger); 2] {
+    [
+        (
+            rox_i18n::t!("particles-trigger-continuous"),
+            Trigger::Continuous,
+        ),
+        (rox_i18n::t!("particles-burst"), Trigger::Burst),
+    ]
+}
 
 /// One scene or force knob a route may drive: the persisted id, the label
 /// the target list shows, and how a route's factor lands on it. The
@@ -151,34 +163,37 @@ const TRIGGER_CHOICES: &[(&str, Trigger)] = &[
 /// settings row in [`crate::signal_ui::bindable_row`].
 struct BindTarget {
     id: &'static str,
-    label: &'static str,
+    /// A rox-i18n key, resolved at the point of use rather than here: a
+    /// `const` array can't hold the locale-dependent `SharedString` `t!`
+    /// returns.
+    label_key: &'static str,
     apply: fn(&mut Scene, &mut Forces, f32),
 }
 
 const BIND_TARGETS: &[BindTarget] = &[
     BindTarget {
         id: "gravity",
-        label: "Gravity",
+        label_key: "particles-gravity",
         apply: |scene, _, k| scene.gravity *= k,
     },
     BindTarget {
         id: "drag",
-        label: "Drag",
+        label_key: "particles-drag",
         apply: |scene, _, k| scene.drag *= k,
     },
     BindTarget {
         id: "turbulence",
-        label: "Turbulence",
+        label_key: "particles-turbulence",
         apply: |_, forces, k| forces.turbulence *= k,
     },
     BindTarget {
         id: "scale",
-        label: "Turbulence Scale",
+        label_key: "particles-turbulence-scale",
         apply: |_, forces, k| forces.turbulence_scale *= k,
     },
     BindTarget {
         id: "drift",
-        label: "Turbulence Drift",
+        label_key: "particles-turbulence-drift",
         apply: |_, forces, k| forces.turbulence_speed *= k,
     },
 ];
@@ -188,39 +203,40 @@ const BIND_TARGETS: &[BindTarget] = &[
 /// scales that emitter's own setting.
 struct EmitterBindTarget {
     id: &'static str,
-    label: &'static str,
+    /// See [`BindTarget::label_key`].
+    label_key: &'static str,
     apply: fn(&mut Emitter, f32),
 }
 
 const EMITTER_BIND_TARGETS: &[EmitterBindTarget] = &[
     EmitterBindTarget {
         id: "speed",
-        label: "Speed",
+        label_key: "particles-speed",
         apply: |emitter, k| emitter.speed *= k,
     },
     EmitterBindTarget {
         id: "rate",
-        label: "Rate",
+        label_key: "particles-rate",
         apply: |emitter, k| emitter.rate *= k,
     },
     EmitterBindTarget {
         id: "burst",
-        label: "Burst",
+        label_key: "particles-burst",
         apply: |emitter, k| emitter.burst *= k,
     },
     EmitterBindTarget {
         id: "cone",
-        label: "Cone",
+        label_key: "particles-cone",
         apply: |emitter, k| emitter.cone *= k,
     },
     EmitterBindTarget {
         id: "size",
-        label: "Size",
+        label_key: "particles-size",
         apply: |emitter, k| emitter.size *= k,
     },
     EmitterBindTarget {
         id: "life",
-        label: "Lifetime",
+        label_key: "particles-lifetime",
         apply: |emitter, k| emitter.life *= k,
     },
 ];
@@ -515,13 +531,18 @@ impl RouteTargets for Modulated {
     fn targets(&self) -> Vec<(String, String)> {
         let mut targets: Vec<(String, String)> = BIND_TARGETS
             .iter()
-            .map(|t| (t.id.to_string(), t.label.to_string()))
+            .map(|t| (t.id.to_string(), rox_i18n::t!(t.label_key).to_string()))
             .collect();
         for (i, emitter) in self.emitters.iter().enumerate() {
             for t in EMITTER_BIND_TARGETS {
                 targets.push((
                     format!("e{}.{}", emitter.id, t.id),
-                    format!("Emitter {} {}", i + 1, t.label),
+                    rox_i18n::t!(
+                        "particles-emitter-target",
+                        index = (i + 1) as u64,
+                        target = rox_i18n::t!(t.label_key).to_string()
+                    )
+                    .to_string(),
                 ));
             }
         }
@@ -987,7 +1008,7 @@ struct EmitterScrubs {
 /// A labelled config toggle for the Display menu: the row label, a getter
 /// for its current state, and a setter that flips it.
 type ConfigToggle = (
-    &'static str,
+    SharedString,
     fn(&ParticlesPanel) -> bool,
     fn(&mut ParticlesPanel),
 );
@@ -1127,17 +1148,17 @@ impl ParticlesPanel {
     ) -> PopupMenu {
         let toggles: Vec<ConfigToggle> = vec![
             (
-                "Round Particles",
+                rox_i18n::t!("particles-round-particles"),
                 |this| this.config.scene.round,
                 |this| this.config.scene.round = !this.config.scene.round,
             ),
             (
-                "Glow",
+                rox_i18n::t!("particles-glow"),
                 |this| this.config.scene.glow,
                 |this| this.config.scene.glow = !this.config.scene.glow,
             ),
             (
-                "Hold on Pause",
+                rox_i18n::t!("particles-hold-on-pause"),
                 |this| this.config.scene.freeze,
                 |this| this.config.scene.freeze = !this.config.scene.freeze,
             ),
@@ -1156,7 +1177,10 @@ impl ParticlesPanel {
             }
             submenu
         });
-        menu.item(PopupMenuItem::submenu("Display", submenu))
+        menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("library-menu-display"),
+            submenu,
+        ))
     }
 }
 
@@ -1248,7 +1272,7 @@ impl ParticlesPanel {
         self.sync_emitter_state(window, cx);
         let count = self.config.emitters.len();
         let add = settings_ui::small_button(
-            "Add Emitter",
+            rox_i18n::t!("particles-add-emitter"),
             icons::PLUS,
             false,
             cx.listener(|this, _, _, cx| this.add_emitter(cx)),
@@ -1259,14 +1283,14 @@ impl ParticlesPanel {
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child("No emitters yet - add one to start the field."),
+                    .child(rox_i18n::t!("particles-emitters-empty")),
             );
         }
         for i in 0..count {
             list = list.child(self.emitter_block(i, cx));
         }
         div().flex().flex_col().gap(SECTION_GAP).child(section(
-            "Emitters",
+            rox_i18n::t!("particles-section-emitters"),
             Some(add.into_any_element()),
             list,
         ))
@@ -1329,10 +1353,9 @@ impl ParticlesPanel {
         let eid = emitter.id;
 
         let header = settings_ui::block_header(
-            div()
-                .text_xs()
-                .text_color(palette::text_muted())
-                .child(format!("Emitter {}", index + 1)),
+            div().text_xs().text_color(palette::text_muted()).child(
+                rox_i18n::t!("particles-emitter-label", index = (index + 1) as u64).to_string(),
+            ),
             div()
                 .flex()
                 .flex_row()
@@ -1386,10 +1409,10 @@ impl ParticlesPanel {
             .gap(tokens::SPACE_SM)
             .child(header)
             .child(setting_row(
-                "Trigger",
+                rox_i18n::t!("particles-trigger"),
                 None,
-                panel::choices(
-                    TRIGGER_CHOICES,
+                panel::choices_shared(
+                    &trigger_choices(),
                     mode,
                     move |this: &mut Self, mode, cx| {
                         if let Some(emitter) = this.config.emitters.get_mut(index) {
@@ -1403,14 +1426,14 @@ impl ParticlesPanel {
             .when(mode == Trigger::Continuous, |d| {
                 d.child(signal_ui::bindable_row(
                     self,
-                    "Rate",
+                    rox_i18n::t!("particles-rate"),
                     None,
                     format!("e{eid}.rate"),
                     panel::value_slider_edit(
                         &scrubs.rate,
                         &self.value_edit,
                         (rate - RATE_MIN) / (RATE_MAX - RATE_MIN),
-                        format!("{rate:.0}/s"),
+                        format!("{}/s", rox_i18n::format::format_int(rate.round() as i64)),
                         format!("{rate:.0}"),
                         |v| (v - RATE_MIN) / (RATE_MAX - RATE_MIN),
                         move |this: &mut Self, fraction, cx| {
@@ -1427,14 +1450,14 @@ impl ParticlesPanel {
             .when(mode == Trigger::Burst, |d| {
                 d.child(signal_ui::bindable_row(
                     self,
-                    "Burst",
+                    rox_i18n::t!("particles-burst"),
                     None,
                     format!("e{eid}.burst"),
                     panel::value_slider_edit(
                         &scrubs.burst,
                         &self.value_edit,
                         (burst - BURST_MIN) / (BURST_MAX - BURST_MIN),
-                        format!("{burst:.0}"),
+                        rox_i18n::format::format_int(burst.round() as i64),
                         format!("{burst:.0}"),
                         |v| (v - BURST_MIN) / (BURST_MAX - BURST_MIN),
                         move |this: &mut Self, fraction, cx| {
@@ -1449,10 +1472,10 @@ impl ParticlesPanel {
                 ))
             })
             .child(setting_row(
-                "Shape",
+                rox_i18n::t!("particles-shape"),
                 None,
-                panel::choices(
-                    SHAPE_CHOICES,
+                panel::choices_shared(
+                    &shape_choices(),
                     shape,
                     move |this: &mut Self, shape, cx| {
                         if let Some(emitter) = this.config.emitters.get_mut(index) {
@@ -1464,13 +1487,13 @@ impl ParticlesPanel {
                 ),
             ))
             .child(setting_row(
-                "Position X",
+                rox_i18n::t!("particles-position-x"),
                 None,
                 panel::value_slider_edit(
                     &scrubs.x,
                     &self.value_edit,
                     x,
-                    format!("{}%", (x * 100.0).round() as i32),
+                    rox_i18n::format::format_percent((x * 100.0).round() as f64),
                     format!("{}", (x * 100.0).round() as i32),
                     |v| v / 100.0,
                     move |this: &mut Self, fraction, cx| {
@@ -1483,13 +1506,13 @@ impl ParticlesPanel {
                 ),
             ))
             .child(setting_row(
-                "Position Y",
+                rox_i18n::t!("particles-position-y"),
                 None,
                 panel::value_slider_edit(
                     &scrubs.y,
                     &self.value_edit,
                     y,
-                    format!("{}%", (y * 100.0).round() as i32),
+                    rox_i18n::format::format_percent((y * 100.0).round() as f64),
                     format!("{}", (y * 100.0).round() as i32),
                     |v| v / 100.0,
                     move |this: &mut Self, fraction, cx| {
@@ -1504,16 +1527,16 @@ impl ParticlesPanel {
             .when(shape != Shape::Point, |d| {
                 d.child(setting_row(
                     match shape {
-                        Shape::Ring => "Radius",
-                        Shape::Box => "Width",
-                        _ => "Length",
+                        Shape::Ring => rox_i18n::t!("particles-radius"),
+                        Shape::Box => rox_i18n::t!("particles-width"),
+                        _ => rox_i18n::t!("particles-length"),
                     },
                     None,
                     panel::value_slider_edit(
                         &scrubs.width,
                         &self.value_edit,
                         width / 2.0,
-                        format!("{}%", (width * 100.0).round() as i32),
+                        rox_i18n::format::format_percent((width * 100.0).round() as f64),
                         format!("{}", (width * 100.0).round() as i32),
                         |v| v / 200.0,
                         move |this: &mut Self, fraction, cx| {
@@ -1528,13 +1551,13 @@ impl ParticlesPanel {
             })
             .when(shape == Shape::Box, |d| {
                 d.child(setting_row(
-                    "Height",
+                    rox_i18n::t!("particles-height"),
                     None,
                     panel::value_slider_edit(
                         &scrubs.height,
                         &self.value_edit,
                         height / 2.0,
-                        format!("{}%", (height * 100.0).round() as i32),
+                        rox_i18n::format::format_percent((height * 100.0).round() as f64),
                         format!("{}", (height * 100.0).round() as i32),
                         |v| v / 200.0,
                         move |this: &mut Self, fraction, cx| {
@@ -1549,13 +1572,13 @@ impl ParticlesPanel {
             })
             .when(matches!(shape, Shape::Line | Shape::Box), |d| {
                 d.child(setting_row(
-                    "Rotation",
+                    rox_i18n::t!("particles-rotation"),
                     None,
                     panel::value_slider_edit(
                         &scrubs.rotation,
                         &self.value_edit,
                         rotation / 360.0,
-                        format!("{rotation:.0}°"),
+                        format!("{}°", rox_i18n::format::format_int(rotation.round() as i64)),
                         format!("{rotation:.0}"),
                         |v| v.rem_euclid(360.0) / 360.0,
                         move |this: &mut Self, fraction, cx| {
@@ -1569,10 +1592,10 @@ impl ParticlesPanel {
                 ))
             })
             .child(setting_row(
-                "Aim",
+                rox_i18n::t!("particles-aim"),
                 None,
-                panel::choices(
-                    AIM_CHOICES,
+                panel::choices_shared(
+                    &aim_choices(),
                     aim,
                     move |this: &mut Self, aim, cx| {
                         if let Some(emitter) = this.config.emitters.get_mut(index) {
@@ -1585,13 +1608,16 @@ impl ParticlesPanel {
             ))
             .when(aim == Aim::Fixed, |d| {
                 d.child(setting_row(
-                    "Direction",
+                    rox_i18n::t!("particles-direction"),
                     None,
                     panel::value_slider_edit(
                         &scrubs.direction,
                         &self.value_edit,
                         direction / 360.0,
-                        format!("{direction:.0}°"),
+                        format!(
+                            "{}°",
+                            rox_i18n::format::format_int(direction.round() as i64)
+                        ),
                         format!("{direction:.0}"),
                         |v| v.rem_euclid(360.0) / 360.0,
                         move |this: &mut Self, fraction, cx| {
@@ -1606,14 +1632,14 @@ impl ParticlesPanel {
             })
             .child(signal_ui::bindable_row(
                 self,
-                "Cone",
+                rox_i18n::t!("particles-cone"),
                 None,
                 format!("e{eid}.cone"),
                 panel::value_slider_edit(
                     &scrubs.cone,
                     &self.value_edit,
                     cone / 360.0,
-                    format!("{cone:.0}°"),
+                    format!("{}°", rox_i18n::format::format_int(cone.round() as i64)),
                     format!("{cone:.0}"),
                     |v| v / 360.0,
                     move |this: &mut Self, fraction, cx| {
@@ -1628,14 +1654,17 @@ impl ParticlesPanel {
             ))
             .child(signal_ui::bindable_row(
                 self,
-                "Speed",
+                rox_i18n::t!("particles-speed"),
                 None,
                 format!("e{eid}.speed"),
                 panel::value_slider_edit(
                     &scrubs.speed,
                     &self.value_edit,
                     (speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN),
-                    format!("{speed:.0} px/s"),
+                    format!(
+                        "{} px/s",
+                        rox_i18n::format::format_int(speed.round() as i64)
+                    ),
                     format!("{speed:.0}"),
                     |v| (v - SPEED_MIN) / (SPEED_MAX - SPEED_MIN),
                     move |this: &mut Self, fraction, cx| {
@@ -1650,14 +1679,14 @@ impl ParticlesPanel {
             ))
             .child(signal_ui::bindable_row(
                 self,
-                "Size",
+                rox_i18n::t!("particles-size"),
                 None,
                 format!("e{eid}.size"),
                 panel::value_slider_edit(
                     &scrubs.size,
                     &self.value_edit,
                     (size - SIZE_MIN) / (SIZE_MAX - SIZE_MIN),
-                    format!("{size:.0} px"),
+                    format!("{} px", rox_i18n::format::format_int(size.round() as i64)),
                     format!("{size:.0}"),
                     |v| (v - SIZE_MIN) / (SIZE_MAX - SIZE_MIN),
                     move |this: &mut Self, fraction, cx| {
@@ -1672,14 +1701,14 @@ impl ParticlesPanel {
             ))
             .child(signal_ui::bindable_row(
                 self,
-                "Lifetime",
+                rox_i18n::t!("particles-lifetime"),
                 None,
                 format!("e{eid}.life"),
                 panel::value_slider_edit(
                     &scrubs.life,
                     &self.value_edit,
                     (life - LIFE_MIN) / (LIFE_MAX - LIFE_MIN),
-                    format!("{life:.1} s"),
+                    rox_i18n::format::format_unit(f64::from(life), 1, "s"),
                     format!("{life:.1}"),
                     |v| (v - LIFE_MIN) / (LIFE_MAX - LIFE_MIN),
                     move |this: &mut Self, fraction, cx| {
@@ -1692,7 +1721,11 @@ impl ParticlesPanel {
                 ),
                 cx,
             ))
-            .child(setting_row("Color", None, color_row))
+            .child(setting_row(
+                rox_i18n::t!("particles-color"),
+                None,
+                color_row,
+            ))
     }
 
     /// The Forces page: the drift laid over the scene's steady pull. Every
@@ -1705,7 +1738,7 @@ impl ParticlesPanel {
             &self.turbulence_scrub,
             &self.value_edit,
             turbulence / TURB_MAX,
-            format!("{turbulence:.0}"),
+            rox_i18n::format::format_int(turbulence.round() as i64),
             format!("{turbulence:.0}"),
             |v| v / TURB_MAX,
             |this: &mut Self, fraction, cx| {
@@ -1718,7 +1751,7 @@ impl ParticlesPanel {
             &self.turb_scale_scrub,
             &self.value_edit,
             (scale - TURB_SCALE_MIN) / (TURB_SCALE_MAX - TURB_SCALE_MIN),
-            format!("{scale:.0} px"),
+            format!("{} px", rox_i18n::format::format_int(scale.round() as i64)),
             format!("{scale:.0}"),
             |v| (v - TURB_SCALE_MIN) / (TURB_SCALE_MAX - TURB_SCALE_MIN),
             |this: &mut Self, fraction, cx| {
@@ -1732,7 +1765,7 @@ impl ParticlesPanel {
             &self.turb_speed_scrub,
             &self.value_edit,
             speed / TURB_SPEED_MAX,
-            format!("{speed:.2}"),
+            rox_i18n::format::format_float(f64::from(speed), 2),
             format!("{speed:.2}"),
             |v| v / TURB_SPEED_MAX,
             |this: &mut Self, fraction, cx| {
@@ -1742,7 +1775,7 @@ impl ParticlesPanel {
             cx,
         );
         div().flex().flex_col().gap(SECTION_GAP).child(section(
-            "Turbulence",
+            rox_i18n::t!("particles-turbulence"),
             None,
             div()
                 .flex()
@@ -1750,24 +1783,24 @@ impl ParticlesPanel {
                 .gap(tokens::SPACE_MD)
                 .child(signal_ui::bindable_row(
                     self,
-                    "Strength",
-                    Some("How hard the field pushes particles around; zero is off"),
+                    rox_i18n::t!("particles-turbulence-strength"),
+                    Some(rox_i18n::t!("particles-turbulence-strength.description")),
                     "turbulence".to_string(),
                     strength_slider,
                     cx,
                 ))
                 .child(signal_ui::bindable_row(
                     self,
-                    "Scale",
-                    Some("How wide one swirl runs; small churns, large rolls"),
+                    rox_i18n::t!("particles-scale"),
+                    Some(rox_i18n::t!("particles-scale.description")),
                     "scale".to_string(),
                     scale_slider,
                     cx,
                 ))
                 .child(signal_ui::bindable_row(
                     self,
-                    "Drift",
-                    Some("How fast the field itself moves, so the swirls don't stand still"),
+                    rox_i18n::t!("particles-drift"),
+                    Some(rox_i18n::t!("particles-drift.description")),
                     "drift".to_string(),
                     drift_slider,
                     cx,
@@ -1785,7 +1818,7 @@ impl ParticlesPanel {
             &self.gravity_scrub,
             &self.value_edit,
             gravity / GRAVITY_MAX,
-            format!("{gravity:.0}"),
+            rox_i18n::format::format_int(gravity.round() as i64),
             format!("{gravity:.0}"),
             |v| v / GRAVITY_MAX,
             |this: &mut Self, fraction, cx| {
@@ -1798,7 +1831,7 @@ impl ParticlesPanel {
             &self.gravity_angle_scrub,
             &self.value_edit,
             angle / 360.0,
-            format!("{angle:.0}°"),
+            format!("{}°", rox_i18n::format::format_int(angle.round() as i64)),
             format!("{angle:.0}"),
             |v| v.rem_euclid(360.0) / 360.0,
             |this: &mut Self, fraction, cx| {
@@ -1811,7 +1844,7 @@ impl ParticlesPanel {
             &self.drag_scrub,
             &self.value_edit,
             drag / DRAG_MAX,
-            format!("{drag:.2}"),
+            rox_i18n::format::format_float(f64::from(drag), 2),
             format!("{drag:.2}"),
             |v| v / DRAG_MAX,
             |this: &mut Self, fraction, cx| {
@@ -1825,7 +1858,7 @@ impl ParticlesPanel {
             .flex_col()
             .gap(SECTION_GAP)
             .child(section(
-                "Gravity",
+                rox_i18n::t!("particles-gravity"),
                 None,
                 div()
                     .flex()
@@ -1833,40 +1866,40 @@ impl ParticlesPanel {
                     .gap(tokens::SPACE_MD)
                     .child(signal_ui::bindable_row(
                         self,
-                        "Strength",
-                        Some("Constant pull on everything in flight"),
+                        rox_i18n::t!("particles-gravity-strength"),
+                        Some(rox_i18n::t!("particles-gravity-strength.description")),
                         "gravity".to_string(),
                         gravity_slider,
                         cx,
                     ))
                     .child(setting_row(
-                        "Direction",
-                        Some("Which way it pulls; 0 is up, 180 is down".into()),
+                        rox_i18n::t!("particles-direction"),
+                        Some(rox_i18n::t!("particles-direction.description")),
                         angle_slider,
                     )),
             ))
             .child(section(
-                "Medium",
+                rox_i18n::t!("particles-section-medium"),
                 None,
                 signal_ui::bindable_row(
                     self,
-                    "Drag",
-                    Some("How much speed the air eats each second; zero is a vacuum"),
+                    rox_i18n::t!("particles-drag"),
+                    Some(rox_i18n::t!("particles-drag.description")),
                     "drag".to_string(),
                     drag_slider,
                     cx,
                 ),
             ))
             .child(section(
-                "Particles",
+                rox_i18n::t!("particles-section-particles"),
                 None,
                 div()
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
-                        "Round Particles",
-                        Some("Draw dots instead of squares".into()),
+                        rox_i18n::t!("particles-round-particles"),
+                        Some(rox_i18n::t!("particles-round-particles.description")),
                         toggle(
                             self.config.scene.round,
                             |this: &mut Self, on, cx| {
@@ -1877,8 +1910,8 @@ impl ParticlesPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Glow",
-                        Some("Lay a soft halo behind each particle".into()),
+                        rox_i18n::t!("particles-glow"),
+                        Some(rox_i18n::t!("particles-glow.description")),
                         toggle(
                             self.config.scene.glow,
                             |this: &mut Self, on, cx| {
@@ -1890,11 +1923,11 @@ impl ParticlesPanel {
                     )),
             ))
             .child(section(
-                "Playback",
+                rox_i18n::t!("particles-section-playback"),
                 None,
                 setting_row(
-                    "Hold on Pause",
-                    Some("Freeze the field while paused instead of letting it drift out".into()),
+                    rox_i18n::t!("particles-hold-on-pause"),
+                    Some(rox_i18n::t!("particles-hold-on-pause.description")),
                     toggle(
                         self.config.scene.freeze,
                         |this: &mut Self, on, cx| {
@@ -1922,7 +1955,10 @@ impl Panel for ParticlesPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Particles")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-particles"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1988,7 +2024,7 @@ impl Panel for ParticlesPanel {
         // and the tick lands on the right, the way every other top-level
         // check row in the app reads. The icon-less form is for flyouts.
         let menu = menu.item(panel::check_row(
-            "Edit Emitters",
+            rox_i18n::t!("particles-edit-emitters"),
             Some(icons::MOVE),
             |this: &Self| this.edit,
             |this, _| {

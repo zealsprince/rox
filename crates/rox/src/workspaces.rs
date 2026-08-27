@@ -30,8 +30,14 @@ use rox_panel_api::panel::shader;
 /// The bundle itself stays on disk until [`Entry::bundle`] asks for it, so
 /// building the list costs a directory read and nothing more.
 pub struct Entry {
-    /// The bundle's name, the list's display and lookup key.
+    /// The bundle's name: the lookup key everything resolves and applies
+    /// by, and what a saved file is called on disk. Never translated, so
+    /// a settings file written in one language still resolves in another.
     pub name: String,
+    /// What a list shows instead of [`Entry::name`]. Shipped bundles whose
+    /// name is a word rather than a proper name have a translation; every
+    /// other entry, including everything a user saved, reads as its name.
+    pub title: SharedString,
     /// The saved file this entry reads from, None for a shipped bundle.
     pub path: Option<PathBuf>,
     pub builtin: bool,
@@ -70,6 +76,52 @@ fn stem_of(path: &Path) -> Option<String> {
     path.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .filter(|s| !s.trim().is_empty())
+}
+
+/// A shipped bundle's own name and blurb, translated where rox ships a
+/// message for it.
+///
+/// The bundle format is shareable and third parties author it, so the
+/// translations live in the locale files keyed by the bundle's name rather
+/// than in a field the schema would carry for everyone and nobody would
+/// fill. A bundle rox doesn't ship falls through to whatever its author
+/// wrote, which is the only honest answer for someone else's text.
+///
+/// The names themselves mostly stay as written: Foobar, Metro, Phosphor and
+/// the rest are proper names the same way the shader examples are, and
+/// `bundle.name` is the lookup key besides. `(Default)` is the exception,
+/// being a word rather than a name.
+fn shipped_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.ends_with('-') {
+            // One separator per run, or "Llama (WinAmp)" would slug with a
+            // double hyphen where the space meets the bracket.
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// The display name for a bundle, translated only where rox ships one.
+pub fn display_title(name: &str) -> String {
+    rox_i18n::try_translate(&format!("workspace-shipped-{}", shipped_slug(name)))
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// The blurb for a bundle, translated only where rox ships one.
+fn display_blurb(name: &str, own: &str) -> Option<SharedString> {
+    if let Some(text) =
+        rox_i18n::try_translate(&format!("workspace-shipped-{}-blurb", shipped_slug(name)))
+    {
+        return Some(text);
+    }
+    Some(own.trim())
+        .filter(|d| !d.is_empty())
+        .map(|d| SharedString::from(d.to_string()))
 }
 
 /// A shipped bundle by name, parsed out of the assets on demand.
@@ -111,6 +163,7 @@ pub fn shipped() -> Vec<Entry> {
                 named => named.to_string(),
             };
             (!name.trim().is_empty()).then_some(Entry {
+                title: display_title(&name).into(),
                 name,
                 path: None,
                 builtin: true,
@@ -142,8 +195,12 @@ fn saved_in(dir: &Path) -> Vec<Entry> {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .filter_map(|path| {
+            let name = stem_of(&path)?;
             Some(Entry {
-                name: stem_of(&path)?,
+                // A saved workspace is the user's own; its name is theirs
+                // and reads back exactly as they typed it.
+                title: name.clone().into(),
+                name,
                 path: Some(path),
                 builtin: false,
                 preview_dark: None,
@@ -339,10 +396,9 @@ fn screen_shader_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
             .shaders
             .iter()
             .any(|entry| entry.name == name)
-            .then(|| format!("Wears the {name} overlay shader over the whole window.").into());
+            .then(|| rox_i18n::t!("workspace-apply-screen-shader-named", name = name));
     }
-    (!post.source.trim().is_empty())
-        .then(|| "Wears an overlay shader over the whole window.".into())
+    (!post.source.trim().is_empty()).then(|| rox_i18n::t!("workspace-apply-screen-shader-plain"))
 }
 
 /// Whether the look wears a shader once it lands: the overlay over the whole
@@ -465,17 +521,19 @@ impl ApplyCard {
         let meta = &bundle.meta;
         let mut byline = Vec::new();
         if !meta.author.trim().is_empty() {
-            byline.push(format!("by {}", meta.author.trim()));
+            byline.push(
+                rox_i18n::t!("workspace-byline-author", author = meta.author.trim()).to_string(),
+            );
         }
         if !meta.version.trim().is_empty() {
-            byline.push(format!("version {}", meta.version.trim()));
+            byline.push(
+                rox_i18n::t!("workspace-byline-version", version = meta.version.trim()).to_string(),
+            );
         }
         ApplyCard {
             name: bundle.name.clone(),
             byline: (!byline.is_empty()).then(|| byline.join(", ").into()),
-            description: Some(meta.description.trim())
-                .filter(|d| !d.is_empty())
-                .map(|d| SharedString::from(d.to_string())),
+            description: display_blurb(&bundle.name, &meta.description),
             shaders: unapproved_shaders(bundle),
             screen_shader: screen_shader_line(bundle),
             wears_shaders: wears_shaders(bundle),
@@ -495,15 +553,11 @@ impl ApplyCard {
             .iter()
             .map(|shader| shader.label.as_str())
             .collect();
-        Some(
-            format!(
-                "Carries {} shader{}: {}",
-                self.shaders.len(),
-                if self.shaders.len() == 1 { "" } else { "s" },
-                names.join(", ")
-            )
-            .into(),
-        )
+        Some(rox_i18n::t!(
+            "workspace-apply-shader-count",
+            count = self.shaders.len() as u64,
+            names = names.join(", ")
+        ))
     }
 
     /// Whether the dialog offers two ways to say yes. Anything the look
@@ -1047,6 +1101,45 @@ mod tests {
     /// rides: the pool, the screen shader, panel chrome inside a dump, and a
     /// Shader panel's own config. One missed and that panel comes up blank on
     /// a shipped look.
+    /// The slug is what ties a shipped bundle to its message, so a name
+    /// with brackets or spaces has to land on the key the locale files
+    /// actually carry.
+    #[test]
+    fn slugs_match_the_keys_the_locales_carry() {
+        assert_eq!(shipped_slug("(Default)"), "default");
+        assert_eq!(shipped_slug("Llama (WinAmp)"), "llama-winamp");
+        assert_eq!(shipped_slug("CaTRoX"), "catrox");
+        assert_eq!(shipped_slug("Foobar"), "foobar");
+    }
+
+    /// Proper names stay as written and only the word gets translated,
+    /// because the name is also the lookup key everything applies by.
+    #[test]
+    fn only_the_word_is_translated() {
+        assert_eq!(display_title("Foobar"), "Foobar");
+        assert_eq!(display_title("Phosphor"), "Phosphor");
+        // Not a rox bundle at all: somebody else's, left exactly alone.
+        assert_eq!(display_title("Someone Else's Look"), "Someone Else's Look");
+        assert_eq!(
+            display_title("(Default)"),
+            rox_i18n::t!("workspace-shipped-default")
+        );
+    }
+
+    /// Every shipped bundle's blurb resolves, so none of them falls back
+    /// to English prose in a translated build by accident.
+    #[test]
+    fn every_shipped_bundle_has_a_translated_blurb() {
+        for entry in shipped() {
+            let key = format!("workspace-shipped-{}-blurb", shipped_slug(&entry.name));
+            assert!(
+                rox_i18n::try_translate(&key).is_some(),
+                "{} ships without {key}",
+                entry.name
+            );
+        }
+    }
+
     #[test]
     fn shipped_trust_collects_every_shader_a_bundle_carries() {
         let bundle = WorkspaceBundle {
@@ -1174,10 +1267,12 @@ mod tests {
         assert_eq!(labels, ["Grain", "Bloom", hashed.as_str()], "{labels:?}");
 
         let line = ApplyCard::of(&bundle).shader_line().expect("a shader line");
-        assert!(
-            line.starts_with("Carries 3 shaders: Grain, Bloom, "),
-            "{line}"
+        let expected_prefix = rox_i18n::t!(
+            "workspace-apply-shader-count",
+            count = 3u64,
+            names = "Grain, Bloom, "
         );
+        assert!(line.starts_with(expected_prefix.as_ref()), "{line}");
 
         // Agreeing to them is what empties the review, so the same bundle
         // applied twice only asks once.
@@ -1364,9 +1459,14 @@ mod tests {
         bundle.meta.description = "Warm and quiet.".into();
         let card = ApplyCard::of(&bundle);
         assert_eq!(card.name, "Nightfall");
+        let expected_byline = format!(
+            "{}, {}",
+            rox_i18n::t!("workspace-byline-author", author = "Nova"),
+            rox_i18n::t!("workspace-byline-version", version = "2.1")
+        );
         assert_eq!(
             card.byline.as_ref().map(|line| line.as_ref()),
-            Some("by Nova, version 2.1")
+            Some(expected_byline.as_str())
         );
         assert_eq!(
             card.description.as_ref().map(|line| line.as_ref()),

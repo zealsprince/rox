@@ -90,7 +90,10 @@ impl Panel for SpacerPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Spacer")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-spacer"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<gpui::SharedString> {

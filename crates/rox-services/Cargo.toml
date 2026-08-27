@@ -11,6 +11,8 @@ rox-acoustic = { path = "../rox-acoustic" }
 # Settings, the pace estimates, and the clock formatters the player still
 # hands out.
 rox-core = { path = "../rox-core" }
+# The biography fetch asks Last.fm for the reader's language.
+rox-i18n = { path = "../rox-i18n" }
 # The backdrop bakes a palette seed and paints through the tokens.
 rox-design = { path = "../rox-design" }
 # The database under all of this: the projection, the scanner, the writer,

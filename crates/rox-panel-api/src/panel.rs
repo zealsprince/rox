@@ -551,7 +551,7 @@ pub fn track_actions(
         let new_state = playlist_state.clone();
         let new_ids = playlist_ids.clone();
         submenu = submenu.item(
-            PopupMenuItem::new("New Playlist...")
+            PopupMenuItem::new(rox_i18n::t!("panel-new-playlist"))
                 .icon(Icon::default().path(icons::PLUS))
                 .on_click(move |_, _, cx| {
                     crate::openers::playlist_create(new_state.clone(), new_ids.clone(), cx);
@@ -592,7 +592,7 @@ pub fn track_actions(
         // The primary editing flow: the selection into the tag editor
         // window; the metadata panel's inline pencil stays the quick path.
         .item(
-            PopupMenuItem::new("Edit Tags...")
+            PopupMenuItem::new(rox_i18n::t!("panel-edit-tags"))
                 .icon(Icon::default().path(icons::PENCIL))
                 .on_click(move |_, _, cx| {
                     crate::openers::tags_editor(tag_state.clone(), tag_ids.clone(), cx);
@@ -601,7 +601,7 @@ pub fn track_actions(
         // Covers get their own window: the tag editor edits text per
         // track, this stamps one image across the selection.
         .item(
-            PopupMenuItem::new("Edit Cover Art...")
+            PopupMenuItem::new(rox_i18n::t!("panel-edit-cover"))
                 .icon(Icon::default().path(icons::IMAGE))
                 .on_click(move |_, _, cx| {
                     crate::openers::cover_editor(cover_state.clone(), ids.clone(), cx);
@@ -611,7 +611,7 @@ pub fn track_actions(
         // change rather than a tag edit, so it gets its own dialog with
         // the whole plan on screen before anything moves.
         .item(
-            PopupMenuItem::new("Rename Files...")
+            PopupMenuItem::new(rox_i18n::t!("panel-rename-files"))
                 .icon(Icon::default().path(icons::FOLDER))
                 .on_click(move |_, _, cx| {
                     crate::openers::rename_dialog(rename_state.clone(), rename_ids.clone(), cx);
@@ -621,7 +621,7 @@ pub fn track_actions(
     // up where the encoder to write them exists. No ffmpeg, no row.
     let menu = if crate::openers::convert_available() {
         menu.item(
-            PopupMenuItem::new("Convert...")
+            PopupMenuItem::new(rox_i18n::t!("panel-convert"))
                 .icon(Icon::default().path(icons::AUDIO_LINES))
                 .on_click(move |_, _, cx| {
                     crate::openers::convert_dialog(convert_state.clone(), convert_ids.clone(), cx);

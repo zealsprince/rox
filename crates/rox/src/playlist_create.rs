@@ -40,7 +40,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     open_modal(
         state,
         Action::Create(ids),
-        "New Playlist",
+        rox_i18n::t!("playlist-create-title"),
         String::new(),
         cx,
     );
@@ -48,11 +48,17 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
 
 /// Open the rename modal, seeded with the current name.
 pub fn open_rename(state: AppState, id: i64, current: String, cx: &mut App) {
-    open_modal(state, Action::Rename(id), "Rename Playlist", current, cx);
+    open_modal(
+        state,
+        Action::Rename(id),
+        rox_i18n::t!("playlist-create-rename-title"),
+        current,
+        cx,
+    );
 }
 
-fn open_modal(state: AppState, action: Action, verb: &str, current: String, cx: &mut App) {
-    let title = SharedString::from(format!("rox - {verb}"));
+fn open_modal(state: AppState, action: Action, verb: SharedString, current: String, cx: &mut App) {
+    let title = rox_i18n::t!("playlist-create-window-title", verb = verb.to_string());
     let bounds = Bounds::centered(None, size(px(380.), px(170.)), cx);
     rox_panel_api::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
         cx.new(|cx| PlaylistNameWindow::new(state, action, current, window, cx))
@@ -80,7 +86,7 @@ impl PlaylistNameWindow {
     ) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Playlist name")
+                .placeholder(rox_i18n::t!("playlist-create-placeholder"))
                 .default_value(current)
         });
         // The name is what gates the save, so the footer follows it
@@ -144,7 +150,7 @@ impl PlaylistNameWindow {
             div()
                 .text_xs()
                 .text_color(palette::tone_warn())
-                .child("Name the playlist to save it")
+                .child(rox_i18n::t!("playlist-create-not-savable"))
                 .into_any_element()
         };
         div()

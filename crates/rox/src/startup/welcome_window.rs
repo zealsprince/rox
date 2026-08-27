@@ -46,7 +46,7 @@ pub fn open(state: AppState, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(1240.), px(660.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        "rox - Welcome",
+        rox_i18n::t!("welcome-window-title"),
         bounds,
         Some(size(px(700.), px(460.))),
         move |window, cx| cx.new(|cx| WelcomeWindow::new(state, window, cx)),
@@ -67,20 +67,18 @@ const STAGES: [Stage; 2] = [Stage::Welcome, Stage::Workspaces];
 
 impl Stage {
     /// The stage's headline.
-    fn title(self) -> &'static str {
+    fn title(self) -> SharedString {
         match self {
-            Stage::Welcome => "Welcome to rox",
-            Stage::Workspaces => "Quick Start",
+            Stage::Welcome => rox_i18n::t!("welcome-stage-title-welcome"),
+            Stage::Workspaces => rox_i18n::t!("welcome-stage-title-quick-start"),
         }
     }
 
     /// The line under the headline, the one thing the stage is about.
-    fn lead(self) -> &'static str {
+    fn lead(self) -> SharedString {
         match self {
-            Stage::Welcome => "Foobar if it was made in 20XX.",
-            Stage::Workspaces => {
-                "Pick a workspace and the main window puts it on: layouts, palette, the whole look."
-            }
+            Stage::Welcome => rox_i18n::t!("welcome-stage-lead-welcome"),
+            Stage::Workspaces => rox_i18n::t!("welcome-stage-lead-quick-start"),
         }
     }
 }
@@ -139,6 +137,7 @@ impl WelcomeWindow {
             .into_iter()
             .map(|entry| Tile {
                 name: SharedString::from(entry.name.clone()),
+                title: entry.title.clone(),
                 // The list already parsed the bundle to build itself, so the
                 // credit costs nothing on top.
                 author: entry.author.map(SharedString::from),
@@ -221,7 +220,7 @@ const MAX_TILE_W: f32 = 900.0;
 /// you, on the panel surface so it sits proud of the page. Cards share a
 /// row and split it evenly, so a stage reads as a few things beside each
 /// other rather than one column of copy.
-fn card(icon: &'static str, title: &'static str, body: impl IntoElement) -> Div {
+fn card(icon: &'static str, title: impl Into<SharedString>, body: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_col()
@@ -252,7 +251,7 @@ fn card(icon: &'static str, title: &'static str, body: impl IntoElement) -> Div 
                         .flex_none()
                         .text_color(palette::text_muted()),
                 )
-                .child(title),
+                .child(title.into()),
         )
         .child(body)
 }
@@ -289,7 +288,11 @@ fn scroll_lane(column: impl IntoElement, scroll: &ScrollHandle) -> Div {
 /// One quick-start tile as the window holds it: what the workspace is
 /// called, who made it when their card says, and the pictures it shows.
 struct Tile {
+    /// The bundle's own name, which is what applying it asks for.
     name: SharedString,
+    /// What the tile reads, translated for the shipped bundles that have
+    /// a word rather than a proper name for a title.
+    title: SharedString,
     author: Option<SharedString>,
     previews: TilePreviews,
 }
@@ -424,7 +427,7 @@ fn workspace_tile(
                         div()
                             .text_xs()
                             .text_color(palette::text_faint())
-                            .child(SharedString::from(format!("by {author}"))),
+                            .child(rox_i18n::t!("welcome-tile-by", author = author.to_string())),
                     )
                 }),
         )
@@ -444,133 +447,108 @@ impl WelcomeWindow {
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_SM)
-                        .child(line(
-                            "A quick tour of where music comes in and where the look \
-                             lives. It ends at the shelf of shipped workspaces, one \
-                             click each.",
-                        ))
+                        .child(line(rox_i18n::t!("welcome-tour-intro")))
                         .child(div().text_color(palette::text_faint()).child(kbd_line([
-                            Seg::Text("Step through it with".into()),
+                            Seg::Text(rox_i18n::t!("welcome-step-hint-before")),
                             Seg::Key("Left".into()),
-                            Seg::Text("and".into()),
+                            Seg::Text(rox_i18n::t!("welcome-and")),
                             Seg::Key("Right".into()),
-                            Seg::Text(", or the buttons below.".into()),
+                            Seg::Text(rox_i18n::t!("welcome-step-hint-after")),
                         ]))),
                 )
                 .child(cards([
                     card(
                         icons::MUSIC,
-                        "Music",
+                        rox_i18n::t!("welcome-card-music-title"),
                         div()
                             .flex()
                             .flex_col()
                             .items_start()
                             .gap(tokens::SPACE_SM)
                             .child(small_button(
-                                "Add Folder",
+                                rox_i18n::t!("welcome-add-folder"),
                                 icons::FOLDER_PLUS,
                                 false,
                                 cx.listener(|this, _, _, cx| {
                                     rox_services::catalog::browse(&this.state.library, cx);
                                 }),
                             ))
-                            .child(line(
-                                "rox scans it into the library and the files stay where \
-                                 they are. More folders go in settings under library.",
-                            )),
+                            .child(line(rox_i18n::t!("welcome-music-note"))),
                     ),
                     card(
                         icons::PLAY,
-                        "Playback",
+                        rox_i18n::t!("welcome-card-playback-title"),
                         div()
                             .flex()
                             .flex_col()
                             .gap(tokens::SPACE_SM)
                             .child(kbd_line([
                                 Seg::Key(chord("P")),
-                                Seg::Text("opens quick play: type a track, hit".into()),
+                                Seg::Text(rox_i18n::t!("welcome-quickplay-before")),
                                 Seg::Key("Enter".into()),
-                                Seg::Text("and it plays.".into()),
+                                Seg::Text(rox_i18n::t!("welcome-quickplay-after")),
                             ]))
                             .child(kbd_line([
                                 Seg::Key("Space".into()),
-                                Seg::Text("toggles playback;".into()),
+                                Seg::Text(rox_i18n::t!("welcome-playback-before")),
                                 Seg::Key("Left".into()),
-                                Seg::Text("and".into()),
+                                Seg::Text(rox_i18n::t!("welcome-and")),
                                 Seg::Key("Right".into()),
-                                Seg::Text("seek.".into()),
+                                Seg::Text(rox_i18n::t!("welcome-playback-after")),
                             ])),
                     ),
                     card(
                         icons::SETTINGS,
-                        "Settings",
+                        rox_i18n::t!("welcome-card-settings-title"),
                         div()
                             .flex()
                             .flex_col()
                             .gap(tokens::SPACE_SM)
                             .child(kbd_line([
                                 Seg::Key(chord(",")),
-                                Seg::Text(
-                                    "opens settings: the palette, transparency, and \
-                                     behavior."
-                                        .into(),
-                                ),
+                                Seg::Text(rox_i18n::t!("welcome-settings-hint-after")),
                             ]))
-                            .child(line(
-                                "Save an arrangement as a layout; a workspace bundles \
-                                 layouts and palette into one shareable look.",
-                            )),
+                            .child(line(rox_i18n::t!("welcome-layout-note"))),
                     ),
                 ]))
                 .child(cards([
                     card(
                         icons::LAYOUT_DASHBOARD,
-                        "Panels",
+                        rox_i18n::t!("welcome-card-panels-title"),
                         div()
                             .flex()
                             .flex_col()
                             .gap(tokens::SPACE_SM)
-                            .child(line(
-                                "Every surface is a panel, and the menubar's Panels menu \
-                                 opens more of them.",
-                            ))
-                            .child(line(
-                                "Rearranging needs Design Mode, on by default at the top \
-                                 of that menu. Off locks the layout, so a finished setup \
-                                 can't be nudged.",
-                            )),
+                            .child(line(rox_i18n::t!("welcome-panels-note")))
+                            .child(line(rox_i18n::t!("welcome-design-mode-note"))),
                     ),
                     card(
                         icons::MOVE_HORIZONTAL,
-                        "Rearranging",
+                        rox_i18n::t!("welcome-card-rearranging-title"),
                         div()
                             .flex()
                             .flex_col()
                             .gap(tokens::SPACE_SM)
                             .child(kbd_line([
-                                Seg::Text("Drag a tab, or hold".into()),
-                                Seg::Key("Middle Mouse".into()),
-                                Seg::Text("or".into()),
+                                Seg::Text(rox_i18n::t!("welcome-rearrange-before")),
+                                Seg::Key(rox_i18n::t!("welcome-key-middle-mouse")),
+                                Seg::Text(rox_i18n::t!("welcome-or")),
                                 Seg::Key("Alt".into()),
                                 Seg::Text("+".into()),
-                                Seg::Key("Left Click".into()),
-                                Seg::Text("anywhere in a panel to move it.".into()),
+                                Seg::Key(rox_i18n::t!("welcome-key-left-click")),
+                                Seg::Text(rox_i18n::t!("welcome-rearrange-after")),
                             ]))
-                            .child(line(
-                                "Drop it on a panel's edge to split there, on the middle \
-                                 to share a tab group, or outside the window to make it \
-                                 its own window.",
-                            )),
+                            .child(line(rox_i18n::t!("welcome-drop-note"))),
                     ),
                     card(
                         icons::KEYBOARD,
-                        "Menubar",
+                        rox_i18n::t!("welcome-card-menubar-title"),
                         kbd_line([
-                            Seg::Text("With the menubar hidden, hold".into()),
+                            Seg::Text(rox_i18n::t!("welcome-menubar-before")),
                             Seg::Key("Alt".into()),
-                            Seg::Text("to float it back over the dock, or tap".into()),
+                            Seg::Text(rox_i18n::t!("welcome-menubar-mid")),
                             Seg::Key("Alt".into()),
-                            Seg::Text("twice to leave it up.".into()),
+                            Seg::Text(rox_i18n::t!("welcome-menubar-after")),
                         ]),
                     ),
                 ]))
@@ -652,7 +630,7 @@ impl WelcomeWindow {
                             .children(self.workspaces.iter().enumerate().map(|(i, tile)| {
                                 let apply = tile.name.clone();
                                 workspace_tile(
-                                    tile.name.clone(),
+                                    tile.title.clone(),
                                     tile.author.clone(),
                                     tile.previews.pick(palette::mode()),
                                     self.hovered_tile == Some(i),
@@ -679,10 +657,12 @@ impl WelcomeWindow {
                             })),
                     ),
             )
-            .child(div().text_xs().text_color(palette::text_faint()).child(
-                "Picking one replaces the main window's look and closes the tour. \
-                         This window is here any time under Application > Welcome.",
-            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_faint())
+                    .child(rox_i18n::t!("welcome-shelf-caption")),
+            )
             .into_any_element()
     }
 
@@ -792,28 +772,28 @@ impl Render for WelcomeWindow {
                 .gap(tokens::SPACE_SM)
                 .when(!last, |d| {
                     d.child(small_button(
-                        "Close",
+                        rox_i18n::t!("welcome-close"),
                         icons::CLOSE,
                         false,
                         cx.listener(|_, _, window, _| window.remove_window()),
                     ))
                 })
                 .child(small_button(
-                    "Back",
+                    rox_i18n::t!("welcome-back"),
                     icons::CHEVRON_LEFT,
                     first,
                     cx.listener(|this, _, _, cx| this.step(-1, cx)),
                 ))
                 .child(if last {
                     small_button(
-                        "Done",
+                        rox_i18n::t!("welcome-done"),
                         icons::CHECK,
                         false,
                         cx.listener(|_, _, window, _| window.remove_window()),
                     )
                 } else {
                     small_button(
-                        "Next",
+                        rox_i18n::t!("welcome-next"),
                         icons::CHEVRON_RIGHT,
                         false,
                         cx.listener(|this, _, _, cx| this.step(1, cx)),

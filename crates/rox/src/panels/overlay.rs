@@ -178,9 +178,14 @@ impl OverlayPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // Let the children reach this host from their own menus; the
         // dock never sees a hosted panel, so nothing else offers it.
+        let overlay_title = rox_i18n::t!("overlay-title");
         composite::report_hosted(
             self.slots.iter().flatten(),
-            self.config.chrome.title.as_deref().unwrap_or("Overlay"),
+            self.config
+                .chrome
+                .title
+                .as_deref()
+                .unwrap_or(&overlay_title),
             cx,
         );
 
@@ -293,7 +298,7 @@ impl OverlayPanel {
                     .icon(Icon::default().path(icons::LAYERS))
                     .small()
                     .ghost()
-                    .tooltip("Toggle overlay")
+                    .tooltip(rox_i18n::t!("overlay-toggle"))
                     .on_click(move |_, window, cx| {
                         if let Some(this) = toggle.upgrade() {
                             this.update(cx, |this, cx| this.toggle(window, cx));
@@ -312,7 +317,7 @@ impl OverlayPanel {
                     cx,
                 )
             }));
-        let parent = composite::parent_button("Overlay", cx);
+        let parent = composite::parent_button(rox_i18n::t!("overlay-title"), cx);
         root.child(controls)
             .child(composite::parent_controls().child(parent))
     }
@@ -349,8 +354,8 @@ impl PanelSettings for OverlayPanel {
                 .flex_col()
                 .gap(tokens::SPACE_MD)
                 .child(setting_row(
-                    "Dim",
-                    Some("How hard the main panel dims under the revealed overlay".into()),
+                    rox_i18n::t!("overlay-dim"),
+                    Some(rox_i18n::t!("overlay-dim.description")),
                     settings_ui::scalar(
                         &self.dim_scrub,
                         &self.value_edit,
@@ -379,7 +384,10 @@ impl Panel for OverlayPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Overlay")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("overlay-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -461,7 +469,7 @@ impl Panel for OverlayPanel {
     ) -> PopupMenu {
         let toggle = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Toggle overlay")
+            PopupMenuItem::new(rox_i18n::t!("overlay-toggle"))
                 .icon(Icon::default().path(icons::LAYERS))
                 .on_click(move |_, window, cx| {
                     if let Some(this) = toggle.upgrade() {

@@ -31,7 +31,9 @@ pub fn confidence_badge(confidence: f32) -> Div {
         } else {
             palette::text_muted()
         })
-        .child(SharedString::from(format!("{pct}%")))
+        .child(SharedString::from(rox_i18n::format::format_percent(
+            pct as f64,
+        )))
 }
 
 /// The confidence as a filled bar, so the list reads at a glance without

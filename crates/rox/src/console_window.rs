@@ -77,7 +77,7 @@ fn open_now(cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        "rox - Console",
+        rox_i18n::t!("console-window-title"),
         bounds,
         Some(min),
         move |window, cx| cx.new(|cx| ConsoleWindow::new(player, window, cx)),
@@ -91,7 +91,7 @@ fn open_now(cx: &mut App) {
 pub fn open_button() -> impl IntoElement {
     Button::new("open-console")
         .icon(Icon::default().path(icons::FILE_TEXT))
-        .label("Open Console")
+        .label(rox_i18n::t!("console-open-button"))
         .small()
         .ghost()
         .on_click(|_, _, cx| open(cx))
@@ -258,14 +258,11 @@ impl ConsoleWindow {
                     .min_w_0()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(SharedString::from(match count {
-                        1 => "1 line".to_string(),
-                        n => format!("{n} lines"),
-                    })),
+                    .child(rox_i18n::t!("console-line-count", count = count as u64)),
             )
             .child(self.toggle(
                 "console-error",
-                "Error",
+                rox_i18n::t_static("console-filter-error"),
                 self.show_error,
                 |this, cx| {
                     this.show_error = !this.show_error;
@@ -275,7 +272,7 @@ impl ConsoleWindow {
             ))
             .child(self.toggle(
                 "console-warn",
-                "Warn",
+                rox_i18n::t_static("console-filter-warn"),
                 self.show_warn,
                 |this, cx| {
                     this.show_warn = !this.show_warn;
@@ -285,7 +282,7 @@ impl ConsoleWindow {
             ))
             .child(self.toggle(
                 "console-info",
-                "Info",
+                rox_i18n::t_static("console-filter-info"),
                 self.show_info,
                 |this, cx| {
                     this.show_info = !this.show_info;
@@ -295,7 +292,7 @@ impl ConsoleWindow {
             ))
             .child(self.toggle(
                 "console-follow",
-                "Follow",
+                rox_i18n::t_static("console-follow"),
                 self.follow,
                 |this, cx| {
                     this.follow = !this.follow;
@@ -304,7 +301,7 @@ impl ConsoleWindow {
                 cx,
             ))
             .child(settings_ui::small_button(
-                "Copy",
+                rox_i18n::t!("console-copy"),
                 icons::COPY,
                 false,
                 cx.listener(|this, _, _, cx| {
@@ -312,7 +309,7 @@ impl ConsoleWindow {
                 }),
             ))
             .child(settings_ui::small_button(
-                "Reveal",
+                rox_i18n::t!("console-reveal"),
                 icons::FILE_TEXT,
                 false,
                 cx.listener(|_, _, _, cx| {
@@ -320,7 +317,7 @@ impl ConsoleWindow {
                 }),
             ))
             .child(settings_ui::small_button(
-                "Clear",
+                rox_i18n::t!("console-clear"),
                 icons::TRASH,
                 false,
                 cx.listener(|this, _, _, cx| {
@@ -338,9 +335,9 @@ impl ConsoleWindow {
         let shown = self.shown();
         if shown.is_empty() {
             let empty = if self.lines.is_empty() {
-                "Nothing logged yet"
+                rox_i18n::t!("console-empty-none")
             } else {
-                "Nothing at these levels"
+                rox_i18n::t!("console-empty-filtered")
             };
             return div()
                 .size_full()

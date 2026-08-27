@@ -110,18 +110,21 @@ fn query_note(query: &str) -> Option<SharedString> {
             let known = QUERY_FIELDS.iter().any(|(field, _)| *field == name);
             (!name.is_empty() && !known).then_some(name)
         })?;
-    Some(format!("\"{unknown}:\" isn't a field, so that term matches as plain text").into())
+    Some(rox_i18n::t!(
+        "smart-playlist-unknown-field",
+        field = unknown
+    ))
 }
 
 /// Open the editor. `id` names an existing smart playlist to edit; None
 /// starts a new one.
 pub fn open(state: AppState, id: Option<i64>, cx: &mut App) {
     let verb = if id.is_some() {
-        "Edit Smart Playlist"
+        rox_i18n::t!("smart-playlist-edit-title")
     } else {
-        "New Smart Playlist"
+        rox_i18n::t!("smart-playlist-new-title")
     };
-    let title = SharedString::from(format!("rox - {verb}"));
+    let title = rox_i18n::t!("smart-playlist-window-title", verb = verb.to_string());
     let bounds = Bounds::centered(None, size(px(900.), px(560.)), cx);
     rox_panel_api::panel::open_child_window(
         cx,
@@ -185,7 +188,7 @@ impl SmartPlaylistWindow {
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Playlist name")
+                .placeholder(rox_i18n::t!("smart-playlist-name-placeholder"))
                 .default_value(current_name)
         });
         let query = cx.new(|cx| SearchBox::new("Query", &def.query, window, cx).small());
@@ -195,7 +198,7 @@ impl SmartPlaylistWindow {
         query.update(cx, |query, cx| query.set_completions(provider, cx));
         let limit = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("No limit")
+                .placeholder(rox_i18n::t!("smart-playlist-limit-placeholder"))
                 .default_value(def.limit.map(|n| n.to_string()).unwrap_or_default())
         });
 
@@ -315,7 +318,7 @@ impl SmartPlaylistWindow {
     }
 
     /// One labeled row of the form.
-    fn field(label: &'static str, control: impl IntoElement) -> gpui::Div {
+    fn field(label: impl Into<SharedString>, control: impl IntoElement) -> gpui::Div {
         div()
             .flex()
             .flex_row()
@@ -326,7 +329,7 @@ impl SmartPlaylistWindow {
                     .w(LABEL_W)
                     .flex_none()
                     .text_color(palette::text_muted())
-                    .child(label),
+                    .child(label.into()),
             )
             .child(div().flex_1().min_w_0().child(control))
     }
@@ -339,9 +342,9 @@ impl SmartPlaylistWindow {
         let descending = self.descending;
         let note = query_note(self.query.read(cx).query());
         let heading = if self.id.is_some() {
-            "Edit Smart Playlist"
+            rox_i18n::t!("smart-playlist-edit-title")
         } else {
-            "New Smart Playlist"
+            rox_i18n::t!("smart-playlist-new-title")
         };
         let fields = div()
             .flex()
@@ -349,7 +352,7 @@ impl SmartPlaylistWindow {
             .gap(tokens::SPACE_SM)
             .child(Self::field("Name", Input::new(&self.name).w_full()))
             .child(Self::field(
-                "Query",
+                rox_i18n::t!("smart-playlist-query-label"),
                 self.query
                     .update(cx, |query, cx| query.element(cx))
                     .w_full(),
@@ -366,7 +369,7 @@ impl SmartPlaylistWindow {
                 )
             })
             .child(Self::field(
-                "Sort",
+                rox_i18n::t!("smart-playlist-sort-label"),
                 div()
                     .flex()
                     .flex_row()
@@ -416,11 +419,18 @@ impl SmartPlaylistWindow {
                                     }),
                                 )
                                 .child(checkbox(descending))
-                                .child(div().text_color(palette::text_muted()).child("Descending")),
+                                .child(
+                                    div()
+                                        .text_color(palette::text_muted())
+                                        .child(rox_i18n::t!("smart-playlist-descending")),
+                                ),
                         )
                     }),
             ))
-            .child(Self::field("Limit", Input::new(&self.limit).w_full()));
+            .child(Self::field(
+                rox_i18n::t!("smart-playlist-limit-label"),
+                Input::new(&self.limit).w_full(),
+            ));
         div()
             .w(CONTROLS_W)
             .flex_none()
@@ -433,10 +443,10 @@ impl SmartPlaylistWindow {
 
     /// The preview column: the count over the tracks the definition takes.
     fn preview(&mut self, cx: &mut Context<Self>) -> Div {
-        let count: SharedString = match self.matched.len() {
-            1 => "1 track matches".into(),
-            n => format!("{n} tracks match").into(),
-        };
+        let count = rox_i18n::t!(
+            "smart-playlist-match-count",
+            count = self.matched.len() as u64
+        );
         let this = cx.entity().downgrade();
         let list = if self.matched.is_empty() {
             div()
@@ -446,7 +456,7 @@ impl SmartPlaylistWindow {
                 .justify_center()
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child("No tracks match")
+                .child(rox_i18n::t!("smart-playlist-no-matches"))
                 .into_any_element()
         } else {
             uniform_list("smart-matches", self.matched.len(), move |range, _, cx| {
@@ -475,7 +485,7 @@ impl SmartPlaylistWindow {
             .border_color(palette::border())
             .child(
                 section(
-                    "Matched Tracks",
+                    rox_i18n::t!("smart-playlist-matched-tracks"),
                     Some(
                         div()
                             .text_xs()
@@ -528,7 +538,7 @@ impl SmartPlaylistWindow {
             div()
                 .text_xs()
                 .text_color(palette::tone_warn())
-                .child("Name the playlist to save it")
+                .child(rox_i18n::t!("smart-playlist-name-to-save"))
                 .into_any_element()
         };
         div()

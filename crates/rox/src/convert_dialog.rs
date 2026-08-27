@@ -92,7 +92,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                "rox - Convert",
+                rox_i18n::t!("convert-dialog-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| ConvertDialog::new(state, ids, window, cx)),
@@ -684,12 +684,15 @@ impl ConvertDialog {
     fn check_note(&self) -> Div {
         let (line, color): (SharedString, gpui::Rgba) = match &self.check {
             Check::Waiting => (
-                "Checked against ffmpeg once you stop typing".into(),
+                rox_i18n::t!("convert-dialog-check-waiting"),
                 palette::text_muted(),
             ),
-            Check::Checking => ("Asking ffmpeg...".into(), palette::text_muted()),
+            Check::Checking => (
+                rox_i18n::t!("convert-dialog-checking"),
+                palette::text_muted(),
+            ),
             Check::Passed => (
-                "ffmpeg encoded a moment of silence with these, so they run".into(),
+                rox_i18n::t!("convert-dialog-check-passed"),
                 palette::tone_good(),
             ),
             Check::Failed(reason) => (reason.clone(), palette::tone_bad()),
@@ -709,15 +712,17 @@ impl ConvertDialog {
                     .gap(px(2.))
                     .text_xs()
                     .child(div().text_color(color).child(line))
-                    .child(div().text_color(palette::text_faint()).child(
-                        "Arguments split on spaces, so no quoting; embedded art isn't carried \
-                         for custom formats",
-                    )),
+                    .child(
+                        div()
+                            .text_color(palette::text_faint())
+                            .child(rox_i18n::t!("convert-dialog-custom-note")),
+                    ),
             )
     }
 
     /// A labelled row of the form the dialog's three controls share.
-    fn control_row(label: &'static str, control: impl IntoElement) -> Div {
+    fn control_row(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
+        let label = label.into();
         div()
             .flex()
             .flex_row()
@@ -739,9 +744,9 @@ impl ConvertDialog {
         let current = self.preset;
         let custom = self.custom;
         let label: SharedString = if custom {
-            "Custom".into()
+            rox_i18n::t!("convert-dialog-custom-label")
         } else {
-            current.label().into()
+            current.label()
         };
         let host = cx.entity().downgrade();
         let picker = settings_ui::select_field("convert-preset", label, false).dropdown_menu(
@@ -759,18 +764,20 @@ impl ConvertDialog {
                     );
                 }
                 let host = host.clone();
-                menu.item(PopupMenuItem::new("Custom...").checked(custom).on_click(
-                    move |_, _, cx| {
-                        if let Some(host) = host.upgrade() {
-                            host.update(cx, |this, cx| this.set_custom(cx));
-                        }
-                    },
-                ))
+                menu.item(
+                    PopupMenuItem::new(rox_i18n::t!("convert-dialog-custom-menu-item"))
+                        .checked(custom)
+                        .on_click(move |_, _, cx| {
+                            if let Some(host) = host.upgrade() {
+                                host.update(cx, |this, cx| this.set_custom(cx));
+                            }
+                        }),
+                )
             },
         );
         let dest: SharedString = match &self.dest {
             Some(dir) => dir.display().to_string().into(),
-            None => "Choose a folder to write into".into(),
+            None => rox_i18n::t!("convert-dialog-choose-folder"),
         };
         let dest_color = if self.dest.is_some() {
             palette::text_bright()
@@ -782,11 +789,14 @@ impl ConvertDialog {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
-            .child(Self::control_row("format", picker))
+            .child(Self::control_row(
+                rox_i18n::t!("convert-dialog-label-format"),
+                picker,
+            ))
             .when(custom, |controls| {
                 controls
                     .child(Self::control_row(
-                        "extension",
+                        rox_i18n::t!("convert-dialog-label-extension"),
                         Input::new(&self.custom_ext).small(),
                     ))
                     .child(Self::control_row(
@@ -796,7 +806,7 @@ impl ConvertDialog {
                     .child(self.check_note())
             })
             .child(Self::control_row(
-                "into",
+                rox_i18n::t!("convert-dialog-label-into"),
                 div()
                     .flex()
                     .flex_row()
@@ -812,14 +822,14 @@ impl ConvertDialog {
                             .child(dest),
                     )
                     .child(settings_ui::small_button(
-                        "Browse...",
+                        rox_i18n::t!("convert-dialog-browse"),
                         icons::FOLDER,
                         false,
                         cx.listener(|this, _, window, cx| this.browse(window, cx)),
                     )),
             ))
             .child(Self::control_row(
-                "named",
+                rox_i18n::t!("convert-dialog-label-named"),
                 Input::new(&self.pattern).small(),
             ))
             .child(
@@ -842,7 +852,7 @@ impl ConvertDialog {
                                 div()
                                     .text_xs()
                                     .text_color(palette::text_muted())
-                                    .child("Mirror the library's folders"),
+                                    .child(rox_i18n::t!("convert-dialog-mirror")),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.set_mirror(!mirroring, window, cx);
@@ -853,9 +863,9 @@ impl ConvertDialog {
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(format!(
-                        "{}; / makes a folder, the format sets the extension",
-                        guess::PLACEHOLDERS
+                    .child(rox_i18n::t!(
+                        "convert-dialog-pattern-help",
+                        placeholders = guess::PLACEHOLDERS
                             .iter()
                             .filter(|p| **p != "%skip%")
                             .copied()
@@ -875,17 +885,20 @@ impl ConvertDialog {
             return Some((e.clone(), palette::tone_bad()));
         }
         if self.dest.is_none() {
-            return Some(("Pick a folder to write into".into(), palette::tone_warn()));
+            return Some((
+                rox_i18n::t!("convert-dialog-pick-folder"),
+                palette::tone_warn(),
+            ));
         }
         if !self.format_ready() {
             return Some((
-                "The typed format hasn't passed ffmpeg yet".into(),
+                rox_i18n::t!("convert-dialog-format-not-ready"),
                 palette::tone_warn(),
             ));
         }
         if self.converting() == 0 {
             return Some((
-                "Nothing to convert: every row is skipped".into(),
+                rox_i18n::t!("convert-dialog-nothing-to-convert"),
                 palette::tone_warn(),
             ));
         }
@@ -898,9 +911,7 @@ impl ConvertDialog {
     /// image's.
     fn span_note(&self) -> Option<SharedString> {
         let spans = self.spans();
-        (spans > 0).then(|| {
-            format!("{spans} trimmed out of a cue image and tagged from the library").into()
-        })
+        (spans > 0).then(|| rox_i18n::t!("convert-dialog-span-note", count = spans as u64))
     }
 
     /// The window's own actions, and the shortcut for them or the reason
@@ -939,7 +950,7 @@ impl ConvertDialog {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Convert",
+                        rox_i18n::t!("convert-dialog-convert-button"),
                         icons::AUDIO_LINES,
                         !ready,
                         cx.listener(|this, _, window, cx| this.convert(window, cx)),
@@ -969,11 +980,11 @@ impl Render for ConvertDialog {
         let count = div()
             .text_xs()
             .text_color(palette::text())
-            .child(SharedString::from(format!(
-                "{} of {} will convert",
-                self.converting(),
-                self.tracks.len()
-            )))
+            .child(rox_i18n::t!(
+                "convert-dialog-will-convert",
+                count = self.converting() as u64,
+                total = self.tracks.len() as u64
+            ))
             .into_any_element();
         let preview = div()
             .flex_1()

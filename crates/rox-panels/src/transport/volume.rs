@@ -254,9 +254,9 @@ impl VolumePanel {
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
-            ("Icon", VolumeItem::Icon),
-            ("Slider", VolumeItem::Slider),
-            ("Percent", VolumeItem::Percent),
+            (rox_i18n::t!("volume-item-icon"), VolumeItem::Icon),
+            (rox_i18n::t!("volume-item-slider"), VolumeItem::Slider),
+            (rox_i18n::t!("volume-item-percent"), VolumeItem::Percent),
         ] {
             let weak = cx.entity().downgrade();
             menu = menu.item(
@@ -278,7 +278,7 @@ impl VolumePanel {
         }
         let weak = cx.entity().downgrade();
         menu.item(
-            PopupMenuItem::new("Stretch")
+            PopupMenuItem::new(rox_i18n::t!("volume-stretch"))
                 .disabled(!self.config.items.contains(&VolumeItem::Slider))
                 .checked(self.config.stretch)
                 .on_click(move |_, _, cx| {
@@ -334,13 +334,8 @@ impl PanelSettings for VolumePanel {
                 cx,
             ))
             .child(panel::setting_block(
-                "Pieces",
-                Some(
-                    "Drag along the bar to reorder; drag between the rows, or use a \
-                     chip's x and plus, to hide and show. With the percent hidden \
-                     the speaker's tooltip carries it"
-                        .into(),
-                ),
+                rox_i18n::t!("volume-pieces"),
+                Some(rox_i18n::t!("volume-pieces.description")),
                 None,
                 panel::arrange_editor(
                     "volume-items",
@@ -355,8 +350,8 @@ impl PanelSettings for VolumePanel {
             ))
             .when(self.config.items.contains(&VolumeItem::Slider), |d| {
                 d.child(panel::setting_row(
-                    "Stretch",
-                    Some("Let the slider fill the panel instead of capping its width".into()),
+                    rox_i18n::t!("volume-stretch"),
+                    Some(rox_i18n::t!("volume-stretch.description")),
                     panel::toggle(
                         self.config.stretch,
                         |this: &mut Self, stretch, cx| {
@@ -369,10 +364,13 @@ impl PanelSettings for VolumePanel {
             })
             .when(self.config.items.contains(&VolumeItem::Percent), |d| {
                 d.child(panel::setting_row(
-                    "Readout",
-                    Some("Show the level as a percent or as the decibel gain it applies".into()),
-                    panel::choices(
-                        &[("Percent", false), ("Decibels", true)],
+                    rox_i18n::t!("volume-readout"),
+                    Some(rox_i18n::t!("volume-readout.description")),
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("volume-readout-percent"), false),
+                            (rox_i18n::t!("volume-readout-decibels"), true),
+                        ],
                         self.config.percent_db,
                         |this: &mut Self, percent_db, cx| {
                             this.config.percent_db = percent_db;
@@ -392,7 +390,7 @@ fn fmt_db(volume: f32) -> String {
     if volume <= 0.0 {
         "-inf dB".into()
     } else {
-        format!("{:.1} dB", 20.0 * volume.log10())
+        rox_i18n::format::format_unit((20.0 * volume.log10()) as f64, 1, "dB")
     }
 }
 
@@ -425,7 +423,7 @@ impl VolumePanel {
         let level = if self.config.percent_db {
             fmt_db(volume)
         } else {
-            format!("{}%", (volume * 100.0).round() as u32)
+            rox_i18n::format::format_percent((volume * 100.0).round() as f64)
         };
 
         // The speaker doubles as the mute toggle and the state readout:
@@ -441,10 +439,14 @@ impl VolumePanel {
         // Click toggles mute, so that's what the tip says; with the readout
         // off, the level rides along behind it so it still has a home.
         let tip = match (muted, self.config.items.contains(&VolumeItem::Percent)) {
-            (true, true) => "Unmute".to_string(),
-            (true, false) => format!("Unmute, {level}"),
-            (false, true) => "Mute".to_string(),
-            (false, false) => format!("Mute, {level}"),
+            (true, true) => rox_i18n::t!("volume-tip-unmute").to_string(),
+            (true, false) => {
+                rox_i18n::t!("volume-tip-unmute-level", level = level.clone()).to_string()
+            }
+            (false, true) => rox_i18n::t!("volume-tip-mute").to_string(),
+            (false, false) => {
+                rox_i18n::t!("volume-tip-mute-level", level = level.clone()).to_string()
+            }
         };
         let icon = panel::Tip::keyed("volume-icon", tip).apply(
             div()
@@ -554,7 +556,7 @@ impl VolumePanel {
 transport_panel!(
     VolumePanel,
     "volume",
-    "Volume",
+    rox_i18n::t!("panel-title-volume"),
     min_w = |_: &VolumePanel| rox_dock::resizable::PANEL_MIN_SIZE
 );
 

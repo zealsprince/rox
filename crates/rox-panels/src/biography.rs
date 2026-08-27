@@ -319,7 +319,7 @@ impl BiographyPanel {
         // flyout's note), so these read like the other panels' toggle rows.
         let entity = cx.entity();
         let toggle =
-            |menu: PopupMenu, label: &'static str, checked, set: fn(&mut BiographyConfig)| {
+            |menu: PopupMenu, label: SharedString, checked, set: fn(&mut BiographyConfig)| {
                 let weak = entity.downgrade();
                 menu.item(
                     PopupMenuItem::new(label)
@@ -333,21 +333,33 @@ impl BiographyPanel {
                         }),
                 )
             };
-        let menu = toggle(menu, "Header Image", self.config.portrait, |c| {
-            c.portrait = !c.portrait
-        });
-        let menu = toggle(menu, "Keep Aspect Ratio", self.config.header_aspect, |c| {
-            c.header_aspect = !c.header_aspect
-        });
-        let menu = toggle(menu, "Fill Width", self.config.header_fill, |c| {
-            c.header_fill = !c.header_fill
-        });
-        let menu = toggle(menu, "Background", self.config.background, |c| {
-            c.background = !c.background
-        });
+        let menu = toggle(
+            menu,
+            rox_i18n::t!("biography-header-image"),
+            self.config.portrait,
+            |c| c.portrait = !c.portrait,
+        );
+        let menu = toggle(
+            menu,
+            rox_i18n::t!("biography-keep-aspect"),
+            self.config.header_aspect,
+            |c| c.header_aspect = !c.header_aspect,
+        );
+        let menu = toggle(
+            menu,
+            rox_i18n::t!("biography-fill-width"),
+            self.config.header_fill,
+            |c| c.header_fill = !c.header_fill,
+        );
+        let menu = toggle(
+            menu,
+            rox_i18n::t!("biography-background"),
+            self.config.background,
+            |c| c.background = !c.background,
+        );
         let weak = cx.entity().downgrade();
         menu.separator().item(
-            PopupMenuItem::new("Refresh")
+            PopupMenuItem::new(rox_i18n::t!("biography-refresh"))
                 .icon(Icon::default().path(icons::REFRESH_CW))
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -399,8 +411,8 @@ impl PanelSettings for BiographyPanel {
                 cx,
             ))
             .child(panel::setting_row(
-                "Header Image",
-                Some("The wide artist banner across the top, or the portrait when there is no banner".into()),
+                rox_i18n::t!("biography-header-image"),
+                Some(rox_i18n::t!("biography-header-image.description")),
                 panel::toggle(
                     self.config.portrait,
                     |this: &mut Self, on, cx| {
@@ -411,8 +423,8 @@ impl PanelSettings for BiographyPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Keep Aspect Ratio",
-                Some("Show the header at its own proportions instead of cropping it to fill a band".into()),
+                rox_i18n::t!("biography-keep-aspect"),
+                Some(rox_i18n::t!("biography-keep-aspect.description")),
                 panel::toggle(
                     self.config.header_aspect,
                     |this: &mut Self, on, cx| {
@@ -423,8 +435,8 @@ impl PanelSettings for BiographyPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Fill Width",
-                Some("Let a tall header span the full width instead of sitting capped and centered".into()),
+                rox_i18n::t!("biography-fill-width"),
+                Some(rox_i18n::t!("biography-fill-width.description")),
                 panel::toggle(
                     self.config.header_fill,
                     |this: &mut Self, on, cx| {
@@ -435,8 +447,8 @@ impl PanelSettings for BiographyPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Background",
-                Some("The artist fanart behind the text, dimmed and fading out toward the bottom".into()),
+                rox_i18n::t!("biography-background"),
+                Some(rox_i18n::t!("biography-background.description")),
                 panel::toggle(
                     self.config.background,
                     |this: &mut Self, on, cx| {
@@ -447,8 +459,8 @@ impl PanelSettings for BiographyPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Stats",
-                Some("Listeners and plays on Last.fm, under the name".into()),
+                rox_i18n::t!("biography-stats"),
+                Some(rox_i18n::t!("biography-stats.description")),
                 panel::toggle(
                     self.config.stats,
                     |this: &mut Self, on, cx| {
@@ -459,8 +471,8 @@ impl PanelSettings for BiographyPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Tags",
-                Some("The genre tags as a chip row".into()),
+                rox_i18n::t!("biography-tags"),
+                Some(rox_i18n::t!("biography-tags.description")),
                 panel::toggle(
                     self.config.tags,
                     |this: &mut Self, on, cx| {
@@ -471,8 +483,8 @@ impl PanelSettings for BiographyPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Similar Artists",
-                Some("Names related listening leans toward, at the foot".into()),
+                rox_i18n::t!("biography-similar-artists"),
+                Some(rox_i18n::t!("biography-similar-artists.description")),
                 panel::toggle(
                     self.config.similar,
                     |this: &mut Self, on, cx| {
@@ -500,7 +512,10 @@ impl Panel for BiographyPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Biography")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("biography-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -601,11 +616,11 @@ impl BiographyPanel {
         // panel lays its own artist background over this instead.
         let root = div().size_full().bg(palette::bg_root_opaque());
         let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
-            return root.child(quiet("No track"));
+            return root.child(quiet(rox_i18n::t!("content-no-track")));
         };
         let name = self.artist_for(&key, cx);
         if name.is_empty() {
-            return root.child(quiet("No artist tag"));
+            return root.child(quiet(rox_i18n::t!("biography-no-artist-tag")));
         }
         self.ensure_loaded(&name, false, cx);
         let key = providers::normalize(&name);
@@ -614,14 +629,18 @@ impl BiographyPanel {
                 let artist = artist.clone();
                 root.child(self.sheet(&artist))
             }
-            Some((k, None)) if *k == key => root.child(quiet(SharedString::from(format!(
-                "Nothing found for {name}"
-            )))),
+            Some((k, None)) if *k == key => root.child(quiet(rox_i18n::t!(
+                "biography-not-found",
+                name = name.clone()
+            ))),
             _ => match &self.error {
                 Some((k, error)) if *k == key => {
                     root.child(rox_panel_api::openers::console_notice(error.clone()))
                 }
-                _ => root.child(loading(SharedString::from(format!("Looking up {name}")))),
+                _ => root.child(loading(rox_i18n::t!(
+                    "biography-looking-up",
+                    name = name.clone()
+                ))),
             },
         }
     }
@@ -689,14 +708,14 @@ impl BiographyPanel {
                     .gap(tokens::SPACE_MD)
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(SharedString::from(format!(
-                        "{} listeners",
-                        fmt_count(info.listeners)
-                    )))
-                    .child(SharedString::from(format!(
-                        "{} plays",
-                        fmt_count(info.playcount)
-                    ))),
+                    .child(rox_i18n::t!(
+                        "biography-listeners-count",
+                        count = fmt_count(info.listeners)
+                    ))
+                    .child(rox_i18n::t!(
+                        "biography-plays-count",
+                        count = fmt_count(info.playcount)
+                    )),
             );
         }
         if self.config.tags && !info.tags.is_empty() {
@@ -713,7 +732,7 @@ impl BiographyPanel {
             content = content.child(
                 div()
                     .text_color(palette::text_faint())
-                    .child("No biography on file"),
+                    .child(rox_i18n::t!("biography-no-text")),
             );
         } else {
             // Paragraphs as the stripped text separated them; single
@@ -742,7 +761,7 @@ impl BiographyPanel {
                         div()
                             .text_xs()
                             .text_color(palette::text_muted())
-                            .child("Similar artists"),
+                            .child(rox_i18n::t!("biography-similar-heading")),
                     )
                     .child(
                         div()
@@ -762,7 +781,7 @@ impl BiographyPanel {
                         .hover(|d| d.text_color(palette::text_muted()))
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url))
-                        .child("From Last.fm"),
+                        .child(rox_i18n::t!("biography-from-lastfm")),
                 ),
             );
         }

@@ -62,11 +62,11 @@ impl ColumnKind {
 
     fn label(self) -> &'static str {
         match self {
-            ColumnKind::Artist => "Artist",
-            ColumnKind::AlbumArtist => "Album Artist",
-            ColumnKind::Album => "Album",
-            ColumnKind::Genre => "Genre",
-            ColumnKind::Year => "Year",
+            ColumnKind::Artist => rox_i18n::t_static("filter-field-artist"),
+            ColumnKind::AlbumArtist => rox_i18n::t_static("filter-field-album-artist"),
+            ColumnKind::Album => rox_i18n::t_static("filter-field-album"),
+            ColumnKind::Genre => rox_i18n::t_static("filter-field-genre"),
+            ColumnKind::Year => rox_i18n::t_static("filter-field-year"),
         }
     }
 
@@ -554,7 +554,7 @@ impl FilterPanel {
                         let remove = weak.clone();
                         menu.separator()
                             .item(
-                                PopupMenuItem::new("Clear Selection")
+                                PopupMenuItem::new(rox_i18n::t!("filter-clear-selection"))
                                     .icon(Icon::default().path(icons::CLOSE))
                                     .disabled(!picked)
                                     .on_click(move |_, _, cx| {
@@ -563,7 +563,7 @@ impl FilterPanel {
                                     }),
                             )
                             .item(
-                                PopupMenuItem::new("Remove Column")
+                                PopupMenuItem::new(rox_i18n::t!("filter-remove-column"))
                                     .icon(Icon::default().path(icons::TRASH))
                                     .on_click(move |_, _, cx| {
                                         let Some(this) = remove.upgrade() else { return };
@@ -600,9 +600,11 @@ impl FilterPanel {
             .icon(Icon::default().path(icons::PLUS))
             .small();
         let button = if labelled {
-            button.label("Add Column").outline()
+            button.label(rox_i18n::t!("filter-add-column")).outline()
         } else {
-            button.ghost().tooltip("Add column")
+            button
+                .ghost()
+                .tooltip(rox_i18n::t!("filter-add-column-tooltip"))
         };
         button.dropdown_menu(move |mut menu, _, _| {
             for kind in ColumnKind::ALL {
@@ -650,13 +652,21 @@ impl FilterPanel {
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| this.clear_column(col, cx)),
             )
-            .child(div().flex_1().min_w_0().truncate().child("All"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(rox_i18n::t!("filter-all")),
+            )
             .child(
                 div()
                     .flex_none()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(SharedString::from(distinct.to_string())),
+                    .child(SharedString::from(rox_i18n::format::format_int(
+                        distinct as i64,
+                    ))),
             )
     }
 
@@ -717,7 +727,9 @@ impl FilterPanel {
                                 .flex_none()
                                 .text_xs()
                                 .text_color(palette::text_muted())
-                                .child(SharedString::from(value.count.to_string())),
+                                .child(SharedString::from(rox_i18n::format::format_int(
+                                    value.count as i64,
+                                ))),
                         ),
                 )
             })
@@ -736,7 +748,7 @@ impl FilterPanel {
     /// shown.
     fn columns_menu(&self, mut menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let shown = self.config.columns.clone();
-        menu = menu.label("Columns");
+        menu = menu.label(rox_i18n::t!("library-columns"));
         for kind in ColumnKind::ALL {
             let weak = cx.entity().downgrade();
             menu = menu.item(
@@ -786,7 +798,10 @@ impl Panel for FilterPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Filter")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("content-filter"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -851,7 +866,7 @@ impl Panel for FilterPanel {
         let filtering = !self.state.query.read(cx).filter().is_empty();
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Clear Filters")
+            PopupMenuItem::new(rox_i18n::t!("filter-clear-filters"))
                 .icon(Icon::default().path(icons::CLOSE))
                 .disabled(!filtering)
                 .on_click(move |_, _, cx| {
@@ -914,7 +929,7 @@ impl FilterPanel {
                     .child(
                         div()
                             .text_color(palette::text_faint())
-                            .child("Pick a field to start filtering"),
+                            .child(rox_i18n::t!("filter-empty")),
                     )
                     .child(self.add_button(true, cx)),
             );
@@ -1128,7 +1143,7 @@ fn sym_source(projection: &Projection, kind: ColumnKind) -> (&[u32], &SymTable) 
 /// string, so the pick still matches exactly.
 fn sym_label(value: &str) -> SharedString {
     if value.is_empty() {
-        "Unknown".into()
+        rox_i18n::t!("filter-unknown")
     } else {
         SharedString::from(value.to_string())
     }
@@ -1137,7 +1152,7 @@ fn sym_label(value: &str) -> SharedString {
 /// Year zero is the untagged marker, the scanner's default.
 fn year_label(year: u16) -> SharedString {
     if year == 0 {
-        "Unknown".into()
+        rox_i18n::t!("filter-unknown")
     } else {
         SharedString::from(year.to_string())
     }

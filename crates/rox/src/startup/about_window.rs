@@ -57,10 +57,12 @@ pub fn open(state: AppState, cx: &mut App) {
     // offscreen. Growing the bounds with the text keeps the whole page in view.
     let scale = palette::font_scale();
     let bounds = Bounds::centered(None, size(px(960. * scale), px(240. * scale)), cx);
-    let handle =
-        rox_panel_api::panel::open_fixed_window(cx, "rox - About", bounds, move |_window, cx| {
-            cx.new(|cx| AboutWindow::new(state, cx))
-        });
+    let handle = rox_panel_api::panel::open_fixed_window(
+        cx,
+        rox_i18n::t!("about-window-title"),
+        bounds,
+        move |_window, cx| cx.new(|cx| AboutWindow::new(state, cx)),
+    );
     cx.set_global(OpenAbout(handle));
 }
 
@@ -196,13 +198,13 @@ impl AboutWindow {
         if updater::can_update() {
             let release = release.clone();
             row.child(small_button(
-                "Download",
+                rox_i18n::t!("about-download"),
                 icons::DOWNLOAD,
                 false,
                 cx.listener(move |_, _, _, cx| Self::download(&release, cx)),
             ))
             .child(small_button(
-                "Release Notes",
+                rox_i18n::t!("about-release-notes"),
                 icons::EXTERNAL_LINK,
                 false,
                 cx.listener(move |_, _, _, cx| cx.open_url(&url)),
@@ -210,7 +212,7 @@ impl AboutWindow {
             .into_any_element()
         } else {
             row.child(small_button(
-                "Get It",
+                rox_i18n::t!("about-get-it"),
                 icons::EXTERNAL_LINK,
                 false,
                 cx.listener(move |_, _, _, cx| cx.open_url(&url)),
@@ -259,6 +261,12 @@ fn link(text: impl Into<SharedString>, url: &'static str) -> Div {
         .child(text.into())
 }
 
+/// A link that ends a sentence. The period rides inside a gapless row with the
+/// link so the paragraph's gap doesn't open a space before the full stop.
+fn link_end(text: impl Into<SharedString>, url: &'static str) -> Div {
+    div().flex().flex_row().child(link(text, url)).child(".")
+}
+
 /// A muted paragraph that wraps text and inline links together, the license
 /// prose's line register.
 fn prose() -> Div {
@@ -292,9 +300,9 @@ impl Render for AboutWindow {
                         .flex_row()
                         .items_center()
                         .gap(tokens::SPACE_SM)
-                        .child(line(format!("Version {version} is ready")))
+                        .child(line(rox_i18n::t!("about-version-ready", version = version)))
                         .child(small_button(
-                            "Restart Now",
+                            rox_i18n::t!("about-restart-now"),
                             icons::REFRESH_CW,
                             false,
                             cx.listener(|_, _, _, cx| cx.restart()),
@@ -302,29 +310,39 @@ impl Render for AboutWindow {
                         .into_any_element(),
                 ),
                 updater::Status::Downloading(progress) => Some(
-                    line(format!("Downloading... {:.0}%", progress.fraction() * 100.))
-                        .into_any_element(),
+                    line(rox_i18n::t!(
+                        "about-downloading",
+                        percent = (progress.fraction() * 100.).round() as u64
+                    ))
+                    .into_any_element(),
                 ),
                 updater::Status::Failed { error } => match &self.update_check {
                     // The release the download failed for is still the cached
                     // one, so the retry rides beside the reason.
                     UpdateCheck::Available(release) => Some(Self::release_row(
                         release,
-                        format!("The update failed: {error}"),
+                        rox_i18n::t!("about-update-failed", error = error).to_string(),
                         cx,
                     )),
-                    _ => Some(line(format!("The update failed: {error}")).into_any_element()),
+                    _ => Some(
+                        line(rox_i18n::t!("about-update-failed", error = error)).into_any_element(),
+                    ),
                 },
                 updater::Status::Idle => match &self.update_check {
                     UpdateCheck::Idle => None,
-                    UpdateCheck::Checking => Some(line("Checking...").into_any_element()),
-                    UpdateCheck::UpToDate => {
-                        Some(line("You're on the latest version").into_any_element())
+                    UpdateCheck::Checking => {
+                        Some(line(rox_i18n::t!("about-checking")).into_any_element())
                     }
-                    UpdateCheck::Failed => Some(line("Couldn't reach GitHub").into_any_element()),
+                    UpdateCheck::UpToDate => {
+                        Some(line(rox_i18n::t!("about-up-to-date")).into_any_element())
+                    }
+                    UpdateCheck::Failed => {
+                        Some(line(rox_i18n::t!("about-check-failed")).into_any_element())
+                    }
                     UpdateCheck::Available(release) => Some(Self::release_row(
                         release,
-                        format!("Version {} is available", release.version),
+                        rox_i18n::t!("about-version-available", version = release.version.clone())
+                            .to_string(),
                         cx,
                     )),
                 },
@@ -336,7 +354,7 @@ impl Render for AboutWindow {
                 .items_center()
                 .gap(tokens::SPACE_SM)
                 .child(small_button(
-                    "Check for Updates",
+                    rox_i18n::t!("about-check-for-updates"),
                     icons::REFRESH_CW,
                     checking,
                     cx.listener(|this, _, _, cx| this.check_for_updates(cx)),
@@ -346,41 +364,42 @@ impl Render for AboutWindow {
             // The identity column beside the logo: name and version up top, then
             // the copyright, the copyleft notice, and where the source lives.
             let identity = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_XS)
-                    .child(
-                        div()
-                            .text_xl()
-                            .text_color(palette::text_bright())
-                            .child("rox"),
-                    )
-                    .child(line(format!("Version {}", updates::CURRENT))),
-            )
-            .child(
-                prose()
-                    .child("Copyright © 2026")
-                    .child(link("Andrew Lake", SITE))
-                    .child(link("(@zealsprince)", PROFILE)),
-            )
-            .child(
-                prose()
-                    .child("rox is free software under the GNU AGPLv3. The source is on")
-                    .child(link("GitHub", REPO))
-                    .child("."),
-            )
-            .child(
-                prose()
-                    .child("You should have received a copy of the license with this program. If not, see")
-                    .child(link("gnu.org/licenses", LICENSE_URL))
-                    .child("."),
-            )
-            .child(update_control);
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_XS)
+                        .child(
+                            div()
+                                .text_xl()
+                                .text_color(palette::text_bright())
+                                .child("rox"),
+                        )
+                        .child(line(rox_i18n::t!(
+                            "about-version",
+                            version = updates::CURRENT.to_string()
+                        ))),
+                )
+                .child(
+                    prose()
+                        .child(rox_i18n::t!("about-copyright"))
+                        .child(link("Andrew Lake", SITE))
+                        .child(link("(@zealsprince)", PROFILE)),
+                )
+                .child(
+                    prose()
+                        .child(rox_i18n::t!("about-license-lead"))
+                        .child(link_end("GitHub", REPO)),
+                )
+                .child(
+                    prose()
+                        .child(rox_i18n::t!("about-notice-lead"))
+                        .child(link_end("gnu.org/licenses", LICENSE_URL)),
+                )
+                .child(update_control);
 
             let page = div()
                 .flex()

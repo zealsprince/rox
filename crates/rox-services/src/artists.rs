@@ -63,7 +63,24 @@ pub struct Artist {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     fetched: u64,
+    /// The language the bio was fetched in. A cached entry from another
+    /// language is stale however recently it landed, since the whole
+    /// point of refetching is that the reader changed language. Absent on
+    /// entries written before bios were language-aware, which reads as
+    /// English and refetches once for anyone not on English.
+    #[serde(default)]
+    lang: String,
     info: Option<ArtistInfo>,
+}
+
+/// The Last.fm language code for the active locale: the primary subtag,
+/// so en-CA asks for English.
+fn bio_lang() -> String {
+    rox_i18n::locale()
+        .split('-')
+        .next()
+        .unwrap_or("en")
+        .to_string()
 }
 
 /// The cache files for a name: the JSON and the three image slots beside
@@ -130,9 +147,15 @@ pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
     let cached: Option<Entry> = fs::read_to_string(&files.info)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok());
-    let fresh = cached
-        .as_ref()
-        .is_some_and(|entry| now().saturating_sub(entry.fetched) < TTL_SECS);
+    let lang = bio_lang();
+    let fresh = cached.as_ref().is_some_and(|entry| {
+        now().saturating_sub(entry.fetched) < TTL_SECS
+            && entry.lang.as_str() == lang
+            // An entry written before bios carried a language reads as
+            // English, so an English reader keeps theirs.
+            || (entry.lang.is_empty() && lang == "en")
+                && now().saturating_sub(entry.fetched) < TTL_SECS
+    });
     if !providers::artist_online() || (fresh && !force) {
         let info = cached.and_then(|entry| entry.info);
         // A fresh entry can still be missing images - one transient
@@ -146,10 +169,11 @@ pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
         }
         return Ok(info.map(|info| assemble(info, &files)));
     }
-    match providers::lastfm::artist_info(name) {
+    match providers::lastfm::artist_info(name, &lang) {
         Ok(info) => {
             let entry = Entry {
                 fetched: now(),
+                lang: lang.clone(),
                 info,
             };
             let _ = fs::create_dir_all(artists_dir());

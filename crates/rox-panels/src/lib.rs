@@ -22,6 +22,7 @@ pub mod history;
 pub mod library;
 pub mod lyrics;
 pub mod metadata;
+pub mod oscilloscope;
 pub mod output;
 pub mod particles;
 pub mod playlists;

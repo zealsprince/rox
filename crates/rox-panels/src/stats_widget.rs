@@ -68,23 +68,14 @@ impl ListenRange {
     /// segments still fit its row.
     fn label(self) -> &'static str {
         match self {
-            ListenRange::Day => "Today",
-            ListenRange::Week => "This Week",
-            ListenRange::Month => "This Month",
-            ListenRange::Year => "This Year",
-            ListenRange::All => "All Time",
+            ListenRange::Day => rox_i18n::t_static("stats-range-today"),
+            ListenRange::Week => rox_i18n::t_static("stats-range-week"),
+            ListenRange::Month => rox_i18n::t_static("stats-range-month"),
+            ListenRange::Year => rox_i18n::t_static("stats-range-year"),
+            ListenRange::All => rox_i18n::t_static("stats-range-all"),
         }
     }
 }
-
-/// The range picker's options, the segmented control's labels.
-const RANGES: &[(&str, ListenRange)] = &[
-    ("Day", ListenRange::Day),
-    ("Week", ListenRange::Week),
-    ("Month", ListenRange::Month),
-    ("Year", ListenRange::Year),
-    ("All", ListenRange::All),
-];
 
 /// Every window in order, the tooltip's rows and the menu flyout's; the
 /// readout's own range reads brighter among the tooltip's.
@@ -269,7 +260,9 @@ impl StatsWidgetPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let menu = menu.separator().label("Readout");
+        let menu = menu
+            .separator()
+            .label(rox_i18n::t!("stats-readout-section"));
         // The range as a flyout, with live ticks through follow_panel +
         // check_row: the flyout stays open on a pick, so a tick baked in
         // at build time would sit on the old range.
@@ -291,12 +284,15 @@ impl StatsWidgetPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Count", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("stats-count-menu"),
+            submenu,
+        ));
         // The three booleans sit at the top level, where the menu closes
         // on the click and a plain check carries the state fine.
         let menu = self.toggle_item(
             menu,
-            "Show the Number",
+            rox_i18n::t!("stats-show-number"),
             self.config.show_count,
             cx,
             |config| {
@@ -305,14 +301,14 @@ impl StatsWidgetPanel {
         );
         let menu = self.toggle_item(
             menu,
-            "Show the Change",
+            rox_i18n::t!("stats-show-change"),
             self.config.show_change,
             cx,
             |config| config.show_change = !config.show_change,
         );
         self.toggle_item(
             menu,
-            "Click Opens Stats",
+            rox_i18n::t!("stats-click-opens"),
             self.config.open_on_click,
             cx,
             |config| config.open_on_click = !config.open_on_click,
@@ -323,7 +319,7 @@ impl StatsWidgetPanel {
     fn toggle_item(
         &self,
         menu: PopupMenu,
-        label: &'static str,
+        label: impl Into<SharedString>,
         on: bool,
         cx: &mut Context<Self>,
         flip: impl Fn(&mut StatsWidgetConfig) + 'static,
@@ -350,7 +346,9 @@ impl StatsWidgetPanel {
             .iter()
             .map(|range| TooltipRow {
                 label: SharedString::from(range.label()),
-                count: SharedString::from(self.counts.get(*range).to_string()),
+                count: SharedString::from(rox_i18n::format::format_int(
+                    self.counts.get(*range) as i64
+                )),
                 change: self
                     .config
                     .show_change
@@ -380,8 +378,10 @@ fn change_look(delta: i64) -> (&'static str, gpui::Rgba) {
 fn change_label(delta: i64) -> String {
     if delta == 0 {
         "0".to_string()
+    } else if delta > 0 {
+        format!("+{}", rox_i18n::format::format_int(delta))
     } else {
-        format!("{delta:+}")
+        rox_i18n::format::format_int(delta)
     }
 }
 
@@ -417,7 +417,11 @@ impl Render for StatsTooltip {
             .shadow_md()
             .text_color(palette::text())
             .text_xs()
-            .child(div().text_color(palette::text_muted()).child("Listens"))
+            .child(
+                div()
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("stats-tooltip-listens")),
+            )
             .children(self.rows.iter().map(|row| {
                 div()
                     .flex()
@@ -473,17 +477,23 @@ impl PanelSettings for StatsWidgetPanel {
                 .flex_col()
                 .gap(settings_ui::SECTION_GAP)
                 .child(settings_ui::section(
-                    "Readout",
+                    rox_i18n::t!("stats-readout-section"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
-                            "Count",
-                            Some("Which trailing window the number counts listens over; the hover list always carries them all".into()),
-                            panel::choices(
-                                RANGES,
+                            rox_i18n::t!("stats-count-menu"),
+                            Some(rox_i18n::t!("stats-count-menu.description")),
+                            panel::choices_shared(
+                                &[
+                                    (rox_i18n::t!("stats-range-day-short"), ListenRange::Day),
+                                    (rox_i18n::t!("stats-range-week-short"), ListenRange::Week),
+                                    (rox_i18n::t!("stats-range-month-short"), ListenRange::Month),
+                                    (rox_i18n::t!("stats-range-year-short"), ListenRange::Year),
+                                    (rox_i18n::t!("stats-range-all-short"), ListenRange::All),
+                                ],
                                 self.config.range,
                                 |this: &mut Self, range, cx| {
                                     this.config.range = range;
@@ -493,8 +503,8 @@ impl PanelSettings for StatsWidgetPanel {
                             ),
                         ))
                         .child(setting_row(
-                            "Show the Number",
-                            Some("Draw the count beside the icon; off leaves a bare icon with the counts on hover".into()),
+                            rox_i18n::t!("stats-show-number"),
+                            Some(rox_i18n::t!("stats-show-number.description")),
                             toggle(
                                 self.config.show_count,
                                 |this: &mut Self, on, cx| {
@@ -505,8 +515,8 @@ impl PanelSettings for StatsWidgetPanel {
                             ),
                         ))
                         .child(setting_row(
-                            "Show the Change",
-                            Some("Add a chip for how the window compares with the one before it, up or down; All Time has nothing behind it".into()),
+                            rox_i18n::t!("stats-show-change"),
+                            Some(rox_i18n::t!("stats-show-change.description")),
                             toggle(
                                 self.config.show_change,
                                 |this: &mut Self, on, cx| {
@@ -518,11 +528,11 @@ impl PanelSettings for StatsWidgetPanel {
                         )),
                 ))
                 .child(settings_ui::section(
-                    "Click",
+                    rox_i18n::t!("stats-click-section"),
                     None,
                     setting_row(
-                        "Open Stats on Click",
-                        Some("Click the widget to open the stats window, the full listening record".into()),
+                        rox_i18n::t!("stats-open-on-click"),
+                        Some(rox_i18n::t!("stats-open-on-click.description")),
                         toggle(
                             self.config.open_on_click,
                             |this: &mut Self, on, cx| {
@@ -552,7 +562,10 @@ impl Panel for StatsWidgetPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Stats Widget")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("stats-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -616,7 +629,7 @@ impl Panel for StatsWidgetPanel {
     ) -> PopupMenu {
         let state = self.state.clone();
         let menu = menu.item(
-            PopupMenuItem::new("Open Stats")
+            PopupMenuItem::new(rox_i18n::t!("stats-open"))
                 .icon(Icon::default().path(icons::CHART_PIE))
                 .on_click(move |_, _, cx| {
                     rox_panel_api::openers::stats_window(state.clone(), cx);
@@ -704,7 +717,9 @@ impl Render for StatsWidgetPanel {
                                 } else {
                                     palette::text_muted()
                                 })
-                                .child(SharedString::from(count.to_string())),
+                                .child(SharedString::from(rox_i18n::format::format_int(
+                                    count as i64,
+                                ))),
                         )
                     })
                     .when_some(change, |d, delta| {
@@ -723,7 +738,9 @@ impl Render for StatsWidgetPanel {
                                 // dash; a zero beside it would just be
                                 // another digit to read past.
                                 .when(delta != 0, |d| {
-                                    d.child(SharedString::from(delta.unsigned_abs().to_string()))
+                                    d.child(SharedString::from(rox_i18n::format::format_int(
+                                        delta.unsigned_abs() as i64,
+                                    )))
                                 }),
                         )
                     })

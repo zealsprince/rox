@@ -133,7 +133,10 @@ impl Panel for DragAnchorPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Drag Anchor")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-drag-anchor"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<gpui::SharedString> {

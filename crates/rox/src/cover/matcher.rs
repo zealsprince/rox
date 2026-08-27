@@ -69,7 +69,7 @@ pub fn open(
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                "rox - Find Cover Art",
+                rox_i18n::t!("cover-matcher-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| {
@@ -123,12 +123,12 @@ impl CoverMatch {
     ) -> Self {
         let artist_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Artist")
+                .placeholder(rox_i18n::t!("head-piece-artist"))
                 .default_value(artist)
         });
         let album_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Album")
+                .placeholder(rox_i18n::t!("head-piece-album"))
                 .default_value(album)
         });
         let _input_events = [&artist_input, &album_input]
@@ -215,7 +215,7 @@ impl CoverMatch {
             }
             Err(e) => {
                 log::warn!("cover search: {e}");
-                self.phase = Phase::Failed(format!("Search failed: {e}").into());
+                self.phase = Phase::Failed(rox_i18n::t!("cover-matcher-search-failed", error = e));
             }
         }
         cx.notify();
@@ -288,8 +288,9 @@ impl CoverMatch {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 match bytes.and_then(|bytes| {
-                    let mime =
-                        sniff_mime(&bytes).ok_or_else(|| "Unsupported image format".to_string())?;
+                    let mime = sniff_mime(&bytes).ok_or_else(|| {
+                        rox_i18n::t!("cover-matcher-unsupported-format").to_string()
+                    })?;
                     Ok((bytes, mime.to_string()))
                 }) {
                     Ok((bytes, mime)) => {
@@ -301,7 +302,7 @@ impl CoverMatch {
                         } else {
                             // The editor closed under us; nothing to fill.
                             this.applying = false;
-                            this.error = Some("The cover editor was closed".into());
+                            this.error = Some(rox_i18n::t!("cover-matcher-editor-closed"));
                             cx.notify();
                         }
                     }
@@ -369,7 +370,11 @@ impl CoverMatch {
                     .child(gpui::svg().path(icons::IMAGE).size(px(22.)))
                     .into_any_element(),
             };
-            let source = format!("{}  {}px", slot.candidate.provider, slot.candidate.width);
+            let source = rox_i18n::t!(
+                "cover-matcher-tile-info",
+                provider = slot.candidate.provider,
+                width = slot.candidate.width as u64
+            );
             grid = grid.child(
                 div()
                     .id(("cover", ix))
@@ -411,7 +416,7 @@ impl CoverMatch {
                             .text_xs()
                             .text_color(palette::text_muted())
                             .truncate()
-                            .child(SharedString::from(source)),
+                            .child(source),
                     ),
             );
         }
@@ -422,18 +427,18 @@ impl CoverMatch {
     /// The clauses run in the order a search clears them, so the footer
     /// names the one step that is actually next, and Set Cover is live
     /// exactly when nothing is left.
-    fn blocker(&self) -> Option<&'static str> {
+    fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref l) if !l.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...",
-                _ => "No cover to set",
+                Phase::Searching => "Searching...".into(),
+                _ => rox_i18n::t!("cover-matcher-blocked-no-cover"),
             });
         }
         if self.selected.is_none() {
-            return Some("Pick a cover to set it");
+            return Some(rox_i18n::t!("cover-matcher-blocked-pick"));
         }
         if self.applying {
-            return Some("Fetching the full image...");
+            return Some(rox_i18n::t!("cover-matcher-blocked-fetching"));
         }
         None
     }
@@ -470,9 +475,9 @@ impl CoverMatch {
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
                         if self.applying {
-                            "Setting..."
+                            rox_i18n::t!("cover-matcher-setting")
                         } else {
-                            "Set Cover"
+                            rox_i18n::t!("cover-matcher-set-cover")
                         },
                         icons::CHECK,
                         !can_apply,
@@ -496,10 +501,10 @@ impl Render for CoverMatch {
                 div()
                     .text_xs()
                     .text_color(palette::text())
-                    .child(SharedString::from(match loaded.len() {
-                        1 => "1 cover".to_string(),
-                        n => format!("{n} covers"),
-                    }))
+                    .child(rox_i18n::t!(
+                        "cover-matcher-cover-count",
+                        count = loaded.len() as u64
+                    ))
                     .into_any_element(),
             ),
             _ => None,
@@ -508,7 +513,9 @@ impl Render for CoverMatch {
         let content = match &self.phase {
             Phase::Searching => note("Searching...").into_any_element(),
             Phase::Failed(e) => crate::console_window::notice(e.clone()).into_any_element(),
-            Phase::Ready(loaded) if loaded.is_empty() => note("No covers found").into_any_element(),
+            Phase::Ready(loaded) if loaded.is_empty() => {
+                note(rox_i18n::t!("cover-matcher-no-covers")).into_any_element()
+            }
             Phase::Ready(loaded) => div()
                 .id("cover-grid")
                 .size_full()

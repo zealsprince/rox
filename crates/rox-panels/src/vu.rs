@@ -26,11 +26,11 @@ use rox_viz::AudioFeed;
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{
-    self, choices, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState,
+    self, choices_shared, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState,
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
-use crate::spectrum::{ramp_color, Gradient, Orientation, GRADIENT_CHOICES, ORIENTATION_CHOICES};
+use crate::spectrum::{gradient_choices, orientation_choices, ramp_color, Gradient, Orientation};
 
 /// The most meters the panel draws: stereo is two, mono folds to one.
 const MAX_METERS: usize = 2;
@@ -123,16 +123,28 @@ pub enum Ballistics {
     Peak,
 }
 
-const STYLE_CHOICES: &[(&str, MeterStyle)] = &[
-    ("Continuous", MeterStyle::Continuous),
-    ("Segments", MeterStyle::Segments),
-];
+fn style_choices() -> [(SharedString, MeterStyle); 2] {
+    [
+        (rox_i18n::t!("vu-style-continuous"), MeterStyle::Continuous),
+        (rox_i18n::t!("vu-style-segments"), MeterStyle::Segments),
+    ]
+}
 
-const CHANNEL_CHOICES: &[(&str, Channels)] =
-    &[("Stereo", Channels::Stereo), ("Mono", Channels::Mono)];
+fn channel_choices() -> [(SharedString, Channels); 2] {
+    [
+        (rox_i18n::t!("vu-channels-stereo"), Channels::Stereo),
+        (rox_i18n::t!("vu-channels-mono"), Channels::Mono),
+    ]
+}
 
-const BALLISTICS_CHOICES: &[(&str, Ballistics)] =
-    &[("VU", Ballistics::Vu), ("Peak", Ballistics::Peak)];
+fn ballistics_choices() -> [(SharedString, Ballistics); 2] {
+    [
+        // No locale key surveyed for this label; left as-is (see
+        // .i18n-work/skipped-visual-panels.md).
+        ("VU".into(), Ballistics::Vu),
+        (rox_i18n::t!("vu-ballistics-peak"), Ballistics::Peak),
+    ]
+}
 
 /// The VU panel's per-view config: what a saved layout restores and what the
 /// customize window edits. Missing fields take the defaults, so a layout
@@ -586,15 +598,15 @@ impl VuPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        type ConfigToggle = (&'static str, fn(&VuPanel) -> bool, fn(&mut VuPanel));
+        type ConfigToggle = (SharedString, fn(&VuPanel) -> bool, fn(&mut VuPanel));
         let toggles: Vec<ConfigToggle> = vec![
             (
-                "Peak Caps",
+                rox_i18n::t!("vu-peak-caps"),
                 |this| this.config.caps,
                 |this| this.config.caps = !this.config.caps,
             ),
             (
-                "dB Scale",
+                rox_i18n::t!("vu-db-scale"),
                 |this| this.config.scale,
                 |this| this.config.scale = !this.config.scale,
             ),
@@ -613,7 +625,10 @@ impl VuPanel {
             }
             submenu
         });
-        menu.item(PopupMenuItem::submenu("Display", submenu))
+        menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("library-menu-display"),
+            submenu,
+        ))
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -709,10 +724,10 @@ impl PanelSettings for VuPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "Channels",
-                Some("Split the stereo pair, or fold to one meter".into()),
-                choices(
-                    CHANNEL_CHOICES,
+                rox_i18n::t!("vu-channels"),
+                Some(rox_i18n::t!("vu-channels.description")),
+                choices_shared(
+                    &channel_choices(),
                     self.config.channels,
                     |this: &mut Self, channels, cx| {
                         this.config.channels = channels;
@@ -722,10 +737,10 @@ impl PanelSettings for VuPanel {
                 ),
             ))
             .child(setting_row(
-                "Style",
-                Some("A solid column, or LED-style segments".into()),
-                choices(
-                    STYLE_CHOICES,
+                rox_i18n::t!("vu-style"),
+                Some(rox_i18n::t!("vu-style.description")),
+                choices_shared(
+                    &style_choices(),
                     self.config.style,
                     |this: &mut Self, style, cx| {
                         this.config.style = style;
@@ -735,10 +750,10 @@ impl PanelSettings for VuPanel {
                 ),
             ))
             .child(setting_row(
-                "Orientation",
-                Some("The edge the meters grow from".into()),
-                choices(
-                    ORIENTATION_CHOICES,
+                rox_i18n::t!("vu-orientation"),
+                Some(rox_i18n::t!("vu-orientation.description")),
+                choices_shared(
+                    &orientation_choices(),
                     self.config.orientation,
                     |this: &mut Self, orientation, cx| {
                         this.config.orientation = orientation;
@@ -748,10 +763,10 @@ impl PanelSettings for VuPanel {
                 ),
             ))
             .child(setting_row(
-                "Ballistics",
-                Some("VU integrates the loudness slowly; Peak snaps up and eases down".into()),
-                choices(
-                    BALLISTICS_CHOICES,
+                rox_i18n::t!("vu-ballistics"),
+                Some(rox_i18n::t!("vu-ballistics.description")),
+                choices_shared(
+                    &ballistics_choices(),
                     self.config.ballistics,
                     |this: &mut Self, ballistics, cx| {
                         this.config.ballistics = ballistics;
@@ -762,8 +777,8 @@ impl PanelSettings for VuPanel {
             ))
             .when(self.config.style == MeterStyle::Segments, |d| {
                 d.child(setting_row(
-                    "Segment Height",
-                    Some("How tall each cell in a stack draws".into()),
+                    rox_i18n::t!("vu-segment-height"),
+                    Some(rox_i18n::t!("vu-segment-height.description")),
                     settings_ui::scalar(
                         &self.seg_h_scrub,
                         &self.value_edit,
@@ -774,8 +789,8 @@ impl PanelSettings for VuPanel {
                     ),
                 ))
                 .child(setting_row(
-                    "Segment Gap",
-                    Some("The seam between cells in a stack".into()),
+                    rox_i18n::t!("vu-segment-gap"),
+                    Some(rox_i18n::t!("vu-segment-gap.description")),
                     settings_ui::scalar(
                         &self.seg_gap_scrub,
                         &self.value_edit,
@@ -787,10 +802,10 @@ impl PanelSettings for VuPanel {
                 ))
             })
             .child(setting_row(
-                "Gradient",
-                Some("Color the meters by level: the theme's ramp, the cover art's colors under song theming, or a custom pair".into()),
-                choices(
-                    GRADIENT_CHOICES,
+                rox_i18n::t!("vu-gradient-mode"),
+                Some(rox_i18n::t!("vu-gradient-mode.description")),
+                choices_shared(
+                    &gradient_choices(),
                     self.config.gradient,
                     |this: &mut Self, gradient, cx| {
                         this.config.gradient = gradient;
@@ -805,20 +820,20 @@ impl PanelSettings for VuPanel {
                     .flatten(),
                 |d, [lo, hi]| {
                     d.child(setting_row(
-                        "Base Color",
-                        Some("The quiet end of the custom ramp".into()),
+                        rox_i18n::t!("spectrum-gradient-base-color"),
+                        Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
                         ColorPicker::new(&lo).small(),
                     ))
                     .child(setting_row(
-                        "Tip Color",
-                        Some("The loud end of the custom ramp".into()),
+                        rox_i18n::t!("spectrum-gradient-tip-color"),
+                        Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
                         ColorPicker::new(&hi).small(),
                     ))
                 },
             )
             .child(setting_row(
-                "Peak Caps",
-                Some("Hold a mark at each meter's recent peak".into()),
+                rox_i18n::t!("vu-peak-caps"),
+                Some(rox_i18n::t!("vu-peak-caps.description")),
                 toggle(
                     self.config.caps,
                     |this: &mut Self, on, cx| {
@@ -829,8 +844,8 @@ impl PanelSettings for VuPanel {
                 ),
             ))
             .child(setting_row(
-                "Cap Gravity",
-                Some("How hard the peak marks fall once the meter drops away".into()),
+                rox_i18n::t!("vu-cap-gravity"),
+                Some(rox_i18n::t!("vu-cap-gravity.description")),
                 panel::value_slider_edit(
                     &self.gravity_scrub,
                     &self.value_edit,
@@ -843,8 +858,8 @@ impl PanelSettings for VuPanel {
                 ),
             ))
             .child(setting_row(
-                "Hold on Pause",
-                Some("Freeze the meters while paused instead of letting them fall to silence".into()),
+                rox_i18n::t!("vu-hold-on-pause"),
+                Some(rox_i18n::t!("vu-hold-on-pause.description")),
                 toggle(
                     self.config.freeze,
                     |this: &mut Self, on, cx| {
@@ -855,8 +870,8 @@ impl PanelSettings for VuPanel {
                 ),
             ))
             .child(setting_row(
-                "dB Scale",
-                Some("Draw labeled gridlines at the dB marks behind the meters".into()),
+                rox_i18n::t!("vu-db-scale"),
+                Some(rox_i18n::t!("vu-db-scale.description")),
                 toggle(
                     self.config.scale,
                     |this: &mut Self, on, cx| {
@@ -884,7 +899,10 @@ impl Panel for VuPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "VU Meter")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-vu"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {

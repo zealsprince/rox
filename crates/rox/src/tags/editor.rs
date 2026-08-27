@@ -246,7 +246,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                "rox - Tag Editor",
+                rox_i18n::t!("tags-editor-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| TagEditor::new(state, ids, window, cx)),
@@ -1142,7 +1142,7 @@ impl TagEditor {
                         .into_any_element(),
                     None => div()
                         .text_color(palette::text_muted())
-                        .child("no match")
+                        .child(rox_i18n::t!("tags-editor-guess-no-match"))
                         .into_any_element(),
                 };
                 div()
@@ -1169,7 +1169,11 @@ impl TagEditor {
         };
         let status: SharedString = match parse_error {
             Some(e) => e,
-            None => format!("{hits} of {} match", self.tracks.len()).into(),
+            None => rox_i18n::t!(
+                "tags-editor-guess-match-count",
+                hits = hits as u64,
+                total = self.tracks.len() as u64
+            ),
         };
         div()
             .flex()
@@ -1192,7 +1196,7 @@ impl TagEditor {
                             .w(px(84.))
                             .flex_none()
                             .text_color(palette::text_muted())
-                            .child("pattern"),
+                            .child(rox_i18n::t!("tags-editor-guess-pattern-label")),
                     )
                     .child(
                         div()
@@ -1217,15 +1221,19 @@ impl TagEditor {
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(format!(
-                        "{}; / matches the folder above, %skip% discards",
-                        guess::PLACEHOLDERS.join(" ")
+                    .child(rox_i18n::t!(
+                        "tags-editor-guess-help",
+                        placeholders = guess::PLACEHOLDERS.join(" ")
                     )),
             )
             .children(rows)
             .child(div().text_xs().text_color(palette::text_muted()).map(|d| {
                 if folded > 0 {
-                    d.child(format!("{status}, {folded} more not shown"))
+                    d.child(rox_i18n::t!(
+                        "tags-editor-guess-folded",
+                        status = status.to_string(),
+                        count = folded as u64
+                    ))
                 } else {
                     d.child(status)
                 }
@@ -1555,9 +1563,10 @@ impl TagEditor {
                 div()
                     .py(tokens::SPACE_XS)
                     .text_color(palette::text_muted())
-                    .child(format!(
-                        "{} of {} files' tags couldn't be read",
-                        unknowns.failed, unknowns.files
+                    .child(rox_i18n::t!(
+                        "tags-editor-unread-count",
+                        failed = unknowns.failed as u64,
+                        total = unknowns.files as u64
                     )),
             );
         }
@@ -1604,7 +1613,11 @@ impl TagEditor {
                                     .flex_none()
                                     .text_xs()
                                     .text_color(palette::text_muted())
-                                    .child(format!("{} of {}", row.files, unknowns.files)),
+                                    .child(rox_i18n::t!(
+                                        "tags-editor-unknown-partial",
+                                        count = row.files as u64,
+                                        total = unknowns.files as u64
+                                    )),
                             )
                         })
                         // The arm toggle, the clear-all chip's language: a
@@ -1626,7 +1639,11 @@ impl TagEditor {
                                             .hover(|d| d.text_color(palette::text()))
                                     }
                                 })
-                                .child(if removed { "will remove" } else { "remove" })
+                                .child(if removed {
+                                    rox_i18n::t!("tags-editor-will-remove")
+                                } else {
+                                    rox_i18n::t!("tags-editor-remove")
+                                })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.toggle_remove_unknown(i, cx)
                                 })),
@@ -1678,7 +1695,10 @@ impl TagEditor {
                                 .flex_none()
                                 .text_color(palette::text_muted()),
                         )
-                        .child(format!("Other Tags ({})", unknowns.rows.len())),
+                        .child(rox_i18n::t!(
+                            "tags-editor-other-tags",
+                            count = unknowns.rows.len() as u64
+                        )),
                 )
                 .when(open, |d| d.child(body)),
         )
@@ -1698,7 +1718,7 @@ impl TagEditor {
         let single = self.tracks.len() == 1;
         let look_up = (!self.table && single && providers::metadata_online()).then(|| {
             settings_ui::small_button(
-                "Look Up",
+                rox_i18n::t!("tags-editor-look-up"),
                 icons::DOWNLOAD,
                 self.saving || self.baselines.is_none(),
                 cx.listener(|this, _, window, cx| this.look_up(0, window, cx)),
@@ -1715,7 +1735,7 @@ impl TagEditor {
             .when(single, |d| {
                 let path = self.tracks[0].path.clone();
                 d.child(settings_ui::small_button(
-                    "Reveal",
+                    rox_i18n::t!("tags-editor-reveal"),
                     icons::FOLDER,
                     false,
                     move |_, _, cx| cx.reveal_path(&path),
@@ -1725,14 +1745,18 @@ impl TagEditor {
             // per-track view, so only a batch offers the swap.
             .when(!single, |d| {
                 d.child(settings_ui::small_button(
-                    if self.table { "Form" } else { "Table" },
+                    if self.table {
+                        rox_i18n::t!("tags-editor-form-view")
+                    } else {
+                        rox_i18n::t!("tags-editor-table-view")
+                    },
                     icons::ROWS_3,
                     self.saving || self.baselines.is_none(),
                     cx.listener(|this, _, window, cx| this.toggle_table(window, cx)),
                 ))
             })
             .child(settings_ui::small_button(
-                "Guess",
+                rox_i18n::t!("tags-editor-guess-button"),
                 icons::FILE_TEXT,
                 self.saving || self.baselines.is_none(),
                 cx.listener(|this, _, window, cx| this.toggle_guess(window, cx)),
@@ -1758,8 +1782,17 @@ impl TagEditor {
                 d.child(div().absolute().inset_0().occlude())
             });
         match look_up {
-            Some(control) => section_with_control("Tags", control, Some(buttons), content),
-            None => section("Tags", Some(buttons), content),
+            Some(control) => section_with_control(
+                rox_i18n::t!("tags-editor-tags-section"),
+                control,
+                Some(buttons),
+                content,
+            ),
+            None => section(
+                rox_i18n::t!("tags-editor-tags-section"),
+                Some(buttons),
+                content,
+            ),
         }
     }
 
@@ -1779,11 +1812,13 @@ impl TagEditor {
             // A commit runs off the UI thread, so say it plainly. The
             // count names how far a slow batch has got instead of
             // freezing on a mute spinner.
-            let label = if self.save_total > 1 {
+            let label = {
                 let at = (self.save_done + 1).min(self.save_total);
-                format!("Saving {}/{}...", at, self.save_total)
-            } else {
-                "Saving...".to_string()
+                rox_i18n::t!(
+                    "tags-editor-saving-progress",
+                    done = at as u64,
+                    total = self.save_total as u64
+                )
             };
             div()
                 .flex()
@@ -1801,15 +1836,14 @@ impl TagEditor {
             // of the read that never happened.
             let reason: Option<SharedString> = if self.unsupported > 0 {
                 Some(if self.unsupported == self.tracks.len() {
-                    "Tags for this format can't be read or written yet.".into()
+                    rox_i18n::t!("tags-editor-format-unsupported-all")
                 } else {
-                    "Some of these files are in a format whose tags can't be read or written yet."
-                        .into()
+                    rox_i18n::t!("tags-editor-format-unsupported-some")
                 })
             } else if self.error.is_some() {
                 self.error.clone()
             } else if self.baselines.is_none() {
-                Some("Loading tags...".into())
+                Some(rox_i18n::t!("tags-editor-loading"))
             } else {
                 None
             };
@@ -1886,7 +1920,7 @@ impl TagEditor {
                 let field: gpui::AnyElement = if *per_track && !single {
                     let value = self.inputs[i].read(cx).value();
                     let (text, faded) = if self.mixed.get(i).copied().unwrap_or(false) {
-                        (SharedString::from("Multiple values"), true)
+                        (rox_i18n::t!("tags-editor-multiple-values"), true)
                     } else if value.is_empty() {
                         (SharedString::from("-"), true)
                     } else {
@@ -1959,7 +1993,11 @@ impl TagEditor {
                                             .hover(|d| d.text_color(palette::text()))
                                     }
                                 })
-                                .child(if cleared { "will clear" } else { "clear all" })
+                                .child(if cleared {
+                                    rox_i18n::t!("tags-editor-will-clear")
+                                } else {
+                                    rox_i18n::t!("tags-editor-clear-all")
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.toggle_clear(i, window, cx)
                                 })),

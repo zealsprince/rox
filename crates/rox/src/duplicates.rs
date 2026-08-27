@@ -62,11 +62,11 @@ enum KeepPolicy {
 }
 
 impl KeepPolicy {
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            KeepPolicy::Quality => "Keep best quality",
-            KeepPolicy::Oldest => "Keep oldest",
-            KeepPolicy::Newest => "Keep newest",
+            KeepPolicy::Quality => rox_i18n::t!("duplicates-policy-quality"),
+            KeepPolicy::Oldest => rox_i18n::t!("duplicates-policy-oldest"),
+            KeepPolicy::Newest => rox_i18n::t!("duplicates-policy-newest"),
         }
     }
 }
@@ -136,7 +136,7 @@ pub fn open(
     let bounds = Bounds::centered(None, size(px(760.), px(600.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        "rox - Duplicates",
+        rox_i18n::t!("duplicates-window-title"),
         bounds,
         Some(MIN_SIZE),
         move |window, cx| cx.new(|cx| Duplicates::new(library, thumbs, now_art, window, cx)),
@@ -195,7 +195,7 @@ impl Duplicates {
     ) -> Self {
         let _backdrop_changed = cx.observe(&now_art, |_, _, cx| cx.notify());
         let query_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Filter by title, artist, or folder")
+            InputState::new(window, cx).placeholder(rox_i18n::t!("duplicates-filter-placeholder"))
         });
         let _query_changed = cx.subscribe_in(
             &query_input,
@@ -254,7 +254,7 @@ impl Duplicates {
             return;
         }
         let Some(projection) = self.library.read(cx).projection().cloned() else {
-            self.error = Some("The library is still loading; try again shortly.".into());
+            self.error = Some(rox_i18n::t!("duplicates-library-loading"));
             cx.notify();
             return;
         };
@@ -496,7 +496,14 @@ impl Duplicates {
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| path.display().to_string());
-                            first_error = Some(format!("{name}: {e}"));
+                            first_error = Some(
+                                rox_i18n::t!(
+                                    "duplicates-trash-error",
+                                    name = name,
+                                    error = e.to_string()
+                                )
+                                .to_string(),
+                            );
                         }
                     }
                 }
@@ -547,11 +554,13 @@ impl Duplicates {
                 this.rebuild_rows();
                 this.trashing = false;
                 this.result = Some(if failures > 0 {
-                    format!("Moved {n} to trash, {failures} failed").into()
-                } else if n == 1 {
-                    "Moved 1 file to trash".into()
+                    rox_i18n::t!(
+                        "duplicates-trash-result-failed",
+                        count = n as u64,
+                        failed = failures as u64
+                    )
                 } else {
-                    format!("Moved {n} files to trash").into()
+                    rox_i18n::t!("duplicates-trash-result", count = n as u64)
                 });
                 this.error = first_error.map(Into::into);
                 cx.notify();
@@ -581,7 +590,7 @@ impl Duplicates {
                         .text_xs()
                         .text_color(palette::text_muted())
                         .child(Spinner::new().with_size(Size::Small))
-                        .child("Scanning..."),
+                        .child(rox_i18n::t!("duplicates-scanning")),
                 )
             })
             .child(small_button(
@@ -604,9 +613,13 @@ impl Duplicates {
             Some(error)
         } else if self.trashing {
             let at = (self.trash_done + 1).min(self.trash_total);
-            Some(format!("Trashing {}/{}...", at, self.trash_total).into())
+            Some(rox_i18n::t!(
+                "duplicates-trashing",
+                done = at as u64,
+                total = self.trash_total as u64
+            ))
         } else if count == 0 && !self.groups.is_empty() {
-            Some("Check copies to trash them".into())
+            Some(rox_i18n::t!("duplicates-check-to-trash"))
         } else {
             None
         };
@@ -618,11 +631,10 @@ impl Duplicates {
             .gap(tokens::SPACE_SM)
             .text_xs()
             .when(count > 0, |d| {
-                d.child(
-                    div()
-                        .text_color(palette::text_muted())
-                        .child(format!("{count} selected")),
-                )
+                d.child(div().text_color(palette::text_muted()).child(rox_i18n::t!(
+                    "duplicates-selected-count",
+                    count = count as u64
+                )))
             })
             .when_some(result, |d, result| {
                 d.child(div().text_color(palette::text_muted()).child(result))
@@ -643,11 +655,7 @@ impl Duplicates {
             .bg(palette::bg_panel())
             .child(left)
             .child(small_button(
-                if count > 0 {
-                    format!("Trash ({count})")
-                } else {
-                    "Trash".to_string()
-                },
+                rox_i18n::t!("duplicates-trash-button", count = count as u64),
                 icons::TRASH,
                 busy || count == 0,
                 cx.listener(|this, _, window, cx| this.trash(window, cx)),
@@ -701,9 +709,9 @@ impl Duplicates {
         }
         if self.groups.is_empty() {
             let message = if !self.scanned {
-                "Scan the library for tracks that appear more than once."
+                rox_i18n::t!("duplicates-scan-hint")
             } else {
-                "No duplicates found."
+                rox_i18n::t!("duplicates-no-duplicates")
             };
             return region.child(
                 div()
@@ -725,16 +733,16 @@ impl Duplicates {
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(if groups == 1 {
-                        format!("1 group, {extras} extra copies")
-                    } else {
-                        format!("{groups} groups, {extras} extra copies")
-                    }),
+                    .child(rox_i18n::t!(
+                        "duplicates-groups-summary",
+                        groups = groups as u64,
+                        extras = extras as u64
+                    )),
                 small_button(
                     if count > 0 {
-                        "Select none"
+                        rox_i18n::t!("duplicates-select-none")
                     } else {
-                        "Auto-select"
+                        rox_i18n::t!("duplicates-auto-select")
                     },
                     icons::CHECK,
                     self.trashing,
@@ -764,7 +772,7 @@ impl Duplicates {
                                     .items_center()
                                     .justify_center()
                                     .text_color(palette::text_muted())
-                                    .child("No groups match the filter."),
+                                    .child(rox_i18n::t!("duplicates-no-filter-matches")),
                             )
                         } else {
                             d.child(
@@ -862,7 +870,7 @@ impl Duplicates {
                         .flex_none()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("different albums"),
+                        .child(rox_i18n::t!("duplicates-different-albums")),
                 )
             })
             .child(
@@ -870,11 +878,7 @@ impl Duplicates {
                     .flex_none()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(if n == 2 {
-                        "2 copies".to_string()
-                    } else {
-                        format!("{n} copies")
-                    }),
+                    .child(rox_i18n::t!("duplicates-copy-count", count = n as u64)),
             )
     }
 
@@ -902,7 +906,10 @@ impl Duplicates {
         let quality = {
             let codec = member.codec.to_uppercase();
             if member.bitrate_kbps > 0 {
-                format!("{} {} kbps", codec, member.bitrate_kbps)
+                format!(
+                    "{codec} {}",
+                    rox_i18n::format::format_unit(member.bitrate_kbps as f64, 0, "kbps")
+                )
             } else {
                 codec
             }

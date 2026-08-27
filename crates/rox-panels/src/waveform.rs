@@ -306,14 +306,14 @@ impl WaveformPanel {
         .size_full()
     }
 
-    fn message(&self, text: &'static str) -> impl IntoElement {
+    fn message(&self, text: impl Into<SharedString>) -> impl IntoElement {
         div()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
             .text_color(palette::text_muted())
-            .child(text)
+            .child(text.into())
     }
 }
 
@@ -583,8 +583,8 @@ impl PanelSettings for WaveformPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "Bar Width",
-                Some("How thick each bar draws".into()),
+                rox_i18n::t!("waveform-bar-width"),
+                Some(rox_i18n::t!("waveform-bar-width.description")),
                 settings_ui::scalar(
                     &self.bar_w_scrub,
                     &self.value_edit,
@@ -595,8 +595,8 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
-                "Bar Gap",
-                Some("Space between bars, zero merges them into a solid shape".into()),
+                rox_i18n::t!("waveform-bar-gap"),
+                Some(rox_i18n::t!("waveform-bar-gap.description")),
                 settings_ui::scalar(
                     &self.gap_scrub,
                     &self.value_edit,
@@ -607,10 +607,8 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
-                "Outline",
-                Some(
-                    "Trace the bars instead of filling them; merged bars read as one shape".into(),
-                ),
+                rox_i18n::t!("waveform-outline"),
+                Some(rox_i18n::t!("waveform-outline.description")),
                 toggle(
                     self.config.outline,
                     |this: &mut Self, on, cx| {
@@ -621,8 +619,8 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
-                "Split Channels",
-                Some("One row per channel, left above right; mono tracks stay a single row".into()),
+                rox_i18n::t!("waveform-split-channels"),
+                Some(rox_i18n::t!("waveform-split-channels.description")),
                 toggle(
                     self.config.split_channels,
                     |this: &mut Self, on, cx| {
@@ -633,8 +631,8 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
-                "Scrobble Marker",
-                Some("A thin line where the track counts as scrobbled to Last.fm".into()),
+                rox_i18n::t!("waveform-scrobble-marker"),
+                Some(rox_i18n::t!("waveform-scrobble-marker.description")),
                 toggle(
                     self.config.scrobble_marker,
                     |this: &mut Self, on, cx| {
@@ -662,7 +660,10 @@ impl Panel for WaveformPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Waveform")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-waveform"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -727,7 +728,7 @@ impl Panel for WaveformPanel {
         // items, like the transport panels'.
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Split Channels")
+            PopupMenuItem::new(rox_i18n::t!("waveform-split-channels"))
                 .checked(self.config.split_channels)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -739,7 +740,7 @@ impl Panel for WaveformPanel {
         );
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Scrobble Marker")
+            PopupMenuItem::new(rox_i18n::t!("waveform-scrobble-marker"))
                 .checked(self.config.scrobble_marker)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -833,7 +834,7 @@ impl WaveformPanel {
                 // frames at refresh rate while paused on a failed decode.
                 self.from = Shape::Blank;
                 self.to = Shape::Blank;
-                self.message("Waveform unavailable for this track")
+                self.message(rox_i18n::t!("waveform-unavailable"))
                     .into_any_element()
             }
             (Some(_), Peaks::Decoding) => {

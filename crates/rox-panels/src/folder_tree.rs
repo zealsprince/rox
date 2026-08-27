@@ -1320,7 +1320,9 @@ impl FolderTreePanel {
                             .flex_none()
                             .text_xs()
                             .text_color(palette::text_muted())
-                            .child(SharedString::from(count.to_string())),
+                            .child(SharedString::from(rox_i18n::format::format_int(
+                                *count as i64,
+                            ))),
                     )
                 }
                 RowKind::Track {
@@ -1462,14 +1464,14 @@ impl PanelSettings for FolderTreePanel {
     ) -> gpui::AnyElement {
         div()
             .child(panel::setting_row(
-                "Cover Art",
-                Some("Show album art in place of the row icon, on folders or songs".into()),
-                panel::choices(
+                rox_i18n::t!("folder-tree-cover-art"),
+                Some(rox_i18n::t!("folder-tree-cover-art.description")),
+                panel::choices_shared(
                     &[
-                        ("None", CoverArt::None),
-                        ("Folders", CoverArt::Folders),
-                        ("Songs", CoverArt::Songs),
-                        ("Both", CoverArt::Both),
+                        (rox_i18n::t!("shader-pick-none"), CoverArt::None),
+                        (rox_i18n::t!("folder-tree-cover-folders"), CoverArt::Folders),
+                        (rox_i18n::t!("folder-tree-cover-songs"), CoverArt::Songs),
+                        (rox_i18n::t!("choice-both"), CoverArt::Both),
                     ],
                     self.config.cover,
                     |this: &mut Self, cover, cx| this.set_cover(cover, cx),
@@ -1491,7 +1493,7 @@ impl PanelSettings for FolderTreePanel {
                 .gap(crate::settings::ui::SECTION_GAP)
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Reveal and scroll to the playing track whenever it changes".into(),
+                    rox_i18n::t!("folder-tree-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         // Catch up right away instead of waiting for the next
@@ -1502,13 +1504,13 @@ impl PanelSettings for FolderTreePanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Scroll back to the playing track after you stop browsing".into(),
+                    rox_i18n::t!("folder-tree-resume-description"),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the track instead of jumping".into(),
+                    rox_i18n::t!("folder-tree-smooth-description"),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1523,15 +1525,15 @@ impl PanelSettings for FolderTreePanel {
                     cx,
                 ))
                 .child(crate::settings::ui::section(
-                    "Filter",
+                    rox_i18n::t!("content-filter"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(panel::setting_row(
-                            "Non-matching Folders",
-                            Some("Hide the folders with no match, or keep them dim".into()),
+                            rox_i18n::t!("folder-tree-nonmatch-folders"),
+                            Some(rox_i18n::t!("folder-tree-nonmatch-folders.description")),
                             panel::choices(
                                 &[("Dim", FilterEffect::Dim), ("Hide", FilterEffect::Hide)],
                                 self.config.folders,
@@ -1540,11 +1542,8 @@ impl PanelSettings for FolderTreePanel {
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Non-matching Songs",
-                            Some(
-                                "Inside a folder that matches, dim the stray songs or hide them"
-                                    .into(),
-                            ),
+                            rox_i18n::t!("folder-tree-nonmatch-songs"),
+                            Some(rox_i18n::t!("folder-tree-nonmatch-songs.description")),
                             panel::choices(
                                 &[("Dim", FilterEffect::Dim), ("Hide", FilterEffect::Hide)],
                                 self.config.songs,
@@ -1642,7 +1641,10 @@ impl Panel for FolderTreePanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Tree")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("folder-tree-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1736,7 +1738,7 @@ impl Panel for FolderTreePanel {
         // Checks on the right so the follow toggle keeps its icon; the
         // default left side would swap it out for the checkmark.
         let menu = menu.check_side(Side::Right).item(
-            PopupMenuItem::new("Jump to Playing")
+            PopupMenuItem::new(rox_i18n::t!("panel-jump-to-playing"))
                 .icon(Icon::default().path(icons::DISC))
                 .disabled(self.playing.is_none())
                 .on_click(move |_, _, cx| {
@@ -1746,7 +1748,7 @@ impl Panel for FolderTreePanel {
         );
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Follow Playing")
+            PopupMenuItem::new(rox_i18n::t!("tracking-follow"))
                 .icon(Icon::default().path(icons::LOCATE))
                 .checked(self.config.follow_playing)
                 .on_click(move |_, _, cx| {
@@ -1756,7 +1758,7 @@ impl Panel for FolderTreePanel {
         );
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Collapse All")
+            PopupMenuItem::new(rox_i18n::t!("folder-tree-collapse-all"))
                 .icon(Icon::default().path(icons::MINIMIZE))
                 .disabled(self.expanded.is_empty())
                 .on_click(move |_, _, cx| {
@@ -1766,7 +1768,7 @@ impl Panel for FolderTreePanel {
         );
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Clear Folder Scope")
+            PopupMenuItem::new(rox_i18n::t!("folder-tree-clear-scope"))
                 .icon(Icon::default().path(icons::FUNNEL))
                 .disabled(!scoped)
                 .on_click(move |_, _, cx| {
@@ -1778,7 +1780,7 @@ impl Panel for FolderTreePanel {
         // same way it rides the settings page. Live checks through
         // follow_panel + check_row, not plain .checked(), so the tick moves
         // while the flyout stays open.
-        let menu = menu.separator().label("Display");
+        let menu = menu.separator().label(rox_i18n::t!("panel-menu-display"));
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -1799,7 +1801,10 @@ impl Panel for FolderTreePanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Cover Art", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("folder-tree-cover-art"),
+            submenu,
+        ));
         // The Dim/Hide knobs, the same flyout shape, so the behavior toggles
         // ride the menu too - one for folders, one for songs.
         let panel = cx.entity();
@@ -1817,7 +1822,10 @@ impl Panel for FolderTreePanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Non-matching Folders", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("folder-tree-nonmatch-folders"),
+            submenu,
+        ));
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -1833,7 +1841,10 @@ impl Panel for FolderTreePanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Non-matching Songs", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("folder-tree-nonmatch-songs"),
+            submenu,
+        ));
         // Follow the shared search query, or filter by this panel's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
@@ -1923,9 +1934,9 @@ impl FolderTreePanel {
             let searching =
                 !self.effective_query(cx).is_empty() || !self.effective_filter(cx).is_empty();
             let message = if searching {
-                "No matches"
+                rox_i18n::t!("picker-no-matches")
             } else {
-                "No folders in the library yet"
+                rox_i18n::t!("folder-tree-empty")
             };
             return root.child(
                 div()
@@ -2030,7 +2041,7 @@ impl FolderTreePanel {
                         menu,
                         state,
                         ids,
-                        "Play Folder",
+                        rox_i18n::t!("folder-tree-play-folder"),
                         window,
                         cx,
                         move |_, cx| {
@@ -2043,9 +2054,9 @@ impl FolderTreePanel {
                     let scope_panel = weak.clone();
                     menu.separator().item(
                         PopupMenuItem::new(if scoped {
-                            "Clear Folder Scope"
+                            rox_i18n::t!("folder-tree-clear-scope")
                         } else {
-                            "Scope Filter to Folder"
+                            rox_i18n::t!("folder-tree-scope-to-folder")
                         })
                         .icon(Icon::default().path(icons::FUNNEL))
                         .on_click(move |_, _, cx| {
@@ -2077,11 +2088,9 @@ impl FolderTreePanel {
                             vec![id]
                         }
                     };
-                    let label = if selection.len() > 1 {
-                        format!("Play {} Songs", selection.len())
-                    } else {
-                        "Play".to_string()
-                    };
+                    let label =
+                        rox_i18n::t!("folder-tree-play-songs", count = selection.len() as u64)
+                            .to_string();
                     let play_panel = weak.clone();
                     let play_ids = selection.clone();
                     panel::track_actions(menu, state, selection, label, window, cx, move |_, cx| {

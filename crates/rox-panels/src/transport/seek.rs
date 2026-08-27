@@ -276,7 +276,7 @@ impl SeekStripPanel {
         let weak = cx.entity().downgrade();
         let timings = self.timings_shown();
         let menu = menu.item(
-            PopupMenuItem::new("Show Timings")
+            PopupMenuItem::new(rox_i18n::t!("seek-show-timings"))
                 .checked(timings)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -288,7 +288,7 @@ impl SeekStripPanel {
         );
         let weak = cx.entity().downgrade();
         menu.item(
-            PopupMenuItem::new("Scrobble Marker")
+            PopupMenuItem::new(rox_i18n::t!("seek-scrobble-marker"))
                 .checked(self.config.scrobble_marker)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -335,12 +335,8 @@ impl PanelSettings for SeekStripPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_block(
-                "Pieces",
-                Some(
-                    "Drag along a row to reorder and between rows to move; \
-                     a chip's x and plus hide and show"
-                        .into(),
-                ),
+                rox_i18n::t!("transport-pieces"),
+                Some(rox_i18n::t!("transport-pieces.description")),
                 None,
                 panel::arrange_rows_editor(
                     "seek-items",
@@ -355,8 +351,8 @@ impl PanelSettings for SeekStripPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Thickness",
-                Some("The track line's height".into()),
+                rox_i18n::t!("seek-thickness"),
+                Some(rox_i18n::t!("seek-thickness.description")),
                 settings_ui::scalar(
                     &self.thickness_scrub,
                     &self.value_edit,
@@ -370,8 +366,8 @@ impl PanelSettings for SeekStripPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Rounding",
-                Some("The line's corner radius, up to a pill at half the thickness".into()),
+                rox_i18n::t!("seek-rounding"),
+                Some(rox_i18n::t!("seek-rounding.description")),
                 settings_ui::scalar(
                     &self.rounding_scrub,
                     &self.value_edit,
@@ -385,10 +381,13 @@ impl PanelSettings for SeekStripPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Playhead",
-                Some("Span the strip's full height or hug the line".into()),
-                panel::choices(
-                    &[("Full", true), ("Line", false)],
+                rox_i18n::t!("seek-playhead"),
+                Some(rox_i18n::t!("seek-playhead.description")),
+                panel::choices_shared(
+                    &[
+                        (rox_i18n::t!("seek-playhead-full"), true),
+                        (rox_i18n::t!("seek-playhead-line"), false),
+                    ],
                     self.config.playhead_full,
                     |this: &mut Self, full, cx| {
                         this.config.playhead_full = full;
@@ -398,8 +397,8 @@ impl PanelSettings for SeekStripPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Playhead Width",
-                Some("The moving position marker's width".into()),
+                rox_i18n::t!("seek-playhead-width"),
+                Some(rox_i18n::t!("seek-playhead-width.description")),
                 settings_ui::scalar(
                     &self.playhead_scrub,
                     &self.value_edit,
@@ -414,8 +413,8 @@ impl PanelSettings for SeekStripPanel {
             ))
             .when(self.config.playhead_full, |d| {
                 d.child(panel::setting_row(
-                    "Playhead Max Height",
-                    Some("Cap the full playhead, centered on the line; 0 fills the panel".into()),
+                    rox_i18n::t!("seek-playhead-max-height"),
+                    Some(rox_i18n::t!("seek-playhead-max-height.description")),
                     settings_ui::scalar(
                         &self.playhead_max_scrub,
                         &self.value_edit,
@@ -431,10 +430,13 @@ impl PanelSettings for SeekStripPanel {
             })
             .when(self.config.items.contains(&SeekItem::Ending), |d| {
                 d.child(panel::setting_row(
-                    "Ending",
-                    Some("Count down the time left or show the full length".into()),
-                    panel::choices(
-                        &[("Remaining", false), ("Total", true)],
+                    rox_i18n::t!("seek-ending"),
+                    Some(rox_i18n::t!("seek-ending.description")),
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("seek-ending-remaining"), false),
+                            (rox_i18n::t!("seek-ending-total"), true),
+                        ],
                         self.config.show_total,
                         |this: &mut Self, show_total, cx| {
                             this.config.show_total = show_total;
@@ -445,8 +447,8 @@ impl PanelSettings for SeekStripPanel {
                 ))
             })
             .child(panel::setting_row(
-                "Scrobble Marker",
-                Some("A thin line where the track counts as scrobbled to Last.fm".into()),
+                rox_i18n::t!("seek-scrobble-marker"),
+                Some(rox_i18n::t!("seek-scrobble-marker.description")),
                 panel::toggle(
                     self.config.scrobble_marker,
                     |this: &mut Self, on, cx| {
@@ -764,7 +766,12 @@ impl SeekStripPanel {
 }
 
 // The width is the seek strip's clocks around a usable track.
-transport_panel!(SeekStripPanel, "seek", "Seek", min_w = 160.);
+transport_panel!(
+    SeekStripPanel,
+    "seek",
+    rox_i18n::t!("panel-title-seek"),
+    min_w = 160.
+);
 
 #[cfg(test)]
 mod tests {

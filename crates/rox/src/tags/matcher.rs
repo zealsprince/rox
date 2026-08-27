@@ -142,7 +142,7 @@ fn open_with(
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                "rox - Find Metadata",
+                rox_i18n::t!("tags-matcher-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| {
@@ -224,12 +224,12 @@ impl TagMatch {
         // the score, so an edit finds and ranks the right release.
         let artist_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Artist")
+                .placeholder(rox_i18n::t!("head-piece-artist"))
                 .default_value(artist)
         });
         let title_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Title")
+                .placeholder(rox_i18n::t!("info-item-title"))
                 .default_value(title)
         });
         let _input_events = [&artist_input, &title_input]
@@ -349,7 +349,7 @@ impl TagMatch {
             }
             Err(e) => {
                 log::warn!("metadata search: {e}");
-                self.phase = Phase::Failed(format!("Search failed: {e}").into());
+                self.phase = Phase::Failed(rox_i18n::t!("tags-matcher-search-failed", error = e));
             }
         }
         cx.notify();
@@ -658,19 +658,21 @@ impl Render for TagMatch {
                 div()
                     .text_xs()
                     .text_color(palette::text())
-                    .child(SharedString::from(match found.len() {
-                        1 => "1 match".to_string(),
-                        n => format!("{n} matches"),
-                    }))
+                    .child(rox_i18n::t!(
+                        "tags-matcher-match-count",
+                        count = found.len() as u64
+                    ))
                     .into_any_element(),
             ),
             _ => None,
         };
 
         let content = match &self.phase {
-            Phase::Searching => note("Searching..."),
+            Phase::Searching => note(rox_i18n::t!("tags-matcher-searching")),
             Phase::Failed(e) => crate::console_window::notice(e.clone()),
-            Phase::Ready(found) if found.is_empty() => note("No matches found"),
+            Phase::Ready(found) if found.is_empty() => {
+                note(rox_i18n::t!("tags-matcher-no-matches"))
+            }
             Phase::Ready(found) => {
                 let compare = match self.selected.and_then(|ix| found.get(ix)) {
                     Some(candidate) => div()
@@ -689,7 +691,7 @@ impl Render for TagMatch {
                         .items_center()
                         .justify_center()
                         .text_color(palette::text_faint())
-                        .child("Pick a match")
+                        .child(rox_i18n::t!("tags-matcher-pick-match"))
                         .into_any_element(),
                 };
                 div()
@@ -751,21 +753,21 @@ impl TagMatch {
     /// The clauses run in the order a lookup clears them, so the footer
     /// names the one step that is actually next, and Apply is live exactly
     /// when nothing is left.
-    fn blocker(&self) -> Option<&'static str> {
+    fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
             return Some(match self.phase {
-                Phase::Searching => "Searching...",
-                _ => "No match to apply",
+                Phase::Searching => "Searching...".into(),
+                _ => rox_i18n::t!("tags-matcher-blocked-no-match"),
             });
         }
         if self.selected.is_none() {
-            return Some("Pick a match");
+            return Some(rox_i18n::t!("tags-matcher-blocked-pick"));
         }
         if !self.armed.iter().any(|&a| a) {
-            return Some("Arm a field to apply");
+            return Some(rox_i18n::t!("tags-matcher-blocked-arm"));
         }
         if self.saving {
-            return Some("Writing the tags...");
+            return Some(rox_i18n::t!("tags-matcher-blocked-writing"));
         }
         None
     }
@@ -843,7 +845,10 @@ impl TagMatch {
                     .text_xs()
                     .text_color(palette::text_faint())
                     .truncate()
-                    .child(SharedString::from(format!("Tagging {}", self.line))),
+                    .child(rox_i18n::t!(
+                        "tags-matcher-tagging",
+                        track = self.line.to_string()
+                    )),
             )
             .child(
                 div()

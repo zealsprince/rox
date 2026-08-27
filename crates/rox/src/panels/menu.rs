@@ -172,7 +172,7 @@ impl MenuPanel {
                     cx.notify();
                 }
             }))
-            .child(menu.label)
+            .child(rox_i18n::t!(menu.label))
             .child(chevron())
             .when(open, |d| {
                 d.child(flyout_side(self.menu_flyout(menu, cx), self.flyout_left(0)).top(px(-5.)))
@@ -400,7 +400,7 @@ impl MenuPanel {
                                 .px(tokens::SPACE_MD)
                                 .py(tokens::SPACE_XS)
                                 .text_color(palette::text_muted())
-                                .child("No layouts"),
+                                .child(rox_i18n::t!("menu-panel-no-layouts")),
                         );
                     }
                 } else {
@@ -429,7 +429,7 @@ impl MenuPanel {
                 }),
             )
             .child(icon(icons::PLUS))
-            .child("New...")
+            .child(rox_i18n::t!("menu-panel-new"))
     }
 
     /// A preset row in a layouts flyout: closes the overlay, then does the
@@ -475,7 +475,7 @@ impl MenuPanel {
                             .px(tokens::SPACE_MD)
                             .py(tokens::SPACE_XS)
                             .text_color(palette::text_muted())
-                            .child("No presets"),
+                            .child(rox_i18n::t!("menu-panel-no-presets")),
                     )
                 } else {
                     flyout.children(
@@ -588,7 +588,7 @@ impl MenuPanel {
                 }),
             )
             .child(icon(def.icon))
-            .child(def.label)
+            .child(rox_i18n::t!(def.label))
     }
 
     /// A preset row in a presets flyout: closes the overlay, then does the
@@ -698,14 +698,13 @@ impl MenuPanel {
                                 .px(tokens::SPACE_MD)
                                 .py(tokens::SPACE_XS)
                                 .text_color(palette::text_muted())
-                                .child("No workspaces"),
+                                .child(rox_i18n::t!("menu-panel-no-workspaces")),
                         );
                     }
                 } else {
-                    flyout =
-                        flyout.children(entries.into_iter().map(|entry| {
-                            self.workspace_row(entry.name, entry.builtin, target, cx)
-                        }));
+                    flyout = flyout.children(entries.into_iter().map(|entry| {
+                        self.workspace_row(entry.name, entry.title, entry.builtin, target, cx)
+                    }));
                 }
                 d.child(flyout)
             })
@@ -726,7 +725,7 @@ impl MenuPanel {
                 }),
             )
             .child(icon(icons::PLUS))
-            .child("New...")
+            .child(rox_i18n::t!("menu-panel-new"))
     }
 
     /// A workspace row in a workspaces flyout: closes the overlay, then
@@ -735,11 +734,12 @@ impl MenuPanel {
     fn workspace_row(
         &self,
         name: String,
+        title: gpui::SharedString,
         builtin: bool,
         target: WorkspaceTarget,
         cx: &mut Context<Self>,
     ) -> Div {
-        let label = SharedString::from(name.clone());
+        let label = title;
         row()
             .on_mouse_down(
                 MouseButton::Left,
@@ -758,7 +758,7 @@ impl MenuPanel {
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("Built-in"),
+                        .child(rox_i18n::t!("menu-panel-built-in")),
                 )
             })
     }
@@ -870,6 +870,9 @@ fn chevron() -> impl IntoElement {
 
 /// A submenu row's leading group: its icon and label together, so the
 /// chevron can sit at the far edge with `justify_between`.
+/// A flyout row's icon and name. `label` is a message key off the `MENUS`
+/// table, not display text, so it resolves here rather than at each of the
+/// five row builders that funnel through this.
 fn label_with_icon(icon_path: &'static str, label: &'static str) -> Div {
     div()
         .flex()
@@ -877,7 +880,7 @@ fn label_with_icon(icon_path: &'static str, label: &'static str) -> Div {
         .items_center()
         .gap(tokens::SPACE_SM)
         .child(icon(icon_path))
-        .child(label)
+        .child(rox_i18n::t!(label))
 }
 
 impl PanelSettings for MenuPanel {
@@ -946,7 +949,10 @@ impl Panel for MenuPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Menu")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("menu-panel-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<gpui::SharedString> {

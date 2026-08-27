@@ -102,11 +102,7 @@ pub fn estimate(pace: f32, missing: u64, workers: usize) -> Option<String> {
 
 /// "4 workers", or "1 worker".
 pub fn workers_phrase(workers: usize) -> String {
-    if workers == 1 {
-        "1 worker".into()
-    } else {
-        format!("{workers} workers")
-    }
+    rox_i18n::t!("pace-workers", count = workers as u64).to_string()
 }
 
 /// A duration as a person would say it, hedged to match how rough it is:
@@ -116,33 +112,29 @@ pub fn workers_phrase(workers: usize) -> String {
 pub fn human(secs: f64) -> String {
     let minutes = secs / 60.0;
     if minutes < 1.0 {
-        return "under a minute".into();
+        return rox_i18n::t!("pace-under-a-minute").to_string();
     }
     if minutes < 60.0 {
-        let m = minutes.round() as u64;
-        return if m == 1 {
-            "about a minute".into()
-        } else {
-            format!("about {m} minutes")
-        };
+        return rox_i18n::t!("pace-minutes", count = minutes.round() as u64).to_string();
     }
     let hours = minutes / 60.0;
     if hours < 10.0 {
         // Halves under ten hours: "about 2.5 hours" reads as the estimate
         // it is, where "about 152 minutes" would read as a measurement.
+        // The half-hour case can't go through a plural selector, since
+        // Fluent selects on the number and 2.5 is not a plural category
+        // any locale names; it gets its own message.
         let halves = (hours * 2.0).round() / 2.0;
-        return if halves == 1.0 {
-            "about an hour".into()
-        } else if halves.fract() == 0.0 {
-            format!("about {} hours", halves as u64)
+        return if halves.fract() == 0.0 {
+            rox_i18n::t!("pace-hours", count = halves as u64).to_string()
         } else {
-            format!("about {halves} hours")
+            rox_i18n::t!("pace-half-hours", value = halves).to_string()
         };
     }
     if hours < 48.0 {
-        return format!("about {} hours", hours.round() as u64);
+        return rox_i18n::t!("pace-hours", count = hours.round() as u64).to_string();
     }
-    format!("about {} days", (hours / 24.0).round() as u64)
+    rox_i18n::t!("pace-days", count = (hours / 24.0).round() as u64).to_string()
 }
 
 #[cfg(test)]
@@ -177,14 +169,21 @@ mod tests {
     /// The slider's whole promise: twice the workers, half the wait. Worth
     /// pinning because the readout is what someone commits an afternoon
     /// against.
+    ///
+    /// Pinned in English under the shared lock. The wording lives in the
+    /// locale files now, so without this the assertions below would read
+    /// whatever the OS locale negotiated to and fail on a German machine.
     #[test]
     fn workers_divide_the_wait() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some("en-CA"));
         // 8 worker-seconds a track over 1,800 tracks: 4 hours on one worker.
         assert_eq!(estimate(8.0, 1_800, 1).unwrap(), "about 4 hours");
         assert_eq!(estimate(8.0, 1_800, 2).unwrap(), "about 2 hours");
         assert_eq!(estimate(8.0, 1_800, 4).unwrap(), "about an hour");
         // A zero count can't divide by nothing, and reads as one worker.
         assert_eq!(estimate(8.0, 1_800, 0), estimate(8.0, 1_800, 1));
+        rox_i18n::set_locale(None);
     }
 
     /// A sample reaches across the work list, never just its head, and never
@@ -213,22 +212,46 @@ mod tests {
     /// The one place the count is spelled out, so "1 workers" never ships.
     #[test]
     fn one_worker_is_singular() {
-        assert_eq!(workers_phrase(1), "1 worker");
-        assert_eq!(workers_phrase(2), "2 workers");
-        assert_eq!(workers_phrase(32), "32 workers");
+        assert_eq!(
+            workers_phrase(1),
+            rox_i18n::t!("pace-workers", count = 1u64)
+        );
+        assert_eq!(
+            workers_phrase(2),
+            rox_i18n::t!("pace-workers", count = 2u64)
+        );
+        assert_eq!(
+            workers_phrase(32),
+            rox_i18n::t!("pace-workers", count = 32u64)
+        );
     }
 
     /// The wording holds its shape across the scales a pass actually spans,
     /// and hedges harder the longer it gets.
     #[test]
     fn durations_read_like_a_person_said_them() {
-        assert_eq!(human(20.0), "under a minute");
-        assert_eq!(human(70.0), "about a minute");
-        assert_eq!(human(60.0 * 20.0), "about 20 minutes");
-        assert_eq!(human(3600.0), "about an hour");
-        assert_eq!(human(3600.0 * 2.4), "about 2.5 hours");
-        assert_eq!(human(3600.0 * 3.1), "about 3 hours");
-        assert_eq!(human(3600.0 * 11.6), "about 12 hours");
-        assert_eq!(human(3600.0 * 72.0), "about 3 days");
+        assert_eq!(human(20.0), rox_i18n::t!("pace-under-a-minute"));
+        assert_eq!(human(70.0), rox_i18n::t!("pace-minutes", count = 1u64));
+        assert_eq!(
+            human(60.0 * 20.0),
+            rox_i18n::t!("pace-minutes", count = 20u64)
+        );
+        assert_eq!(human(3600.0), rox_i18n::t!("pace-hours", count = 1u64));
+        assert_eq!(
+            human(3600.0 * 2.4),
+            rox_i18n::t!("pace-half-hours", value = 2.5)
+        );
+        assert_eq!(
+            human(3600.0 * 3.1),
+            rox_i18n::t!("pace-hours", count = 3u64)
+        );
+        assert_eq!(
+            human(3600.0 * 11.6),
+            rox_i18n::t!("pace-hours", count = 12u64)
+        );
+        assert_eq!(
+            human(3600.0 * 72.0),
+            rox_i18n::t!("pace-days", count = 3u64)
+        );
     }
 }

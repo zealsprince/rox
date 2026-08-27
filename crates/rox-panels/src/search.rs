@@ -80,7 +80,7 @@ impl SearchPanel {
         // so drop the input's border and rounding and let it collapse to a
         // thin bar.
         let search = cx.new(|cx| {
-            SearchBox::new("Search the library", &initial, window, cx)
+            SearchBox::new(rox_i18n::t!("search-placeholder"), &initial, window, cx)
                 .bare()
                 .xsmall()
                 .icon()
@@ -195,8 +195,8 @@ impl SearchPanel {
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
             for (label, place) in [
-                ("Inline", ChipsPlacement::Inline),
-                ("Below", ChipsPlacement::Below),
+                (rox_i18n::t!("search-chips-inline"), ChipsPlacement::Inline),
+                (rox_i18n::t!("search-chips-below"), ChipsPlacement::Below),
             ] {
                 submenu = submenu.item(panel::check_row(
                     label,
@@ -211,7 +211,10 @@ impl SearchPanel {
             }
             submenu
         });
-        menu.item(PopupMenuItem::submenu("Filter Chips", submenu))
+        menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("search-filter-chips"),
+            submenu,
+        ))
     }
 }
 
@@ -250,7 +253,10 @@ impl Panel for SearchPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Search")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("query-search"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {

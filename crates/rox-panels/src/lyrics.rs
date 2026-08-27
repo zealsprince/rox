@@ -503,7 +503,7 @@ impl LyricsPanel {
         );
         let weak = cx.entity().downgrade();
         menu.separator().item(
-            PopupMenuItem::new("Follow Playback")
+            PopupMenuItem::new(rox_i18n::t!("lyrics-follow-playback"))
                 .checked(self.config.follow)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -733,8 +733,8 @@ impl PanelSettings for LyricsPanel {
                 cx,
             ))
             .child(panel::setting_row(
-                "Follow Playback",
-                Some("Glide the active line to the middle as a synced sheet plays".into()),
+                rox_i18n::t!("lyrics-follow-playback"),
+                Some(rox_i18n::t!("lyrics-follow-playback.description")),
                 panel::toggle(
                     self.config.follow,
                     |this: &mut Self, on, cx| {
@@ -745,8 +745,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Always Centered",
-                Some("Pad the ends so the first and last lines can center too".into()),
+                rox_i18n::t!("lyrics-always-centered"),
+                Some(rox_i18n::t!("lyrics-always-centered.description")),
                 panel::toggle(
                     self.config.pre_scroll,
                     |this: &mut Self, on, cx| {
@@ -757,8 +757,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Fade Lines In",
-                Some("Fade a line up from dim as it becomes the active one".into()),
+                rox_i18n::t!("lyrics-fade-lines-in"),
+                Some(rox_i18n::t!("lyrics-fade-lines-in.description")),
                 panel::toggle(
                     self.config.fade_lines,
                     |this: &mut Self, on, cx| {
@@ -769,8 +769,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Build Word by Word",
-                Some("Reveal words as they are sung, karaoke style; unsung lines wait hidden".into()),
+                rox_i18n::t!("lyrics-build-word-by-word"),
+                Some(rox_i18n::t!("lyrics-build-word-by-word.description")),
                 panel::toggle(
                     self.config.word_by_word,
                     |this: &mut Self, on, cx| {
@@ -781,8 +781,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Lead-in Rest",
-                Some("Sit on a blank rest before a long intro, so the first line fades in when it arrives".into()),
+                rox_i18n::t!("lyrics-lead-in-rest"),
+                Some(rox_i18n::t!("lyrics-lead-in-rest.description")),
                 panel::toggle(
                     self.config.intro_rest,
                     |this: &mut Self, on, cx| {
@@ -793,8 +793,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Rest in Gaps",
-                Some("Move to a blank rest through a long instrumental gap instead of holding the last line".into()),
+                rox_i18n::t!("lyrics-rest-in-gaps"),
+                Some(rox_i18n::t!("lyrics-rest-in-gaps.description")),
                 panel::toggle(
                     self.config.gap_rest,
                     |this: &mut Self, on, cx| {
@@ -806,8 +806,8 @@ impl PanelSettings for LyricsPanel {
             ))
             .when(self.config.intro_rest || self.config.gap_rest, |d| {
                 d.child(panel::setting_row(
-                    "Gap Threshold",
-                    Some("How long an intro or gap must run to earn a rest".into()),
+                    rox_i18n::t!("lyrics-gap-threshold"),
+                    Some(rox_i18n::t!("lyrics-gap-threshold.description")),
                     settings_ui::scalar(
                         &self.gap_scrub,
                         &self.value_edit,
@@ -822,8 +822,8 @@ impl PanelSettings for LyricsPanel {
                 ))
             })
             .child(panel::setting_row(
-                "Line Falloff",
-                Some("How far each line dims per step away from the active one".into()),
+                rox_i18n::t!("lyrics-line-falloff"),
+                Some(rox_i18n::t!("lyrics-line-falloff.description")),
                 settings_ui::scalar(
                     &self.dim_scrub,
                     &self.value_edit,
@@ -837,13 +837,13 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Falloff Edge",
-                Some("Which side of the active line the falloff dims".into()),
-                panel::choices(
+                rox_i18n::t!("lyrics-falloff-edge"),
+                Some(rox_i18n::t!("lyrics-falloff-edge.description")),
+                panel::choices_shared(
                     &[
-                        ("Top", DimEdge::Top),
-                        ("Bottom", DimEdge::Bottom),
-                        ("Both", DimEdge::Both),
+                        (rox_i18n::t!("lyrics-edge-top"), DimEdge::Top),
+                        (rox_i18n::t!("lyrics-edge-bottom"), DimEdge::Bottom),
+                        (rox_i18n::t!("choice-both"), DimEdge::Both),
                     ],
                     self.config.dim_edge,
                     |this: &mut Self, edge, cx| {
@@ -854,10 +854,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Online Search Button",
-                Some(
-                    "Show the search button on the empty face; the right-click menu still finds lyrics".into(),
-                ),
+                rox_i18n::t!("lyrics-search-button"),
+                Some(rox_i18n::t!("lyrics-search-button.description")),
                 panel::toggle(
                     self.config.search_button,
                     |this: &mut Self, on, cx| {
@@ -868,8 +866,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Auto Search",
-                Some("Search online on a track with no words and save a confident match, no picker".into()),
+                rox_i18n::t!("lyrics-auto-search"),
+                Some(rox_i18n::t!("lyrics-auto-search.description")),
                 panel::toggle(
                     self.config.auto_search,
                     |this: &mut Self, on, cx| {
@@ -880,8 +878,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Show Song Name",
-                Some("Show the track's name on the empty face, over the no-lyrics line".into()),
+                rox_i18n::t!("lyrics-show-song-name"),
+                Some(rox_i18n::t!("lyrics-show-song-name.description")),
                 panel::toggle(
                     self.config.show_name,
                     |this: &mut Self, on, cx| {
@@ -892,8 +890,8 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Title on Unsynced",
-                Some("Pin the track's title above an unsynced sheet, so a short panel still shows it".into()),
+                rox_i18n::t!("lyrics-title-unsynced"),
+                Some(rox_i18n::t!("lyrics-title-unsynced.description")),
                 panel::toggle(
                     self.config.show_title,
                     |this: &mut Self, on, cx| {
@@ -904,13 +902,13 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Rest Marker",
-                Some("What a wordless line shows in a synced sheet, the gaps and blank lines".into()),
-                panel::choices(
+                rox_i18n::t!("lyrics-rest-marker"),
+                Some(rox_i18n::t!("lyrics-rest-marker.description")),
+                panel::choices_shared(
                     &[
-                        ("Note", RestMark::Note),
-                        ("Dots", RestMark::Dots),
-                        ("None", RestMark::None),
+                        (rox_i18n::t!("lyrics-mark-note"), RestMark::Note),
+                        (rox_i18n::t!("lyrics-mark-dots"), RestMark::Dots),
+                        (rox_i18n::t!("shader-pick-none"), RestMark::None),
                     ],
                     self.config.rest_mark,
                     |this: &mut Self, mark, cx| {
@@ -936,7 +934,7 @@ impl PanelSettings for LyricsPanel {
         // Reset the lyric type back to its defaults: family off to the app
         // font, weight, size, and spacing to the built-in look.
         let reset = settings_ui::small_button(
-            "Reset",
+            rox_i18n::t!("panel-reset"),
             icons::REFRESH_CW,
             false,
             cx.listener(|this, _, _, cx| {
@@ -950,15 +948,15 @@ impl PanelSettings for LyricsPanel {
         );
         Some(
             settings_ui::section(
-                "Lyrics",
+                rox_i18n::t!("lyrics-title"),
                 Some(reset.into_any_element()),
                 div()
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(panel::setting_row(
-                        "Font",
-                        Some("The lyric typeface; default follows the app font".into()),
+                        rox_i18n::t!("panel-font"),
+                        Some(rox_i18n::t!("lyrics-font.description")),
                         panel::font_picker(
                             "lyrics-font",
                             self.config.font.clone(),
@@ -970,7 +968,7 @@ impl PanelSettings for LyricsPanel {
                         ),
                     ))
                     .child(panel::setting_row(
-                        "Bold",
+                        rox_i18n::t!("lyrics-bold"),
                         None,
                         panel::toggle(
                             self.config.bold,
@@ -982,8 +980,8 @@ impl PanelSettings for LyricsPanel {
                         ),
                     ))
                     .child(panel::setting_row(
-                        "Text Size",
-                        Some("The lyric text; the synced line height follows it".into()),
+                        rox_i18n::t!("lyrics-text-size"),
+                        Some(rox_i18n::t!("lyrics-text-size.description")),
                         settings_ui::scalar(
                             &self.size_scrub,
                             &self.value_edit,
@@ -997,11 +995,8 @@ impl PanelSettings for LyricsPanel {
                         ),
                     ))
                     .child(panel::setting_row(
-                        "Line Spacing",
-                        Some(
-                            "How far the synced lines sit apart, as a multiple of the text size"
-                                .into(),
-                        ),
+                        rox_i18n::t!("lyrics-line-spacing"),
+                        Some(rox_i18n::t!("lyrics-line-spacing.description")),
                         settings_ui::scalar(
                             &self.spacing_scrub,
                             &self.value_edit,
@@ -1034,7 +1029,10 @@ impl Panel for LyricsPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Lyrics")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("lyrics-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1118,7 +1116,7 @@ impl Panel for LyricsPanel {
         // so a right click reaches it too.
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Edit Lyrics")
+            PopupMenuItem::new(rox_i18n::t!("lyrics-edit-lyrics"))
                 .icon(Icon::default().path(icons::PENCIL))
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -1131,7 +1129,7 @@ impl Panel for LyricsPanel {
         let menu = if providers::lyrics_online() {
             let weak = cx.entity().downgrade();
             menu.item(
-                PopupMenuItem::new("Find Lyrics Online...")
+                PopupMenuItem::new(rox_i18n::t!("lyrics-find-online"))
                     .icon(Icon::default().path(icons::DOWNLOAD))
                     .on_click(move |_, _, cx| {
                         let Some(this) = weak.upgrade() else { return };
@@ -1149,7 +1147,7 @@ impl Panel for LyricsPanel {
             Some(key) if self.lyrics_for(&key.path).is_some() => {
                 let weak = cx.entity().downgrade();
                 menu.item(
-                    PopupMenuItem::new("Wipe Lyrics")
+                    PopupMenuItem::new(rox_i18n::t!("lyrics-wipe-lyrics"))
                         .icon(Icon::default().path(icons::TRASH))
                         .on_click(move |_, _, cx| {
                             let Some(this) = weak.upgrade() else { return };
@@ -1161,7 +1159,7 @@ impl Panel for LyricsPanel {
                 let marked = lyrics::marked_none(&key.path, Some(&lyrics_dir()));
                 let weak = cx.entity().downgrade();
                 menu.item(
-                    PopupMenuItem::new("No Lyrics for This Track")
+                    PopupMenuItem::new(rox_i18n::t!("lyrics-no-lyrics-track"))
                         .icon(Icon::default().path(icons::MINUS))
                         .checked(marked)
                         .on_click(move |_, _, cx| {
@@ -1236,7 +1234,7 @@ impl LyricsPanel {
             return if self.config.show_name {
                 div().size_full()
             } else {
-                placeholder("No track")
+                placeholder(rox_i18n::t!("content-no-track"))
             };
         };
 
@@ -1273,7 +1271,7 @@ impl LyricsPanel {
         let show_button = self.config.search_button && providers::lyrics_online();
         let button = show_button.then(|| {
             settings_ui::small_button(
-                "Search Online",
+                rox_i18n::t!("lyrics-search-online"),
                 icons::DOWNLOAD,
                 false,
                 cx.listener(|this, _, _, cx| this.open_match(cx)),
@@ -1314,7 +1312,11 @@ impl LyricsPanel {
             )
         })
         .when(show_notice, |d| {
-            d.child(div().text_color(palette::text_faint()).child("No lyrics"))
+            d.child(
+                div()
+                    .text_color(palette::text_faint())
+                    .child(rox_i18n::t!("lyrics-no-lyrics-notice")),
+            )
         })
         .when_some(button, |d, button| d.child(button))
         // A zero-layout canvas over the face reports its size so the next
@@ -1820,7 +1822,7 @@ fn falloff(dim: f32, edge: DimEdge, active: Option<usize>, ix: usize) -> f32 {
 }
 
 /// A quiet centered line where the sheet would sit.
-fn placeholder(text: &'static str) -> Div {
+fn placeholder(text: impl Into<SharedString>) -> Div {
     div()
         .size_full()
         .flex()
@@ -1828,7 +1830,7 @@ fn placeholder(text: &'static str) -> Div {
         .justify_center()
         .p(tokens::SPACE_MD)
         .text_color(palette::text_faint())
-        .child(text)
+        .child(text.into())
 }
 
 /// A centered spinner while the sheet loads, so the wait reads as work in

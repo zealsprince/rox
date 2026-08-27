@@ -122,49 +122,56 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
     if let Some(job) = embeddings::progress(cx) {
         live.push((
             Job::Acoustic.icon(),
-            format!("Analyzing {}", share(job.done(), job.total())),
+            rox_i18n::t!("tasks-analyzing", progress = share(job.done(), job.total())).to_string(),
         ));
     }
     if let Some(job) = replaygain_job::progress(cx) {
         live.push((
             Job::ReplayGain.icon(),
-            format!("Measuring {}", share(job.done(), job.total())),
+            rox_i18n::t!("tasks-measuring", progress = share(job.done(), job.total())).to_string(),
         ));
     }
     if let Some(job) = tempo_job::progress(cx) {
         live.push((
             Job::Tempo.icon(),
-            format!("Timing {}", share(job.done(), job.total())),
+            rox_i18n::t!("tasks-timing", progress = share(job.done(), job.total())).to_string(),
         ));
     }
     if let Some(job) = import::progress(cx) {
         live.push((
             Job::LovedImport.icon(),
-            format!("Importing {}", share(job.done(), job.total())),
+            rox_i18n::t!("tasks-importing", progress = share(job.done(), job.total())).to_string(),
         ));
     }
     if let Some(job) = convert::progress(cx) {
         live.push((
             Job::Convert.icon(),
-            format!("Converting {}", share(job.done(), job.total())),
+            rox_i18n::t!(
+                "tasks-converting",
+                progress = share(job.done(), job.total())
+            )
+            .to_string(),
         ));
     }
     if let Some(job) = bake::progress(cx) {
         live.push((
             Job::Bake.icon(),
-            format!("Embedding {}", share(job.done(), job.total())),
+            rox_i18n::t!("tasks-embedding", progress = share(job.done(), job.total())).to_string(),
         ));
     }
     let running = match live.len() {
         0 => None,
         1 => live.pop(),
-        several => Some((icons::CLOCK, format!("{several} tasks"))),
+        several => Some((
+            icons::CLOCK,
+            rox_i18n::t!("tasks-chip-count", count = several as u64).to_string(),
+        )),
     };
     let open = cx.listener(|_, _, _, cx| open(cx));
     // Idle the glyph is a clock and nothing else, so the tip is the only
     // thing that says what it opens. Running, the chip has the count and
     // the tip stays on the click.
-    let tip = panel::Tip::keyed("tasks", "Open library tasks");
+    let tip = panel::Tip::keyed("tasks", rox_i18n::t!("tasks-tip"));
     let Some((path, label)) = running else {
         return tip.apply(
             div()
@@ -204,10 +211,14 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
 /// one depending on what it's allowed to use.
 fn priced(pace: f32, missing: u64, workers: usize) -> Option<String> {
     let estimate = rox_core::pace::estimate(pace, missing, workers)?;
-    Some(format!(
-        "{estimate} at {}",
-        rox_core::pace::workers_phrase(workers)
-    ))
+    Some(
+        rox_i18n::t!(
+            "tasks-estimate-at",
+            estimate = estimate,
+            workers = rox_core::pace::workers_phrase(workers)
+        )
+        .to_string(),
+    )
 }
 
 /// How far along as a percentage, or an ellipsis while the work list is
@@ -216,7 +227,7 @@ fn share(done: usize, total: usize) -> String {
     if total == 0 {
         return "...".into();
     }
-    format!("{}%", (done.min(total) * 100 / total).min(100))
+    rox_i18n::format::format_percent((done.min(total) * 100 / total).min(100) as f64)
 }
 
 /// The window's floor. Wide enough that a path and a count share a line
@@ -268,10 +279,13 @@ fn open_now(cx: &mut App) {
         // scroll on first open.
         .unwrap_or((640., 480.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let handle =
-        panel::open_child_window(cx, "rox - Tasks", bounds, Some(MIN), move |window, cx| {
-            cx.new(|cx| TasksWindow::new(player, library.clone(), window, cx))
-        });
+    let handle = panel::open_child_window(
+        cx,
+        rox_i18n::t!("tasks-window-title"),
+        bounds,
+        Some(MIN),
+        move |window, cx| cx.new(|cx| TasksWindow::new(player, library.clone(), window, cx)),
+    );
     cx.set_global(OpenTasks(handle));
 }
 
@@ -303,15 +317,15 @@ enum Job {
 const JOBS: [Job; 4] = [Job::Scan, Job::Acoustic, Job::ReplayGain, Job::Tempo];
 
 impl Job {
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Job::Scan => "Library Scan",
-            Job::Acoustic => "Acoustic Analysis",
-            Job::ReplayGain => "ReplayGain",
-            Job::Tempo => "Tempo Analysis",
-            Job::LovedImport => "Last.fm Loved Tracks",
-            Job::Convert => "Convert Audio",
-            Job::Bake => "Embed Stored Metadata",
+            Job::Scan => rox_i18n::t!("tasks-job-scan"),
+            Job::Acoustic => rox_i18n::t!("tasks-job-acoustic"),
+            Job::ReplayGain => rox_i18n::t!("tasks-job-replaygain"),
+            Job::Tempo => rox_i18n::t!("tasks-job-tempo"),
+            Job::LovedImport => rox_i18n::t!("tasks-job-loved-import"),
+            Job::Convert => rox_i18n::t!("tasks-job-convert"),
+            Job::Bake => "Embed Stored Metadata".into(),
         }
     }
 
@@ -333,12 +347,12 @@ impl Job {
     /// What the start button says and wears, or None for a job this window
     /// only watches. The wording matches the settings page's buttons, since
     /// they start the same work.
-    fn start_label(self) -> Option<(&'static str, &'static str)> {
+    fn start_label(self) -> Option<(SharedString, &'static str)> {
         match self {
-            Job::Scan => Some(("Rescan", icons::REFRESH_CW)),
-            Job::Acoustic => Some(("Analyze Missing", icons::FLASK)),
-            Job::ReplayGain => Some(("Measure Missing", icons::GAUGE)),
-            Job::Tempo => Some(("Analyze Missing", icons::CLOCK)),
+            Job::Scan => Some((rox_i18n::t!("tasks-start-rescan"), icons::REFRESH_CW)),
+            Job::Acoustic => Some((rox_i18n::t!("tasks-start-analyze-missing"), icons::FLASK)),
+            Job::ReplayGain => Some((rox_i18n::t!("tasks-start-measure-missing"), icons::GAUGE)),
+            Job::Tempo => Some((rox_i18n::t!("tasks-start-analyze-missing"), icons::CLOCK)),
             // The import belongs to an account, not to a library, and it
             // reads its user off the settings it's started from. Offering
             // it here would be a second door into a room with one chair.
@@ -542,12 +556,15 @@ struct Finished {
 impl Finished {
     fn line(&self) -> String {
         let mut line = if self.stopped {
-            format!("Last run stopped after {}", self.done)
+            rox_i18n::t!("tasks-last-run-stopped", count = self.done as u64).to_string()
         } else {
-            format!("Last run finished, {} done", self.done)
+            rox_i18n::t!("tasks-last-run-finished", count = self.done as u64).to_string()
         };
         if self.failed > 0 {
-            line.push_str(&format!(" ({} skipped)", self.failed));
+            line.push_str(&format!(
+                " {}",
+                rox_i18n::t!("tasks-skipped-suffix", count = self.failed as u64)
+            ));
         }
         line
     }
@@ -555,7 +572,7 @@ impl Finished {
 
 /// Why a row can't start, carrying what the row should say about it, or
 /// None where the idle line above already covers it.
-struct Blocked(Option<&'static str>);
+struct Blocked(Option<SharedString>);
 
 /// The three app-global passes as of the last poll. The scan is not in here:
 /// it lives in the catalog, which is asked for it when a row is drawn.
@@ -869,16 +886,21 @@ impl TasksWindow {
                     lines.push(status);
                 }
                 if self.facts.roots == 0 {
-                    lines.push("No folders added yet. Open one from the File menu".into());
+                    lines.push(rox_i18n::t!("tasks-scan-no-folders").to_string());
                 } else {
-                    let folders = if self.facts.roots == 1 {
-                        "1 folder".to_string()
-                    } else {
-                        format!("{} folders", self.facts.roots)
-                    };
+                    let folders =
+                        rox_i18n::t!("tasks-scan-folder-count", count = self.facts.roots as u64)
+                            .to_string();
                     lines.push(match self.since_scan() {
-                        Some(ago) => format!("{folders}, last scanned {ago} ago"),
-                        None => format!("{folders}, never scanned"),
+                        Some(ago) => rox_i18n::t!(
+                            "tasks-scan-last-scanned",
+                            folders = folders.clone(),
+                            ago = ago
+                        )
+                        .to_string(),
+                        None => {
+                            rox_i18n::t!("tasks-scan-never-scanned", folders = folders).to_string()
+                        }
                     });
                 }
             }
@@ -886,29 +908,37 @@ impl TasksWindow {
                 let coverage = self.facts.acoustic;
                 let label = &self.facts.acoustic_label;
                 if !self.facts.acoustic_on {
-                    lines.push(
-                        "Describing how tracks sound is switched off in Settings, under Library"
-                            .into(),
-                    );
+                    lines.push(rox_i18n::t!("tasks-acoustic-off").to_string());
                 } else if coverage.total == 0 {
                     lines.push("Nothing scanned to analyze yet".into());
                 } else if coverage.missing() == 0 {
-                    lines.push(format!(
-                        "All {} scanned tracks are described by {label}",
-                        coverage.total
-                    ));
-                } else {
-                    let mut line = format!(
-                        "{label} describes {} of {} scanned tracks",
-                        coverage.embedded, coverage.total
+                    lines.push(
+                        rox_i18n::t!(
+                            "tasks-acoustic-all-described",
+                            count = coverage.total as u64,
+                            label = label.clone()
+                        )
+                        .to_string(),
                     );
+                } else {
+                    let mut line = rox_i18n::t!(
+                        "tasks-acoustic-partial",
+                        label = label.clone(),
+                        embedded = coverage.embedded as u64,
+                        total = coverage.total as u64
+                    )
+                    .to_string();
                     if let Some(estimate) = &self.facts.acoustic_estimate {
-                        line.push_str(&format!(", the rest takes {estimate}"));
+                        line.push_str(&rox_i18n::t!(
+                            "tasks-rest-takes",
+                            estimate = estimate.clone()
+                        ));
                     }
                     lines.push(line);
                 }
                 if let Some(reason) = embeddings::last_failure(cx) {
-                    lines.push(format!("The last pass stopped: {reason}"));
+                    lines
+                        .push(rox_i18n::t!("tasks-last-pass-stopped", reason = reason).to_string());
                 }
                 if let Some(done) = &self.acoustic_done {
                     lines.push(done.line());
@@ -916,19 +946,23 @@ impl TasksWindow {
             }
             Job::ReplayGain => {
                 if self.facts.rg_total == 0 {
-                    lines.push("Nothing scanned to measure yet".into());
+                    lines.push(rox_i18n::t!("tasks-nothing-to-measure").to_string());
                 } else if self.facts.rg_missing == 0 {
-                    lines.push(format!(
-                        "All {} tracks have a gain to play at",
-                        self.facts.rg_total
-                    ));
-                } else {
-                    let mut line = format!(
-                        "{} of {} tracks have no gain",
-                        self.facts.rg_missing, self.facts.rg_total
+                    lines.push(
+                        rox_i18n::t!("tasks-rg-all-gain", count = self.facts.rg_total).to_string(),
                     );
+                } else {
+                    let mut line = rox_i18n::t!(
+                        "tasks-rg-partial",
+                        missing = self.facts.rg_missing,
+                        total = self.facts.rg_total
+                    )
+                    .to_string();
                     if let Some(estimate) = &self.facts.rg_estimate {
-                        line.push_str(&format!(", measuring them takes {estimate}"));
+                        line.push_str(&rox_i18n::t!(
+                            "tasks-measuring-takes",
+                            estimate = estimate.clone()
+                        ));
                     }
                     lines.push(line);
                 }
@@ -939,20 +973,23 @@ impl TasksWindow {
             Job::Tempo => {
                 let bpm = self.facts.bpm;
                 if !self.facts.tempo_on {
-                    lines.push(
-                        "Working out how fast tracks run is switched off in Settings, under \
-                         Library"
-                            .into(),
-                    );
+                    lines.push(rox_i18n::t!("tasks-tempo-off").to_string());
                 } else if bpm.total() == 0 {
                     lines.push("Nothing scanned to analyze yet".into());
                 } else if bpm.missing == 0 {
-                    lines.push(format!("All {} tracks have a tempo", bpm.total()));
+                    lines.push(rox_i18n::t!("tasks-tempo-all", count = bpm.total()).to_string());
                 } else {
-                    let mut line =
-                        format!("{} of {} tracks have no tempo", bpm.missing, bpm.total());
+                    let mut line = rox_i18n::t!(
+                        "tasks-tempo-partial",
+                        missing = bpm.missing,
+                        total = bpm.total()
+                    )
+                    .to_string();
                     if let Some(estimate) = &self.facts.tempo_estimate {
-                        line.push_str(&format!(", working them out takes {estimate}"));
+                        line.push_str(&rox_i18n::t!(
+                            "tasks-working-out-takes",
+                            estimate = estimate.clone()
+                        ));
                     }
                     lines.push(line);
                 }
@@ -964,23 +1001,27 @@ impl TasksWindow {
                 Some(Ok(summary)) => {
                     lines.push(summary.line());
                     if summary.unmatched > 0 {
-                        lines.push(format!(
-                            "{} had no match in this library",
-                            summary.unmatched
-                        ));
+                        lines.push(
+                            rox_i18n::t!(
+                                "tasks-import-unmatched",
+                                count = summary.unmatched as u64
+                            )
+                            .to_string(),
+                        );
                     }
                 }
-                Some(Err(e)) => lines.push(format!("The last import failed: {e}")),
+                Some(Err(e)) => lines
+                    .push(rox_i18n::t!("tasks-import-failed", error = e.to_string()).to_string()),
                 // Only reachable for a frame, between the row appearing and
                 // the first progress landing.
-                None => lines.push("Reading the loved list...".into()),
+                None => lines.push(rox_i18n::t!("tasks-import-reading").to_string()),
             },
             Job::Convert => {
                 match convert::last(cx) {
                     Some(summary) => lines.push(summary.line()),
                     // Only reachable for a frame, between the row appearing
                     // and the first file finishing.
-                    None => lines.push("Starting ffmpeg...".into()),
+                    None => lines.push(rox_i18n::t!("tasks-convert-starting").to_string()),
                 }
                 // ffmpeg's own last words about the first file it refused.
                 // A count with no reason is what sends someone to the log.
@@ -993,7 +1034,7 @@ impl TasksWindow {
                     Some(summary) => lines.push(summary.line()),
                     // Only reachable for a frame, between the row appearing
                     // and the first file being written.
-                    None => lines.push("Writing tags...".into()),
+                    None => lines.push(rox_i18n::t!("tasks-bake-writing").to_string()),
                 }
                 // What the writer said about the first file it refused. A
                 // count with no reason is what sends someone to the log.
@@ -1034,9 +1075,9 @@ impl TasksWindow {
         // refresh at a time anyway.
         if library.read(cx).busy().is_some() {
             return Some(Blocked(Some(if library.read(cx).scanning() {
-                "The library is scanning"
+                rox_i18n::t!("tasks-library-scanning")
             } else {
-                "The library is busy"
+                rox_i18n::t!("tasks-library-busy")
             })));
         }
         match job {
@@ -1048,7 +1089,7 @@ impl TasksWindow {
                     // The pass would load a half-written model file, and the
                     // download is what has to finish first anyway.
                     embeddings::models::progress(cx)
-                        .map(|_| Blocked(Some("A model is still downloading")))
+                        .map(|_| Blocked(Some(rox_i18n::t!("tasks-model-downloading"))))
                 }
             }
             Job::ReplayGain => (self.facts.rg_missing == 0).then_some(Blocked(None)),
@@ -1101,15 +1142,26 @@ impl TasksWindow {
             counted as f32 / snapshot.total as f32
         };
         let mut line = if snapshot.total == 0 {
-            "Working out what's missing...".to_string()
+            rox_i18n::t!("tasks-working-out-missing").to_string()
         } else {
-            format!("{counted} of {}", snapshot.total)
+            rox_i18n::t!(
+                "tasks-count-of-total",
+                done = counted as u64,
+                total = snapshot.total as u64
+            )
+            .to_string()
         };
         if let Some(eta) = snapshot.eta {
-            line.push_str(&format!(", {} left", rox_core::pace::human(eta)));
+            line.push_str(&rox_i18n::t!(
+                "tasks-time-left",
+                left = rox_core::pace::human(eta)
+            ));
         }
         if snapshot.failed > 0 {
-            line.push_str(&format!(" ({} skipped)", snapshot.failed));
+            line.push_str(&format!(
+                " {}",
+                rox_i18n::t!("tasks-skipped-suffix", count = snapshot.failed as u64)
+            ));
         }
         let mut lines = vec![bar(fraction), muted(line)];
         let current = if snapshot.current_is_path {
@@ -1139,7 +1191,11 @@ impl TasksWindow {
             // its button goes inert when the workspace is gone.
             let inert = stopping || (library.is_none() && job == Job::Scan);
             return Some(settings_ui::small_button(
-                if stopping { "Stopping..." } else { "Stop" },
+                if stopping {
+                    rox_i18n::t!("tasks-stopping")
+                } else {
+                    rox_i18n::t!("tasks-stop")
+                },
                 icons::STOP,
                 inert,
                 cx.listener(move |_, _, _, cx| job.stop(library.as_ref(), cx)),
@@ -1222,9 +1278,7 @@ impl TasksWindow {
             // window opened over is gone, and the rows are reading its last
             // word rather than anything live.
             .when(self.library().is_none(), |d| {
-                d.child(muted(
-                    "No library window is open, so these can't be started from here".into(),
-                ))
+                d.child(muted(rox_i18n::t!("tasks-no-library-window").to_string()))
             })
     }
 }

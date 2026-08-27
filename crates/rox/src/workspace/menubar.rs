@@ -7,6 +7,12 @@ use super::*;
 
 use gpui::MouseDownEvent;
 
+/// Where the Application menu's three project links land. The issue form is
+/// the chooser rather than a blank issue, so a report arrives on a template.
+const ISSUES_URL: &str = "https://github.com/zealsprince/rox/issues/new/choose";
+const DISCUSSIONS_URL: &str = "https://github.com/zealsprince/rox/discussions";
+const CHAT_URL: &str = "https://hivecom.net/chat?channel=rox";
+
 impl Workspace {
     pub(crate) fn run(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
@@ -48,6 +54,9 @@ impl Workspace {
             MenuAction::OpenSignals => crate::signals_window::open(cx),
             MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
             MenuAction::OpenAbout => crate::startup::about_window::open(self.state.clone(), cx),
+            MenuAction::ReportIssue => cx.open_url(ISSUES_URL),
+            MenuAction::OpenDiscussions => cx.open_url(DISCUSSIONS_URL),
+            MenuAction::OpenChat => cx.open_url(CHAT_URL),
             MenuAction::ToggleMenubar => {
                 let on = !settings::hide_menubar();
                 settings::set_hide_menubar(on, cx);
@@ -191,7 +200,7 @@ impl Workspace {
                     cx.notify();
                 }))
             })
-            .child(menu.label)
+            .child(rox_i18n::t!(menu.label))
             .when(open, |d| d.child(deferred(self.dropdown(menu, cx))))
     }
     /// The menubar row: the mini toggle, the menus, and the status side.
@@ -667,7 +676,7 @@ impl Workspace {
                             .size_3p5()
                             .text_color(palette::text_muted()),
                     )
-                    .child(label),
+                    .child(rox_i18n::t!(label)),
             )
             .child(
                 svg()
@@ -702,7 +711,7 @@ impl Workspace {
                                 .px(tokens::SPACE_MD)
                                 .py(tokens::SPACE_XS)
                                 .text_color(palette::text_muted())
-                                .child("No layouts"),
+                                .child(rox_i18n::t!("menu-no-layouts")),
                         );
                     }
                 } else {
@@ -743,7 +752,7 @@ impl Workspace {
                     .size_3p5()
                     .text_color(palette::text_muted()),
             )
-            .child("New...")
+            .child(rox_i18n::t!("menu-new-ellipsis"))
     }
 
     /// A preset row in a layouts flyout: closes the menu, then does the
@@ -802,7 +811,7 @@ impl Workspace {
             let presets = panel_presets::saved();
             let flyout = flyout_box(self.flyout_left(0));
             d.child(if presets.is_empty() {
-                flyout.child(flyout_note("No presets"))
+                flyout.child(flyout_note(rox_i18n::t!("menu-no-presets")))
             } else {
                 flyout.children(
                     presets
@@ -935,7 +944,7 @@ impl Workspace {
                 .size_3p5()
                 .text_color(palette::text_muted()),
         )
-        .child(def.label)
+        .child(rox_i18n::t!(def.label))
     }
 
     /// A preset row in a presets flyout: closes the menu, then does the
@@ -1019,7 +1028,7 @@ impl Workspace {
                             .size_3p5()
                             .text_color(palette::text_muted()),
                     )
-                    .child(label),
+                    .child(rox_i18n::t!(label)),
             )
             .child(
                 svg()
@@ -1060,14 +1069,13 @@ impl Workspace {
                                 .px(tokens::SPACE_MD)
                                 .py(tokens::SPACE_XS)
                                 .text_color(palette::text_muted())
-                                .child("No workspaces"),
+                                .child(rox_i18n::t!("menu-no-workspaces")),
                         );
                     }
                 } else {
-                    flyout =
-                        flyout.children(entries.into_iter().map(|entry| {
-                            self.workspace_item(entry.name, entry.builtin, target, cx)
-                        }));
+                    flyout = flyout.children(entries.into_iter().map(|entry| {
+                        self.workspace_item(entry.name, entry.title, entry.builtin, target, cx)
+                    }));
                 }
                 d.child(flyout)
             })
@@ -1100,7 +1108,7 @@ impl Workspace {
                     .size_3p5()
                     .text_color(palette::text_muted()),
             )
-            .child("New...")
+            .child(rox_i18n::t!("menu-new-ellipsis"))
     }
 
     /// A workspace row in a workspaces flyout: closes the menu, then stages
@@ -1109,11 +1117,12 @@ impl Workspace {
     fn workspace_item(
         &self,
         name: String,
+        title: gpui::SharedString,
         builtin: bool,
         target: WorkspaceTarget,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let label = SharedString::from(name.clone());
+        let label = title;
         div()
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
@@ -1144,7 +1153,7 @@ impl Workspace {
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("Built-in"),
+                        .child(rox_i18n::t!("menu-workspace-builtin-tag")),
                 )
             })
     }
@@ -1204,7 +1213,7 @@ fn submenu_shell(
                         .size_3p5()
                         .text_color(palette::text_muted()),
                 )
-                .child(label),
+                .child(rox_i18n::t!(label)),
         )
         .child(
             svg()
@@ -1232,12 +1241,12 @@ fn flyout_box(leftward: bool) -> Div {
 }
 
 /// What a flyout says instead of its items when it has none.
-fn flyout_note(text: &'static str) -> Div {
+fn flyout_note(text: impl Into<SharedString>) -> Div {
     div()
         .px(tokens::SPACE_MD)
         .py(tokens::SPACE_XS)
         .text_color(palette::text_muted())
-        .child(text)
+        .child(text.into())
 }
 
 /// The Alt tap tracker behind the menubar pin. Alt held floats a hidden bar

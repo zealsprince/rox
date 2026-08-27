@@ -60,11 +60,17 @@ pub fn open(
     let view = std::rc::Rc::new(std::cell::RefCell::new(None));
     let handle = {
         let view = view.clone();
-        rox_panel_api::panel::open_fixed_window(cx, "rox - Overlay Shader", bounds, move |_, cx| {
-            let entity = cx.new(|cx| ShaderConfirm::new(prior, player, now_art, on_reverted, cx));
-            *view.borrow_mut() = Some(entity.clone());
-            entity
-        })
+        rox_panel_api::panel::open_fixed_window(
+            cx,
+            rox_i18n::t!("shader-confirm-window-title"),
+            bounds,
+            move |_, cx| {
+                let entity =
+                    cx.new(|cx| ShaderConfirm::new(prior, player, now_art, on_reverted, cx));
+                *view.borrow_mut() = Some(entity.clone());
+                entity
+            },
+        )
     };
     let entity = view.borrow_mut().take().expect("build ran synchronously");
     // Registered before any shading sweep can run, and torn down with the
@@ -182,16 +188,12 @@ impl Render for ShaderConfirm {
                         .flex_col()
                         .p(tokens::SPACE_MD)
                         .gap(tokens::SPACE_MD)
-                        .child("Keep this screen shader?")
+                        .child(rox_i18n::t!("shader-confirm-question"))
                         .child(
                             kbd_line([
-                                Seg::Text(
-                                    "A shader can make windows hard to use. Revert or close \
-                                     this window to go back to how things were."
-                                        .into(),
-                                ),
+                                Seg::Text(rox_i18n::t!("shader-confirm-hint-before")),
                                 Seg::Key(chord("Shift+X")),
-                                Seg::Text("toggles the shader from anywhere.".into()),
+                                Seg::Text(rox_i18n::t!("shader-confirm-hint-after")),
                             ])
                             .text_xs(),
                         )
@@ -204,13 +206,13 @@ impl Render for ShaderConfirm {
                                 .justify_end()
                                 .gap(tokens::SPACE_SM)
                                 .child(small_button(
-                                    "Revert",
+                                    rox_i18n::t!("shader-confirm-revert"),
                                     icons::CLOSE,
                                     false,
                                     cx.listener(|this, _, _, cx| this.close(cx)),
                                 ))
                                 .child(small_button(
-                                    "Keep",
+                                    rox_i18n::t!("shader-confirm-keep"),
                                     icons::CHECK,
                                     false,
                                     cx.listener(|this, _, _, cx| {

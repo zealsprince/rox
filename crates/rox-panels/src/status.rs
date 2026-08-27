@@ -218,11 +218,11 @@ impl StatusPanel {
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
-            ("Count", StatusItem::Count),
-            ("Time", StatusItem::Time),
-            ("Albums", StatusItem::Albums),
-            ("Artists", StatusItem::Artists),
-            ("Plays", StatusItem::Plays),
+            (rox_i18n::t!("status-item-count"), StatusItem::Count),
+            (rox_i18n::t!("status-item-time"), StatusItem::Time),
+            (rox_i18n::t!("status-item-albums"), StatusItem::Albums),
+            (rox_i18n::t!("status-item-artists"), StatusItem::Artists),
+            (rox_i18n::t!("status-item-plays"), StatusItem::Plays),
         ] {
             let weak = cx.entity().downgrade();
             menu = menu.item(
@@ -367,22 +367,37 @@ fn totals_rows(
     plays: u64,
 ) -> Vec<(SharedString, SharedString)> {
     [
-        ("Tracks", tracks.to_string()),
-        ("Albums", albums.to_string()),
-        ("Artists", artists.to_string()),
-        ("Genres", genres.to_string()),
         (
-            "Total Time",
+            rox_i18n::t!("head-piece-tracks"),
+            rox_i18n::format::format_int(tracks as i64),
+        ),
+        (
+            rox_i18n::t!("status-item-albums"),
+            rox_i18n::format::format_int(albums as i64),
+        ),
+        (
+            rox_i18n::t!("status-item-artists"),
+            rox_i18n::format::format_int(artists as i64),
+        ),
+        (
+            rox_i18n::t!("content-total-genres"),
+            rox_i18n::format::format_int(genres as i64),
+        ),
+        (
+            rox_i18n::t!("content-total-time"),
             format!(
                 "{} ({})",
                 group_head::fmt_total(total_ms),
                 rox_core::fmt::fmt_span(total_ms / 1000)
             ),
         ),
-        ("Plays", plays.to_string()),
+        (
+            rox_i18n::t!("status-item-plays"),
+            rox_i18n::format::format_int(plays as i64),
+        ),
     ]
     .into_iter()
-    .map(|(label, value)| (SharedString::from(label), SharedString::from(value)))
+    .map(|(label, value)| (label, SharedString::from(value)))
     .collect()
 }
 
@@ -427,7 +442,7 @@ pub fn library_tooltip(library: &Entity<Library>, cx: &mut App) -> AnyView {
             )
         });
     cx.new(|_| TotalsTooltip {
-        scope: SharedString::from("Library"),
+        scope: rox_i18n::t!("panel-title-library"),
         rows,
     })
     .into()
@@ -518,12 +533,8 @@ impl PanelSettings for StatusPanel {
                 cx,
             ))
             .child(panel::setting_block(
-                "Readouts",
-                Some(
-                    "Drag along the bar to reorder; drag between the rows, \
-                     or use a chip's x and plus, to hide and show"
-                        .into(),
-                ),
+                rox_i18n::t!("status-readouts"),
+                Some(rox_i18n::t!("status-readouts.description")),
                 None,
                 panel::arrange_editor(
                     "status-items",
@@ -565,20 +576,13 @@ impl StatusPanel {
         };
         // The count leads in the text color; every other readout sits
         // muted behind it, the classic status bar weighting.
-        let stat = |text: String| {
+        let stat = |text: SharedString| {
             div()
                 .min_w_0()
                 .truncate()
                 .text_color(palette::text_muted())
                 .child(text)
                 .into_any_element()
-        };
-        let noun = |n: usize, one: &str, many: &str| {
-            if n == 1 {
-                format!("1 {one}")
-            } else {
-                format!("{n} {many}")
-            }
         };
         // The strip renders the config's list as-is: each shown readout
         // in its place, whatever order the arrange editor left them in.
@@ -594,17 +598,18 @@ impl StatusPanel {
                     // set. Past that the plain count takes over. Titles run
                     // long, so this one truncates instead of pinning.
                     let label = match (totals.selection, totals.tracks) {
-                        (true, n) => totals
-                            .selection_label
-                            .clone()
-                            .unwrap_or_else(|| format!("{n} selected")),
-                        (false, n) => noun(n, "track", "tracks"),
+                        (true, n) => totals.selection_label.clone().unwrap_or_else(|| {
+                            rox_i18n::t!("status-count-selected", count = n as u64).to_string()
+                        }),
+                        (false, n) => {
+                            rox_i18n::t!("status-count-tracks", count = n as u64).to_string()
+                        }
                     };
-                    let scope = SharedString::from(if totals.selection {
-                        "Selection"
+                    let scope = if totals.selection {
+                        rox_i18n::t!("status-scope-selection")
                     } else {
-                        "Library"
-                    });
+                        rox_i18n::t!("panel-title-library")
+                    };
                     // The hover carries the whole readout set, so the
                     // count answers for the readouts the strip hides.
                     let weak = weak.clone();
@@ -623,10 +628,16 @@ impl StatusPanel {
                         })
                         .into_any_element()
                 }
-                StatusItem::Time => stat(group_head::fmt_total(totals.total_ms)),
-                StatusItem::Albums => stat(noun(totals.albums, "album", "albums")),
-                StatusItem::Artists => stat(noun(totals.artists, "artist", "artists")),
-                StatusItem::Plays => stat(noun(totals.plays as usize, "play", "plays")),
+                StatusItem::Time => stat(group_head::fmt_total(totals.total_ms).into()),
+                StatusItem::Albums => stat(rox_i18n::t!(
+                    "status-count-albums",
+                    count = totals.albums as u64
+                )),
+                StatusItem::Artists => stat(rox_i18n::t!(
+                    "status-count-artists",
+                    count = totals.artists as u64
+                )),
+                StatusItem::Plays => stat(rox_i18n::t!("status-count-plays", count = totals.plays)),
                 StatusItem::Spacer => div().flex_1().into_any_element(),
             })
             .collect();
@@ -640,7 +651,7 @@ impl StatusPanel {
 transport_panel!(
     StatusPanel,
     "status",
-    "Status",
+    rox_i18n::t!("status-title"),
     min_w = |_: &StatusPanel| px(96.),
     min_h = |_: &StatusPanel| palette::scaled_px(16.)
 );

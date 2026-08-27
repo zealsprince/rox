@@ -206,7 +206,7 @@ impl ksni::Tray for RoxTray {
         use ksni::menu::StandardItem;
         vec![
             StandardItem {
-                label: "Open".into(),
+                label: rox_i18n::t!("tray-open").to_string(),
                 activate: Box::new(|this: &mut Self| {
                     let _ = this.tx.try_send(TrayCommand::Open);
                 }),
@@ -214,7 +214,12 @@ impl ksni::Tray for RoxTray {
             }
             .into(),
             StandardItem {
-                label: if self.playing { "Pause" } else { "Play" }.into(),
+                label: if self.playing {
+                    rox_i18n::t!("tray-pause")
+                } else {
+                    rox_i18n::t!("tray-play")
+                }
+                .to_string(),
                 enabled: self.has_track,
                 activate: Box::new(|this: &mut Self| {
                     let _ = this.tx.try_send(TrayCommand::Toggle);
@@ -224,7 +229,7 @@ impl ksni::Tray for RoxTray {
             .into(),
             ksni::MenuItem::Separator,
             StandardItem {
-                label: "Quit".into(),
+                label: rox_i18n::t!("tray-quit").to_string(),
                 activate: Box::new(|this: &mut Self| {
                     let _ = this.tx.try_send(TrayCommand::Quit);
                 }),
@@ -367,9 +372,9 @@ fn windows_tray_thread(
         }
     };
 
-    let open = MenuItem::with_id("open", "Open", true, None);
-    let toggle = MenuItem::with_id("toggle", "Play", false, None);
-    let quit = MenuItem::with_id("quit", "Quit", true, None);
+    let open = MenuItem::with_id("open", rox_i18n::t!("tray-open"), true, None);
+    let toggle = MenuItem::with_id("toggle", rox_i18n::t!("tray-play"), false, None);
+    let quit = MenuItem::with_id("quit", rox_i18n::t!("tray-quit"), true, None);
     let menu = Menu::new();
     if let Err(err) = menu.append_items(&[&open, &toggle, &PredefinedMenuItem::separator(), &quit])
     {
@@ -416,7 +421,11 @@ fn windows_tray_thread(
         if msg.hwnd.is_null() {
             match msg.message {
                 WM_ROX_TRAY_STATE => {
-                    toggle.set_text(if msg.wParam & 2 != 0 { "Pause" } else { "Play" });
+                    toggle.set_text(if msg.wParam & 2 != 0 {
+                        rox_i18n::t!("tray-pause")
+                    } else {
+                        rox_i18n::t!("tray-play")
+                    });
                     toggle.set_enabled(msg.wParam & 1 != 0);
                     continue;
                 }

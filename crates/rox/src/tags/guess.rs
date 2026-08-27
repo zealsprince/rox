@@ -65,7 +65,11 @@ fn field_for(name: &str) -> Result<Option<Field>, String> {
         "genre" => Field::Genre,
         "comment" => Field::Comment,
         "skip" | "dummy" | "ignore" => return Ok(None),
-        other => return Err(format!("unknown placeholder %{other}%")),
+        other => {
+            return Err(
+                rox_i18n::t!("tags-guess-unknown-placeholder", name = other.to_owned()).to_string(),
+            )
+        }
     }))
 }
 
@@ -82,7 +86,7 @@ pub fn parse(pattern: &str) -> Result<Pattern, String> {
             }
             let after = &rest[start + 1..];
             let Some(end) = after.find('%') else {
-                return Err("unclosed %".into());
+                return Err(rox_i18n::t!("tags-guess-unclosed").to_string());
             };
             match field_for(&after[..end])? {
                 Some(field) => tokens.push(Token::Capture(field)),
@@ -100,7 +104,7 @@ pub fn parse(pattern: &str) -> Result<Pattern, String> {
         .flatten()
         .any(|t| matches!(t, Token::Capture(_)));
     if !captures {
-        return Err("no placeholders".into());
+        return Err(rox_i18n::t!("tags-guess-no-placeholders").to_string());
     }
     Ok(Pattern { components })
 }
@@ -236,7 +240,9 @@ impl Pattern {
             for token in tokens {
                 match token {
                     Token::Literal(lit) => segment.push_str(lit),
-                    Token::Skip => return Err("%skip% has nothing to render".into()),
+                    Token::Skip => {
+                        return Err(rox_i18n::t!("tags-guess-skip-renders-nothing").to_string())
+                    }
                     Token::Capture(field) => {
                         let raw = values
                             .iter()
@@ -253,7 +259,7 @@ impl Pattern {
             }
             let trimmed = trim_segment(&segment);
             if trimmed.is_empty() {
-                return Err("pattern renders an empty folder or file name".into());
+                return Err(rox_i18n::t!("tags-guess-empty-segment").to_string());
             }
             path.push(trimmed);
         }

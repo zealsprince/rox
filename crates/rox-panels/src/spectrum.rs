@@ -32,7 +32,8 @@ use rox_viz::AudioFeed;
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{
-    self, choices, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState,
+    self, choices, choices_shared, setting_row, toggle, AppState, PanelChrome, PanelSettings,
+    ScrubState,
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
@@ -284,42 +285,52 @@ impl Symmetry {
     }
 }
 
-/// The style, orientation, and symmetry pickers' options.
-const STYLE_CHOICES: &[(&str, SpectrumStyle)] = &[
-    ("Bars", SpectrumStyle::Bars),
-    ("Blocks", SpectrumStyle::Blocks),
-    ("Line", SpectrumStyle::Line),
-];
+/// The style and symmetry pickers' options, translated at render time.
+fn style_choices() -> [(SharedString, SpectrumStyle); 3] {
+    [
+        (rox_i18n::t!("spectrum-style-bars"), SpectrumStyle::Bars),
+        (rox_i18n::t!("spectrum-style-blocks"), SpectrumStyle::Blocks),
+        (rox_i18n::t!("spectrum-style-line"), SpectrumStyle::Line),
+    ]
+}
 
 /// Shared with the VU meter panel, which grows its meters from the same
 /// four edges.
-pub const ORIENTATION_CHOICES: &[(&str, Orientation)] = &[
-    ("Bottom", Orientation::Bottom),
-    ("Top", Orientation::Top),
-    ("Left", Orientation::Left),
-    ("Right", Orientation::Right),
-];
+pub fn orientation_choices() -> [(SharedString, Orientation); 4] {
+    [
+        (rox_i18n::t!("valign-bottom"), Orientation::Bottom),
+        (rox_i18n::t!("valign-top"), Orientation::Top),
+        (rox_i18n::t!("side-left"), Orientation::Left),
+        (rox_i18n::t!("side-right"), Orientation::Right),
+    ]
+}
 
-const LABEL_CHOICES: &[(&str, Labels)] = &[
-    ("Off", Labels::Off),
-    ("Pitch", Labels::Pitch),
-    ("Frequency", Labels::Freq),
-];
+fn label_choices() -> [(SharedString, Labels); 3] {
+    [
+        (rox_i18n::t!("panel-size-off"), Labels::Off),
+        (rox_i18n::t!("spectrum-labels-pitch"), Labels::Pitch),
+        (rox_i18n::t!("spectrum-labels-frequency"), Labels::Freq),
+    ]
+}
 
-const SYMMETRY_CHOICES: &[(&str, Symmetry)] = &[
-    ("None", Symmetry::None),
-    ("Forward", Symmetry::Forward),
-    ("Reverse", Symmetry::Reverse),
-];
+fn symmetry_choices() -> [(SharedString, Symmetry); 3] {
+    [
+        (rox_i18n::t!("shader-pick-none"), Symmetry::None),
+        (rox_i18n::t!("spectrum-symmetry-forward"), Symmetry::Forward),
+        (rox_i18n::t!("spectrum-symmetry-reverse"), Symmetry::Reverse),
+    ]
+}
 
 /// Shared with the VU meter panel, which colors its meters by the same
 /// loudness ramp.
-pub const GRADIENT_CHOICES: &[(&str, Gradient)] = &[
-    ("Off", Gradient::Off),
-    ("Theme", Gradient::Theme),
-    ("Cover", Gradient::Cover),
-    ("Custom", Gradient::Custom),
-];
+pub fn gradient_choices() -> [(SharedString, Gradient); 4] {
+    [
+        (rox_i18n::t!("panel-size-off"), Gradient::Off),
+        (rox_i18n::t!("spectrum-gradient-theme"), Gradient::Theme),
+        (rox_i18n::t!("spectrum-gradient-cover"), Gradient::Cover),
+        (rox_i18n::t!("shader-pick-custom"), Gradient::Custom),
+    ]
+}
 
 /// The spectrum panel's per-view config: what a saved layout restores, and
 /// what the customize window edits. Missing fields take the defaults, so a
@@ -1417,10 +1428,10 @@ impl PanelSettings for SpectrumPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "Style",
-                Some("Classic bars, LED-style blocks, or a solid line".into()),
-                choices(
-                    STYLE_CHOICES,
+                rox_i18n::t!("spectrum-style"),
+                Some(rox_i18n::t!("spectrum-style.description")),
+                choices_shared(
+                    &style_choices(),
                     self.config.style,
                     |this: &mut Self, style, cx| {
                         this.config.style = style;
@@ -1430,10 +1441,10 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Orientation",
-                Some("The edge the bands grow from".into()),
-                choices(
-                    ORIENTATION_CHOICES,
+                rox_i18n::t!("spectrum-orientation"),
+                Some(rox_i18n::t!("spectrum-orientation.description")),
+                choices_shared(
+                    &orientation_choices(),
                     self.config.orientation,
                     |this: &mut Self, orientation, cx| {
                         this.config.orientation = orientation;
@@ -1443,10 +1454,10 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Symmetry",
-                Some("Fold the spectrum around the center; forward puts lows at the edges, reverse meets them in the middle".into()),
-                choices(
-                    SYMMETRY_CHOICES,
+                rox_i18n::t!("spectrum-symmetry"),
+                Some(rox_i18n::t!("spectrum-symmetry.description")),
+                choices_shared(
+                    &symmetry_choices(),
                     self.config.symmetry,
                     |this: &mut Self, symmetry, cx| {
                         this.config.symmetry = symmetry;
@@ -1456,18 +1467,18 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Low Bound",
-                Some("Lowest frequency the bars analyze".into()),
+                rox_i18n::t!("signal-low-bound"),
+                Some(rox_i18n::t!("spectrum-low-bound-description")),
                 self.freq_slider(&self.lo_scrub, self.config.freq_lo, Self::set_freq_lo, cx),
             ))
             .child(setting_row(
-                "High Bound",
-                Some("Highest frequency the bars analyze".into()),
+                rox_i18n::t!("signal-high-bound"),
+                Some(rox_i18n::t!("spectrum-high-bound-description")),
                 self.freq_slider(&self.hi_scrub, self.config.freq_hi, Self::set_freq_hi, cx),
             ))
             .child(setting_row(
-                "Bar Width",
-                Some("How thick each bar draws, thinner bars fit more bands".into()),
+                rox_i18n::t!("spectrum-bar-width"),
+                Some(rox_i18n::t!("spectrum-bar-width.description")),
                 settings_ui::scalar(
                     &self.bar_w_scrub,
                     &self.value_edit,
@@ -1478,8 +1489,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Bar Gap",
-                Some("Space between bars, wider gaps fit fewer bars".into()),
+                rox_i18n::t!("spectrum-bar-gap"),
+                Some(rox_i18n::t!("spectrum-bar-gap.description")),
                 settings_ui::scalar(
                     &self.bar_gap_scrub,
                     &self.value_edit,
@@ -1491,8 +1502,8 @@ impl PanelSettings for SpectrumPanel {
             ))
             .when(self.config.style == SpectrumStyle::Blocks, |d| {
                 d.child(setting_row(
-                    "Block Height",
-                    Some("How tall each cell in a stack draws".into()),
+                    rox_i18n::t!("spectrum-block-height"),
+                    Some(rox_i18n::t!("spectrum-block-height.description")),
                     settings_ui::scalar(
                         &self.block_h_scrub,
                         &self.value_edit,
@@ -1503,8 +1514,8 @@ impl PanelSettings for SpectrumPanel {
                     ),
                 ))
                 .child(setting_row(
-                    "Block Gap",
-                    Some("The seam between cells in a stack".into()),
+                    rox_i18n::t!("spectrum-block-gap"),
+                    Some(rox_i18n::t!("spectrum-block-gap.description")),
                     settings_ui::scalar(
                         &self.block_gap_scrub,
                         &self.value_edit,
@@ -1516,8 +1527,8 @@ impl PanelSettings for SpectrumPanel {
                 ))
             })
             .child(setting_row(
-                "FFT Size",
-                Some("Analysis window; short reacts fast, long resolves finer".into()),
+                rox_i18n::t!("spectrum-fft-size"),
+                Some(rox_i18n::t!("spectrum-fft-size.description")),
                 choices(
                     FFT_CHOICES,
                     self.config.fft_lo(),
@@ -1529,8 +1540,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Split Zones",
-                Some("Analyze below and above a split frequency at different window sizes".into()),
+                rox_i18n::t!("spectrum-split-zones"),
+                Some(rox_i18n::t!("spectrum-split-zones.description")),
                 toggle(
                     self.config.split,
                     |this: &mut Self, on, cx| {
@@ -1542,8 +1553,8 @@ impl PanelSettings for SpectrumPanel {
             ))
             .when(self.config.split, |d| {
                 d.child(setting_row(
-                    "Split At",
-                    Some("Where the zones meet, snapped to the nearest bar".into()),
+                    rox_i18n::t!("spectrum-split-at"),
+                    Some(rox_i18n::t!("spectrum-split-at.description")),
                     self.freq_slider(
                         &self.split_scrub,
                         self.config.split_hz,
@@ -1552,8 +1563,8 @@ impl PanelSettings for SpectrumPanel {
                     ),
                 ))
                 .child(setting_row(
-                    "High FFT Size",
-                    Some("Analysis window for the bands above the split".into()),
+                    rox_i18n::t!("spectrum-high-fft-size"),
+                    Some(rox_i18n::t!("spectrum-high-fft-size.description")),
                     choices(
                         FFT_CHOICES,
                         self.config.fft_hi(),
@@ -1566,10 +1577,10 @@ impl PanelSettings for SpectrumPanel {
                 ))
             })
             .child(setting_row(
-                "Gradient",
-                Some("Color the bands by loudness: the theme's ramp, the cover art's colors under song theming, or a custom pair".into()),
-                choices(
-                    GRADIENT_CHOICES,
+                rox_i18n::t!("spectrum-gradient-mode"),
+                Some(rox_i18n::t!("spectrum-gradient-mode.description")),
+                choices_shared(
+                    &gradient_choices(),
                     self.config.gradient,
                     |this: &mut Self, gradient, cx| {
                         this.config.gradient = gradient;
@@ -1584,21 +1595,21 @@ impl PanelSettings for SpectrumPanel {
                     .flatten(),
                 |d, [lo, hi]| {
                     d.child(setting_row(
-                        "Base Color",
-                        Some("The quiet end of the custom ramp".into()),
+                        rox_i18n::t!("spectrum-gradient-base-color"),
+                        Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
                         ColorPicker::new(&lo).small(),
                     ))
                     .child(setting_row(
-                        "Tip Color",
-                        Some("The loud end of the custom ramp".into()),
+                        rox_i18n::t!("spectrum-gradient-tip-color"),
+                        Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
                         ColorPicker::new(&hi).small(),
                     ))
                 },
             )
             .when(self.config.style == SpectrumStyle::Bars, |d| {
                 d.child(setting_row(
-                    "Outline Bars",
-                    Some("Draw each bar as a hollow outline instead of a filled ramp".into()),
+                    rox_i18n::t!("spectrum-outline-bars"),
+                    Some(rox_i18n::t!("spectrum-outline-bars.description")),
                     toggle(
                         self.config.outline,
                         |this: &mut Self, on, cx| {
@@ -1610,8 +1621,8 @@ impl PanelSettings for SpectrumPanel {
                 ))
                 .when(self.config.outline, |d| {
                     d.child(setting_row(
-                        "Outline Width",
-                        Some("Stroke thickness of the hollow bars".into()),
+                        rox_i18n::t!("spectrum-outline-width"),
+                        Some(rox_i18n::t!("spectrum-outline-width.description")),
                         settings_ui::scalar(
                             &self.outline_w_scrub,
                             &self.value_edit,
@@ -1624,8 +1635,8 @@ impl PanelSettings for SpectrumPanel {
                 })
             })
             .child(setting_row(
-                "Peak Caps",
-                Some("Hold a mark at each band's recent peak".into()),
+                rox_i18n::t!("spectrum-peak-caps"),
+                Some(rox_i18n::t!("spectrum-peak-caps.description")),
                 toggle(
                     self.config.caps,
                     |this: &mut Self, on, cx| {
@@ -1636,8 +1647,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Hold on Pause",
-                Some("Freeze the bars while paused instead of letting them fall to silence".into()),
+                rox_i18n::t!("spectrum-hold-on-pause"),
+                Some(rox_i18n::t!("spectrum-hold-on-pause.description")),
                 toggle(
                     self.config.freeze,
                     |this: &mut Self, on, cx| {
@@ -1648,8 +1659,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Cap Gravity",
-                Some("How hard the peak marks fall once the band drops away".into()),
+                rox_i18n::t!("spectrum-cap-gravity"),
+                Some(rox_i18n::t!("spectrum-cap-gravity.description")),
                 panel::value_slider_edit(
                     &self.gravity_scrub,
                     &self.value_edit,
@@ -1662,10 +1673,10 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Axis Labels",
-                Some("Mark the range across the panel: octaves (C1, C2, ...) or frequencies (100, 1k, 10k)".into()),
-                choices(
-                    LABEL_CHOICES,
+                rox_i18n::t!("spectrum-axis-labels"),
+                Some(rox_i18n::t!("spectrum-axis-labels.description")),
+                choices_shared(
+                    &label_choices(),
                     self.config.labels,
                     |this: &mut Self, labels, cx| {
                         this.config.labels = labels;
@@ -1692,7 +1703,10 @@ impl Panel for SpectrumPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Spectrum")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-spectrum"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {

@@ -48,10 +48,10 @@ pub(crate) fn volume_wheel(player: &Entity<Player>, event: &ScrollWheelEvent, cx
 /// never slide off screen; a panel whose controls depend on its config
 /// passes a closure over `&self` instead of a literal.
 macro_rules! transport_panel {
-    ($panel:ty, $name:literal, $title:literal, min_w = $min_w:literal) => {
+    ($panel:ty, $name:literal, $title:expr, min_w = $min_w:literal) => {
         transport_panel!($panel, $name, $title, min_w = |_: &$panel| px($min_w));
     };
-    ($panel:ty, $name:literal, $title:literal, min_w = $min_w:expr) => {
+    ($panel:ty, $name:literal, $title:expr, min_w = $min_w:expr) => {
         transport_panel!(
             $panel,
             $name,
@@ -60,7 +60,7 @@ macro_rules! transport_panel {
             min_h = |_: &$panel| rox_dock::resizable::PANEL_MIN_SIZE
         );
     };
-    ($panel:ty, $name:literal, $title:literal, min_w = $min_w:expr, min_h = $min_h:expr) => {
+    ($panel:ty, $name:literal, $title:expr, min_w = $min_w:expr, min_h = $min_h:expr) => {
         impl EventEmitter<PanelEvent> for $panel {}
 
         impl Focusable for $panel {

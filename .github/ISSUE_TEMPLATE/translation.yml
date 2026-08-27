@@ -1,0 +1,51 @@
+name: Translation
+description: A translation that's wrong, awkward, or missing, or a language rox doesn't speak yet
+labels: [i18n]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Translations live in
+        [`crates/rox-i18n/locales`](https://github.com/zealsprince/rox/tree/main/crates/rox-i18n/locales),
+        one `rox.ftl` per language, with `en-CA` as the source that carries every
+        key. Worth a peek there first: if the string already reads right on `main`,
+        the fix just hasn't shipped yet. And if you spotted this on the website
+        rather than in the app, that copy lives in
+        [zealsprince/rox.music](https://github.com/zealsprince/rox.music/issues),
+        so file it there instead.
+  - type: dropdown
+    id: language
+    attributes:
+      label: Which language?
+      options:
+        - Deutsch (de)
+        - Français (fr)
+        - Italiano (it)
+        - Español (es)
+        - Português (pt-BR)
+        - Русский (ru)
+        - Українська (uk)
+        - 日本語 (ja)
+        - 简体中文 (zh-Hans)
+        - English (en-CA)
+        - One rox doesn't ship yet
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What's off, or what's missing?
+      description: >
+        Quote the string as it shows today and where in the UI you see it, then
+        what a native speaker would say instead. English leaking through in
+        another language counts too. Proposing a new language? Name it, and say
+        whether you'd want to translate it yourself.
+      placeholder: The queue panel says "..." but it should say "..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: rox version
+      description: Settings > About shows it. Strings move between releases, so this helps place yours.
+      placeholder: 1.X.X

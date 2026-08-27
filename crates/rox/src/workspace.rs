@@ -68,6 +68,7 @@ use rox_panels::history::HistoryPanel;
 use rox_panels::library::{LibraryConfig, LibraryPanel};
 use rox_panels::lyrics::LyricsPanel;
 use rox_panels::metadata::MetadataPanel;
+use rox_panels::oscilloscope::OscilloscopePanel;
 use rox_panels::output::OutputPanel;
 use rox_panels::particles::ParticlesPanel;
 use rox_panels::playlists::PlaylistsPanel;
@@ -1020,7 +1021,7 @@ pub(crate) fn add_panel_submenu(
                     let tabs = tabs.clone();
                     menu = menu.submenu_with_icon(
                         Some(Icon::default().path(icon)),
-                        label,
+                        rox_i18n::t!(label),
                         window,
                         cx,
                         move |mut menu, _, _| {
@@ -1036,8 +1037,11 @@ pub(crate) fn add_panel_submenu(
         menu
     });
     menu.separator().item(
-        gpui_component::menu::PopupMenuItem::submenu("Add Panel", submenu)
-            .icon(Icon::default().path(icons::PLUS)),
+        gpui_component::menu::PopupMenuItem::submenu(
+            rox_i18n::t!("workspace-context-add-panel"),
+            submenu,
+        )
+        .icon(Icon::default().path(icons::PLUS)),
     )
 }
 
@@ -1059,7 +1063,7 @@ fn add_panel_item(
                 .flex_row()
                 .items_center()
                 .gap(tokens::SPACE_SM)
-                .child(div().flex_1().child(def.label))
+                .child(div().flex_1().child(rox_i18n::t!(def.label)))
                 .child(
                     svg()
                         .path(icons::AUDIO_WAVEFORM)
@@ -1068,7 +1072,7 @@ fn add_panel_item(
                 )
         })
     } else {
-        gpui_component::menu::PopupMenuItem::new(def.label)
+        gpui_component::menu::PopupMenuItem::new(rox_i18n::t!(def.label))
     };
     menu.item(
         item.icon(Icon::default().path(def.icon))
@@ -1342,6 +1346,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("playback", TransportPanel);
     configured!("volume", VolumePanel);
     configured!("spectrum", SpectrumPanel);
+    configured!("oscilloscope", OscilloscopePanel);
     configured!("waveform", WaveformPanel);
     configured!("vu meter", VuPanel);
     // Registered whether or not experimental features are on: the flag
@@ -1391,6 +1396,11 @@ pub(crate) enum MenuAction {
     OpenSignals,
     OpenWelcome,
     OpenAbout,
+    /// The three links out to the project, each opening in the browser:
+    /// the issue form, the discussions board, and the IRC channel.
+    ReportIssue,
+    OpenDiscussions,
+    OpenChat,
     ToggleMenubar,
     ToggleDecorations,
     /// Flip design mode: whether the layout can be rearranged where it
@@ -1412,6 +1422,12 @@ pub(crate) enum MenuAction {
 
 #[derive(Clone, Copy)]
 pub(crate) struct MenuItem {
+    /// An i18n key, not display text. `MENUS` is `const`, and a translator
+    /// call isn't, so every renderer resolves this through
+    /// [`menu_item_display`] (or, off the shared path, `t_static`
+    /// directly) rather than showing it as-is. A panel row is the one
+    /// exception: [`panel_menu_item`] fills this from [`PanelDef::label`],
+    /// which is a catalog identifier, not one of ours.
     pub(crate) label: &'static str,
     pub(crate) icon: &'static str,
     pub(crate) action: MenuAction,
@@ -1455,6 +1471,9 @@ impl MenuAction {
             MenuAction::OpenSignals => "signals".into(),
             MenuAction::OpenWelcome => "welcome".into(),
             MenuAction::OpenAbout => "about".into(),
+            MenuAction::ReportIssue => "report-issue".into(),
+            MenuAction::OpenDiscussions => "discussions".into(),
+            MenuAction::OpenChat => "chat".into(),
             MenuAction::ToggleMenubar => "toggle-menubar".into(),
             MenuAction::ToggleDecorations => "toggle-decorations".into(),
             MenuAction::ToggleDesignMode => "toggle-design-mode".into(),
@@ -1463,7 +1482,10 @@ impl MenuAction {
             MenuAction::ImportWorkspace => "import-workspace".into(),
             MenuAction::ToggleQuitToTray => "toggle-quit-to-tray".into(),
             MenuAction::CloseWindow => "close-window".into(),
-            MenuAction::OpenPanel(def) => format!("panel:{}", def.label),
+            // Keyed by registry name. The label is an i18n key that a
+            // translator is free to reword, so encoding identity in it
+            // means the round trip stops resolving the moment one does.
+            MenuAction::OpenPanel(def) => format!("panel:{}", def.name),
         };
         Some(id)
     }
@@ -1472,10 +1494,10 @@ impl MenuAction {
     /// the catalog, so a row for a panel that has since been gated off
     /// (experimental) decodes to None and the pick does nothing.
     fn from_command_id(id: &str) -> Option<MenuAction> {
-        if let Some(label) = id.strip_prefix("panel:") {
+        if let Some(name) = id.strip_prefix("panel:") {
             return catalog::sections()
                 .flat_map(|section| section.panels.iter())
-                .find(|def| def.label == label)
+                .find(|def| def.name == name)
                 .map(MenuAction::OpenPanel);
         }
         Some(match id {
@@ -1490,6 +1512,9 @@ impl MenuAction {
             "signals" => MenuAction::OpenSignals,
             "welcome" => MenuAction::OpenWelcome,
             "about" => MenuAction::OpenAbout,
+            "report-issue" => MenuAction::ReportIssue,
+            "discussions" => MenuAction::OpenDiscussions,
+            "chat" => MenuAction::OpenChat,
             "toggle-menubar" => MenuAction::ToggleMenubar,
             "toggle-decorations" => MenuAction::ToggleDecorations,
             "toggle-art-theming" => MenuAction::ToggleArtTheming,
@@ -1579,11 +1604,12 @@ fn run_menu_command(command: &str, cx: &mut App) {
             ws.run_panel_preset(name, PanelTarget::NewWindow, window, cx)
         }),
         // A catalog panel straight into a window of its own, the Window
-        // menu's half of the same flyout. Keyed by label like "panel:".
+        // menu's half of the same flyout. Keyed by registry name like
+        // "panel:".
         "panel-window" => {
             if let Some(def) = catalog::sections()
                 .flat_map(|section| section.panels.iter())
-                .find(|def| def.label == name)
+                .find(|def| def.name == name)
             {
                 with_front_workspace(cx, move |ws, window, cx| {
                     ws.open_panel_window(def, window, cx)
@@ -1685,103 +1711,120 @@ pub(crate) enum MenuEntry {
 }
 
 pub(crate) struct Menu {
+    /// An i18n key, not display text, same as [`MenuItem::label`]. Every
+    /// renderer wraps it in `t!`/`t_static` before showing it.
     pub(crate) label: &'static str,
     pub(crate) entries: &'static [MenuEntry],
 }
 
 pub(crate) const MENUS: &[Menu] = &[
     Menu {
-        label: "Application",
+        label: "menu-application",
         entries: &[
             MenuEntry::Item(MenuItem {
-                label: "Settings",
+                label: "menu-settings",
                 icon: icons::SETTINGS,
                 action: MenuAction::OpenSettings,
             }),
             // The two instruments: windows you work while the music plays,
             // rather than preferences you set and close.
-            MenuEntry::Section("Tuning"),
+            MenuEntry::Section("menu-section-tuning"),
             MenuEntry::Item(MenuItem {
-                label: "Equalizer",
+                label: "menu-equalizer",
                 icon: icons::AUDIO_LINES,
                 action: MenuAction::OpenEqualizer,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Signals",
+                label: "menu-signals",
                 icon: icons::AUDIO_WAVEFORM,
                 action: MenuAction::OpenSignals,
             }),
-            MenuEntry::Section("Library"),
+            MenuEntry::Section("menu-section-library"),
             MenuEntry::Item(MenuItem {
-                label: "Stats",
+                label: "menu-stats",
                 icon: icons::CHART_PIE,
                 action: MenuAction::OpenStats,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Tasks",
+                label: "menu-tasks",
                 icon: icons::CLOCK,
                 action: MenuAction::OpenTasks,
             }),
-            MenuEntry::Section("App"),
+            MenuEntry::Section("menu-section-app"),
             MenuEntry::Item(MenuItem {
-                label: "Console",
+                label: "menu-console",
                 icon: icons::FILE_TEXT,
                 action: MenuAction::OpenConsole,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Welcome",
+                label: "menu-report-issue",
+                icon: icons::BUG,
+                action: MenuAction::ReportIssue,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "menu-discussions",
+                icon: icons::MESSAGES,
+                action: MenuAction::OpenDiscussions,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "menu-chat",
+                icon: icons::HASH,
+                action: MenuAction::OpenChat,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "menu-welcome",
                 icon: icons::INFO,
                 action: MenuAction::OpenWelcome,
             }),
             MenuEntry::Item(MenuItem {
-                label: "About",
+                label: "menu-about",
                 icon: icons::LOGO,
                 action: MenuAction::OpenAbout,
             }),
-            MenuEntry::Section("Session"),
+            MenuEntry::Section("menu-section-session"),
             MenuEntry::Item(MenuItem {
-                label: "Exit",
+                label: "menu-exit",
                 icon: icons::CLOSE,
                 action: MenuAction::Quit,
             }),
         ],
     },
     Menu {
-        label: "Playback",
+        label: "menu-playback",
         entries: &[
             MenuEntry::Item(MenuItem {
-                label: "Play",
+                label: "playback-item-play",
                 icon: icons::PLAY,
                 action: MenuAction::TogglePlayback,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Stop",
+                label: "playback-item-stop",
                 icon: icons::STOP,
                 action: MenuAction::Stop,
             }),
-            MenuEntry::Section("Track"),
+            MenuEntry::Section("menu-section-track"),
             MenuEntry::Item(MenuItem {
-                label: "Next",
+                label: "playback-item-next",
                 icon: icons::SKIP_FORWARD,
                 action: MenuAction::Next,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Previous",
+                label: "playback-item-previous",
                 icon: icons::SKIP_BACK,
                 action: MenuAction::Previous,
             }),
         ],
     },
     Menu {
-        label: "Window",
+        label: "menu-window",
         entries: &[
             MenuEntry::Item(MenuItem {
-                label: "New Window",
+                label: "menu-new-window",
                 icon: icons::PLUS,
                 action: MenuAction::NewWindow,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Empty Window",
+                label: "menu-empty-window",
                 icon: icons::SQUARE_DASHED,
                 action: MenuAction::EmptyWindow,
             }),
@@ -1789,79 +1832,79 @@ pub(crate) const MENUS: &[Menu] = &[
             // configured, a catalog pick bare, both the shape a panel dragged
             // out of the dock lands in.
             MenuEntry::PanelWindowsSubmenu {
-                label: "New Window from Panel",
+                label: "menu-new-window-from-panel",
                 icon: icons::EXTERNAL_LINK,
             },
-            MenuEntry::Section("Interface"),
+            MenuEntry::Section("menu-section-interface"),
             MenuEntry::Item(MenuItem {
-                label: "Hide Menubar",
+                label: "menu-hide-menubar",
                 icon: icons::EYE,
                 action: MenuAction::ToggleMenubar,
             }),
             MenuEntry::Item(MenuItem {
-                label: "OS Decorations",
+                label: "menu-os-decorations",
                 icon: icons::APP_WINDOW,
                 action: MenuAction::ToggleDecorations,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Song Theming",
+                label: "menu-song-theming",
                 icon: icons::DISC,
                 action: MenuAction::ToggleArtTheming,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Overlay Shader",
+                label: "menu-overlay-shader",
                 icon: icons::BLEND,
                 action: MenuAction::TogglePostShader,
             }),
-            MenuEntry::Section("Session"),
+            MenuEntry::Section("menu-section-session"),
             MenuEntry::Item(MenuItem {
-                label: "Remain in Tray",
+                label: "menu-remain-in-tray",
                 icon: icons::MINIMIZE,
                 action: MenuAction::ToggleQuitToTray,
             }),
             MenuEntry::Item(MenuItem {
                 // Closes this window, unlike Application's Exit which quits.
-                label: "Close",
+                label: "menu-close",
                 icon: icons::CLOSE,
                 action: MenuAction::CloseWindow,
             }),
         ],
     },
     Menu {
-        label: "Workspace",
+        label: "menu-workspace",
         entries: &[
             MenuEntry::WorkspacesSubmenu {
-                label: "Apply Workspace",
+                label: "menu-apply-workspace",
                 icon: icons::GALLERY,
                 target: WorkspaceTarget::Apply,
                 with_new: false,
             },
             MenuEntry::WorkspacesSubmenu {
-                label: "Save Workspace",
+                label: "menu-save-workspace",
                 icon: icons::DOWNLOAD,
                 target: WorkspaceTarget::Overwrite,
                 with_new: true,
             },
             MenuEntry::Item(MenuItem {
-                label: "Import Workspace...",
+                label: "menu-import-workspace",
                 icon: icons::UPLOAD,
                 action: MenuAction::ImportWorkspace,
             }),
-            MenuEntry::Section("Layouts"),
+            MenuEntry::Section("menu-section-layouts"),
             MenuEntry::LayoutsSubmenu {
-                label: "New Window from Layout",
+                label: "menu-new-window-from-layout",
                 icon: icons::LAYOUT_DASHBOARD,
                 target: LayoutTarget::NewWindow,
                 with_new: false,
             },
             MenuEntry::LayoutsSubmenu {
-                label: "Save Layout",
+                label: "menu-save-layout",
                 icon: icons::UPLOAD,
                 target: LayoutTarget::Overwrite,
                 with_new: true,
             },
             MenuEntry::LayoutsSubmenu {
-                label: "Apply Layout",
+                label: "menu-apply-layout",
                 icon: icons::DOWNLOAD,
                 target: LayoutTarget::Apply,
                 with_new: false,
@@ -1869,21 +1912,21 @@ pub(crate) const MENUS: &[Menu] = &[
         ],
     },
     Menu {
-        label: "Panels",
+        label: "menu-panels",
         entries: &[
             // The switch over the things it governs: every row under this one
             // puts a panel into the layout, which is what design mode is about,
             // and the menus that arrange panels are the place someone looks for
             // it rather than the Window menu's interface knobs.
             MenuEntry::Item(MenuItem {
-                label: "Design Mode",
+                label: "menu-design-mode",
                 icon: icons::LAYOUT_DASHBOARD,
                 action: MenuAction::ToggleDesignMode,
             }),
-            MenuEntry::Section("Add"),
+            MenuEntry::Section("menu-section-add"),
             // The panels you already configured lead the ones you haven't.
             MenuEntry::PresetsSubmenu {
-                label: "Presets",
+                label: "menu-panels-presets",
                 icon: icons::COPY,
                 target: PanelTarget::Open,
             },
@@ -1919,8 +1962,11 @@ pub(crate) fn section_shows(section: &'static PanelSection) -> bool {
 /// playing, "Play" while stopped or paused.
 pub(crate) fn menu_item_display(item: MenuItem, is_playing: bool) -> (&'static str, &'static str) {
     match item.action {
-        MenuAction::TogglePlayback if is_playing => ("Pause", icons::PAUSE),
-        _ => (item.label, item.icon),
+        MenuAction::TogglePlayback if is_playing => {
+            (rox_i18n::t_static("menu-pause"), icons::PAUSE)
+        }
+        // `item.label` is an i18n key, not display text - see `menu_section`.
+        _ => (rox_i18n::t_static(item.label), item.icon),
     }
 }
 
@@ -2052,7 +2098,7 @@ pub struct Workspace {
     /// Why this window's layout fell back to empty, shown by the empty
     /// hint until a layout change leaves panels standing. None when the
     /// empty start was asked for.
-    layout_error: Option<&'static str>,
+    layout_error: Option<SharedString>,
     /// The mini-player button's two presets, by name. Cached off the settings
     /// file so the menubar never reads disk per frame; the settings window
     /// pushes changes back through [`Workspace::set_mini_roles`]. The button
@@ -2374,9 +2420,9 @@ impl Workspace {
         let layout_error = (restored.is_none() && expected).then(|| {
             let message = match &start {
                 WorkspaceStart::Preset(_) => {
-                    "This window's layout preset couldn't be restored, so it starts empty."
+                    rox_i18n::t!("workspace-layout-preset-restore-failed")
                 }
-                _ => "The saved layout couldn't be restored, so this window starts empty.",
+                _ => rox_i18n::t!("workspace-layout-restore-failed"),
             };
             log::warn!("workspace: {message}");
             message
@@ -2891,8 +2937,7 @@ impl Workspace {
         self.bottom_stack = bottom_stack;
         self.dock
             .update(cx, |dock, cx| dock.set_center(center, window, cx));
-        self.layout_error =
-            Some("The workspace's layout couldn't be restored, so this window starts empty.");
+        self.layout_error = Some(rox_i18n::t!("workspace-workspace-restore-failed"));
         log::warn!("workspace: applied workspace has no restorable layout, starting empty");
         // The empty build has no name of its own.
         self.set_active_layout(None);
@@ -3232,7 +3277,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Workspace name"));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rox_i18n::t!("workspace-dialog-workspace-name-placeholder"))
+        });
         self._layout_input =
             Some(
                 cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
@@ -3421,7 +3469,10 @@ impl Workspace {
     /// Open the save dialog: a focused name field that Enter or the button
     /// commits into a new preset.
     pub(crate) fn open_save_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Layout name"));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rox_i18n::t!("workspace-dialog-layout-name-placeholder"))
+        });
         self._layout_input =
             Some(
                 cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
@@ -3704,8 +3755,18 @@ impl Workspace {
                 .gap(tokens::SPACE_MD)
                 .p(tokens::SPACE_MD)
                 .bg(rgba(0x00000055))
-                .child(self.drop_zone("Play now", icons::PLAY, true, cx))
-                .child(self.drop_zone("Add to queue", icons::LIST_MUSIC, false, cx))
+                .child(self.drop_zone(
+                    rox_i18n::t!("workspace-drop-play-now"),
+                    icons::PLAY,
+                    true,
+                    cx,
+                ))
+                .child(self.drop_zone(
+                    rox_i18n::t!("workspace-drop-add-queue"),
+                    icons::LIST_MUSIC,
+                    false,
+                    cx,
+                ))
                 .into_any_element(),
         )
     }
@@ -3715,7 +3776,7 @@ impl Workspace {
     /// file from the OS and a track dragged from the library.
     fn drop_zone(
         &self,
-        label: &'static str,
+        label: impl Into<SharedString>,
         icon: &'static str,
         play_now: bool,
         cx: &mut Context<Self>,
@@ -3734,7 +3795,7 @@ impl Workspace {
             .bg(palette::bg_menu_opaque())
             .text_color(palette::text_muted())
             .child(Icon::default().path(icon))
-            .child(div().text_lg().child(label))
+            .child(div().text_lg().child(label.into()))
             .drag_over::<ExternalPaths>(|style, _, _, _| {
                 style
                     .border_color(palette::accent())
@@ -3982,17 +4043,22 @@ impl Workspace {
             // A way back to the welcome window's quick-start tiles, since
             // this launcher replaced it as the empty window's face.
             .child(
-                div().absolute().top(tokens::SPACE_SM).right(tokens::SPACE_SM).child(
-                    panel::icon_control(
+                div()
+                    .absolute()
+                    .top(tokens::SPACE_SM)
+                    .right(tokens::SPACE_SM)
+                    .child(panel::icon_control(
                         icons::INFO,
                         palette::text_muted(),
-                        "Open the welcome window",
+                        panel::Tip::keyed(
+                            "open-welcome-hint",
+                            rox_i18n::t!("workspace-launcher-open-welcome"),
+                        ),
                         |this: &mut Self, cx| {
                             crate::startup::welcome_window::open(this.state.clone(), cx);
                         },
                         cx,
-                    ),
-                ),
+                    )),
             )
             .child(
                 div()
@@ -4021,20 +4087,22 @@ impl Workspace {
                                     .items_center()
                                     .gap(px(2.))
                                     .child(
-                                        div().text_color(palette::text()).child("An empty window"),
+                                        div()
+                                            .text_color(palette::text())
+                                            .child(rox_i18n::t!("workspace-launcher-title")),
                                     )
                                     .child(
-                                        div().text_xs().text_color(palette::text_muted()).child(
-                                            "Add your first panel to start building; or chose a preset \
-                                            under Workspace > Apply Workspace",
-                                        ),
+                                        div()
+                                            .text_xs()
+                                            .text_color(palette::text_muted())
+                                            .child(rox_i18n::t!("workspace-launcher-hint")),
                                     )
                                     // The fallback notice: this window is
                                     // empty because a layout would not
                                     // restore, not because the user asked.
                                     // Accent rather than a status red: the
                                     // app recovered, this is emphasis.
-                                    .when_some(self.layout_error, |d, message| {
+                                    .when_some(self.layout_error.clone(), |d, message| {
                                         d.child(
                                             div()
                                                 .pt(tokens::SPACE_XS)
@@ -4050,7 +4118,7 @@ impl Workspace {
                     .children(catalog::sections().map(|section| {
                         let tiles = section.panels.iter().map(|def| {
                             launcher_tile(
-                                def.label,
+                                rox_i18n::t!(def.label),
                                 def.icon,
                                 catalog::supports_signals(def),
                                 cx.listener(move |this, _, window, cx| {
@@ -4058,10 +4126,11 @@ impl Workspace {
                                 }),
                             )
                         });
-                        launcher_section(
-                            section.group.map(|(label, _)| label).unwrap_or("Panels"),
-                            tiles,
-                        )
+                        let group_label = section
+                            .group
+                            .map(|(label, _)| rox_i18n::t!(label))
+                            .unwrap_or_else(|| rox_i18n::t!("menu-panels"));
+                        launcher_section(group_label, tiles)
                     }))
                     // Under the whole catalog: the other way back to the
                     // welcome window's quick-start, spelled out for anyone who
@@ -4080,13 +4149,10 @@ impl Workspace {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
-                                    crate::startup::welcome_window::open(
-                                        this.state.clone(),
-                                        cx,
-                                    );
+                                    crate::startup::welcome_window::open(this.state.clone(), cx);
                                 }),
                             )
-                            .child("Need help?"),
+                            .child(rox_i18n::t!("workspace-launcher-need-help")),
                     ),
             )
     }
@@ -4102,9 +4168,9 @@ impl Workspace {
         // words, since two arrows pointing in and two pointing out are a
         // coin flip to anyone who hasn't clicked it before.
         let (icon, tip) = if self.on_mini() {
-            (icons::MAXIMIZE, "Back to the full layout")
+            (icons::MAXIMIZE, rox_i18n::t!("workspace-mini-tip-back"))
         } else {
-            (icons::MINIMIZE, "Shrink to the mini player")
+            (icons::MINIMIZE, rox_i18n::t!("workspace-mini-tip-shrink"))
         };
         Some(
             panel::Tip::keyed("mini-toggle", tip).apply(
@@ -4150,7 +4216,7 @@ impl Workspace {
         let card = match dialog {
             LayoutDialog::Save(input) => card
                 .key_context("SearchInput")
-                .child(div().child("Save Layout"))
+                .child(div().child(rox_i18n::t!("workspace-dialog-save-layout-title")))
                 .child(Input::new(input))
                 .child(
                     div()
@@ -4159,23 +4225,26 @@ impl Workspace {
                         .justify_end()
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
-                            "Cancel",
+                            rox_i18n::t!("workspace-dialog-cancel"),
                             false,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
-                            "Save",
+                            rox_i18n::t!("workspace-dialog-save"),
                             true,
                             cx.listener(|this, _, window, cx| this.commit_save(window, cx)),
                         )),
                 ),
             LayoutDialog::ConfirmOverwrite(name) => card
-                .child(div().child(SharedString::from(format!("Overwrite \"{name}\"?"))))
+                .child(div().child(rox_i18n::t!(
+                    "workspace-dialog-overwrite-title",
+                    name = name.as_str()
+                )))
                 .child(
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("This replaces the saved layout with the current one."),
+                        .child(rox_i18n::t!("workspace-layout-overwrite-body")),
                 )
                 .child(
                     div()
@@ -4184,23 +4253,26 @@ impl Workspace {
                         .justify_end()
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
-                            "Cancel",
+                            rox_i18n::t!("workspace-dialog-cancel"),
                             false,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
-                            "Overwrite",
+                            rox_i18n::t!("workspace-dialog-overwrite"),
                             true,
                             cx.listener(|this, _, window, cx| this.overwrite_confirmed(window, cx)),
                         )),
                 ),
             LayoutDialog::ConfirmApply(name) => card
-                .child(div().child(SharedString::from(format!("Apply \"{name}\"?"))))
+                .child(div().child(rox_i18n::t!(
+                    "workspace-dialog-apply-title",
+                    name = name.as_str()
+                )))
                 .child(
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("This replaces this window's current layout."),
+                        .child(rox_i18n::t!("workspace-layout-apply-body")),
                 )
                 .child(
                     div()
@@ -4209,19 +4281,19 @@ impl Workspace {
                         .justify_end()
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
-                            "Cancel",
+                            rox_i18n::t!("workspace-dialog-cancel"),
                             false,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
-                            "Apply",
+                            rox_i18n::t!("workspace-dialog-apply"),
                             true,
                             cx.listener(|this, _, window, cx| this.apply_confirmed(window, cx)),
                         )),
                 ),
             LayoutDialog::SaveWorkspace(input) => card
                 .key_context("SearchInput")
-                .child(div().child("Save Workspace"))
+                .child(div().child(rox_i18n::t!("workspace-dialog-save-workspace-title")))
                 .child(Input::new(input))
                 .child(
                     div()
@@ -4230,12 +4302,12 @@ impl Workspace {
                         .justify_end()
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
-                            "Cancel",
+                            rox_i18n::t!("workspace-dialog-cancel"),
                             false,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
-                            "Save",
+                            rox_i18n::t!("workspace-dialog-save"),
                             true,
                             cx.listener(|this, _, window, cx| {
                                 this.commit_save_workspace(window, cx)
@@ -4243,12 +4315,15 @@ impl Workspace {
                         )),
                 ),
             LayoutDialog::ConfirmOverwriteWorkspace(name) => card
-                .child(div().child(SharedString::from(format!("Overwrite \"{name}\"?"))))
+                .child(div().child(rox_i18n::t!(
+                    "workspace-dialog-overwrite-title",
+                    name = name.as_str()
+                )))
                 .child(
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("This replaces the saved workspace with the current look."),
+                        .child(rox_i18n::t!("workspace-overwrite-body")),
                 )
                 .child(
                     div()
@@ -4257,12 +4332,12 @@ impl Workspace {
                         .justify_end()
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
-                            "Cancel",
+                            rox_i18n::t!("workspace-dialog-cancel"),
                             false,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
-                            "Overwrite",
+                            rox_i18n::t!("workspace-dialog-overwrite"),
                             true,
                             cx.listener(|this, _, window, cx| {
                                 this.overwrite_workspace_confirmed(window, cx)
@@ -4290,19 +4365,23 @@ impl Workspace {
                     // need the room; a plain apply keeps the dialogs' shared
                     // width.
                     .when(split || screen.is_some(), |d| d.w(px(380.)))
-                    .child(div().child(SharedString::from(if *imported {
-                        format!("Imported \"{}\"", bundle_card.name)
+                    .child(div().child(if *imported {
+                        rox_i18n::t!(
+                            "workspace-apply-imported-title",
+                            name = bundle_card.name.as_str()
+                        )
                     } else {
-                        format!("Apply \"{}\"?", bundle_card.name)
-                    })))
+                        rox_i18n::t!(
+                            "workspace-dialog-apply-title",
+                            name = bundle_card.name.as_str()
+                        )
+                    }))
                     .children(bundle_card.byline.clone().map(line))
                     .children(bundle_card.description.clone().map(line))
                     .child(line(if *imported {
-                        "It's saved to your workspaces. Applying it now replaces the whole \
-                         look: layouts, palette, appearance."
-                            .into()
+                        rox_i18n::t!("workspace-apply-imported-body")
                     } else {
-                        "This replaces the whole look: layouts, palette, appearance.".into()
+                        rox_i18n::t!("workspace-apply-body")
                     }))
                     // A screen shader covers the whole window, so it gets said
                     // before the apply rather than asked about after, and the
@@ -4310,12 +4389,12 @@ impl Workspace {
                     .children(screen.clone().map(line))
                     .children(screen.map(|_| {
                         kbd_line([
-                            Seg::Text("Turn it off any time with".into()),
+                            Seg::Text(rox_i18n::t!("workspace-screen-shader-hint-before")),
                             Seg::Key(chord("Shift+X")),
-                            Seg::Text("or".into()),
-                            Seg::Key("Window".into()),
-                            Seg::Text("then".into()),
-                            Seg::Key("Overlay Shader".into()),
+                            Seg::Text(rox_i18n::t!("workspace-hint-or")),
+                            Seg::Key(rox_i18n::t!("menu-window")),
+                            Seg::Text(rox_i18n::t!("workspace-hint-then")),
+                            Seg::Key(rox_i18n::t!("menu-overlay-shader")),
                         ])
                         .text_xs()
                     }))
@@ -4327,14 +4406,9 @@ impl Workspace {
                     // instead.
                     .children(split.then(|| {
                         line(if shaders.is_some() {
-                            "Approving lets them run on this machine. Applying without them \
-                             leaves the look bare, with the shaders still in its pool."
-                                .into()
+                            rox_i18n::t!("workspace-apply-shaders-approve-body")
                         } else {
-                            SharedString::from(
-                                "Applying without them leaves the look bare, with the shaders \
-                                 still in its pool.",
-                            )
+                            rox_i18n::t!("workspace-apply-shaders-plain-body")
                         })
                     }))
                     .child(
@@ -4344,14 +4418,22 @@ impl Workspace {
                             .justify_end()
                             .gap(tokens::SPACE_SM)
                             .child(dialog_button(
-                                if *imported { "Not Now" } else { "Cancel" },
+                                if *imported {
+                                    rox_i18n::t!("workspace-dialog-not-now")
+                                } else {
+                                    rox_i18n::t!("workspace-dialog-cancel")
+                                },
                                 false,
                                 cx.listener(|this, _, window, cx| {
                                     this.close_layout_dialog(window, cx)
                                 }),
                             ))
                             .child(dialog_button(
-                                if split { "Without Shaders" } else { "Apply" },
+                                if split {
+                                    rox_i18n::t!("workspace-dialog-without-shaders")
+                                } else {
+                                    rox_i18n::t!("workspace-dialog-apply")
+                                },
                                 !split,
                                 cx.listener(|this, _, window, cx| {
                                     this.apply_workspace_confirmed(ApplyShaders::Skip, window, cx)
@@ -4360,9 +4442,9 @@ impl Workspace {
                             .children(split.then(|| {
                                 dialog_button(
                                     if shaders.is_some() {
-                                        "Approve and Apply"
+                                        rox_i18n::t!("workspace-dialog-approve-apply")
                                     } else {
-                                        "With Shaders"
+                                        rox_i18n::t!("workspace-dialog-with-shaders")
                                     },
                                     true,
                                     cx.listener(|this, _, window, cx| {
@@ -4377,11 +4459,15 @@ impl Workspace {
                     )
             }
             LayoutDialog::ConfirmCloseLocked { name, .. } => card
-                .child(div().child(SharedString::from(format!("Close \"{name}\"?"))))
+                .child(div().child(rox_i18n::t!(
+                    "workspace-dialog-close-title",
+                    name = name.as_ref()
+                )))
                 .child(
-                    div().text_xs().text_color(palette::text_muted()).child(
-                        "This panel is pinned in place. Closing it takes it out of the layout.",
-                    ),
+                    div()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(rox_i18n::t!("workspace-panel-locked-close-body")),
                 )
                 .child(
                     div()
@@ -4390,12 +4476,12 @@ impl Workspace {
                         .justify_end()
                         .gap(tokens::SPACE_SM)
                         .child(dialog_button(
-                            "Cancel",
+                            rox_i18n::t!("workspace-dialog-cancel"),
                             false,
                             cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
                         ))
                         .child(dialog_button(
-                            "Close",
+                            rox_i18n::t!("workspace-dialog-close"),
                             true,
                             cx.listener(|this, _, window, cx| {
                                 this.close_locked_confirmed(window, cx)
@@ -4548,6 +4634,9 @@ pub(crate) fn flyout_side(d: Div, leftward: bool) -> Div {
 }
 
 /// A muted heading over a divider, grouping the rows below it in a dropdown.
+/// `label` is an i18n key, not display text - the table that builds these
+/// rows is `const` and can't call a translator, so the key rides through
+/// unresolved until it lands here.
 pub(crate) fn menu_section(label: &'static str) -> Div {
     div()
         .mt(tokens::SPACE_XS)
@@ -4557,7 +4646,7 @@ pub(crate) fn menu_section(label: &'static str) -> Div {
         .border_color(palette::border())
         .text_xs()
         .text_color(palette::text_muted())
-        .child(label)
+        .child(rox_i18n::t!(label))
 }
 
 /// A launcher row: a centered wrap of tiles.
@@ -4630,7 +4719,7 @@ fn launcher_tile(
 /// A dialog button: the primary one reads as a filled accent control, the
 /// rest as plain controls.
 fn dialog_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     primary: bool,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
@@ -4651,7 +4740,7 @@ fn dialog_button(
             }
         })
         .on_mouse_down(MouseButton::Left, on_click)
-        .child(label)
+        .child(label.into())
 }
 
 impl Render for Workspace {

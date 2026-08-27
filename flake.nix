@@ -114,6 +114,15 @@
             # extra hashes are needed for them here.
             cargoLock.lockFile = ./Cargo.lock;
 
+            # default-members only covers the app; rox-mcp ships beside it
+            # because the MCP settings page hands out a config pointing there.
+            cargoBuildFlags = [
+              "--package"
+              "rox"
+              "--package"
+              "rox-mcp"
+            ];
+
             # Materialize the patched vendor copies [patch.crates-io] points
             # at, in place of the script run the dev shellHook does.
             postPatch = ''

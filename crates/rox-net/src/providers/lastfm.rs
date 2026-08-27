@@ -52,7 +52,7 @@ fn api_key() -> String {
 /// Fetch an artist's info, blocking: Ok(None) is Last.fm not knowing
 /// the name (or no api key to ask with), Err the network or the API
 /// failing. Background executor only.
-pub fn artist_info(name: &str) -> Result<Option<ArtistInfo>, String> {
+pub fn artist_info(name: &str, lang: &str) -> Result<Option<ArtistInfo>, String> {
     let key = api_key();
     if key.is_empty() || name.trim().is_empty() {
         return Ok(None);
@@ -64,6 +64,12 @@ pub fn artist_info(name: &str) -> Result<Option<ArtistInfo>, String> {
         .query("method", "artist.getinfo")
         .query("artist", name.trim())
         .query("autocorrect", "1")
+        // Last.fm keeps per-language wiki text and serves English when a
+        // language has none, so this narrows to the reader's language and
+        // costs nothing when it doesn't exist. Most artists only have the
+        // English text, which is why the caller records which language a
+        // cached bio came back in rather than assuming it got one.
+        .query("lang", lang)
         .query("api_key", &key)
         .query("format", "json");
     let text = match request.call() {

@@ -54,8 +54,16 @@ impl ThemeTogglePanel {
         // effect rather than the persisted pick, so a System pick still
         // reads as the side it resolved to.
         let (icon, next, tip) = match palette::mode() {
-            palette::Mode::Dark => (icons::SUN, Theme::Light, "Switch to the light theme"),
-            palette::Mode::Light => (icons::MOON, Theme::Dark, "Switch to the dark theme"),
+            palette::Mode::Dark => (
+                icons::SUN,
+                Theme::Light,
+                rox_i18n::t!("theme-toggle-to-light"),
+            ),
+            palette::Mode::Light => (
+                icons::MOON,
+                Theme::Dark,
+                rox_i18n::t!("theme-toggle-to-dark"),
+            ),
         };
 
         let button = panel::Tip::keyed("theme-toggle", tip).apply(
@@ -161,7 +169,10 @@ impl Panel for ThemeTogglePanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Theme Toggle")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-theme-toggle"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<gpui::SharedString> {

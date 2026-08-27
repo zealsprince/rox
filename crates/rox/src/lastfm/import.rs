@@ -129,9 +129,9 @@ impl Summary {
     /// The one-line report, the same sentence wherever it's shown.
     pub fn line(&self) -> String {
         let head = if self.stopped {
-            format!("Stopped after {} loved tracks", self.fetched)
+            rox_i18n::t!("lastfm-import-stopped", count = self.fetched as u64).to_string()
         } else {
-            format!("Read {} loved tracks", self.fetched)
+            rox_i18n::t!("lastfm-import-read", count = self.fetched as u64).to_string()
         };
         format!(
             "{head}, matched {}, added {} to favourites",
@@ -336,7 +336,7 @@ fn run(
         std::thread::sleep(PAGE_PAUSE);
     }
 
-    progress.say("Matching against the library");
+    progress.say(rox_i18n::t!("lastfm-import-matching"));
     let conn = store::open(db_path).map_err(|e| e.to_string())?;
     let index = Index::build(store::name_index(&conn).map_err(|e| e.to_string())?);
     let mut ids: Vec<i64> = Vec::new();

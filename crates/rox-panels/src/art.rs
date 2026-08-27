@@ -1645,15 +1645,15 @@ impl PanelSettings for ArtPanel {
                 .flex_col()
                 .gap(settings_ui::SECTION_GAP)
                 .child(settings_ui::section(
-                    "Layout",
+                    rox_i18n::t!("art-layout-section"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
-                            "Vertical Layout",
-                            Some("Stack the shelf as a column that scrolls up and down instead of a row".into()),
+                            rox_i18n::t!("art-vertical-layout"),
+                            Some(rox_i18n::t!("art-vertical-layout.description")),
                             toggle(
                                 self.config.vertical,
                                 |this: &mut Self, on, cx| {
@@ -1663,11 +1663,8 @@ impl PanelSettings for ArtPanel {
                             ),
                         ))
                         .child(setting_row(
-                            "Fill the Panel",
-                            Some(
-                                "Size the centered cover off the panel's height alone (width when \
-                                 vertical); the side covers run off the edge instead of shrinking it".into(),
-                            ),
+                            rox_i18n::t!("art-fill-panel"),
+                            Some(rox_i18n::t!("art-fill-panel.description")),
                             toggle(
                                 self.config.fill,
                                 |this: &mut Self, on, cx| {
@@ -1694,7 +1691,7 @@ impl PanelSettings for ArtPanel {
                 ))
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Center the playing album whenever the track changes".into(),
+                    rox_i18n::t!("art-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         // Catch up right away instead of waiting for the
@@ -1705,13 +1702,13 @@ impl PanelSettings for ArtPanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Center the playing album again after you stop browsing".into(),
+                    rox_i18n::t!("art-resume-description"),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the album instead of jumping".into(),
+                    rox_i18n::t!("art-smooth-description"),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1719,17 +1716,15 @@ impl PanelSettings for ArtPanel {
                     cx,
                 ))
                 .child(settings_ui::section(
-                    "Dimming",
+                    rox_i18n::t!("grid-section-dimming"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
-                            "Dim While Playing",
-                            Some(
-                                "Fade every cover but the playing album's; hovering lights a cover back up".into(),
-                            ),
+                            rox_i18n::t!("grid-dim-while-playing"),
+                            Some(rox_i18n::t!("art-dim-while-playing")),
                             toggle(
                                 self.config.dim_playing,
                                 |this: &mut Self, on, cx| {
@@ -1741,8 +1736,8 @@ impl PanelSettings for ArtPanel {
                         ))
                         .when(self.config.dim_playing, |d| {
                             d.child(setting_row(
-                                "Dim Amount",
-                                Some("How far the other covers fade; 100% hides them".into()),
+                                rox_i18n::t!("grid-dim-amount"),
+                                Some(rox_i18n::t!("grid-dim-amount.description")),
                                 settings_ui::scalar(
                                     &self.dim_scrub,
                                     &self.value_edit,
@@ -1757,8 +1752,8 @@ impl PanelSettings for ArtPanel {
                             ))
                         })
                         .child(setting_row(
-                            "Desaturate While Playing",
-                            Some("Drain every cover but the playing album's to grayscale; hovering brings a cover's color back".into()),
+                            rox_i18n::t!("grid-desaturate"),
+                            Some(rox_i18n::t!("art-desaturate")),
                             toggle(
                                 self.config.desaturate_playing,
                                 |this: &mut Self, on, cx| {
@@ -1768,20 +1763,23 @@ impl PanelSettings for ArtPanel {
                                 cx,
                             ),
                         ))
-                        .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
-                            d.child(setting_row(
-                                "Always",
-                                Some("Keep the covers pushed back even when nothing plays; only a hovered cover shows in full".into()),
-                                toggle(
-                                    self.config.dim_always,
-                                    |this: &mut Self, on, cx| {
-                                        this.config.dim_always = on;
-                                        cx.notify();
-                                    },
-                                    cx,
-                                ),
-                            ))
-                        }),
+                        .when(
+                            self.config.dim_playing || self.config.desaturate_playing,
+                            |d| {
+                                d.child(setting_row(
+                                    rox_i18n::t!("grid-always"),
+                                    Some(rox_i18n::t!("art-always")),
+                                    toggle(
+                                        self.config.dim_always,
+                                        |this: &mut Self, on, cx| {
+                                            this.config.dim_always = on;
+                                            cx.notify();
+                                        },
+                                        cx,
+                                    ),
+                                ))
+                            },
+                        ),
                 ))
                 .into_any_element(),
         )
@@ -1794,15 +1792,15 @@ impl PanelSettings for ArtPanel {
         let rounding = self.config.rounding;
         Some(
             settings_ui::section(
-                "Covers",
+                rox_i18n::t!("art-covers-section"),
                 None,
                 div()
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
-                        "Perspective",
-                        Some("Turn the side covers in real 3D instead of the flat squash".into()),
+                        rox_i18n::t!("art-perspective"),
+                        Some(rox_i18n::t!("art-perspective.description")),
                         toggle(
                             self.config.perspective,
                             |this: &mut Self, on, cx| {
@@ -1813,8 +1811,8 @@ impl PanelSettings for ArtPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Disc Style",
-                        Some("Dress every cover as a CD or as a vinyl record's label".into()),
+                        rox_i18n::t!("art-disc-style"),
+                        Some(rox_i18n::t!("art-disc-style.description")),
                         panel::choices(
                             &discs::DISC_STYLES,
                             self.config.disc_style,
@@ -1828,25 +1826,26 @@ impl PanelSettings for ArtPanel {
                     .when(
                         self.config.disc_style == DiscStyle::Off && !self.config.perspective,
                         |page| {
-                        page.child(setting_row(
-                            "Art Rounding",
-                            Some("Round each cover's corners; 100% is a circle".into()),
-                            settings_ui::scalar(
-                                &self.rounding_scrub,
-                                &self.value_edit,
-                                rounding,
-                                settings_ui::span(0., TILE_ROUNDING_MAX, "%").hard(),
-                                |this: &mut Self, value, cx| {
-                                    this.config.rounding = value;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
-                        ))
-                    })
+                            page.child(setting_row(
+                                rox_i18n::t!("library-art-rounding"),
+                                Some(rox_i18n::t!("grid-art-rounding-description")),
+                                settings_ui::scalar(
+                                    &self.rounding_scrub,
+                                    &self.value_edit,
+                                    rounding,
+                                    settings_ui::span(0., TILE_ROUNDING_MAX, "%").hard(),
+                                    |this: &mut Self, value, cx| {
+                                        this.config.rounding = value;
+                                        cx.notify();
+                                    },
+                                    cx,
+                                ),
+                            ))
+                        },
+                    )
                     .child(setting_row(
-                        "Reflections",
-                        Some("Mirror each cover into the floor below the shelf".into()),
+                        rox_i18n::t!("art-reflections"),
+                        Some(rox_i18n::t!("art-reflections.description")),
                         toggle(
                             self.config.reflection,
                             |this: &mut Self, on, cx| {
@@ -1857,8 +1856,8 @@ impl PanelSettings for ArtPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Shadows",
-                        Some("A soft shadow under every cover".into()),
+                        rox_i18n::t!("art-shadows"),
+                        Some(rox_i18n::t!("art-shadows.description")),
                         toggle(
                             self.config.shadow,
                             |this: &mut Self, on, cx| {
@@ -1869,8 +1868,8 @@ impl PanelSettings for ArtPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Glow",
-                        Some("Pool the accent color behind the centered cover; with the art tint on it takes the playing album's color".into()),
+                        rox_i18n::t!("art-glow"),
+                        Some(rox_i18n::t!("art-glow.description")),
                         toggle(
                             self.config.glow,
                             |this: &mut Self, on, cx| {
@@ -1945,7 +1944,10 @@ impl Panel for ArtPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Album Carousel")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("art-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -2039,7 +2041,7 @@ impl Panel for ArtPanel {
         let menu = menu
             .check_side(Side::Right)
             .item(
-                PopupMenuItem::new("Jump to Playing")
+                PopupMenuItem::new(rox_i18n::t!("panel-jump-to-playing"))
                     .icon(Icon::default().path(icons::DISC))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = weak.upgrade() {
@@ -2048,7 +2050,7 @@ impl Panel for ArtPanel {
                     }),
             )
             .item(
-                PopupMenuItem::new("Follow Playing")
+                PopupMenuItem::new(rox_i18n::t!("tracking-follow"))
                     .icon(Icon::default().path(icons::LOCATE))
                     .checked(follow)
                     .on_click(move |_, _, cx| {
@@ -2060,7 +2062,7 @@ impl Panel for ArtPanel {
 
         // Display section: the view knobs group under flyouts so the menu
         // stays short, the same shape as the library's.
-        let menu = menu.separator().label("Display");
+        let menu = menu.separator().label(rox_i18n::t!("panel-menu-display"));
         // The scroll direction, a checked pair so the current axis reads at
         // a glance.
         let panel = cx.entity();
@@ -2068,8 +2070,16 @@ impl Panel for ArtPanel {
             panel::follow_panel(&panel, cx);
             submenu = submenu.check_side(Side::Right);
             for (name, icon, is_vertical) in [
-                ("Vertical Scroll", icons::MOVE_VERTICAL, true),
-                ("Horizontal Scroll", icons::MOVE_HORIZONTAL, false),
+                (
+                    rox_i18n::t!("grid-vertical-scroll"),
+                    icons::MOVE_VERTICAL,
+                    true,
+                ),
+                (
+                    rox_i18n::t!("grid-horizontal-scroll"),
+                    icons::MOVE_HORIZONTAL,
+                    false,
+                ),
             ] {
                 submenu = submenu.item(panel::check_row(
                     name,
@@ -2081,7 +2091,10 @@ impl Panel for ArtPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Scroll", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("grid-menu-scroll"),
+            submenu,
+        ));
         // Follow the shared search query, or filter by this shelf's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
@@ -2246,9 +2259,9 @@ impl ArtPanel {
                 .text_color(palette::text_muted())
                 .child(
                     if self.effective_query(cx).is_empty() && self.effective_filter(cx).is_empty() {
-                        "The library is empty"
+                        rox_i18n::t!("grid-library-empty")
                     } else {
-                        "No matches"
+                        rox_i18n::t!("picker-no-matches")
                     },
                 )
                 .into_any_element()
@@ -2411,7 +2424,7 @@ impl ArtPanel {
                         let ids: Vec<i64> = this.update(cx, |this, cx| this.ids_for(ix, cx));
                         let panel = weak.clone();
                         let menu = menu.item(
-                            PopupMenuItem::new("Play")
+                            PopupMenuItem::new(rox_i18n::t!("library-play"))
                                 .icon(Icon::default().path(icons::PLAY))
                                 .on_click(move |_, _, cx| {
                                     if let Some(this) = panel.upgrade() {
@@ -2426,7 +2439,7 @@ impl ArtPanel {
                         let convert_state = state.clone();
                         let convert_ids = ids.clone();
                         let menu = menu.item(
-                            PopupMenuItem::new("Edit Tags...")
+                            PopupMenuItem::new(rox_i18n::t!("art-edit-tags"))
                                 .icon(Icon::default().path(icons::PENCIL))
                                 .on_click(move |_, _, cx| {
                                     rox_panel_api::openers::tags_editor(
@@ -2443,7 +2456,7 @@ impl ArtPanel {
                         // track menu's.
                         let menu = if rox_panel_api::openers::convert_available() {
                             menu.item(
-                                PopupMenuItem::new("Convert...")
+                                PopupMenuItem::new(rox_i18n::t!("art-convert"))
                                     .icon(Icon::default().path(icons::AUDIO_LINES))
                                     .on_click(move |_, _, cx| {
                                         rox_panel_api::openers::convert_dialog(
@@ -2469,7 +2482,7 @@ impl ArtPanel {
                             Some(artist) => {
                                 let artist_panel = weak.clone();
                                 menu.separator().item(
-                                    PopupMenuItem::new("Filter by Artist")
+                                    PopupMenuItem::new(rox_i18n::t!("library-filter-by-artist"))
                                         .icon(Icon::default().path(icons::MIC))
                                         .on_click(move |_, _, cx| {
                                             let Some(this) = artist_panel.upgrade() else {

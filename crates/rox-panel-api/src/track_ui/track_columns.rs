@@ -33,7 +33,10 @@ const ROW_H: f32 = 30.;
 /// whether a fresh panel shows it. A panel's registry fixes the render order.
 pub struct Column {
     pub key: &'static str,
-    pub label: &'static str,
+    /// Display text, resolved by whoever builds the registry. Owned rather
+    /// than `&'static str` so a registry can be rebuilt per locale without
+    /// each panel leaking its own copy behind a cache.
+    pub label: SharedString,
     pub default_on: bool,
 }
 
@@ -408,7 +411,7 @@ pub trait HeadingHost: 'static + Sized {
 
 /// The View-page column checklist: a tick per registry column, a click
 /// flipping it. The panel's own registry fixes the set and order.
-pub fn checklist<P: ColumnHost>(columns: &'static [Column], panel: &P, cx: &mut Context<P>) -> Div {
+pub fn checklist<P: ColumnHost>(columns: &[Column], panel: &P, cx: &mut Context<P>) -> Div {
     let mut list = div().flex().flex_col().gap(tokens::SPACE_XS);
     for col in columns {
         let key = col.key;
@@ -436,7 +439,7 @@ pub fn checklist<P: ColumnHost>(columns: &'static [Column], panel: &P, cx: &mut 
                         } else {
                             palette::text_muted()
                         })
-                        .child(col.label),
+                        .child(col.label.clone()),
                 ),
         );
     }
@@ -446,17 +449,17 @@ pub fn checklist<P: ColumnHost>(columns: &'static [Column], panel: &P, cx: &mut 
 /// The right-click Columns submenu: a live-checked row per registry column,
 /// tracking the panel so a flip shows without the menu reopening.
 pub fn columns_submenu<P: ColumnHost>(
-    columns: &'static [Column],
+    columns: Vec<Column>,
     window: &mut Window,
     cx: &mut Context<P>,
 ) -> Entity<PopupMenu> {
     let panel = cx.entity();
     PopupMenu::build(window, cx, move |mut submenu, _, cx| {
         panel::follow_panel(&panel, cx);
-        for col in columns {
+        for col in &columns {
             let key = col.key;
             submenu = submenu.item(panel::check_row(
-                col.label,
+                col.label.clone(),
                 None,
                 move |this: &P| this.column_shown(key),
                 move |this, cx| {

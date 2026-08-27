@@ -86,7 +86,7 @@ pub struct MetadataConfig {
     /// Draw the hairline under each table row. Off by default: the table
     /// face has always drawn bare, the stripes alone carrying the rhythm.
     pub row_borders: bool,
-    /// The shown field keys out of [`FIELDS`]; the registry's default-on
+    /// The shown field keys out of [`fields`]; the registry's default-on
     /// set for a fresh panel. Title and artist head the sheet and are not
     /// listed.
     pub fields: Vec<String>,
@@ -103,7 +103,7 @@ impl Default for MetadataConfig {
             display: MetadataDisplay::default(),
             stripes: true,
             row_borders: false,
-            fields: track_columns::default_columns(FIELDS),
+            fields: track_columns::default_columns(&fields()),
         }
     }
 }
@@ -146,78 +146,84 @@ impl MetadataSource {
 /// The sheet's toggleable fields in display order, the library-column
 /// registry shape so the shared checklist and Fields submenu drive them.
 /// The file facts sit off by default; the tag sheet is the stock face.
-const FIELDS: &[Column] = &[
-    Column {
-        key: "album",
-        label: "Album",
-        default_on: true,
-    },
-    Column {
-        key: "album_artist",
-        label: "Album Artist",
-        default_on: true,
-    },
-    Column {
-        key: "disc",
-        label: "Disc",
-        default_on: true,
-    },
-    Column {
-        key: "track",
-        label: "Track",
-        default_on: true,
-    },
-    Column {
-        key: "genre",
-        label: "Genre",
-        default_on: true,
-    },
-    Column {
-        key: "year",
-        label: "Year",
-        default_on: true,
-    },
-    Column {
-        key: "duration",
-        label: "Duration",
-        default_on: true,
-    },
-    Column {
-        key: "codec",
-        label: "Codec",
-        default_on: true,
-    },
-    Column {
-        key: "bitrate",
-        label: "Bitrate",
-        default_on: true,
-    },
-    Column {
-        key: "sample_rate",
-        label: "Sample Rate",
-        default_on: false,
-    },
-    Column {
-        key: "bit_depth",
-        label: "Bit Depth",
-        default_on: false,
-    },
-    Column {
-        key: "file",
-        label: "File",
-        default_on: false,
-    },
-    Column {
-        key: "plays",
-        label: "Plays",
-        default_on: false,
-    },
-    Column {
-        key: "rating",
-        label: "Rating",
-        default_on: false,
-    },
-];
+///
+/// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
+/// this rebuilds and leaks once per active locale rather than on every
+/// call, mirroring `rox_i18n::t_static`'s own per-locale cache.
+fn fields() -> Vec<Column> {
+    vec![
+        Column {
+            key: "album",
+            label: rox_i18n::t!("head-piece-album"),
+            default_on: true,
+        },
+        Column {
+            key: "album_artist",
+            label: rox_i18n::t!("filter-field-album-artist"),
+            default_on: true,
+        },
+        Column {
+            key: "disc",
+            label: rox_i18n::t!("metadata-field-disc"),
+            default_on: true,
+        },
+        Column {
+            key: "track",
+            label: rox_i18n::t!("metadata-field-track"),
+            default_on: true,
+        },
+        Column {
+            key: "genre",
+            label: rox_i18n::t!("head-piece-genre"),
+            default_on: true,
+        },
+        Column {
+            key: "year",
+            label: rox_i18n::t!("head-piece-year"),
+            default_on: true,
+        },
+        Column {
+            key: "duration",
+            label: rox_i18n::t!("info-item-duration"),
+            default_on: true,
+        },
+        Column {
+            key: "codec",
+            label: rox_i18n::t!("metadata-field-codec"),
+            default_on: true,
+        },
+        Column {
+            key: "bitrate",
+            label: rox_i18n::t!("metadata-field-bitrate"),
+            default_on: true,
+        },
+        Column {
+            key: "sample_rate",
+            label: rox_i18n::t!("metadata-field-sample-rate"),
+            default_on: false,
+        },
+        Column {
+            key: "bit_depth",
+            label: rox_i18n::t!("metadata-field-bit-depth"),
+            default_on: false,
+        },
+        Column {
+            key: "file",
+            label: rox_i18n::t!("metadata-field-file"),
+            default_on: false,
+        },
+        Column {
+            key: "plays",
+            label: rox_i18n::t!("status-item-plays"),
+            default_on: false,
+        },
+        Column {
+            key: "rating",
+            label: rox_i18n::t!("info-item-rating"),
+            default_on: false,
+        },
+    ]
+}
 
 /// What a click on a value does to the shared query: pin the exact value
 /// on the structured filter, the filter panel's own path, or - for the
@@ -231,7 +237,7 @@ enum Search {
     Term(&'static str),
 }
 
-/// How a shown value searches when it's clicked, keyed by [`FIELDS`] plus
+/// How a shown value searches when it's clicked, keyed by [`fields`] plus
 /// the sheet's two head rows. The rest of the sheet describes the file
 /// rather than tagging it, and neither the filter nor the query syntax
 /// reaches those, so duration, codec, bitrate, plays, rating, and the file
@@ -284,21 +290,29 @@ struct Details {
 /// The editable fields in sheet order, each with its input row's label:
 /// the tags the panel shows plus the comment, which only lives in the
 /// file. Duration, codec, and bitrate stay display-only, they describe
-/// the stream.
-const EDIT_FIELDS: &[(Field, &str)] = &[
-    (Field::Title, "Title"),
-    (Field::Artist, "Artist"),
-    (Field::Album, "Album"),
-    (Field::AlbumArtist, "Album Artist"),
-    (Field::DiscNo, "Disc"),
-    (Field::TrackNo, "Track"),
-    (Field::Genre, "Genre"),
-    (Field::Year, "Year"),
-    (Field::Comment, "Comment"),
-];
+/// the stream. A plain function rather than a `const`: `t_static` isn't
+/// const-evaluable, and nothing outside this file needs the slice itself
+/// to be `'static`, so it just rebuilds (cheaply, `t_static` caches the
+/// strings) on each call.
+fn edit_fields() -> Vec<(Field, gpui::SharedString)> {
+    vec![
+        (Field::Title, rox_i18n::t!("info-item-title")),
+        (Field::Artist, rox_i18n::t!("head-piece-artist")),
+        (Field::Album, rox_i18n::t!("head-piece-album")),
+        (
+            Field::AlbumArtist,
+            rox_i18n::t!("filter-field-album-artist"),
+        ),
+        (Field::DiscNo, rox_i18n::t!("metadata-field-disc")),
+        (Field::TrackNo, rox_i18n::t!("metadata-field-track")),
+        (Field::Genre, rox_i18n::t!("head-piece-genre")),
+        (Field::Year, rox_i18n::t!("head-piece-year")),
+        (Field::Comment, rox_i18n::t!("metadata-field-comment")),
+    ]
+}
 
 /// One in-progress edit: the pinned track, the baseline read off its
-/// file, and one input per entry of [`EDIT_FIELDS`]. Lives only while
+/// file, and one input per entry of [`edit_fields`]. Lives only while
 /// edit mode is on.
 struct EditState {
     key: TrackKey,
@@ -521,13 +535,21 @@ impl MetadataPanel {
             panel::follow_panel(&panel, cx);
             submenu = submenu.check_side(Side::Right);
             for (label, icon, source) in [
-                ("Follow Playing", icons::PLAY, MetadataSource::Playing),
                 (
-                    "Follow Selection",
+                    rox_i18n::t!("source-follow-playing"),
+                    icons::PLAY,
+                    MetadataSource::Playing,
+                ),
+                (
+                    rox_i18n::t!("source-follow-selection"),
                     icons::LIST_MUSIC,
                     MetadataSource::Selected,
                 ),
-                ("Library", icons::DATABASE, MetadataSource::Library),
+                (
+                    rox_i18n::t!("panel-title-library"),
+                    icons::DATABASE,
+                    MetadataSource::Library,
+                ),
             ] {
                 submenu = submenu.item(panel::check_row(
                     label,
@@ -542,12 +564,18 @@ impl MetadataPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Source", submenu));
-        let submenu = track_columns::columns_submenu(FIELDS, window, cx);
-        let menu = menu.item(PopupMenuItem::submenu("Fields", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("metadata-source"),
+            submenu,
+        ));
+        let submenu = track_columns::columns_submenu(fields(), window, cx);
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("metadata-fields"),
+            submenu,
+        ));
         let weak = cx.entity().downgrade();
         menu.separator().item(
-            PopupMenuItem::new("Cover Background")
+            PopupMenuItem::new(rox_i18n::t!("metadata-cover-background"))
                 .checked(self.config.cover)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -579,7 +607,7 @@ impl MetadataPanel {
         let Some(key) = self.resolved_track(cx) else {
             return;
         };
-        let inputs: Vec<Entity<InputState>> = EDIT_FIELDS
+        let inputs: Vec<Entity<InputState>> = edit_fields()
             .iter()
             .map(|_| cx.new(|cx| InputState::new(window, cx)))
             .collect();
@@ -620,7 +648,7 @@ impl MetadataPanel {
                 }
                 match read {
                     Ok(fields) => {
-                        for ((field, _), input) in EDIT_FIELDS.iter().zip(&edit.inputs) {
+                        for ((field, _), input) in edit_fields().iter().zip(&edit.inputs) {
                             // Multi-value tags show their first item, the
                             // same one the writer's verify reads back.
                             let value = fields
@@ -661,7 +689,7 @@ impl MetadataPanel {
             return;
         };
         let mut changes = Vec::new();
-        for ((field, _), input) in EDIT_FIELDS.iter().zip(&edit.inputs) {
+        for ((field, _), input) in edit_fields().iter().zip(&edit.inputs) {
             let value = input.read(cx).value().to_string();
             let original = baseline
                 .iter()
@@ -736,7 +764,7 @@ impl track_columns::ColumnHost for MetadataPanel {
     fn set_column(&mut self, key: &'static str, on: bool, cx: &mut Context<Self>) {
         if on {
             let shown: Vec<&str> = self.config.fields.iter().map(String::as_str).collect();
-            self.config.fields = FIELDS
+            self.config.fields = fields()
                 .iter()
                 .filter(|c| c.key == key || shown.contains(&c.key))
                 .map(|c| c.key.to_string())
@@ -782,13 +810,13 @@ impl PanelSettings for MetadataPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Source",
-                Some("Follow what is playing or selected, or read the library as a whole".into()),
-                panel::choices(
+                rox_i18n::t!("metadata-source"),
+                Some(rox_i18n::t!("metadata-source.description")),
+                panel::choices_shared(
                     &[
-                        ("Playing", MetadataSource::Playing),
-                        ("Selected", MetadataSource::Selected),
-                        ("Library", MetadataSource::Library),
+                        (rox_i18n::t!("source-playing"), MetadataSource::Playing),
+                        (rox_i18n::t!("source-selected"), MetadataSource::Selected),
+                        (rox_i18n::t!("panel-title-library"), MetadataSource::Library),
                     ],
                     self.config.source,
                     |this: &mut Self, source, cx| {
@@ -807,12 +835,18 @@ impl PanelSettings for MetadataPanel {
                 cx,
             ))
             .child(panel::setting_row(
-                "Display",
-                Some("The title-led sheet, or a flat label and value table from the top".into()),
-                panel::choices(
+                rox_i18n::t!("metadata-display"),
+                Some(rox_i18n::t!("metadata-display.description")),
+                panel::choices_shared(
                     &[
-                        ("Sheet", MetadataDisplay::Sheet),
-                        ("Table", MetadataDisplay::Table),
+                        (
+                            rox_i18n::t!("metadata-display-sheet"),
+                            MetadataDisplay::Sheet,
+                        ),
+                        (
+                            rox_i18n::t!("metadata-display-table"),
+                            MetadataDisplay::Table,
+                        ),
                     ],
                     self.config.display,
                     |this: &mut Self, display, cx| {
@@ -835,8 +869,8 @@ impl PanelSettings for MetadataPanel {
                 ))
             })
             .child(panel::setting_row(
-                "Cover Background",
-                Some("The track's cover art behind the fields".into()),
+                rox_i18n::t!("metadata-cover-background"),
+                Some(rox_i18n::t!("metadata-cover-background.description")),
                 panel::toggle(
                     self.config.cover,
                     |this: &mut Self, on, cx| {
@@ -847,13 +881,10 @@ impl PanelSettings for MetadataPanel {
                 ),
             ))
             .child(panel::setting_block(
-                "Fields",
-                Some(
-                    "Which fields the sheet lists; a field the track doesn't carry stays hidden"
-                        .into(),
-                ),
+                rox_i18n::t!("metadata-fields"),
+                Some(rox_i18n::t!("metadata-fields.description")),
                 None,
-                track_columns::checklist(FIELDS, self, cx),
+                track_columns::checklist(&fields(), self, cx),
             ))
             .into_any_element()
     }
@@ -867,15 +898,15 @@ impl PanelSettings for MetadataPanel {
         }
         Some(
             settings_ui::section(
-                "Rows",
+                rox_i18n::t!("library-section-rows"),
                 None,
                 div()
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(panel::setting_row(
-                        "Alternating Highlights",
-                        Some("Tint every other row of the table".into()),
+                        rox_i18n::t!("library-stripes"),
+                        Some(rox_i18n::t!("metadata-stripes-description")),
                         panel::toggle(
                             self.config.stripes,
                             |this: &mut Self, on, cx| {
@@ -886,8 +917,8 @@ impl PanelSettings for MetadataPanel {
                         ),
                     ))
                     .child(panel::setting_row(
-                        "Row Borders",
-                        Some("The hairline under each row of the table".into()),
+                        rox_i18n::t!("library-row-borders"),
+                        Some(rox_i18n::t!("metadata-row-borders-description")),
                         panel::toggle(
                             self.config.row_borders,
                             |this: &mut Self, on, cx| {
@@ -917,7 +948,10 @@ impl Panel for MetadataPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Metadata")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-metadata"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1010,7 +1044,7 @@ impl Panel for MetadataPanel {
                 let library = self.state.library.clone();
                 let now_art = self.state.now_art.clone();
                 menu.separator().item(
-                    PopupMenuItem::new("Find Metadata Online...")
+                    PopupMenuItem::new(rox_i18n::t!("metadata-find-online"))
                         .icon(Icon::default().path(icons::DOWNLOAD))
                         .on_click(move |_, _, cx| {
                             rox_panel_api::openers::tags_matcher(
@@ -1107,7 +1141,7 @@ fn value_cell(
 
 /// One labeled field of the sheet: the tag's name dimmed in a fixed
 /// column, its value truncating beside it.
-fn field(label: &'static str, value: Div) -> Div {
+fn field(label: impl Into<SharedString>, value: Div) -> Div {
     div()
         .flex()
         .flex_row()
@@ -1117,7 +1151,7 @@ fn field(label: &'static str, value: Div) -> Div {
                 .w(px(84.))
                 .flex_none()
                 .text_color(palette::text_muted())
-                .child(label),
+                .child(label.into()),
         )
         .child(value)
 }
@@ -1126,7 +1160,13 @@ fn field(label: &'static str, value: Div) -> Div {
 /// faint striping and a bottom hairline as the knobs ask, both in the
 /// library rows' colors. The stripe is translucent so the cover
 /// background keeps showing through.
-fn table_row(ix: usize, label: &'static str, value: Div, stripes: bool, borders: bool) -> Div {
+fn table_row(
+    ix: usize,
+    label: impl Into<SharedString>,
+    value: Div,
+    stripes: bool,
+    borders: bool,
+) -> Div {
     div()
         .flex()
         .flex_row()
@@ -1143,7 +1183,7 @@ fn table_row(ix: usize, label: &'static str, value: Div, stripes: bool, borders:
                 .w(px(110.))
                 .flex_none()
                 .text_color(palette::text_muted())
-                .child(label),
+                .child(label.into()),
         )
         .child(value)
 }
@@ -1265,7 +1305,11 @@ impl MetadataPanel {
             return root.child(
                 justify(div().w_full().flex_none().flex(), align)
                     .p(tokens::SPACE_MD)
-                    .child(div().text_color(palette::text_faint()).child("No track")),
+                    .child(
+                        div()
+                            .text_color(palette::text_faint())
+                            .child(rox_i18n::t!("content-no-track")),
+                    ),
             );
         };
 
@@ -1331,8 +1375,8 @@ impl MetadataPanel {
         // is empty: absence reads cleaner than a labeled blank. The key
         // rides along for [`query_field`], which decides whether the value
         // is clickable.
-        let mut fields: Vec<(&'static str, String, Option<Search>)> = Vec::new();
-        for col in FIELDS {
+        let mut fields: Vec<(gpui::SharedString, String, Option<Search>)> = Vec::new();
+        for col in self::fields() {
             if !self.config.fields.iter().any(|k| k == col.key) {
                 continue;
             }
@@ -1354,7 +1398,12 @@ impl MetadataPanel {
                         (d.duration_ms > 0).then(|| fmt_time(d.duration_ms as f64 / 1000.0))
                     }
                     "codec" => (!d.codec.is_empty()).then(|| d.codec.clone()),
-                    "bitrate" => (d.bitrate_kbps > 0).then(|| format!("{} kbps", d.bitrate_kbps)),
+                    "bitrate" => (d.bitrate_kbps > 0).then(|| {
+                        format!(
+                            "{} kbps",
+                            rox_i18n::format::format_int(i64::from(d.bitrate_kbps))
+                        )
+                    }),
                     "sample_rate" => (d.sample_rate_hz > 0)
                         .then(|| format!("{} kHz", crate::group_head::khz(d.sample_rate_hz))),
                     "bit_depth" => (d.bit_depth > 0).then(|| format!("{} bit", d.bit_depth)),
@@ -1364,7 +1413,7 @@ impl MetadataPanel {
                 }),
             };
             if let Some(value) = value {
-                fields.push((col.label, value, query_field(col.key)));
+                fields.push((col.label.clone(), value, query_field(col.key)));
             }
         }
         let artist = details
@@ -1379,10 +1428,14 @@ impl MetadataPanel {
         // where the vertical knob puts it, and it scrolls when the panel
         // runs short.
         if self.config.display == MetadataDisplay::Table {
-            let mut rows: Vec<(&'static str, String, Option<Search>)> = Vec::new();
-            rows.push(("Title", title, title_field));
+            let mut rows: Vec<(gpui::SharedString, String, Option<Search>)> = Vec::new();
+            rows.push((rox_i18n::t!("info-item-title"), title, title_field));
             if let Some(artist) = artist {
-                rows.push(("Artist", artist, query_field("artist")));
+                rows.push((
+                    rox_i18n::t!("head-piece-artist"),
+                    artist,
+                    query_field("artist"),
+                ));
             }
             rows.extend(fields);
             let stripes = self.config.stripes;
@@ -1472,23 +1525,42 @@ impl MetadataPanel {
             return root.child(
                 justify(div().w_full().flex_none().flex(), align)
                     .p(tokens::SPACE_MD)
-                    .child(div().text_color(palette::text_faint()).child("No library")),
+                    .child(
+                        div()
+                            .text_color(palette::text_faint())
+                            .child(rox_i18n::t!("metadata-no-library")),
+                    ),
             );
         };
-        let fields: Vec<(&'static str, String)> = vec![
-            ("Tracks", totals.tracks.to_string()),
-            ("Albums", totals.albums.to_string()),
-            ("Artists", totals.artists.to_string()),
-            ("Genres", totals.genres.to_string()),
+        let fields: Vec<(gpui::SharedString, String)> = vec![
             (
-                "Total Time",
+                rox_i18n::t!("head-piece-tracks"),
+                rox_i18n::format::format_int(totals.tracks as i64),
+            ),
+            (
+                rox_i18n::t!("status-item-albums"),
+                rox_i18n::format::format_int(totals.albums as i64),
+            ),
+            (
+                rox_i18n::t!("status-item-artists"),
+                rox_i18n::format::format_int(totals.artists as i64),
+            ),
+            (
+                rox_i18n::t!("content-total-genres"),
+                rox_i18n::format::format_int(totals.genres as i64),
+            ),
+            (
+                rox_i18n::t!("content-total-time"),
                 format!(
                     "{} ({})",
                     crate::group_head::fmt_total(totals.total_ms),
                     rox_core::fmt::fmt_span(totals.total_ms / 1000)
                 ),
             ),
-            ("Plays", totals.plays.to_string()),
+            (
+                rox_i18n::t!("status-item-plays"),
+                rox_i18n::format::format_int(totals.plays as i64),
+            ),
         ];
         let mut hit_id = 0usize;
         if display == MetadataDisplay::Table {
@@ -1517,10 +1589,15 @@ impl MetadataPanel {
                     ),
             );
         }
-        let title_cell = value_cell("Library", None, None, &mut hit_id)
-            .text_lg()
-            .text_color(palette::text_bright())
-            .max_w_full();
+        let title_cell = value_cell(
+            &rox_i18n::t!("panel-title-library"),
+            None,
+            None,
+            &mut hit_id,
+        )
+        .text_lg()
+        .text_color(palette::text_bright())
+        .max_w_full();
         let rows: Vec<Div> = fields
             .into_iter()
             .map(|(label, value)| field(label, value_cell(&value, None, None, &mut hit_id)))
@@ -1552,7 +1629,8 @@ impl MetadataPanel {
         let Some(edit) = &self.edit else {
             return div();
         };
-        let rows = EDIT_FIELDS
+        let edit_fields = edit_fields();
+        let rows = edit_fields
             .iter()
             .zip(&edit.inputs)
             .map(|((_, label), input)| {
@@ -1566,7 +1644,7 @@ impl MetadataPanel {
                             .w(px(84.))
                             .flex_none()
                             .text_color(palette::text_muted())
-                            .child(*label),
+                            .child(label.clone()),
                     )
                     .child(div().flex_1().min_w_0().child(Input::new(input).small()))
             });
@@ -1603,13 +1681,13 @@ impl MetadataPanel {
                     .flex_row()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Save",
+                        rox_i18n::t!("metadata-edit-save"),
                         icons::CHECK,
                         edit.saving || edit.baseline.is_none(),
                         cx.listener(|this, _, _, cx| this.save_edit(cx)),
                     ))
                     .child(settings_ui::small_button(
-                        "Cancel",
+                        rox_i18n::t!("bake-cancel"),
                         icons::CLOSE,
                         edit.saving,
                         cx.listener(|this, _, _, cx| this.close_edit(cx)),

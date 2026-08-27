@@ -1622,7 +1622,7 @@ mod tests {
         // what a cleared panel leaves behind.
         assert_eq!(pick(None, None, None), Pick::Empty);
         assert_eq!(pick(None, None, Some("  \n ")), Pick::Empty);
-        assert_eq!(pick_label(&Pick::Empty), "None");
+        assert_eq!(pick_label(&Pick::Empty), rox_i18n::t!("shader-pick-none"));
 
         // A shipped example, matched on the text the way the old chips did.
         assert_eq!(pick(None, None, Some(PLASMA)), Pick::Example(0));
@@ -1651,7 +1651,10 @@ mod tests {
         // Source of its own that matches nothing, which is what arrives
         // inside a layout or a bundle.
         assert_eq!(pick(None, None, Some("// mine")), Pick::Custom);
-        assert_eq!(pick_label(&Pick::Custom), "Custom");
+        assert_eq!(
+            pick_label(&Pick::Custom),
+            rox_i18n::t!("shader-pick-custom")
+        );
 
         // A workspace shader. The name wins over everything the config
         // still carries inline, and a name that resolves to nothing reads

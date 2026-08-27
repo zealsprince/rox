@@ -19,6 +19,7 @@
 //! init order in `main` matters.
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use gpui::{App, Global, KeyBinding, Keystroke};
 
@@ -70,10 +71,10 @@ impl Group {
 
     pub fn label(self) -> &'static str {
         match self {
-            Group::Playback => "Playback",
-            Group::Windows => "Windows",
-            Group::View => "View",
-            Group::Editing => "Editing",
+            Group::Playback => rox_i18n::t_static("keymap-group-playback"),
+            Group::Windows => rox_i18n::t_static("keymap-group-windows"),
+            Group::View => rox_i18n::t_static("keymap-group-view"),
+            Group::Editing => rox_i18n::t_static("keymap-group-editing"),
         }
     }
 
@@ -147,7 +148,7 @@ fn modified(chord: &str) -> bool {
 }
 
 macro_rules! command {
-    ($id:literal, $label:literal, $group:expr, $ctx:expr, $keys:expr, $action:expr, $desc:literal) => {
+    ($id:literal, $label:expr, $group:expr, $ctx:expr, $keys:expr, $action:expr, $desc:expr) => {
         Command {
             id: $id,
             label: $label,
@@ -193,144 +194,152 @@ mod defaults {
 
 /// Everything rox binds. The page draws this in order within each group,
 /// so related rows sit together.
-pub const COMMANDS: &[Command] = &[
-    command!(
-        "toggle_playback",
-        "Play / Pause",
-        Group::Playback,
-        PLAYBACK,
-        &["space"],
-        TogglePlayback,
-        "Start the current track, or pause it where it is"
-    ),
-    command!(
-        "seek_backward",
-        "Seek Backward",
-        Group::Playback,
-        PLAYBACK,
-        &["left"],
-        SeekBackward,
-        "Step back through the playing track"
-    ),
-    command!(
-        "seek_forward",
-        "Seek Forward",
-        Group::Playback,
-        PLAYBACK,
-        &["right"],
-        SeekForward,
-        "Step forward through the playing track"
-    ),
-    command!(
-        "open_settings",
-        "Open Settings",
-        Group::Windows,
-        WORKSPACE,
-        defaults::SETTINGS,
-        OpenSettings,
-        "Open this window"
-    ),
-    command!(
-        "open_stats",
-        "Open Statistics",
-        Group::Windows,
-        WORKSPACE,
-        defaults::STATS,
-        OpenStats,
-        "Open the listening statistics window"
-    ),
-    command!(
-        "open_quick_play",
-        "Quick Play",
-        Group::Windows,
-        WORKSPACE,
-        defaults::QUICK_PLAY,
-        OpenQuickPlay,
-        "Raise the search-and-play prompt over the window"
-    ),
-    command!(
-        "close_window",
-        "Close Window",
-        Group::Windows,
-        None,
-        defaults::CLOSE_WINDOW,
-        CloseWindow,
-        "Close whichever window is in front. Bound everywhere, popped-out panels included"
-    ),
-    command!(
-        "quit",
-        "Quit",
-        Group::Windows,
-        None,
-        defaults::QUIT,
-        Quit,
-        "Leave rox. Bound everywhere, since there's no window it shouldn't work from"
-    ),
-    command!(
-        "focus_search",
-        "Focus Search",
-        Group::View,
-        WORKSPACE,
-        defaults::FOCUS_SEARCH,
-        FocusSearch,
-        "Put the cursor in the library search box"
-    ),
-    command!(
-        "toggle_zoom",
-        "Zoom Panel Group",
-        Group::View,
-        WORKSPACE,
-        &["shift-escape"],
-        ToggleZoom,
-        "Fill the dock with the last-clicked panel group, or back out of it"
-    ),
-    command!(
-        "increase_font_size",
-        "Increase Text Size",
-        Group::View,
-        None,
-        defaults::ZOOM_IN,
-        IncreaseFontSize,
-        "Step the app-wide text size up"
-    ),
-    command!(
-        "decrease_font_size",
-        "Decrease Text Size",
-        Group::View,
-        None,
-        defaults::ZOOM_OUT,
-        DecreaseFontSize,
-        "Step the app-wide text size down"
-    ),
-    command!(
-        "reset_font_size",
-        "Reset Text Size",
-        Group::View,
-        None,
-        defaults::ZOOM_RESET,
-        ResetFontSize,
-        "Snap the text size back to stock"
-    ),
-    command!(
-        "toggle_post_shader",
-        "Toggle Overlay Shader",
-        Group::View,
-        None,
-        defaults::POST_SHADER,
-        TogglePostShader,
-        "Turn the screen shader off and on. Bound everywhere on purpose: a shader can bury \
-         every control this chord would otherwise be reached by"
-    ),
-    command!(
-        "stamp_line",
-        "Stamp Lyric Line",
-        Group::Editing,
-        LYRICS,
-        &["shift-enter"],
-        StampLine,
-        "Write the playing position onto the lyric line being edited"
-    ),
-];
+///
+/// A `Vec` behind [`LazyLock`] rather than a `const` slice, because the
+/// label and description strings resolve through the locale bundles at
+/// first use, and that lookup isn't `const fn`. Every `.iter()` call site
+/// reaches it through [`LazyLock`]'s deref to the built `Vec`; a bare
+/// `for command in COMMANDS` needs `.iter()` added, since deref coercion
+/// doesn't reach `IntoIterator`.
+pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
+    vec![
+        command!(
+            "toggle_playback",
+            rox_i18n::t_static("keymap-toggle-playback"),
+            Group::Playback,
+            PLAYBACK,
+            &["space"],
+            TogglePlayback,
+            rox_i18n::t_static("keymap-toggle-playback.description")
+        ),
+        command!(
+            "seek_backward",
+            rox_i18n::t_static("keymap-seek-backward"),
+            Group::Playback,
+            PLAYBACK,
+            &["left"],
+            SeekBackward,
+            rox_i18n::t_static("keymap-seek-backward.description")
+        ),
+        command!(
+            "seek_forward",
+            rox_i18n::t_static("keymap-seek-forward"),
+            Group::Playback,
+            PLAYBACK,
+            &["right"],
+            SeekForward,
+            rox_i18n::t_static("keymap-seek-forward.description")
+        ),
+        command!(
+            "open_settings",
+            rox_i18n::t_static("keymap-open-settings"),
+            Group::Windows,
+            WORKSPACE,
+            defaults::SETTINGS,
+            OpenSettings,
+            rox_i18n::t_static("keymap-open-settings.description")
+        ),
+        command!(
+            "open_stats",
+            rox_i18n::t_static("keymap-open-stats"),
+            Group::Windows,
+            WORKSPACE,
+            defaults::STATS,
+            OpenStats,
+            rox_i18n::t_static("keymap-open-stats.description")
+        ),
+        command!(
+            "open_quick_play",
+            rox_i18n::t_static("keymap-open-quick-play"),
+            Group::Windows,
+            WORKSPACE,
+            defaults::QUICK_PLAY,
+            OpenQuickPlay,
+            rox_i18n::t_static("keymap-open-quick-play.description")
+        ),
+        command!(
+            "close_window",
+            rox_i18n::t_static("keymap-close-window"),
+            Group::Windows,
+            None,
+            defaults::CLOSE_WINDOW,
+            CloseWindow,
+            rox_i18n::t_static("keymap-close-window.description")
+        ),
+        command!(
+            "quit",
+            rox_i18n::t_static("keymap-quit"),
+            Group::Windows,
+            None,
+            defaults::QUIT,
+            Quit,
+            rox_i18n::t_static("keymap-quit.description")
+        ),
+        command!(
+            "focus_search",
+            rox_i18n::t_static("keymap-focus-search"),
+            Group::View,
+            WORKSPACE,
+            defaults::FOCUS_SEARCH,
+            FocusSearch,
+            rox_i18n::t_static("keymap-focus-search.description")
+        ),
+        command!(
+            "toggle_zoom",
+            rox_i18n::t_static("keymap-toggle-zoom"),
+            Group::View,
+            WORKSPACE,
+            &["shift-escape"],
+            ToggleZoom,
+            rox_i18n::t_static("keymap-toggle-zoom.description")
+        ),
+        command!(
+            "increase_font_size",
+            rox_i18n::t_static("keymap-increase-font-size"),
+            Group::View,
+            None,
+            defaults::ZOOM_IN,
+            IncreaseFontSize,
+            rox_i18n::t_static("keymap-increase-font-size.description")
+        ),
+        command!(
+            "decrease_font_size",
+            rox_i18n::t_static("keymap-decrease-font-size"),
+            Group::View,
+            None,
+            defaults::ZOOM_OUT,
+            DecreaseFontSize,
+            rox_i18n::t_static("keymap-decrease-font-size.description")
+        ),
+        command!(
+            "reset_font_size",
+            rox_i18n::t_static("keymap-reset-font-size"),
+            Group::View,
+            None,
+            defaults::ZOOM_RESET,
+            ResetFontSize,
+            rox_i18n::t_static("keymap-reset-font-size.description")
+        ),
+        command!(
+            "toggle_post_shader",
+            rox_i18n::t_static("keymap-toggle-post-shader"),
+            Group::View,
+            None,
+            defaults::POST_SHADER,
+            TogglePostShader,
+            rox_i18n::t_static("keymap-toggle-post-shader.description")
+        ),
+        command!(
+            "stamp_line",
+            rox_i18n::t_static("keymap-stamp-line"),
+            Group::Editing,
+            LYRICS,
+            &["shift-enter"],
+            StampLine,
+            rox_i18n::t_static("keymap-stamp-line.description")
+        ),
+    ]
+});
 
 /// The command with this id, if the registry still has one. A settings
 /// file written by an older or newer build can name commands this one
@@ -424,7 +433,7 @@ pub fn init(cx: &mut App) {
 pub fn apply(cx: &mut App) {
     let overrides = Settings::load().keymap;
     let mut bindings = cx.global::<Foreign>().0.clone();
-    for command in COMMANDS {
+    for command in COMMANDS.iter() {
         bindings.extend(
             chords(command, &overrides)
                 .iter()
@@ -514,27 +523,27 @@ fn display_keystroke(keystroke: &Keystroke) -> String {
     let mut parts: Vec<&str> = Vec::new();
     let modifiers = keystroke.modifiers;
     if modifiers.control {
-        parts.push("Ctrl");
+        parts.push(rox_i18n::t_static("keymap-mod-ctrl"));
     }
     if modifiers.alt {
         parts.push(if cfg!(target_os = "macos") {
-            "Option"
+            rox_i18n::t_static("keymap-mod-option")
         } else {
-            "Alt"
+            rox_i18n::t_static("keymap-mod-alt")
         });
     }
     if modifiers.shift {
-        parts.push("Shift");
+        parts.push(rox_i18n::t_static("keymap-mod-shift"));
     }
     if modifiers.platform {
         parts.push(match () {
-            _ if cfg!(target_os = "macos") => "Cmd",
-            _ if cfg!(target_os = "windows") => "Win",
-            _ => "Super",
+            _ if cfg!(target_os = "macos") => rox_i18n::t_static("keymap-mod-cmd"),
+            _ if cfg!(target_os = "windows") => rox_i18n::t_static("keymap-mod-win"),
+            _ => rox_i18n::t_static("keymap-mod-super"),
         });
     }
     if modifiers.function {
-        parts.push("Fn");
+        parts.push(rox_i18n::t_static("keymap-mod-fn"));
     }
     let key = key_label(&keystroke.key);
     parts.push(&key);
@@ -546,21 +555,21 @@ fn display_keystroke(keystroke: &Keystroke) -> String {
 /// function row left uppercase whole.
 fn key_label(key: &str) -> String {
     match key {
-        "escape" => "Esc".to_string(),
+        "escape" => rox_i18n::t!("keymap-key-esc").to_string(),
         "enter" => "Enter".to_string(),
-        "backspace" => "Backspace".to_string(),
-        "delete" => "Delete".to_string(),
-        "space" => "Space".to_string(),
-        "tab" => "Tab".to_string(),
-        "up" => "Up".to_string(),
-        "down" => "Down".to_string(),
-        "left" => "Left".to_string(),
-        "right" => "Right".to_string(),
-        "pageup" => "Page Up".to_string(),
-        "pagedown" => "Page Down".to_string(),
-        "home" => "Home".to_string(),
-        "end" => "End".to_string(),
-        "insert" => "Insert".to_string(),
+        "backspace" => rox_i18n::t!("keymap-key-backspace").to_string(),
+        "delete" => rox_i18n::t!("keymap-key-delete").to_string(),
+        "space" => rox_i18n::t!("keymap-key-space").to_string(),
+        "tab" => rox_i18n::t!("keymap-key-tab").to_string(),
+        "up" => rox_i18n::t!("keymap-key-up").to_string(),
+        "down" => rox_i18n::t!("keymap-key-down").to_string(),
+        "left" => rox_i18n::t!("keymap-key-left").to_string(),
+        "right" => rox_i18n::t!("keymap-key-right").to_string(),
+        "pageup" => rox_i18n::t!("keymap-key-page-up").to_string(),
+        "pagedown" => rox_i18n::t!("keymap-key-page-down").to_string(),
+        "home" => rox_i18n::t!("keymap-key-home").to_string(),
+        "end" => rox_i18n::t!("keymap-key-end").to_string(),
+        "insert" => rox_i18n::t!("keymap-key-insert").to_string(),
         key if key.len() == 1 => key.to_uppercase(),
         key => {
             let mut chars = key.chars();
@@ -587,7 +596,7 @@ mod tests {
 
     #[test]
     fn defaults_parse() {
-        for command in COMMANDS {
+        for command in COMMANDS.iter() {
             for chord in command.defaults {
                 assert!(parses(chord), "{} ships an unbindable {chord}", command.id);
             }
@@ -599,7 +608,7 @@ mod tests {
     #[test]
     fn defaults_do_not_clash() {
         let overrides = BTreeMap::new();
-        for command in COMMANDS {
+        for command in COMMANDS.iter() {
             for chord in command.defaults {
                 assert_eq!(
                     clash(command, chord, &overrides),
@@ -613,9 +622,26 @@ mod tests {
 
     #[test]
     fn display_reads_as_keycaps() {
-        assert_eq!(display("ctrl-shift-s"), "Ctrl+Shift+S");
-        assert_eq!(display("space"), "Space");
-        assert_eq!(display("shift-escape"), "Shift+Esc");
+        assert_eq!(
+            display("ctrl-shift-s"),
+            format!(
+                "{}+{}+S",
+                rox_i18n::t_static("keymap-mod-ctrl"),
+                rox_i18n::t_static("keymap-mod-shift")
+            )
+        );
+        assert_eq!(
+            display("space"),
+            rox_i18n::t!("keymap-key-space").to_string()
+        );
+        assert_eq!(
+            display("shift-escape"),
+            format!(
+                "{}+{}",
+                rox_i18n::t_static("keymap-mod-shift"),
+                rox_i18n::t!("keymap-key-esc")
+            )
+        );
     }
 
     #[test]
@@ -679,7 +705,7 @@ mod tests {
         let overrides = BTreeMap::new();
         assert_eq!(
             clash(seek, "ctrl-l", &overrides),
-            Some("Focus Search"),
+            Some(rox_i18n::t_static("keymap-focus-search")),
             "a modified playback chord binds where Focus Search lives"
         );
         assert_eq!(

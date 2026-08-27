@@ -512,6 +512,18 @@ impl OutputStatus {
     /// only appears because a backend reported one, and the rate line
     /// compares the device against the file rather than against what was
     /// asked for.
+    /// A ReplayGain adjustment the way the format writes it: the sign
+    /// always shown, one decimal, and the decimal mark the reader's own.
+    /// The sign is spelled out here because a number formatter has no
+    /// setting for "always", and a gain without one reads as a level.
+    fn signed_db(db: f32) -> String {
+        let sign = if db < 0.0 { "-" } else { "+" };
+        format!(
+            "{sign}{}",
+            rox_i18n::format::format_float(f64::from(db.abs()), 1)
+        )
+    }
+
     pub fn lines(&self, expanded: bool, confirm_rate: bool) -> Vec<SharedString> {
         let resampling = self
             .source_rate
@@ -522,7 +534,7 @@ impl OutputStatus {
         // you're hearing. Broken enough to keep a line of its own in both
         // registers.
         if let Some(why) = &self.negotiated.fallback {
-            lines.push(format!("Exclusive fell back to shared: {why}").into());
+            lines.push(rox_i18n::t!("output-fell-back-to-shared", why = why.to_string()));
         }
         // Leveling multiplies the source on its way to the ring (ADR 19),
         // so it rides above the rate: whatever the rates say, this is the
@@ -531,35 +543,35 @@ impl OutputStatus {
         // fallback at zero says nothing.
         if expanded {
             if let Some(db) = self.leveling_db {
-                lines.push(format!("ReplayGain is levelling this file by {db:+.1} dB").into());
+                lines.push(rox_i18n::t!("output-replaygain-levelling", db = Self::signed_db(db)));
             }
             if let Some(source) = self.source_rate {
                 if resampling {
-                    lines.push(
-                        format!("The playing file is {source} Hz, resampled to reach the device")
-                            .into(),
-                    );
+                    lines.push(rox_i18n::t!("output-rate-resampled", rate = source));
                 } else if confirm_rate {
-                    lines.push(
-                        format!("The playing file is {source} Hz, so nothing is resampling it")
-                            .into(),
-                    );
+                    lines.push(rox_i18n::t!("output-rate-native", rate = source));
                 }
             }
         } else {
-            let mut bits = Vec::new();
+            let mut bits: Vec<SharedString> = Vec::new();
             if let Some(db) = self.leveling_db {
-                bits.push(format!("ReplayGain {db:+.1} dB"));
+                bits.push(rox_i18n::t!("output-replaygain-short", db = Self::signed_db(db)));
             }
             if let Some(source) = self.source_rate {
                 if resampling {
-                    bits.push(format!("{source} Hz file resampled"));
+                    bits.push(rox_i18n::t!("output-rate-resampled-short", rate = source));
                 } else if confirm_rate {
-                    bits.push(format!("{source} Hz file, no resampling"));
+                    bits.push(rox_i18n::t!("output-rate-native-short", rate = source));
                 }
             }
             if !bits.is_empty() {
-                lines.push(bits.join(", ").into());
+                lines.push(
+                    bits.iter()
+                        .map(SharedString::as_ref)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                        .into(),
+                );
             }
         }
         lines

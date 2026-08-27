@@ -35,6 +35,7 @@ use rox_panels::history::{HistoryConfig, HistoryPanel};
 use rox_panels::library::{LibraryConfig, LibraryPanel};
 use rox_panels::lyrics::{LyricsConfig, LyricsPanel};
 use rox_panels::metadata::{MetadataConfig, MetadataPanel};
+use rox_panels::oscilloscope::{OscilloscopeConfig, OscilloscopePanel};
 use rox_panels::output::{OutputConfig, OutputPanel};
 use rox_panels::particles::{ParticlesConfig, ParticlesPanel};
 use rox_panels::playlists::{PlaylistsConfig, PlaylistsPanel};
@@ -68,6 +69,8 @@ pub(crate) enum PanelPlacement {
 /// the panels that drive the workspace back (menu, window controls);
 /// everything else ignores it.
 pub(crate) struct PanelDef {
+    /// An i18n key, not display text - resolve through `rox_i18n::t!` or
+    /// `rox_i18n::t_static` at the point a menu or picker renders it.
     pub label: &'static str,
     /// The panel's registry name, the string its `panel_name` returns and
     /// `workspace::register_panels` registers its builder under. The label
@@ -84,7 +87,8 @@ pub(crate) struct PanelDef {
 /// Catalogue, Details, Visualizers). A group with no label renders its rows
 /// flat in place, which nothing uses now.
 pub(crate) struct PanelSection {
-    /// The group's label and icon; None for the bare top-level run.
+    /// The group's label (an i18n key, same as [`PanelDef::label`]) and
+    /// icon; None for the bare top-level run.
     pub group: Option<(&'static str, &'static str)>,
     pub panels: &'static [PanelDef],
 }
@@ -93,10 +97,10 @@ pub(crate) struct PanelSection {
 /// queues. The panels reached most often when getting around the library.
 pub(crate) static CATALOGUE: PanelSection =
     PanelSection {
-        group: Some(("Catalogue", icons::DISC)),
+        group: Some(("panel-catalog-group-catalogue", icons::DISC)),
         panels: &[
             PanelDef {
-                label: "Library",
+                label: "panel-title-library",
                 name: "library",
                 icon: icons::LIST_MUSIC,
                 placement: PanelPlacement::Center,
@@ -107,7 +111,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Search",
+                label: "panel-title-search",
                 name: "search",
                 icon: icons::SEARCH,
                 placement: PanelPlacement::Top,
@@ -118,7 +122,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Filter",
+                label: "panel-catalog-filter",
                 name: "filter",
                 icon: icons::FUNNEL,
                 placement: PanelPlacement::Center,
@@ -129,7 +133,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Folder Tree",
+                label: "panel-catalog-folder-tree",
                 name: "folder tree",
                 icon: icons::FOLDER,
                 placement: PanelPlacement::Center,
@@ -140,7 +144,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Album Grid",
+                label: "panel-title-album-grid",
                 name: "album grid",
                 icon: icons::LAYOUT_GRID,
                 placement: PanelPlacement::Center,
@@ -153,7 +157,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Artist Grid",
+                label: "panel-catalog-artist-grid",
                 name: "artist grid",
                 icon: icons::USER,
                 placement: PanelPlacement::Center,
@@ -164,7 +168,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Genre Grid",
+                label: "panel-catalog-genre-grid",
                 name: "genre grid",
                 icon: icons::TAG,
                 placement: PanelPlacement::Center,
@@ -175,7 +179,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Album Carousel",
+                label: "panel-catalog-album-carousel",
                 name: "art view",
                 icon: icons::GALLERY,
                 placement: PanelPlacement::Center,
@@ -186,7 +190,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Playlists",
+                label: "panel-catalog-playlists",
                 name: "playlists",
                 icon: icons::LIST_MUSIC,
                 placement: PanelPlacement::Center,
@@ -197,7 +201,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "Queue",
+                label: "panel-catalog-queue",
                 name: "queue",
                 icon: icons::LIST_MUSIC,
                 placement: PanelPlacement::Center,
@@ -208,7 +212,7 @@ pub(crate) static CATALOGUE: PanelSection =
                 },
             },
             PanelDef {
-                label: "History",
+                label: "panel-catalog-history",
                 name: "history",
                 icon: icons::CLOCK,
                 placement: PanelPlacement::Center,
@@ -224,10 +228,10 @@ pub(crate) static CATALOGUE: PanelSection =
 /// The inspector views: what's playing or selected, shown from a few
 /// angles. Grouped so the Catalogue list stays short.
 pub(crate) static DETAILS: PanelSection = PanelSection {
-    group: Some(("Details", icons::INFO)),
+    group: Some(("panel-catalog-group-details", icons::INFO)),
     panels: &[
         PanelDef {
-            label: "Cover Art",
+            label: "panel-catalog-cover-art",
             name: "cover art",
             icon: icons::IMAGE,
             placement: PanelPlacement::Center,
@@ -236,7 +240,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Metadata",
+            label: "panel-catalog-metadata",
             name: "metadata",
             icon: icons::FILE_TEXT,
             placement: PanelPlacement::Center,
@@ -247,7 +251,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Lyrics",
+            label: "panel-title-lyrics",
             name: "lyrics",
             icon: icons::MIC,
             placement: PanelPlacement::Center,
@@ -256,7 +260,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Biography",
+            label: "panel-catalog-biography",
             name: "biography",
             icon: icons::USER,
             placement: PanelPlacement::Center,
@@ -267,7 +271,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Output",
+            label: "panel-title-output",
             name: "output",
             icon: icons::VOLUME_2,
             placement: PanelPlacement::Center,
@@ -281,10 +285,10 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
 /// The composition hosts: panels that hold other panels inside one dock
 /// slot, for the arrangements the dock's splits and tabs can't make.
 pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
-    group: Some(("Arrangement", icons::LAYOUT_DASHBOARD)),
+    group: Some(("panel-catalog-group-arrangement", icons::LAYOUT_DASHBOARD)),
     panels: &[
         PanelDef {
-            label: "Drawer",
+            label: "panel-catalog-drawer",
             name: "drawer",
             icon: icons::PANEL_BOTTOM,
             placement: PanelPlacement::Center,
@@ -295,7 +299,7 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Group",
+            label: "panel-title-group",
             name: "group",
             icon: icons::COLUMNS_2,
             placement: PanelPlacement::Center,
@@ -306,7 +310,7 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Overlay",
+            label: "panel-catalog-overlay",
             name: "overlay",
             icon: icons::LAYERS,
             placement: PanelPlacement::Center,
@@ -317,7 +321,7 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Slide",
+            label: "panel-catalog-slide",
             name: "slide",
             icon: icons::GALLERY,
             placement: PanelPlacement::Center,
@@ -331,10 +335,10 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
 };
 
 pub(crate) static APPLICATION: PanelSection = PanelSection {
-    group: Some(("Application", icons::APP_WINDOW)),
+    group: Some(("panel-catalog-group-application", icons::APP_WINDOW)),
     panels: &[
         PanelDef {
-            label: "Menu",
+            label: "panel-catalog-menu",
             name: "menu",
             icon: icons::MENU,
             placement: PanelPlacement::Bottom,
@@ -343,7 +347,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Drag Anchor",
+            label: "panel-catalog-drag-anchor",
             name: "drag anchor",
             icon: icons::MOVE,
             placement: PanelPlacement::Bottom,
@@ -356,7 +360,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Spacer",
+            label: "panel-catalog-spacer",
             name: "spacer",
             icon: icons::SQUARE_DASHED,
             placement: PanelPlacement::Bottom,
@@ -365,7 +369,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Window Controls",
+            label: "panel-catalog-window-controls",
             name: "window controls",
             icon: icons::APP_WINDOW,
             placement: PanelPlacement::Bottom,
@@ -376,7 +380,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Mini Toggle",
+            label: "panel-catalog-mini-toggle",
             name: "mini toggle",
             icon: icons::MINIMIZE,
             placement: PanelPlacement::Bottom,
@@ -390,10 +394,10 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
 };
 
 pub(crate) static CONTROLS: PanelSection = PanelSection {
-    group: Some(("Controls", icons::SLIDERS)),
+    group: Some(("panel-catalog-group-controls", icons::SLIDERS)),
     panels: &[
         PanelDef {
-            label: "Track Info",
+            label: "panel-catalog-track-info",
             name: "track info",
             icon: icons::INFO,
             placement: PanelPlacement::Bottom,
@@ -404,7 +408,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Status",
+            label: "panel-catalog-status",
             name: "status",
             icon: icons::CHART_PIE,
             placement: PanelPlacement::Bottom,
@@ -413,7 +417,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Playback",
+            label: "panel-title-playback",
             name: "playback",
             icon: icons::PLAY,
             placement: PanelPlacement::Bottom,
@@ -424,7 +428,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Seek",
+            label: "panel-catalog-seek",
             name: "seek",
             icon: icons::FAST_FORWARD,
             placement: PanelPlacement::Bottom,
@@ -433,7 +437,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Volume",
+            label: "panel-title-volume",
             name: "volume",
             icon: icons::VOLUME_2,
             placement: PanelPlacement::Bottom,
@@ -446,7 +450,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         // pieces; the registry still builds them, so a layout that
         // carries one keeps restoring.
         PanelDef {
-            label: "Queue Widget",
+            label: "panel-catalog-queue-widget",
             name: "queue widget",
             icon: icons::LIST_MUSIC,
             placement: PanelPlacement::Bottom,
@@ -457,7 +461,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "EQ Widget",
+            label: "panel-catalog-eq-widget",
             name: "eq widget",
             icon: icons::AUDIO_LINES,
             placement: PanelPlacement::Bottom,
@@ -468,7 +472,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Stats Widget",
+            label: "panel-catalog-stats-widget",
             name: "stats widget",
             icon: icons::CHART_PIE,
             placement: PanelPlacement::Bottom,
@@ -479,7 +483,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Theme Toggle",
+            label: "panel-catalog-theme-toggle",
             name: "theme toggle",
             icon: icons::CONTRAST,
             placement: PanelPlacement::Bottom,
@@ -493,10 +497,10 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
 };
 
 pub(crate) static VISUALIZERS: PanelSection = PanelSection {
-    group: Some(("Visualizers", icons::EYE)),
+    group: Some(("panel-catalog-group-visualizers", icons::EYE)),
     panels: &[
         PanelDef {
-            label: "Spectrum",
+            label: "panel-catalog-spectrum",
             name: "spectrum",
             icon: icons::AUDIO_LINES,
             placement: PanelPlacement::Bottom,
@@ -507,7 +511,18 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Waveform",
+            label: "panel-catalog-oscilloscope",
+            name: "oscilloscope",
+            icon: icons::ACTIVITY,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| {
+                    OscilloscopePanel::new(state.clone(), OscilloscopeConfig::default(), cx)
+                }))
+            },
+        },
+        PanelDef {
+            label: "panel-catalog-waveform",
             name: "waveform",
             icon: icons::AUDIO_WAVEFORM,
             placement: PanelPlacement::Bottom,
@@ -518,7 +533,7 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "VU Meter",
+            label: "panel-catalog-vu-meter",
             name: "vu meter",
             icon: icons::GAUGE,
             placement: PanelPlacement::Bottom,
@@ -527,7 +542,7 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Shader",
+            label: "panel-title-shader",
             name: "shader",
             icon: icons::BLEND,
             placement: PanelPlacement::Bottom,
@@ -543,9 +558,9 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
 /// features on. A panel graduating moves its entry into the section it
 /// belongs in, and nothing else about it changes.
 pub(crate) static EXPERIMENTAL: PanelSection = PanelSection {
-    group: Some(("Experimental", icons::FLASK)),
+    group: Some(("panel-catalog-group-experimental", icons::FLASK)),
     panels: &[PanelDef {
-        label: "Particles",
+        label: "panel-catalog-particles",
         name: "particles",
         icon: icons::STAR,
         placement: PanelPlacement::Bottom,
@@ -580,10 +595,14 @@ pub(crate) fn is_experimental(section: &PanelSection) -> bool {
 /// A panel joins the list by implementing [`rox_panel_api::signal_ui::RouteHost`]
 /// and wrapping the rows it wants bindable in
 /// [`rox_panel_api::signal_ui::bindable_row`].
-const SIGNAL_PANELS: &[&str] = &["Particles", "Shader"];
+const SIGNAL_PANELS: &[&str] = &["particles", "shader"];
 
 pub(crate) fn supports_signals(def: &PanelDef) -> bool {
-    SIGNAL_PANELS.contains(&def.label)
+    // Registry names, not labels. A label is an i18n key whose whole job
+    // is to change per language and get reworded by translators, so
+    // matching identity on one is a list that silently stops matching.
+    // The name is what the builder registry and saved presets key off.
+    SIGNAL_PANELS.contains(&def.name)
 }
 
 /// Every section in menu order, the groups laid out alphabetically so the
@@ -659,5 +678,113 @@ mod tests {
             }
         }
         assert!(def_for("no such panel").is_none());
+    }
+
+    /// Every label in the catalog is a real message key.
+    ///
+    /// The field is documented as an i18n key, but nothing held it to
+    /// that, and for a while some entries carried display text instead.
+    /// The two failure modes hide each other: an entry holding text
+    /// renders correctly in English, and an entry holding a key renders
+    /// as the key itself, so the menu looks half broken and only in a
+    /// language nobody on the team reads. The source locale carries
+    /// every key by definition, so resolving there is the whole check.
+    #[test]
+    fn every_label_is_a_message_key() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some(rox_i18n::SOURCE_LOCALE));
+        for section in CATALOG {
+            if let Some((group, _)) = section.group {
+                assert!(
+                    rox_i18n::try_translate(group).is_some(),
+                    "the group label {group} is not a message key"
+                );
+            }
+            for def in section.panels {
+                assert!(
+                    rox_i18n::try_translate(def.label).is_some(),
+                    "{}: the label {} is not a message key",
+                    def.name,
+                    def.label
+                );
+            }
+        }
+        rox_i18n::set_locale(None);
+    }
+
+    /// No menu prints a label without resolving it first.
+    ///
+    /// A label is a message key, so rendering it raw puts
+    /// "panel-catalog-filter" on screen where the panel's name belongs.
+    /// It reads as ordinary code to whoever writes the call site and
+    /// only surfaces when somebody runs the app in a language they can
+    /// read. Eight menus draw the catalog and this went wrong in seven
+    /// of them across two separate rounds, so the check scans the
+    /// crate's own source instead of trusting the next reviewer to
+    /// catch the eighth.
+    ///
+    /// Only `def.label` is covered. The group labels come out of a
+    /// destructured tuple and can't be matched on text alone.
+    #[test]
+    fn no_menu_renders_a_label_raw() {
+        fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("the crate has a src directory") {
+                let path = entry.expect("a readable directory entry").path();
+                if path.is_dir() {
+                    collect(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        // Resolving it, or handing the key onward for someone else to
+        // resolve, both count. Printing it does not.
+        const RESOLVED: [&str; 4] = [
+            "t!(def.label",
+            "t_static(def.label",
+            "try_translate(def.label",
+            "label: def.label",
+        ];
+        let mut paths = Vec::new();
+        collect(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut paths,
+        );
+        paths.sort();
+        let mut raw = Vec::new();
+        for path in paths {
+            let text = std::fs::read_to_string(&path).expect("the source is readable");
+            // Tests below assert on labels as data, which is not a render.
+            let code = text.split("#[cfg(test)]").next().unwrap_or(&text);
+            for (line_no, line) in code.lines().enumerate() {
+                if line.contains("def.label")
+                    && !RESOLVED.iter().any(|ok| line.contains(ok))
+                {
+                    raw.push(format!(
+                        "{}:{}  {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        line_no + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+        assert!(
+            raw.is_empty(),
+            "these draw a label without translating it: {raw:#?}"
+        );
+    }
+
+    /// Identity never rides on a label. The signal list is the one place
+    /// that used to match panels by their display string, which quietly
+    /// stops matching the moment a translator rewords it.
+    #[test]
+    fn the_signal_list_names_registry_names() {
+        for name in SIGNAL_PANELS {
+            assert!(
+                def_for(name).is_some(),
+                "{name} is in the signal list but is not a registry name"
+            );
+        }
     }
 }

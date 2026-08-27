@@ -55,63 +55,69 @@ const ROW_H: f32 = 30.;
 /// and favourite controls trail, the tag columns sit between. Which show is
 /// the config's call; this only fixes the order and the default set. Every
 /// key is one the shared [`track_columns::cell`] draws.
-const COLUMNS: &[Column] = &[
-    Column {
-        key: "cover",
-        label: "Cover",
-        default_on: false,
-    },
-    Column {
-        key: "number",
-        label: "Number",
-        default_on: true,
-    },
-    Column {
-        key: "name",
-        label: "Name",
-        default_on: true,
-    },
-    Column {
-        key: "artist",
-        label: "Artist",
-        default_on: true,
-    },
-    Column {
-        key: "album",
-        label: "Album",
-        default_on: false,
-    },
-    Column {
-        key: "year",
-        label: "Year",
-        default_on: false,
-    },
-    Column {
-        key: "genre",
-        label: "Genre",
-        default_on: false,
-    },
-    Column {
-        key: "duration",
-        label: "Duration",
-        default_on: false,
-    },
-    Column {
-        key: "plays",
-        label: "Plays",
-        default_on: false,
-    },
-    Column {
-        key: "rating",
-        label: "Rating",
-        default_on: true,
-    },
-    Column {
-        key: "favourite",
-        label: "Favourite",
-        default_on: true,
-    },
-];
+///
+/// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
+/// this rebuilds and leaks once per active locale rather than on every
+/// call, mirroring `rox_i18n::t_static`'s own per-locale cache.
+fn columns() -> Vec<Column> {
+    vec![
+        Column {
+            key: "cover",
+            label: rox_i18n::t!("columns-cover"),
+            default_on: false,
+        },
+        Column {
+            key: "number",
+            label: rox_i18n::t!("columns-number"),
+            default_on: true,
+        },
+        Column {
+            key: "name",
+            label: rox_i18n::t!("columns-name"),
+            default_on: true,
+        },
+        Column {
+            key: "artist",
+            label: rox_i18n::t!("head-piece-artist"),
+            default_on: true,
+        },
+        Column {
+            key: "album",
+            label: rox_i18n::t!("head-piece-album"),
+            default_on: false,
+        },
+        Column {
+            key: "year",
+            label: rox_i18n::t!("head-piece-year"),
+            default_on: false,
+        },
+        Column {
+            key: "genre",
+            label: rox_i18n::t!("head-piece-genre"),
+            default_on: false,
+        },
+        Column {
+            key: "duration",
+            label: rox_i18n::t!("info-item-duration"),
+            default_on: false,
+        },
+        Column {
+            key: "plays",
+            label: rox_i18n::t!("status-item-plays"),
+            default_on: false,
+        },
+        Column {
+            key: "rating",
+            label: rox_i18n::t!("info-item-rating"),
+            default_on: true,
+        },
+        Column {
+            key: "favourite",
+            label: rox_i18n::t!("info-item-favourite"),
+            default_on: true,
+        },
+    ]
+}
 
 /// The playlists panel's config: the shared chrome, which playlists are
 /// expanded so a saved layout restores the open ones, the album heading
@@ -151,7 +157,7 @@ impl Default for PlaylistsConfig {
             chrome: PanelChrome::default(),
             expanded: Vec::new(),
             headers: Headers::Off,
-            columns: track_columns::default_columns(COLUMNS),
+            columns: track_columns::default_columns(&columns()),
             search: false,
             query_source: QuerySource::default(),
             query: String::new(),
@@ -296,7 +302,11 @@ struct TrackDragPreview {
 impl Render for TrackDragPreview {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let label = if self.extra > 0 {
-            SharedString::from(format!("{} +{}", self.title, self.extra))
+            SharedString::from(format!(
+                "{} +{}",
+                self.title,
+                rox_i18n::format::format_int(self.extra as i64)
+            ))
         } else {
             self.title.clone()
         };
@@ -600,8 +610,8 @@ impl PlaylistsPanel {
 
     /// Put up the one-line refusal a smart playlist's edits get. Nothing
     /// happened, and the line says which nothing it was.
-    fn refuse(&mut self, why: &'static str, cx: &mut Context<Self>) {
-        self.refusal = Some(SharedString::from(why));
+    fn refuse(&mut self, why: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.refusal = Some(why.into());
         cx.notify();
     }
 
@@ -800,7 +810,7 @@ impl PlaylistsPanel {
             let name = path
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Imported".into());
+                .unwrap_or_else(|| rox_i18n::t!("playlists-imported-fallback").to_string());
             let base = path
                 .parent()
                 .map(|dir| dir.to_path_buf())
@@ -950,7 +960,7 @@ impl PlaylistsPanel {
         let (members, smart): (Vec<i64>, Vec<i64>) =
             members.into_iter().partition(|&member| member > 0);
         if !smart.is_empty() {
-            self.refuse("Edit the query to change what a smart playlist holds", cx);
+            self.refuse(rox_i18n::t!("playlists-refuse-edit-query"), cx);
         }
         if members.is_empty() {
             return;
@@ -1014,13 +1024,13 @@ impl PlaylistsPanel {
         // A smart playlist's contents are its query's answer, so there is
         // nowhere for a dropped track to go. Say so rather than swallow it.
         if self.is_smart(playlist_id) {
-            self.refuse("A smart playlist takes its tracks from its query", cx);
+            self.refuse(rox_i18n::t!("playlists-refuse-smart-source"), cx);
             return;
         }
         // And a row dragged out of one has no member to move, only a query
         // it happens to match.
         if drag.members.iter().any(|&member| member < 0) {
-            self.refuse("Tracks in a smart playlist can't be dragged out", cx);
+            self.refuse(rox_i18n::t!("playlists-refuse-drag-out"), cx);
             return;
         }
         let members = drag.members.clone();
@@ -1156,7 +1166,9 @@ impl PlaylistsPanel {
                 div()
                     .flex_none()
                     .text_color(palette::text_muted())
-                    .child(SharedString::from(count.to_string())),
+                    .child(SharedString::from(rox_i18n::format::format_int(
+                        count as i64,
+                    ))),
             )
             // Export this playlist to an M3U8 file. Its own mouse-down stops
             // the press from reaching the row, so a click here never toggles
@@ -1324,7 +1336,7 @@ impl PlaylistsPanel {
             plays: t.plays,
             cover,
         };
-        for col in COLUMNS {
+        for col in columns() {
             if self.column_shown(col.key) {
                 if let Some(c) = track_columns::cell(col.key, &cell, &self.state) {
                     row = row.child(c);
@@ -1340,14 +1352,14 @@ impl PlaylistsPanel {
         let state = self.state.clone();
         let smart_state = self.state.clone();
         menu.item(
-            PopupMenuItem::new("New Playlist...")
+            PopupMenuItem::new(rox_i18n::t!("playlists-new"))
                 .icon(Icon::default().path(icons::PLUS))
                 .on_click(move |_, _, cx| {
                     rox_panel_api::openers::playlist_create(state.clone(), Vec::new(), cx);
                 }),
         )
         .item(
-            PopupMenuItem::new("New Smart Playlist...")
+            PopupMenuItem::new(rox_i18n::t!("playlists-new-smart"))
                 .icon(Icon::default().path(icons::FUNNEL))
                 .on_click(move |_, _, cx| {
                     rox_panel_api::openers::smart_playlist(smart_state.clone(), None, cx);
@@ -1472,19 +1484,19 @@ impl PanelSettings for PlaylistsPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_block(
-                "Columns",
-                Some("Which track columns show beside the title".into()),
+                rox_i18n::t!("library-columns"),
+                Some(rox_i18n::t!("playlists-columns")),
                 None,
-                track_columns::checklist(COLUMNS, self, cx),
+                track_columns::checklist(&columns(), self, cx),
             ))
             .child(panel::setting_row(
-                "Headings",
-                Some("Break each playlist's tracks into album runs; Expanded adds the cover and stats".into()),
-                panel::choices(
+                rox_i18n::t!("panel-headings"),
+                Some(rox_i18n::t!("playlists-headings")),
+                panel::choices_shared(
                     &[
-                        ("Off", Headers::Off),
-                        ("Compact", Headers::Compact),
-                        ("Expanded", Headers::Expanded),
+                        (rox_i18n::t!("headers-off"), Headers::Off),
+                        (rox_i18n::t!("headers-compact"), Headers::Compact),
+                        (rox_i18n::t!("headers-expanded"), Headers::Expanded),
                     ],
                     self.config.headers,
                     |this: &mut Self, headers, cx| this.set_headers(headers, cx),
@@ -1525,7 +1537,10 @@ impl Panel for PlaylistsPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Playlists")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("playlists-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1610,11 +1625,17 @@ impl Panel for PlaylistsPanel {
         // Display section: the view knobs under their own label, ahead of
         // the Panel section, the library's shape. The same knobs the View
         // settings page holds, one flyout each.
-        let menu = menu.separator().label("Display");
-        let columns = track_columns::columns_submenu(COLUMNS, window, cx);
-        let menu = menu.item(PopupMenuItem::submenu("Columns", columns));
+        let menu = menu.separator().label(rox_i18n::t!("panel-menu-display"));
+        let columns_menu = track_columns::columns_submenu(columns(), window, cx);
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("library-columns"),
+            columns_menu,
+        ));
         let headings = track_columns::headings_submenu(window, cx);
-        let menu = menu.item(PopupMenuItem::submenu("Headings", headings));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("panel-headings"),
+            headings,
+        ));
         // Follow the shared search query, or filter by this panel's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
@@ -1662,7 +1683,7 @@ impl Panel for PlaylistsPanel {
     ) -> Option<Vec<Button>> {
         Some(vec![Button::new("import-playlist")
             .icon(Icon::default().path(icons::DOWNLOAD))
-            .tooltip("Import Playlist")
+            .tooltip(rox_i18n::t!("playlists-import-tooltip"))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.import(window, cx)
             }))])
@@ -1695,9 +1716,9 @@ impl PlaylistsPanel {
         let content = if self.rows.is_empty() {
             // A search that hit nothing reads differently from an empty tree.
             let message = if searching {
-                "No matches"
+                rox_i18n::t!("picker-no-matches")
             } else {
-                "No playlists yet, add tracks or use New Playlist"
+                rox_i18n::t!("playlists-empty")
             };
             div().flex_1().min_h_0().flex().flex_col().child(
                 div()
@@ -1780,7 +1801,7 @@ impl PlaylistsPanel {
                     menu,
                     self.state.clone(),
                     vec![track_id],
-                    "Play",
+                    rox_i18n::t!("library-play"),
                     window,
                     cx,
                     move |_, cx| {
@@ -1792,12 +1813,14 @@ impl PlaylistsPanel {
                 let remove_panel = weak.clone();
                 // The right press already pulled the row into the selection, so
                 // Remove drops the whole lit set: one row or many.
-                let remove_label = if self.selected.contains(&member_id) && self.selected.len() > 1
+                let remove_count = if self.selected.contains(&member_id) && self.selected.len() > 1
                 {
-                    format!("Remove {} from Playlist", self.selected.len())
+                    self.selected.len()
                 } else {
-                    "Remove from Playlist".to_string()
+                    1
                 };
+                let remove_label =
+                    rox_i18n::t!("playlists-remove", count = remove_count as u64).to_string();
                 let menu = menu.item(
                     PopupMenuItem::new(remove_label)
                         .icon(Icon::default().path(icons::CLOSE))
@@ -1829,7 +1852,7 @@ impl PlaylistsPanel {
                 let (id, name, favourite, smart) = (*id, name.clone(), *favourite, *smart);
                 let play_panel = weak.clone();
                 let menu = menu.item(
-                    PopupMenuItem::new("Play")
+                    PopupMenuItem::new(rox_i18n::t!("library-play"))
                         .icon(Icon::default().path(icons::PLAY))
                         .on_click(move |_, _, cx| {
                             if let Some(this) = play_panel.upgrade() {
@@ -1842,7 +1865,7 @@ impl PlaylistsPanel {
                 let query_state = self.state.clone();
                 let menu = menu.when(smart, |menu| {
                     menu.item(
-                        PopupMenuItem::new("Edit Query...")
+                        PopupMenuItem::new(rox_i18n::t!("playlists-edit-query"))
                             .icon(Icon::default().path(icons::FUNNEL))
                             .on_click(move |_, _, cx| {
                                 rox_panel_api::openers::smart_playlist(
@@ -1858,7 +1881,7 @@ impl PlaylistsPanel {
                 let rename_state = self.state.clone();
                 let menu = menu.when(!favourite, |menu| {
                     menu.item(
-                        PopupMenuItem::new("Rename...")
+                        PopupMenuItem::new(rox_i18n::t!("playlists-rename"))
                             .icon(Icon::default().path(icons::PENCIL))
                             .on_click(move |_, _, cx| {
                                 rox_panel_api::openers::playlist_rename(
@@ -1873,7 +1896,7 @@ impl PlaylistsPanel {
                 let delete_panel = weak.clone();
                 let menu = menu.when(!favourite, |menu| {
                     menu.item(
-                        PopupMenuItem::new("Delete Playlist")
+                        PopupMenuItem::new(rox_i18n::t!("playlists-delete"))
                             .icon(Icon::default().path(icons::TRASH))
                             .on_click(move |_, _, cx| {
                                 if let Some(this) = delete_panel.upgrade() {

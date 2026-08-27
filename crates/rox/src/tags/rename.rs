@@ -106,7 +106,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
             let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
             rox_panel_api::panel::open_child_window(
                 cx,
-                "rox - Rename Files",
+                rox_i18n::t!("tags-rename-window-title"),
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| cx.new(|cx| RenameFiles::new(state, ids, window, cx)),
@@ -158,12 +158,12 @@ enum Blocked {
 impl Blocked {
     fn label(&self) -> SharedString {
         match self {
-            Blocked::CueTrack => "cue track, no file of its own".into(),
-            Blocked::OutsideRoots => "outside every library root".into(),
-            Blocked::Unresolved => "not in the catalog yet".into(),
+            Blocked::CueTrack => rox_i18n::t!("tags-rename-blocked-cue"),
+            Blocked::OutsideRoots => rox_i18n::t!("tags-rename-blocked-outside-roots"),
+            Blocked::Unresolved => rox_i18n::t!("tags-rename-blocked-unresolved"),
             Blocked::Render(e) => e.clone().into(),
-            Blocked::Duplicate => "two tracks want this name".into(),
-            Blocked::Occupied => "a file is already there".into(),
+            Blocked::Duplicate => rox_i18n::t!("tags-rename-blocked-duplicate"),
+            Blocked::Occupied => rox_i18n::t!("tags-rename-blocked-occupied"),
         }
     }
 }
@@ -598,7 +598,11 @@ impl RenameFiles {
                     Err(e) => {
                         failures += 1;
                         if first_error.is_none() {
-                            first_error = Some(format!("{name}: {e}").into());
+                            first_error = Some(rox_i18n::t!(
+                                "tags-rename-move-error",
+                                name = name.to_string(),
+                                error = e
+                            ));
                         }
                     }
                 }
@@ -628,7 +632,11 @@ impl RenameFiles {
                         // against the current state instead of re-moving.
                         this.applying = false;
                         this.error = Some(if failures > 1 {
-                            format!("{failures} files failed; {e}").into()
+                            rox_i18n::t!(
+                                "tags-rename-move-errors",
+                                count = failures as u64,
+                                error = e.to_string()
+                            )
                         } else {
                             e
                         });
@@ -699,7 +707,7 @@ impl RenameFiles {
         };
         let (line, color) = match &mv.blocked {
             Some(blocked) => (blocked.label(), palette::text_faint()),
-            None if mv.unchanged => ("unchanged".into(), palette::text_faint()),
+            None if mv.unchanged => (rox_i18n::t!("tags-rename-unchanged"), palette::text_faint()),
             None => (SharedString::from(rel(&mv.to)), palette::text_bright()),
         };
         div()
@@ -766,9 +774,9 @@ impl RenameFiles {
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(format!(
-                        "{}; / makes a folder, the extension follows the file",
-                        guess::PLACEHOLDERS
+                    .child(rox_i18n::t!(
+                        "tags-rename-pattern-help",
+                        placeholders = guess::PLACEHOLDERS
                             .iter()
                             .filter(|p| **p != "%skip%")
                             .copied()
@@ -796,9 +804,10 @@ impl RenameFiles {
         let reason = match (&self.parse_error, &self.error) {
             (Some(e), _) => Some((e.clone(), palette::tone_warn())),
             (None, Some(e)) => Some((e.clone(), palette::tone_bad())),
-            (None, None) if movable == 0 => {
-                Some((SharedString::from("Nothing to move"), palette::tone_warn()))
-            }
+            (None, None) if movable == 0 => Some((
+                rox_i18n::t!("tags-rename-nothing-to-move"),
+                palette::tone_warn(),
+            )),
             _ => None,
         };
         let hint = if self.applying {
@@ -811,7 +820,11 @@ impl RenameFiles {
                 .text_xs()
                 .text_color(palette::text_muted())
                 .child(Spinner::new().with_size(Size::Small))
-                .child(format!("Moving {at}/{}...", self.total))
+                .child(rox_i18n::t!(
+                    "tags-rename-moving",
+                    done = at as u64,
+                    total = self.total as u64
+                ))
                 .into_any_element()
         } else if let Some((reason, color)) = reason {
             div()
@@ -874,7 +887,11 @@ impl RenameFiles {
 impl Render for RenameFiles {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let movable = self.movable();
-        let count: SharedString = format!("{movable} of {} will move", self.tracks.len()).into();
+        let count = rox_i18n::t!(
+            "tags-rename-will-move",
+            count = movable as u64,
+            total = self.tracks.len() as u64
+        );
         let rows = self
             .plan
             .iter()
@@ -924,10 +941,14 @@ impl Render for RenameFiles {
                     // the window's, the same as the settings page. Two
                     // layers is what the backdrop reads through everywhere.
                     .bg(palette::bg_elevated())
-                    .child(section("Pattern", None, self.pattern_section(cx)))
+                    .child(section(
+                        rox_i18n::t!("tags-rename-pattern-section"),
+                        None,
+                        self.pattern_section(cx),
+                    ))
                     .child(
                         section(
-                            "Preview",
+                            rox_i18n::t!("tags-rename-preview-section"),
                             Some(
                                 div()
                                     .text_xs()

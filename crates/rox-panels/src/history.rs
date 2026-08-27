@@ -56,11 +56,11 @@ pub enum HistoryView {
 }
 
 impl HistoryView {
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            HistoryView::Recent => "Recently Played",
-            HistoryView::Most => "Most Played",
-            HistoryView::Never => "Never Played",
+            HistoryView::Recent => rox_i18n::t!("history-view-recent"),
+            HistoryView::Most => rox_i18n::t!("history-view-most"),
+            HistoryView::Never => rox_i18n::t!("history-view-never"),
         }
     }
 }
@@ -102,82 +102,90 @@ impl NeverSort {
 }
 
 /// The Never Played sorts, in menu and settings order.
-const NEVER_SORTS: &[(&str, NeverSort)] = &[
-    ("Browse Order", NeverSort::Browse),
-    ("Title", NeverSort::Title),
-    ("Artist", NeverSort::Artist),
-    ("Album", NeverSort::Album),
-    ("Year", NeverSort::Year),
-    ("Duration", NeverSort::Duration),
-    ("Rating", NeverSort::Rating),
-    ("Date Added", NeverSort::Added),
-];
+fn never_sorts() -> Vec<(SharedString, NeverSort)> {
+    vec![
+        (rox_i18n::t!("history-sort-browse"), NeverSort::Browse),
+        (rox_i18n::t!("info-item-title"), NeverSort::Title),
+        (rox_i18n::t!("head-piece-artist"), NeverSort::Artist),
+        (rox_i18n::t!("head-piece-album"), NeverSort::Album),
+        (rox_i18n::t!("head-piece-year"), NeverSort::Year),
+        (rox_i18n::t!("info-item-duration"), NeverSort::Duration),
+        (rox_i18n::t!("info-item-rating"), NeverSort::Rating),
+        (rox_i18n::t!("history-sort-date-added"), NeverSort::Added),
+    ]
+}
 
 /// The track columns, in render order. Plays and Last Played are the record's
 /// own, drawn here; the rest are the shared columns [`track_columns::cell`]
 /// draws. The view sets the query order, not which columns show.
-const COLUMNS: &[Column] = &[
-    Column {
-        key: "cover",
-        label: "Cover",
-        default_on: false,
-    },
-    Column {
-        key: "number",
-        label: "Number",
-        default_on: false,
-    },
-    Column {
-        key: "name",
-        label: "Name",
-        default_on: true,
-    },
-    Column {
-        key: "artist",
-        label: "Artist",
-        default_on: true,
-    },
-    Column {
-        key: "album",
-        label: "Album",
-        default_on: false,
-    },
-    Column {
-        key: "year",
-        label: "Year",
-        default_on: false,
-    },
-    Column {
-        key: "genre",
-        label: "Genre",
-        default_on: false,
-    },
-    Column {
-        key: "duration",
-        label: "Duration",
-        default_on: false,
-    },
-    Column {
-        key: "plays",
-        label: "Plays",
-        default_on: true,
-    },
-    Column {
-        key: "lastplayed",
-        label: "Last Played",
-        default_on: true,
-    },
-    Column {
-        key: "rating",
-        label: "Rating",
-        default_on: true,
-    },
-    Column {
-        key: "favourite",
-        label: "Favourite",
-        default_on: true,
-    },
-];
+///
+/// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
+/// this rebuilds and leaks once per active locale rather than on every call,
+/// mirroring `rox_i18n::t_static`'s own per-locale cache.
+fn columns() -> Vec<Column> {
+    vec![
+        Column {
+            key: "cover",
+            label: rox_i18n::t!("columns-cover"),
+            default_on: false,
+        },
+        Column {
+            key: "number",
+            label: rox_i18n::t!("columns-number"),
+            default_on: false,
+        },
+        Column {
+            key: "name",
+            label: rox_i18n::t!("columns-name"),
+            default_on: true,
+        },
+        Column {
+            key: "artist",
+            label: rox_i18n::t!("head-piece-artist"),
+            default_on: true,
+        },
+        Column {
+            key: "album",
+            label: rox_i18n::t!("head-piece-album"),
+            default_on: false,
+        },
+        Column {
+            key: "year",
+            label: rox_i18n::t!("head-piece-year"),
+            default_on: false,
+        },
+        Column {
+            key: "genre",
+            label: rox_i18n::t!("head-piece-genre"),
+            default_on: false,
+        },
+        Column {
+            key: "duration",
+            label: rox_i18n::t!("info-item-duration"),
+            default_on: false,
+        },
+        Column {
+            key: "plays",
+            label: rox_i18n::t!("status-item-plays"),
+            default_on: true,
+        },
+        Column {
+            key: "lastplayed",
+            label: rox_i18n::t!("history-column-last-played"),
+            default_on: true,
+        },
+        Column {
+            key: "rating",
+            label: rox_i18n::t!("info-item-rating"),
+            default_on: true,
+        },
+        Column {
+            key: "favourite",
+            label: rox_i18n::t!("info-item-favourite"),
+            default_on: true,
+        },
+    ]
+}
 
 /// A flattened display row: an album heading (Recent view only), or a track
 /// at its index into `tracks`.
@@ -248,7 +256,7 @@ impl Default for HistoryConfig {
             headers: Headers::Off,
             never_sort: NeverSort::default(),
             never_desc: false,
-            columns: track_columns::default_columns(COLUMNS),
+            columns: track_columns::default_columns(&columns()),
             search: false,
             query_source: QuerySource::default(),
             query: String::new(),
@@ -351,7 +359,8 @@ impl HistoryPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let search =
+            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // Follow the shared query while global: re-filter and reset the box
         // to it on the next render.
@@ -926,7 +935,7 @@ impl HistoryPanel {
             plays: t.plays as u32,
             cover,
         };
-        for col in COLUMNS {
+        for col in columns() {
             if !self.column_shown(col.key) {
                 continue;
             }
@@ -972,21 +981,21 @@ impl HistoryPanel {
             submenu
         });
         let menu = menu
-            .label("Display")
+            .label(rox_i18n::t!("panel-menu-display"))
             .item(PopupMenuItem::submenu("View", view))
             .item(PopupMenuItem::submenu(
-                "Columns",
-                track_columns::columns_submenu(COLUMNS, window, cx),
+                rox_i18n::t!("library-columns"),
+                track_columns::columns_submenu(columns(), window, cx),
             ));
         match self.config.view {
             HistoryView::Recent => menu.item(PopupMenuItem::submenu(
-                "Headings",
+                rox_i18n::t!("panel-headings"),
                 track_columns::headings_submenu(window, cx),
             )),
             // Recent and Most come out of the events table ordered; Never
             // is the view with a sort to pick.
             HistoryView::Never => menu.item(PopupMenuItem::submenu(
-                "Sort",
+                rox_i18n::t!("history-sort-menu"),
                 self.sort_submenu(window, cx),
             )),
             HistoryView::Most => menu,
@@ -998,7 +1007,7 @@ impl HistoryPanel {
         let panel = cx.entity();
         PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
-            for &(label, sort) in NEVER_SORTS {
+            for (label, sort) in never_sorts() {
                 submenu = submenu.item(panel::check_row(
                     label,
                     None,
@@ -1008,7 +1017,7 @@ impl HistoryPanel {
                 ));
             }
             submenu.separator().item(panel::check_row(
-                "Descending",
+                rox_i18n::t!("history-descending"),
                 None,
                 |this: &Self| this.config.never_desc,
                 |this, cx| {
@@ -1138,13 +1147,16 @@ impl PanelSettings for HistoryPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "View",
-                Some("Which cut of the listen record the panel shows".into()),
-                panel::choices(
+                rox_i18n::t!("history-view-row"),
+                Some(rox_i18n::t!("history-view-row.description")),
+                panel::choices_shared(
                     &[
-                        ("Recent", HistoryView::Recent),
-                        ("Most Played", HistoryView::Most),
-                        ("Never Played", HistoryView::Never),
+                        (
+                            rox_i18n::t!("history-view-recent-short"),
+                            HistoryView::Recent,
+                        ),
+                        (rox_i18n::t!("history-view-most"), HistoryView::Most),
+                        (rox_i18n::t!("history-view-never"), HistoryView::Never),
                     ],
                     self.config.view,
                     |this: &mut Self, view, cx| this.set_view(view, cx),
@@ -1155,18 +1167,18 @@ impl PanelSettings for HistoryPanel {
             // out of the events table in their own order.
             .when(never, |d| {
                 d.child(panel::setting_row(
-                    "Sort",
-                    Some("How the never-played tracks are ordered".into()),
-                    panel::choices(
-                        NEVER_SORTS,
+                    rox_i18n::t!("history-sort-menu"),
+                    Some(rox_i18n::t!("history-sort-menu.description")),
+                    panel::choices_shared(
+                        &never_sorts(),
                         self.config.never_sort,
                         |this: &mut Self, sort, cx| this.set_never_sort(sort, cx),
                         cx,
                     ),
                 ))
                 .child(panel::setting_row(
-                    "Descending",
-                    Some("Run the sort backwards".into()),
+                    rox_i18n::t!("history-descending"),
+                    Some(rox_i18n::t!("history-descending.description")),
                     panel::toggle(
                         desc,
                         |this: &mut Self, on, cx| this.set_never_desc(on, cx),
@@ -1175,25 +1187,22 @@ impl PanelSettings for HistoryPanel {
                 ))
             })
             .child(panel::setting_block(
-                "Columns",
-                Some("Which track columns show".into()),
+                rox_i18n::t!("library-columns"),
+                Some(rox_i18n::t!("panel-columns-description")),
                 None,
-                track_columns::checklist(COLUMNS, self, cx),
+                track_columns::checklist(&columns(), self, cx),
             ))
             // The album orders only stay together in the Recent view; the
             // headings are off the table on Most and Never.
             .when(recent, |d| {
                 d.child(panel::setting_row(
-                    "Headings",
-                    Some(
-                        "Break the recent list into album runs; Expanded adds the cover and stats"
-                            .into(),
-                    ),
-                    panel::choices(
+                    rox_i18n::t!("panel-headings"),
+                    Some(rox_i18n::t!("history-headings")),
+                    panel::choices_shared(
                         &[
-                            ("Off", Headers::Off),
-                            ("Compact", Headers::Compact),
-                            ("Expanded", Headers::Expanded),
+                            (rox_i18n::t!("headers-off"), Headers::Off),
+                            (rox_i18n::t!("headers-compact"), Headers::Compact),
+                            (rox_i18n::t!("headers-expanded"), Headers::Expanded),
                         ],
                         self.config.headers,
                         |this: &mut Self, headers, cx| this.set_headers(headers, cx),
@@ -1235,7 +1244,10 @@ impl Panel for HistoryPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "History")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("history-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1328,7 +1340,7 @@ impl Panel for HistoryPanel {
         let weak = cx.entity().downgrade();
         let menu = match self.playing_row() {
             Some(_) => menu.item(
-                PopupMenuItem::new("Jump to Playing")
+                PopupMenuItem::new(rox_i18n::t!("panel-jump-to-playing"))
                     .icon(Icon::default().path(icons::DISC))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = weak.upgrade() {
@@ -1402,11 +1414,11 @@ impl HistoryPanel {
         let content = if self.rows.is_empty() {
             // Tracks hidden by the query read differently from an empty record.
             let message = if !self.tracks.is_empty() {
-                "No matches"
+                rox_i18n::t!("picker-no-matches")
             } else {
                 match self.config.view {
-                    HistoryView::Never => "Every track has been played",
-                    _ => "No listens yet",
+                    HistoryView::Never => rox_i18n::t!("history-empty-never"),
+                    _ => rox_i18n::t!("history-empty-recent"),
                 }
             };
             div().flex_1().min_h_0().flex().flex_col().child(
@@ -1482,11 +1494,19 @@ impl HistoryPanel {
             // Play queues the clicked track and what follows in the view's
             // order, the double click's move; the rest of the actions take
             // the whole selection.
-            let menu = panel::track_actions(menu, state, ids, "Play", window, cx, move |_, cx| {
-                if let Some(this) = panel.upgrade() {
-                    this.update(cx, |this, cx| this.play_from(ti, cx));
-                }
-            });
+            let menu = panel::track_actions(
+                menu,
+                state,
+                ids,
+                rox_i18n::t!("library-play"),
+                window,
+                cx,
+                move |_, cx| {
+                    if let Some(this) = panel.upgrade() {
+                        this.update(cx, |this, cx| this.play_from(ti, cx));
+                    }
+                },
+            );
             this.update(cx, |this, cx| {
                 this.dropdown_menu(menu.separator(), window, cx)
             })

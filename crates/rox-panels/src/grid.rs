@@ -1258,7 +1258,7 @@ impl PanelSettings for GridPanel {
                 ))
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    rox_i18n::t!("grid-follow.description"),
+                    rox_i18n::t!("grid-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         // Catch up right away instead of waiting for
@@ -1269,13 +1269,13 @@ impl PanelSettings for GridPanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    rox_i18n::t!("grid-resume.description"),
+                    rox_i18n::t!("grid-resume-description"),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    rox_i18n::t!("grid-smooth.description"),
+                    rox_i18n::t!("grid-smooth-description"),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1432,7 +1432,7 @@ impl PanelSettings for GridPanel {
                     ))
                     .child(setting_row(
                         rox_i18n::t!("library-art-rounding"),
-                        Some(rox_i18n::t!("grid-art-rounding.description")),
+                        Some(rox_i18n::t!("grid-art-rounding-description")),
                         settings_ui::scalar(
                             &self.rounding_scrub,
                             &self.value_edit,

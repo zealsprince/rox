@@ -129,7 +129,7 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
     let bounds = Bounds::centered(None, size(px(720.), px(600.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        "rox - Tag Repair",
+        rox_i18n::t!("tags-repair-window-title"),
         bounds,
         Some(MIN_SIZE),
         move |window, cx| cx.new(|cx| TagRepair::new(library, now_art, window, cx)),
@@ -257,7 +257,7 @@ impl TagRepair {
             Scope::Folder(path) => vec![path.clone()],
         };
         if roots.is_empty() {
-            self.error = Some("No folder to scan; add one to the library or pick one.".into());
+            self.error = Some(rox_i18n::t!("tags-repair-no-folder"));
             cx.notify();
             return;
         }
@@ -467,11 +467,13 @@ impl TagRepair {
                 this.repairing = false;
                 let n = done.len();
                 this.result = Some(if failures > 0 {
-                    format!("Repaired {n}, {failures} failed").into()
-                } else if n == 1 {
-                    "Repaired 1 file".into()
+                    rox_i18n::t!(
+                        "tags-repair-result-failed",
+                        count = n as u64,
+                        failed = failures as u64
+                    )
                 } else {
-                    format!("Repaired {n} files").into()
+                    rox_i18n::t!("tags-repair-result", count = n as u64)
                 });
                 this.error = first_error.map(Into::into);
                 cx.notify();
@@ -491,7 +493,7 @@ impl TagRepair {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string())
                 .into(),
-            Scope::Library => "Pick a folder...".into(),
+            Scope::Library => rox_i18n::t!("tags-repair-pick-folder"),
         };
         div()
             .flex()
@@ -503,10 +505,10 @@ impl TagRepair {
                     .w(px(56.))
                     .flex_none()
                     .text_color(palette::text_muted())
-                    .child("scope"),
+                    .child(rox_i18n::t!("tags-repair-label-scope")),
             )
             .child(pill(
-                "Whole library",
+                rox_i18n::t!("tags-repair-whole-library"),
                 0,
                 matches!(self.scope, Scope::Library),
                 busy,
@@ -529,12 +531,12 @@ impl TagRepair {
     fn results(&self, cx: &mut Context<Self>) -> Div {
         if self.found.is_empty() {
             let message = if !self.scanned {
-                "Scan to find files with tag damage a rewrite repairs."
+                rox_i18n::t!("tags-repair-scan-hint")
             } else {
-                "No affected files found."
+                rox_i18n::t!("tags-repair-no-affected")
             };
             return section(
-                "Affected Files",
+                rox_i18n::t!("tags-repair-affected-files"),
                 None,
                 div()
                     .flex_1()
@@ -551,10 +553,10 @@ impl TagRepair {
         let count = self.found.len();
         // The count reads "so far" while rows are still streaming, so it is
         // honest about a scan that is not done yet.
-        let count_label = match (self.scanning, count) {
-            (true, n) => format!("{n} so far"),
-            (false, 1) => "1 file".to_string(),
-            (false, n) => format!("{n} files"),
+        let count_label = if self.scanning {
+            rox_i18n::t!("tags-repair-count-so-far", count = count as u64)
+        } else {
+            rox_i18n::t!("tags-repair-count", count = count as u64)
         };
         let this = cx.entity().downgrade();
         let trailing = div()
@@ -566,7 +568,11 @@ impl TagRepair {
             .text_color(palette::text_muted())
             .child(count_label)
             .child(small_button(
-                if all { "Select none" } else { "Select all" },
+                if all {
+                    rox_i18n::t!("tags-repair-select-none")
+                } else {
+                    rox_i18n::t!("tags-repair-select-all")
+                },
                 icons::CHECK,
                 self.repairing,
                 cx.listener(move |this, _, _, cx| this.select_all(!all, cx)),
@@ -597,9 +603,13 @@ impl TagRepair {
             .when(self.repairing, |d| {
                 d.child(div().absolute().inset_0().occlude())
             });
-        section("Affected Files", Some(trailing), list)
-            .flex_1()
-            .min_h_0()
+        section(
+            rox_i18n::t!("tags-repair-affected-files"),
+            Some(trailing),
+            list,
+        )
+        .flex_1()
+        .min_h_0()
     }
 
     /// The visible slice of file rows for the virtualized list: each a
@@ -707,16 +717,20 @@ impl TagRepair {
                 .text_xs()
                 .text_color(palette::text_muted())
                 .child(Spinner::new().with_size(Size::Small))
-                .child(format!("Repairing {at}/{}...", self.repair_total))
+                .child(rox_i18n::t!(
+                    "tags-repair-progress",
+                    done = at as u64,
+                    total = self.repair_total as u64
+                ))
                 .into_any_element()
         } else if !self.scanned || count == 0 {
             div()
                 .text_xs()
                 .text_color(palette::tone_warn())
                 .child(if self.scanned {
-                    "Check a file to repair it"
+                    rox_i18n::t!("tags-repair-check-to-repair")
                 } else {
-                    "Scan first"
+                    rox_i18n::t!("tags-repair-scan-first")
                 })
                 .into_any_element()
         } else {
@@ -772,11 +786,7 @@ impl TagRepair {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        if count > 0 {
-                            format!("Repair ({count})")
-                        } else {
-                            "Repair".to_string()
-                        },
+                        rox_i18n::t!("tags-repair-repair-button", count = count as u64),
                         icons::CHECK,
                         busy || count == 0,
                         cx.listener(|this, _, window, cx| this.repair(window, cx)),

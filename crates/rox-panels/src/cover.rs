@@ -465,13 +465,16 @@ impl CoverArtPanel {
     }
 
     /// The labelled art slots, the settings row's and the flyout's one
-    /// list.
-    const ART_PICKS: [(&'static str, ArtPick); 4] = [
-        ("Front", ArtPick::Front),
-        ("Disc", ArtPick::Disc),
-        ("Back", ArtPick::Back),
-        ("Artist", ArtPick::Artist),
-    ];
+    /// list. A function rather than a `const` array of `&'static str`
+    /// labels, since the labels are translated at call time.
+    fn art_picks() -> [(SharedString, ArtPick); 4] {
+        [
+            (rox_i18n::t!("cover-art-front"), ArtPick::Front),
+            (rox_i18n::t!("cover-art-disc"), ArtPick::Disc),
+            (rox_i18n::t!("cover-art-back"), ArtPick::Back),
+            (rox_i18n::t!("head-piece-artist"), ArtPick::Artist),
+        ]
+    }
 
     /// The panel's own dropdown entries: the source and artwork picks,
     /// the same knobs the customize window edits.
@@ -498,7 +501,7 @@ impl CoverArtPanel {
             // source flyout's rule.
             panel::follow_panel(&panel, cx);
             let mut submenu = submenu.check_side(gpui_component::Side::Right);
-            for (label, pick) in Self::ART_PICKS {
+            for (label, pick) in Self::art_picks() {
                 submenu = submenu.item(panel::check_row(
                     label,
                     None,
@@ -509,7 +512,10 @@ impl CoverArtPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Artwork", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("cover-artwork"),
+            submenu,
+        ));
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |submenu, _, cx| {
             // Follow the panel so the picked row's tick swaps live, the
@@ -527,11 +533,14 @@ impl CoverArtPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Disc Style", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("cover-disc-style"),
+            submenu,
+        ));
         let panel = cx.entity();
         menu.separator()
             .item(panel::check_row(
-                "Stretch to Fill",
+                rox_i18n::t!("cover-stretch-to-fill"),
                 Some(icons::MAXIMIZE),
                 |this: &Self| this.config.stretch,
                 |this, cx| {
@@ -541,7 +550,7 @@ impl CoverArtPanel {
                 &panel,
             ))
             .item(panel::check_row(
-                "Spin Disc",
+                rox_i18n::t!("cover-spin-disc"),
                 Some(icons::REFRESH_CW),
                 |this: &Self| this.config.spin,
                 |this, cx| this.set_spin(!this.config.spin, cx),
@@ -592,10 +601,10 @@ impl PanelSettings for CoverArtPanel {
                 cx,
             ))
             .child(panel::setting_row(
-                "Artwork",
-                Some("Which picture to show; a slot the file doesn't carry falls back to the front cover".into()),
-                panel::choices(
-                    &Self::ART_PICKS,
+                rox_i18n::t!("cover-artwork"),
+                Some(rox_i18n::t!("cover-artwork.description")),
+                panel::choices_shared(
+                    &Self::art_picks(),
                     self.config.art,
                     |this: &mut Self, art, cx| this.set_art(art, cx),
                     cx,
@@ -610,8 +619,8 @@ impl PanelSettings for CoverArtPanel {
                 cx,
             ))
             .child(panel::setting_row(
-                "Stretch",
-                Some("Fill the panel, ignoring the artwork aspect ratio".into()),
+                rox_i18n::t!("cover-stretch"),
+                Some(rox_i18n::t!("cover-stretch.description")),
                 panel::toggle(
                     self.config.stretch,
                     |this: &mut Self, on, cx| {
@@ -622,8 +631,8 @@ impl PanelSettings for CoverArtPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Disc Style",
-                Some("Dress the artwork as a CD or as a vinyl record's label".into()),
+                rox_i18n::t!("cover-disc-style"),
+                Some(rox_i18n::t!("cover-disc-style.description")),
                 panel::choices(
                     &DISC_STYLES,
                     self.config.disc_style,
@@ -632,8 +641,8 @@ impl PanelSettings for CoverArtPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Spin",
-                Some("Rotate the disc while a track plays; applies to the disc slot or a disc style".into()),
+                rox_i18n::t!("cover-spin"),
+                Some(rox_i18n::t!("cover-spin.description")),
                 panel::toggle(
                     self.config.spin,
                     |this: &mut Self, on, cx| this.set_spin(on, cx),
@@ -645,13 +654,16 @@ impl PanelSettings for CoverArtPanel {
                     .clamp(0., 1.);
                 let ramp = (self.config.spin_ramp / SPIN_RAMP_MAX).clamp(0., 1.);
                 page.child(panel::setting_row(
-                    "Spin Speed",
-                    Some("Full speed, in revolutions per minute".into()),
+                    rox_i18n::t!("cover-spin-speed"),
+                    Some(rox_i18n::t!("cover-spin-speed.description")),
                     panel::value_slider_edit(
                         &self.rpm_scrub,
                         &self.value_edit,
                         rpm,
-                        format!("{} rpm", self.config.spin_rpm.round() as u32),
+                        format!(
+                            "{} rpm",
+                            rox_i18n::format::format_int(self.config.spin_rpm.round() as i64)
+                        ),
                         format!("{}", self.config.spin_rpm.round() as u32),
                         |v| (v - SPIN_RPM_MIN) / (SPIN_RPM_MAX - SPIN_RPM_MIN),
                         |this: &mut Self, fraction, cx| {
@@ -663,13 +675,16 @@ impl PanelSettings for CoverArtPanel {
                     ),
                 ))
                 .child(panel::setting_row(
-                    "Spin Ramp",
-                    Some("How long the disc takes to reach full speed, and to coast back down".into()),
+                    rox_i18n::t!("cover-spin-ramp"),
+                    Some(rox_i18n::t!("cover-spin-ramp.description")),
                     panel::value_slider_edit(
                         &self.ramp_scrub,
                         &self.value_edit,
                         ramp,
-                        format!("{:.1}s", self.config.spin_ramp),
+                        format!(
+                            "{}s",
+                            rox_i18n::format::format_float(f64::from(self.config.spin_ramp), 1)
+                        ),
                         format!("{:.1}", self.config.spin_ramp),
                         |v| v / SPIN_RAMP_MAX,
                         |this: &mut Self, fraction, cx| {
@@ -699,7 +714,10 @@ impl Panel for CoverArtPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Cover Art")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("cover-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {

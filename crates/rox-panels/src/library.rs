@@ -148,6 +148,12 @@ struct TrackTable {
     /// Follows clicks, so keys and mouse hand off mid-browse.
     cursor: Option<usize>,
     columns: Vec<Column>,
+    /// The language the headers above were worded in. Their labels are
+    /// resolved once and stored on the Column, so unlike the strings that
+    /// resolve at render time they don't follow a language switch on
+    /// their own, and the menu hanging off each header re-reads the
+    /// registry every frame. Without this the two disagree on screen.
+    columns_locale: &'static str,
     /// The active sort: a column key and whether it descends. None is the
     /// canonical order. Lives on the delegate because the header click
     /// lands here; the panel reads it back for the layout dump.
@@ -198,6 +204,22 @@ struct TrackTable {
 }
 
 impl TrackTable {
+    /// Reword the headers when the language has changed under them.
+    ///
+    /// Only the wording is touched. Order, widths, and the active sort
+    /// are the user's arrangement and mean the same thing in every
+    /// language, so rebuilding the columns outright would throw away a
+    /// layout to fix a label. A language switch arrives as nothing but a
+    /// repaint, so the header hears about it on its next one.
+    fn reword_columns(&mut self) {
+        let locale = rox_i18n::locale();
+        if self.columns_locale == locale {
+            return;
+        }
+        self.columns_locale = locale;
+        columns::reword(&mut self.columns);
+    }
+
     /// The current unix time the "added" column dates against, refreshed at
     /// most twice a minute so a wall of shown cells shares one read instead of
     /// each calling `SystemTime::now`.
@@ -995,6 +1017,7 @@ impl TableDelegate for TrackTable {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        self.reword_columns();
         let shown: HashSet<String> = self.columns.iter().map(|c| c.key.to_string()).collect();
         let panel = self.panel.clone();
         div()
@@ -1360,9 +1383,14 @@ impl TableDelegate for TrackTable {
             "gain" => match projection
                 .gain_db(row, crate::settings::gain_mode() == GainModeSetting::Album)
             {
-                Some(db) => cell
-                    .text_color(palette::text_muted())
-                    .child(SharedString::from(format!("{db:+.2}"))),
+                Some(db) => {
+                    // The old format! used ":+" to force the sign; the locale
+                    // formatter has no such flag, so it's glued on by hand.
+                    let sign = if db.is_sign_negative() { "-" } else { "+" };
+                    let magnitude = rox_i18n::format::format_float(f64::from(db.abs()), 2);
+                    cell.text_color(palette::text_muted())
+                        .child(SharedString::from(format!("{sign}{magnitude}")))
+                }
                 None => cell,
             },
             // Whole beats a minute: the fraction under them is what the
@@ -1372,7 +1400,9 @@ impl TableDelegate for TrackTable {
             "bpm" => match v.bpm {
                 Some(bpm) => cell
                     .text_color(palette::text_muted())
-                    .child(SharedString::from(format!("{}", bpm.round()))),
+                    .child(SharedString::from(rox_i18n::format::format_int(
+                        bpm.round() as i64,
+                    ))),
                 None => cell,
             },
             "rating" => {
@@ -1389,7 +1419,10 @@ impl TableDelegate for TrackTable {
             "similar" => match self.similar.get(&projection.db_id[row as usize]) {
                 Some(score) => cell
                     .text_color(palette::text_muted())
-                    .child(SharedString::from(format!("{score:.2}"))),
+                    .child(SharedString::from(rox_i18n::format::format_float(
+                        f64::from(*score),
+                        2,
+                    ))),
                 None => cell,
             },
             // Blank at zero like the track and year cells: never played
@@ -1403,12 +1436,9 @@ impl TableDelegate for TrackTable {
                 .justify_end()
                 .gap(px(1.))
                 .when(v.plays > 0, |d| {
-                    d.child(
-                        div()
-                            .text_xs()
-                            .text_color(palette::text_muted())
-                            .child(SharedString::from(v.plays.to_string())),
-                    )
+                    d.child(div().text_xs().text_color(palette::text_muted()).child(
+                        SharedString::from(rox_i18n::format::format_int(v.plays as i64)),
+                    ))
                     .child(div().text_xs().text_color(palette::text_faint()).child("|"))
                 }),
             "plays" => cell
@@ -1416,7 +1446,7 @@ impl TableDelegate for TrackTable {
                 .child(if v.plays == 0 {
                     SharedString::default()
                 } else {
-                    SharedString::from(v.plays.to_string())
+                    SharedString::from(rox_i18n::format::format_int(v.plays as i64))
                 }),
             // How long ago the track was scanned in, blank when unknown
             // (a library indexed before the timestamp existed).
@@ -1719,6 +1749,7 @@ impl LibraryPanel {
             anchor: None,
             cursor: None,
             columns: track_columns(&config.column_layout, &sort),
+            columns_locale: rox_i18n::locale(),
             sort,
             playing_id: None,
             playing_row: None,
@@ -3249,7 +3280,7 @@ impl panel::PanelSettings for LibraryPanel {
                 ))
                 .child(panel::tracking_section(
                     self.follow_playing,
-                    rox_i18n::t!("library-follow.description"),
+                    rox_i18n::t!("library-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.follow_playing = on;
                         // Catch up right away instead of waiting for
@@ -3260,13 +3291,13 @@ impl panel::PanelSettings for LibraryPanel {
                         cx.notify();
                     },
                     self.resume_playing,
-                    rox_i18n::t!("library-resume.description"),
+                    rox_i18n::t!("library-resume-description"),
                     |this: &mut Self, on, cx| {
                         this.resume_playing = on;
                         cx.notify();
                     },
                     self.smooth_follow,
-                    rox_i18n::t!("library-smooth.description"),
+                    rox_i18n::t!("library-smooth-description"),
                     |this: &mut Self, on, cx| {
                         this.smooth_follow = on;
                         cx.notify();
@@ -3492,7 +3523,7 @@ impl panel::PanelSettings for LibraryPanel {
                         .gap(tokens::SPACE_MD)
                         .child(panel::setting_row(
                             rox_i18n::t!("head-piece-art"),
-                            Some(rox_i18n::t!("library-art.description")),
+                            Some(rox_i18n::t!("library-art-description")),
                             panel::toggle(
                                 self.header_art,
                                 |this: &mut Self, on, cx| {

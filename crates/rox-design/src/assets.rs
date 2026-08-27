@@ -130,6 +130,12 @@ pub mod icons {
     pub const INFO: &str = "icons/info.svg";
     /// The banner's warning face, bundled set as well.
     pub const ALERT: &str = "icons/triangle-alert.svg";
+    /// The Application menu's three ways out to the project: file a bug,
+    /// join a thread, sit in the channel. The hash is the IRC one, since
+    /// a channel name is what it draws.
+    pub const BUG: &str = "icons/bug.svg";
+    pub const MESSAGES: &str = "icons/messages-square.svg";
+    pub const HASH: &str = "icons/hash.svg";
     pub const LAYOUT_GRID: &str = "icons/layout-grid.svg";
     pub const GALLERY: &str = "icons/gallery-horizontal-end.svg";
     pub const MOVE_VERTICAL: &str = "icons/move-vertical.svg";
@@ -138,6 +144,11 @@ pub mod icons {
     pub const AUDIO_WAVEFORM: &str = "icons/audio-waveform.svg";
     /// The VU meter panel: a level gauge.
     pub const GAUGE: &str = "icons/gauge.svg";
+    /// The oscilloscope panel: a traced waveform on a scope line.
+    pub const ACTIVITY: &str = "icons/activity.svg";
+    /// The spectrogram panel: stacked ripples, the waterfall of frequency
+    /// over time rather than the single instant the band bars draw.
+    pub const WAVES: &str = "icons/waves.svg";
     /// The mini-player toggle: shrink into the mini layout, grow back to
     /// the primary.
     pub const MINIMIZE: &str = "icons/minimize-2.svg";
@@ -267,6 +278,9 @@ pub mod icons {
         CHART_PIE,
         INFO,
         ALERT,
+        BUG,
+        MESSAGES,
+        HASH,
         LAYOUT_GRID,
         GALLERY,
         MOVE_VERTICAL,
@@ -274,6 +288,8 @@ pub mod icons {
         AUDIO_LINES,
         AUDIO_WAVEFORM,
         GAUGE,
+        ACTIVITY,
+        WAVES,
         MINIMIZE,
         MAXIMIZE,
         FULLSCREEN_EXIT,

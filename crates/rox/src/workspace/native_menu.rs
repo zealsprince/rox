@@ -43,7 +43,7 @@ pub(crate) fn rebuild(cx: &mut App) {
     let menus = MENUS
         .iter()
         .map(|menu| gpui::Menu {
-            name: menu.label.into(),
+            name: rox_i18n::t!(menu.label),
             items: menu
                 .entries
                 .iter()
@@ -76,7 +76,7 @@ fn entry_items(entry: &'static MenuEntry, playing: bool) -> Vec<gpui::MenuItem> 
                 .filter_map(|def| action_item(panel_menu_item(def), playing))
                 .collect(),
             Some((label, _)) => vec![gpui::MenuItem::submenu(gpui::Menu {
-                name: label.into(),
+                name: rox_i18n::t!(label),
                 items: section
                     .panels
                     .iter()
@@ -90,7 +90,7 @@ fn entry_items(entry: &'static MenuEntry, playing: bool) -> Vec<gpui::MenuItem> 
             with_new,
             ..
         } => vec![gpui::MenuItem::submenu(gpui::Menu {
-            name: (*label).into(),
+            name: rox_i18n::t!(*label),
             items: layout_items(*target, *with_new),
         })],
         MenuEntry::WorkspacesSubmenu {
@@ -99,18 +99,18 @@ fn entry_items(entry: &'static MenuEntry, playing: bool) -> Vec<gpui::MenuItem> 
             with_new,
             ..
         } => vec![gpui::MenuItem::submenu(gpui::Menu {
-            name: (*label).into(),
+            name: rox_i18n::t!(*label),
             items: workspace_items(*target, *with_new),
         })],
         MenuEntry::PresetsSubmenu { label, target, .. } => {
             vec![gpui::MenuItem::submenu(gpui::Menu {
-                name: (*label).into(),
+                name: rox_i18n::t!(*label),
                 items: preset_items(*target),
             })]
         }
         MenuEntry::PanelWindowsSubmenu { label, .. } => {
             vec![gpui::MenuItem::submenu(gpui::Menu {
-                name: (*label).into(),
+                name: rox_i18n::t!(*label),
                 items: panel_window_items(),
             })]
         }
@@ -146,29 +146,42 @@ fn native_label(item: MenuItem, playing: bool) -> String {
     match item.action {
         MenuAction::TogglePlayback => {
             if playing {
-                "Pause".into()
+                rox_i18n::t!("menu-pause").to_string()
             } else {
-                "Play".into()
+                rox_i18n::t!("playback-item-play").to_string()
             }
         }
         // The two that hide something take Show/Hide; the two that switch a
         // behavior on and off take Turn On/Off, which is what each one
         // actually does to the thing it names.
         MenuAction::ToggleMenubar => showing(!settings::hide_menubar(), "Menubar"),
-        MenuAction::ToggleDecorations => showing(settings::os_decorations(), "OS Decorations"),
-        MenuAction::ToggleDesignMode => switching(settings::design_mode(), "Design Mode"),
-        MenuAction::ToggleArtTheming => switching(palette::art_theming(), "Song Theming"),
-        MenuAction::TogglePostShader => {
-            switching(crate::workspace::post_shader_on(), "Overlay Shader")
+        MenuAction::ToggleDecorations => showing(
+            settings::os_decorations(),
+            rox_i18n::t!("menu-os-decorations"),
+        ),
+        MenuAction::ToggleDesignMode => {
+            switching(settings::design_mode(), rox_i18n::t!("menu-design-mode"))
         }
-        MenuAction::ToggleQuitToTray => switching(settings::quit_to_tray(), "Remain in Tray"),
-        _ => item.label.into(),
+        MenuAction::ToggleArtTheming => {
+            switching(palette::art_theming(), rox_i18n::t!("menu-song-theming"))
+        }
+        MenuAction::TogglePostShader => switching(
+            crate::workspace::post_shader_on(),
+            rox_i18n::t!("menu-overlay-shader"),
+        ),
+        MenuAction::ToggleQuitToTray => switching(
+            settings::quit_to_tray(),
+            rox_i18n::t!("menu-remain-in-tray"),
+        ),
+        // `item.label` is an i18n key, not display text - see `menu_section`
+        // in workspace.rs.
+        _ => rox_i18n::t_static(item.label).into(),
     }
 }
 
 /// A toggle row for something visible: "Hide X" while X shows.
 #[cfg(target_os = "macos")]
-fn showing(on: bool, what: &str) -> String {
+fn showing(on: bool, what: impl std::fmt::Display) -> String {
     if on {
         format!("Hide {what}")
     } else {
@@ -178,7 +191,7 @@ fn showing(on: bool, what: &str) -> String {
 
 /// A toggle row for a behavior: "Turn Off X" while X is on.
 #[cfg(target_os = "macos")]
-fn switching(on: bool, what: &str) -> String {
+fn switching(on: bool, what: impl std::fmt::Display) -> String {
     if on {
         format!("Turn Off {what}")
     } else {
@@ -201,7 +214,7 @@ fn layout_items(target: LayoutTarget, with_new: bool) -> Vec<gpui::MenuItem> {
     let mut items = Vec::new();
     if with_new {
         items.push(gpui::MenuItem::action(
-            "New...",
+            rox_i18n::t!("menu-new-ellipsis"),
             MenuCommand {
                 command: "layout-save-new".into(),
             },
@@ -209,7 +222,7 @@ fn layout_items(target: LayoutTarget, with_new: bool) -> Vec<gpui::MenuItem> {
     }
     if presets.is_empty() {
         if !with_new {
-            items.push(placeholder("No layouts"));
+            items.push(placeholder(rox_i18n::t!("menu-no-layouts")));
         }
     } else {
         items.extend(presets.into_iter().map(|preset| {
@@ -240,7 +253,7 @@ fn workspace_items(target: WorkspaceTarget, with_new: bool) -> Vec<gpui::MenuIte
     let mut items = Vec::new();
     if with_new {
         items.push(gpui::MenuItem::action(
-            "New...",
+            rox_i18n::t!("menu-new-ellipsis"),
             MenuCommand {
                 command: "workspace-save-new".into(),
             },
@@ -248,15 +261,19 @@ fn workspace_items(target: WorkspaceTarget, with_new: bool) -> Vec<gpui::MenuIte
     }
     if entries.is_empty() {
         if !with_new {
-            items.push(placeholder("No workspaces"));
+            items.push(placeholder(rox_i18n::t!("menu-no-workspaces")));
         }
     } else {
         items.extend(entries.into_iter().map(|entry| {
             // The shipped bundles trail the same tag the in-window rows show.
             let label = if entry.builtin {
-                format!("{} (Built-in)", entry.name)
+                format!(
+                    "{} ({})",
+                    entry.title,
+                    rox_i18n::t!("menu-workspace-builtin-tag")
+                )
             } else {
-                entry.name.clone()
+                entry.title.to_string()
             };
             gpui::MenuItem::action(
                 label,
@@ -280,7 +297,7 @@ fn preset_items(target: PanelTarget) -> Vec<gpui::MenuItem> {
     };
     let presets = crate::panel_presets::saved();
     if presets.is_empty() {
-        return vec![placeholder("No presets")];
+        return vec![placeholder(rox_i18n::t!("menu-no-presets"))];
     }
     presets
         .into_iter()
@@ -315,9 +332,9 @@ fn panel_window_items() -> Vec<gpui::MenuItem> {
             .iter()
             .map(|def| {
                 gpui::MenuItem::action(
-                    def.label,
+                    rox_i18n::t!(def.label),
                     MenuCommand {
-                        command: format!("panel-window:{}", def.label),
+                        command: format!("panel-window:{}", def.name),
                     },
                 )
             })
@@ -325,7 +342,7 @@ fn panel_window_items() -> Vec<gpui::MenuItem> {
         match section.group {
             None => items.extend(rows),
             Some((label, _)) => items.push(gpui::MenuItem::submenu(gpui::Menu {
-                name: label.into(),
+                name: rox_i18n::t!(label),
                 items: rows,
             })),
         }
@@ -338,9 +355,9 @@ fn panel_window_items() -> Vec<gpui::MenuItem> {
 /// It reads enabled rather than greyed: enablement goes by action type and
 /// [`MenuCommand`] has a handler, so there's no way to disable one row.
 #[cfg(target_os = "macos")]
-fn placeholder(label: &str) -> gpui::MenuItem {
+fn placeholder(label: impl Into<SharedString>) -> gpui::MenuItem {
     gpui::MenuItem::action(
-        label.to_string(),
+        label,
         MenuCommand {
             command: "none".into(),
         },

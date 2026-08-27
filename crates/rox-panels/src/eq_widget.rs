@@ -324,9 +324,9 @@ impl EqWidgetPanel {
 /// What the tooltip says a click will do, if anything.
 fn hint(click: EqClick, enabled: bool) -> Option<SharedString> {
     match click {
-        EqClick::Open => Some("Click to open the equalizer".into()),
-        EqClick::Toggle if enabled => Some("Click to turn it off".into()),
-        EqClick::Toggle => Some("Click to turn it on".into()),
+        EqClick::Open => Some(rox_i18n::t!("eq-hint-open")),
+        EqClick::Toggle if enabled => Some(rox_i18n::t!("eq-hint-off")),
+        EqClick::Toggle => Some(rox_i18n::t!("eq-hint-on")),
         EqClick::Nothing => None,
     }
 }
@@ -345,14 +345,13 @@ struct EqTooltip {
 impl Render for EqTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let shape = if self.active == 0 {
-            SharedString::from("Flat, every band at 0 dB")
+            rox_i18n::t!("eq-shape-flat")
         } else {
-            SharedString::from(format!(
-                "{} band{} off flat, peak {:+.1} dB",
-                self.active,
-                if self.active == 1 { "" } else { "s" },
-                self.peak,
-            ))
+            rox_i18n::t!(
+                "eq-shape-active",
+                count = self.active as u64,
+                peak = format!("{:+.1}", self.peak)
+            )
         };
         div()
             .flex()
@@ -368,9 +367,9 @@ impl Render for EqTooltip {
             .text_color(palette::text())
             .text_xs()
             .child(if self.enabled {
-                "Equalizer on"
+                rox_i18n::t!("eq-status-on")
             } else {
-                "Equalizer off"
+                rox_i18n::t!("eq-status-off")
             })
             .child(div().text_color(palette::text_muted()).child(shape))
             .when_some(self.hint.clone(), |d, hint| {
@@ -404,17 +403,13 @@ impl PanelSettings for EqWidgetPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "Click",
-                Some(
-                    "What a click does: open the equalizer window, or flip the whole curve on \
-                     and off where it stands"
-                        .into(),
-                ),
-                panel::choices(
+                rox_i18n::t!("eq-click-section"),
+                Some(rox_i18n::t!("eq-click-section.description")),
+                panel::choices_shared(
                     &[
-                        ("Open", EqClick::Open),
-                        ("Toggle", EqClick::Toggle),
-                        ("Nothing", EqClick::Nothing),
+                        (rox_i18n::t!("eq-click-open"), EqClick::Open),
+                        (rox_i18n::t!("eq-click-toggle"), EqClick::Toggle),
+                        (rox_i18n::t!("eq-click-nothing"), EqClick::Nothing),
                     ],
                     self.config.click,
                     |this: &mut Self, click, cx| {
@@ -425,17 +420,13 @@ impl PanelSettings for EqWidgetPanel {
                 ),
             ))
             .child(setting_row(
-                "Readout",
-                Some(
-                    "The icon, the response curve as a sparkline, or both. The curve wants \
-                     about fifty pixels of width to say anything"
-                        .into(),
-                ),
-                panel::choices(
+                rox_i18n::t!("eq-readout-section"),
+                Some(rox_i18n::t!("eq-readout-section.description")),
+                panel::choices_shared(
                     &[
-                        ("Icon", EqReadout::Icon),
-                        ("Curve", EqReadout::Curve),
-                        ("Both", EqReadout::Both),
+                        (rox_i18n::t!("eq-readout-icon"), EqReadout::Icon),
+                        (rox_i18n::t!("eq-readout-curve"), EqReadout::Curve),
+                        (rox_i18n::t!("choice-both"), EqReadout::Both),
                     ],
                     self.config.readout,
                     |this: &mut Self, readout, cx| {
@@ -448,8 +439,8 @@ impl PanelSettings for EqWidgetPanel {
         // Nothing to pin a badge to once the icon is gone.
         if self.config.readout != EqReadout::Curve {
             rows = rows.child(setting_row(
-                "Band Badge",
-                Some("Count the bands sitting off flat on a badge over the icon".into()),
+                rox_i18n::t!("eq-band-badge"),
+                Some(rox_i18n::t!("eq-band-badge.description")),
                 toggle(
                     self.config.badge,
                     |this: &mut Self, on, cx| {
@@ -460,7 +451,7 @@ impl PanelSettings for EqWidgetPanel {
                 ),
             ));
         }
-        Some(settings_ui::section("Widget", None, rows).into_any_element())
+        Some(settings_ui::section(rox_i18n::t!("eq-widget-section"), None, rows).into_any_element())
     }
 }
 
@@ -478,7 +469,10 @@ impl Panel for EqWidgetPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "EQ Widget")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("eq-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -540,12 +534,12 @@ impl Panel for EqWidgetPanel {
     ) -> PopupMenu {
         let menu = menu
             .item(
-                PopupMenuItem::new("Open Equalizer")
+                PopupMenuItem::new(rox_i18n::t!("eq-open"))
                     .icon(Icon::default().path(icons::AUDIO_LINES))
                     .on_click(|_, _, cx| rox_panel_api::openers::eq_window(cx)),
             )
             .item(
-                PopupMenuItem::new("Flatten")
+                PopupMenuItem::new(rox_i18n::t!("eq-flatten"))
                     .icon(Icon::default().path(icons::MINUS))
                     .disabled(EqShape::read().active() == 0)
                     .on_click(|_, _, cx| player::flatten_eq(cx)),

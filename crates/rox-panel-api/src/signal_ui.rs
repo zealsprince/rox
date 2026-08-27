@@ -228,9 +228,9 @@ fn hz_to_frac(hz: f32) -> f32 {
 /// A bound's Hz for the slider readout, compact enough for the strip.
 fn fmt_hz(hz: f32) -> String {
     if hz >= 1000.0 {
-        format!("{:.1} kHz", hz / 1000.0)
+        rox_i18n::format::format_unit(hz as f64 / 1000.0, 1, "kHz")
     } else {
-        format!("{:.0} Hz", hz.round())
+        rox_i18n::format::format_unit(hz as f64, 0, "Hz")
     }
 }
 
@@ -461,7 +461,7 @@ fn begin_rename<P: SignalHost>(host: &mut P, id: u64, window: &mut Window, cx: &
         .unwrap_or_default();
     let input = cx.new(|cx| {
         InputState::new(window, cx)
-            .placeholder("Signal name")
+            .placeholder(rox_i18n::t!("signal-name-placeholder"))
             .default_value(current)
     });
     let sub = cx.subscribe_in(
@@ -542,7 +542,7 @@ pub fn signals_page<P: SignalHost>(host: &P, cx: &mut Context<P>) -> Div {
             div()
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child("No signals yet - add one, or right-click any bindable knob."),
+                .child(rox_i18n::t!("signals-empty")),
         );
     }
     for signal in &pool {
@@ -665,10 +665,10 @@ fn signal_block<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                     div()
                         .text_xs()
                         .text_color(palette::text_faint())
-                        .child(match riders {
-                            1 => "1 route in this panel".to_string(),
-                            n => format!("{n} routes in this panel"),
-                        }),
+                        .child(rox_i18n::t!(
+                            "signal-routes-in-panel",
+                            count = riders as u64
+                        )),
                 )
             })
             .child(settings_ui::icon_button(
@@ -854,7 +854,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                     &scrubs.smooth,
                     host.value_edit(),
                     smooth,
-                    format!("{}%", (smooth * 100.0).round() as i32),
+                    rox_i18n::format::format_percent((smooth * 100.0).round() as f64),
                     format!("{}", (smooth * 100.0).round() as i32),
                     |v| v / 100.0,
                     move |this: &mut P, fraction, cx| {
@@ -882,7 +882,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                     &scrubs.threshold,
                     host.value_edit(),
                     threshold,
-                    format!("{}%", (threshold * 100.0).round() as i32),
+                    rox_i18n::format::format_percent((threshold * 100.0).round() as f64),
                     format!("{}", (threshold * 100.0).round() as i32),
                     |v| v / 100.0,
                     move |this: &mut P, fraction, cx| {
@@ -1014,7 +1014,7 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
             &scrubs.rate,
             host.value_edit(),
             rate / AGGREGATE_RATE_MAX,
-            format!("{rate:.2}/s"),
+            format!("{}/s", rox_i18n::format::format_float(rate as f64, 2)),
             format!("{rate:.2}"),
             1.0,
             |v| v / AGGREGATE_RATE_MAX,
@@ -1167,7 +1167,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             &scrubs.from,
             host.value_edit(),
             from,
-            format!("{}%", (from * 100.0).round() as i32),
+            rox_i18n::format::format_percent((from * 100.0).round() as f64),
             format!("{}", (from * 100.0).round() as i32),
             SPAN_OVER,
             |v| v / 100.0,
@@ -1187,7 +1187,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             &scrubs.to,
             host.value_edit(),
             to,
-            format!("{}%", (to * 100.0).round() as i32),
+            rox_i18n::format::format_percent((to * 100.0).round() as f64),
             format!("{}", (to * 100.0).round() as i32),
             SPAN_OVER,
             |v| v / 100.0,
@@ -1213,8 +1213,8 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
 /// on the trash inside the expanded editor.
 pub fn bindable_row<P: RouteHost>(
     host: &P,
-    label: &'static str,
-    description: Option<&'static str>,
+    label: impl Into<SharedString>,
+    description: Option<SharedString>,
     target: String,
     control: Div,
     cx: &mut Context<P>,
@@ -1254,7 +1254,7 @@ pub fn bindable_row<P: RouteHost>(
             let panel = weak.clone();
             let target = menu_target.clone();
             menu.item(
-                PopupMenuItem::new("Add Signal")
+                PopupMenuItem::new(rox_i18n::t!("signal-add"))
                     .icon(Icon::default().path(icons::PLUS))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = panel.upgrade() {
@@ -1306,11 +1306,7 @@ pub fn bindable_row<P: RouteHost>(
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
-        .child(panel::setting_row(
-            label,
-            description.map(SharedString::from),
-            control,
-        ));
+        .child(panel::setting_row(label, description, control));
     if open {
         if let Some(index) = bound {
             let header = settings_ui::block_header(

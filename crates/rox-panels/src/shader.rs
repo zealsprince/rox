@@ -143,11 +143,11 @@ enum NoteAction {
 }
 
 impl NoteAction {
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            NoteAction::Inspect => "Inspect",
-            NoteAction::Enable => "Enable",
-            NoteAction::Pick => "Pick a Shader",
+            NoteAction::Inspect => rox_i18n::t!("shader-panel-inspect"),
+            NoteAction::Enable => rox_i18n::t!("shader-panel-enable"),
+            NoteAction::Pick => rox_i18n::t!("shader-panel-pick"),
         }
     }
 
@@ -594,10 +594,9 @@ impl ShaderPanel {
         if let Some(name) = self.config.name.as_deref().filter(|_| self.pool_missing()) {
             return note(
                 vec![
-                    format!("{name} isn't in this workspace's shaders."),
-                    "This panel wears a shader the workspace doesn't carry, so there's \
-                     nothing to run."
+                    rox_i18n::t!("shader-panel-note-missing-title", name = name.to_string())
                         .to_string(),
+                    rox_i18n::t!("shader-panel-note-missing-body").to_string(),
                 ],
                 vec![NoteAction::Pick],
             );
@@ -605,10 +604,8 @@ impl ShaderPanel {
         if self.running().trim().is_empty() {
             return note(
                 vec![
-                    "No shader loaded.".to_string(),
-                    "Pick an example, or point the panel at a .wgsl file defining \
-                     fs_user(uv)."
-                        .to_string(),
+                    rox_i18n::t!("shader-panel-note-empty-title").to_string(),
+                    rox_i18n::t!("shader-panel-note-empty-body").to_string(),
                 ],
                 vec![NoteAction::Pick],
             );
@@ -616,10 +613,8 @@ impl ShaderPanel {
         if self.pending() {
             return note(
                 vec![
-                    "This shader hasn't been read yet.".to_string(),
-                    "It arrived with a layout or a workspace rather than from this \
-                     machine, so it's parked until you've had a look."
-                        .to_string(),
+                    rox_i18n::t!("shader-panel-note-pending-title").to_string(),
+                    rox_i18n::t!("shader-panel-note-pending-body").to_string(),
                 ],
                 vec![NoteAction::Inspect, NoteAction::Enable],
             );
@@ -627,8 +622,8 @@ impl ShaderPanel {
         if !self.config.enabled {
             return note(
                 vec![
-                    "This shader is off.".to_string(),
-                    "The source and its bindings are still here, parked.".to_string(),
+                    rox_i18n::t!("shader-panel-note-off-title").to_string(),
+                    rox_i18n::t!("shader-panel-note-off-body").to_string(),
                 ],
                 vec![NoteAction::Inspect, NoteAction::Enable],
             );
@@ -651,7 +646,7 @@ impl ShaderPanel {
         // aligned at the top: centred, the carets point at the wrong
         // columns and a long message clips at both ends.
         Some(BodyNote {
-            lines: std::iter::once("This shader didn't compile:".to_string())
+            lines: std::iter::once(rox_i18n::t!("shader-panel-compile-error").to_string())
                 .chain(error.lines().take(ERROR_LINES).map(str::to_string))
                 .collect(),
             actions: vec![NoteAction::Inspect],
@@ -763,12 +758,8 @@ impl ShaderPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "Run Shader",
-                Some(
-                    "Off keeps the source, the bookmark and the bindings in place and \
-                     paints nothing"
-                        .into(),
-                ),
+                rox_i18n::t!("shader-panel-run-shader"),
+                Some(rox_i18n::t!("shader-panel-run-shader.description")),
                 // The switch and nothing else. An unread source still has
                 // the approval block above to get through, so flicking this
                 // on can't be the way past it.
@@ -795,7 +786,7 @@ impl ShaderPanel {
                 ),
                 false => panel::banner(
                     panel::Tone::Bad,
-                    "This shader didn't compile",
+                    rox_i18n::t!("shader-panel-compile-title"),
                     error
                         .lines()
                         .take(ERROR_LINES)
@@ -805,7 +796,7 @@ impl ShaderPanel {
             });
         }
         shader = shader.child(setting_row(
-            "Run When Idle",
+            rox_i18n::t!("panel-run-when-idle"),
             Some(
                 "Keep drawing while the audio is silent. Off, the shader parks where it \
                  stands and the panel costs nothing"
@@ -825,8 +816,10 @@ impl ShaderPanel {
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
-            .children(pending.map(|body| section("Awaiting Approval", None, body)))
-            .child(section("Shader", None, shader))
+            .children(
+                pending.map(|body| section(rox_i18n::t!("panel-awaiting-approval"), None, body)),
+            )
+            .child(section(rox_i18n::t!("panel-section-shader"), None, shader))
     }
 
     /// The Bindings page: the routes filling the shader's slots, in the
@@ -877,11 +870,11 @@ impl ShaderPanel {
             .flex_col()
             .gap(SECTION_GAP)
             .child(section(
-                "Routes",
+                rox_i18n::t!("shader-panel-section-routes"),
                 Some(add.into_any_element()),
                 editor.list(cx),
             ))
-            .child(section("Slots", None, slots))
+            .child(section(rox_i18n::t!("panel-section-slots"), None, slots))
     }
 }
 
@@ -899,7 +892,10 @@ impl Panel for ShaderPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Shader")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-shader"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -964,7 +960,7 @@ impl Panel for ShaderPanel {
         // and the tick lands on the right, the way every other top-level
         // check row in the app reads. The icon-less form is for flyouts.
         let menu = menu.item(panel::check_row(
-            "Run When Idle",
+            rox_i18n::t!("panel-run-when-idle"),
             Some(icons::CLOCK),
             |this: &Self| this.config.run_when_idle,
             |this: &mut Self, _| this.config.run_when_idle = !this.config.run_when_idle,

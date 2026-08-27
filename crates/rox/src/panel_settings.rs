@@ -34,6 +34,7 @@ use rox_panels::history::HistoryPanel;
 use rox_panels::library::LibraryPanel;
 use rox_panels::lyrics::LyricsPanel;
 use rox_panels::metadata::MetadataPanel;
+use rox_panels::oscilloscope::OscilloscopePanel;
 use rox_panels::output::OutputPanel;
 use rox_panels::particles::ParticlesPanel;
 use rox_panels::playlists::PlaylistsPanel;
@@ -81,6 +82,7 @@ macro_rules! with_settings_panel {
             StatsWidgetPanel,
             OutputPanel,
             SpectrumPanel,
+            OscilloscopePanel,
             WaveformPanel,
             ParticlesPanel,
             ShaderPanel,

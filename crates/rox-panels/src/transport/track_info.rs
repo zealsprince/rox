@@ -741,11 +741,19 @@ impl TrackInfoPanel {
     /// `.checked()` only refreshes at the top level, and a nested flyout
     /// would show a stale tick until it was reopened.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
-        let mut menu = menu.separator().label("Overflow");
+        let mut menu = menu
+            .separator()
+            .label(rox_i18n::t!("track-info-menu-overflow"));
         for (name, mode) in [
-            ("Truncate", MarqueeMode::Off),
-            ("Scroll", MarqueeMode::Scroll),
-            ("Loop", MarqueeMode::Loop),
+            (
+                rox_i18n::t!("track-info-overflow-truncate"),
+                MarqueeMode::Off,
+            ),
+            (
+                rox_i18n::t!("track-info-overflow-scroll"),
+                MarqueeMode::Scroll,
+            ),
+            (rox_i18n::t!("track-info-overflow-loop"), MarqueeMode::Loop),
         ] {
             let weak = cx.entity().downgrade();
             menu = menu.item(
@@ -917,9 +925,9 @@ impl TrackInfoPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tip = match (id.is_some(), on) {
-            (false, _) => "Nothing to favourite",
-            (true, true) => "Remove from favourites",
-            (true, false) => "Add to favourites",
+            (false, _) => rox_i18n::t!("transport-favourite-nothing"),
+            (true, true) => rox_i18n::t!("transport-favourite-remove"),
+            (true, false) => rox_i18n::t!("transport-favourite-add"),
         };
         panel::Tip::keyed("favourite", tip)
             .apply(
@@ -1038,9 +1046,9 @@ impl PanelSettings for TrackInfoPanel {
         let sizes: Vec<AnyElement> = (0..rows.len())
             .map(|ix| {
                 let label = if rows.len() == 1 {
-                    "Text Size".to_string()
+                    rox_i18n::t!("track-info-text-size").to_string()
                 } else {
-                    format!("Row {} Size", ix + 1)
+                    rox_i18n::t!("track-info-row-size", number = (ix + 1) as u64).to_string()
                 };
                 let scale = self.config.scales.get(ix).copied().unwrap_or(1.0).clamp(
                     ROW_SCALE_MIN,
@@ -1080,12 +1088,8 @@ impl PanelSettings for TrackInfoPanel {
                 cx,
             ))
             .child(panel::setting_block(
-                "Pieces",
-                Some(
-                    "Drag along a row to reorder and between rows to move; \
-                     a chip's x and plus hide and show"
-                        .into(),
-                ),
+                rox_i18n::t!("transport-pieces"),
+                Some(rox_i18n::t!("transport-pieces.description")),
                 None,
                 editor,
             ))
@@ -1113,12 +1117,8 @@ impl PanelSettings for TrackInfoPanel {
                 .gap(tokens::SPACE_MD)
                 .when(self.config.items.contains(&InfoPiece::Output), |d| {
                     d.child(panel::setting_row(
-                        "Color Output Chip",
-                        Some(
-                            "Let the chip turn warning colors when the output falls back or \
-                             resamples. Off keeps it the same muted tone always, and the hover \
-                             note still explains the state".into(),
-                        ),
+                        rox_i18n::t!("track-info-color-output-chip"),
+                        Some(rox_i18n::t!("track-info-color-output-chip.description")),
                         panel::toggle(
                             self.config.output_tint,
                             |this: &mut Self, on, cx| {
@@ -1130,13 +1130,16 @@ impl PanelSettings for TrackInfoPanel {
                     ))
                 })
                 .child(panel::setting_row(
-                    "Marquee",
-                    Some("What a line too long for the panel does: crawl and return, or loop without end".into()),
-                    panel::choices(
+                    rox_i18n::t!("track-info-marquee"),
+                    Some(rox_i18n::t!("track-info-marquee.description")),
+                    panel::choices_shared(
                         &[
-                            ("Off", MarqueeMode::Off),
-                            ("Scroll", MarqueeMode::Scroll),
-                            ("Loop", MarqueeMode::Loop),
+                            (rox_i18n::t!("panel-size-off"), MarqueeMode::Off),
+                            (
+                                rox_i18n::t!("track-info-overflow-scroll"),
+                                MarqueeMode::Scroll,
+                            ),
+                            (rox_i18n::t!("track-info-overflow-loop"), MarqueeMode::Loop),
                         ],
                         self.config.marquee,
                         |this: &mut Self, mode, cx| {
@@ -1149,8 +1152,8 @@ impl PanelSettings for TrackInfoPanel {
                 ))
                 .when(self.config.marquee != MarqueeMode::Off, |d| {
                     d.child(panel::setting_row(
-                        "Speed",
-                        Some("How fast the line crawls".into()),
+                        rox_i18n::t!("track-info-speed"),
+                        Some(rox_i18n::t!("track-info-speed.description")),
                         settings_ui::scalar(
                             &self.speed_scrub,
                             &self.value_edit,
@@ -1163,8 +1166,8 @@ impl PanelSettings for TrackInfoPanel {
                 })
                 .when(self.config.marquee == MarqueeMode::Scroll, |d| {
                     d.child(panel::setting_row(
-                        "Delay",
-                        Some("How long the line rests at each end before moving again".into()),
+                        rox_i18n::t!("track-info-delay"),
+                        Some(rox_i18n::t!("track-info-delay.description")),
                         settings_ui::scalar(
                             &self.delay_scrub,
                             &self.value_edit,
@@ -1177,11 +1180,8 @@ impl PanelSettings for TrackInfoPanel {
                     ))
                 })
                 .child(panel::setting_row(
-                    "Cycle Rows",
-                    Some(
-                        "Show the arrangement's rows one at a time in a single line, \
-                         fading between them; one row alone reads as itself".into(),
-                    ),
+                    rox_i18n::t!("track-info-cycle-rows"),
+                    Some(rox_i18n::t!("track-info-cycle-rows.description")),
                     panel::toggle(
                         self.config.swap,
                         |this: &mut Self, swap, cx| {
@@ -1194,8 +1194,8 @@ impl PanelSettings for TrackInfoPanel {
                 ))
                 .when(self.config.swap, |d| {
                     d.child(panel::setting_row(
-                        "Cycle every",
-                        Some("How long each row sits before the fade".into()),
+                        rox_i18n::t!("track-info-cycle-every"),
+                        Some(rox_i18n::t!("track-info-cycle-every.description")),
                         settings_ui::scalar(
                             &self.swap_scrub,
                             &self.value_edit,
@@ -1240,13 +1240,10 @@ impl TrackInfoPanel {
         {
             (
                 palette::tone_bad(),
-                Some(
-                    format!(
-                        "Exclusive output was asked for and the device wouldn't give it up, so \
-                         the shared mixer is standing in. The device said: {reason}"
-                    )
-                    .into(),
-                ),
+                Some(rox_i18n::t!(
+                    "track-info-output-fallback",
+                    reason = reason.clone()
+                )),
             )
         } else if resampling {
             let source = group_head::khz(status.source_rate.unwrap_or_default());
@@ -1257,22 +1254,19 @@ impl TrackInfoPanel {
             // samples.
             (
                 palette::tone_warn(),
-                Some(
-                    if exclusive {
-                        format!(
-                            "This file is {source} kHz and the card took {device} kHz, so every \
-                             sample is being converted on the way out. The device wouldn't run at \
-                             the file's own rate."
-                        )
-                    } else {
-                        format!(
-                            "This file is {source} kHz and the mixer is running at {device} kHz, \
-                             so every sample is being converted on the way out. Exclusive mode \
-                             would hand the card the file's own rate instead."
-                        )
-                    }
-                    .into(),
-                ),
+                Some(if exclusive {
+                    rox_i18n::t!(
+                        "track-info-output-resample-exclusive",
+                        source = source,
+                        device = device
+                    )
+                } else {
+                    rox_i18n::t!(
+                        "track-info-output-resample-mixer",
+                        source = source,
+                        device = device
+                    )
+                }),
             )
         } else {
             (palette::text_muted(), None)
@@ -1364,7 +1358,7 @@ impl TrackInfoPanel {
             // one failed to start. Plain idle stays blank, the chip still
             // reporting if the arrangement carries one.
             let line: Option<SharedString> = if active {
-                Some("opening...".into())
+                Some(rox_i18n::t!("track-info-opening"))
             } else {
                 error
             };
@@ -1453,8 +1447,9 @@ impl TrackInfoPanel {
             .any(|i| matches!(i, InfoPiece::Next | InfoPiece::Queued))
         {
             let (count, next) = self.queue_info(cx);
-            texts.next = next.map(|line| format!("Next: {line}"));
-            texts.queued = (count > 0).then(|| format!("{count} queued"));
+            texts.next = next.map(|line| rox_i18n::t!("track-info-next", line = line).to_string());
+            texts.queued = (count > 0)
+                .then(|| rox_i18n::t!("track-info-queued-count", count = count as u64).to_string());
         }
         // The inline art resolves only when a row carries the piece, the
         // header lines' rule; the thumb cache does the caching.
@@ -1821,7 +1816,12 @@ fn marquee_line(
 }
 
 // The width is enough of the track info line to read a title.
-transport_panel!(TrackInfoPanel, "track info", "Track Info", min_w = 120.);
+transport_panel!(
+    TrackInfoPanel,
+    "track info",
+    rox_i18n::t!("panel-title-track-info"),
+    min_w = 120.
+);
 
 #[cfg(test)]
 mod tests {

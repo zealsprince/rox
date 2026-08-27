@@ -25,25 +25,41 @@ pub(crate) struct CardEditor {
 /// The card's editable lines: what each one is called, what an empty one
 /// hints at, and the field it reads and writes. Created and updated stay
 /// out of this list because nobody types a date; a save stamps them.
+///
+/// The label and placeholder are i18n keys, not display text - this is a
+/// `const` table, and a translator call isn't, so every read site resolves
+/// them through `t!`/`t_static` rather than showing them as-is.
 type CardField = (
     &'static str,
     &'static str,
     fn(&mut WorkspaceMeta) -> &mut String,
 );
 const CARD_FIELDS: [CardField; 5] = [
-    ("Author", "Who made it", |meta| &mut meta.author),
-    ("Description", "What the look is going for", |meta| {
-        &mut meta.description
-    }),
-    ("Website", "Where it lives", |meta| &mut meta.website),
     (
-        "Version",
-        "Your own version, whatever you count in",
+        "settings-workspace-card-author",
+        "settings-workspace-card-author-placeholder",
+        |meta| &mut meta.author,
+    ),
+    (
+        "settings-workspace-card-description",
+        "settings-workspace-card-description-placeholder",
+        |meta| &mut meta.description,
+    ),
+    (
+        "settings-workspace-card-website",
+        "settings-workspace-card-website-placeholder",
+        |meta| &mut meta.website,
+    ),
+    (
+        "settings-workspace-card-version",
+        "settings-workspace-card-version-placeholder",
         |meta| &mut meta.version,
     ),
-    ("License", "The terms you share it under", |meta| {
-        &mut meta.license
-    }),
+    (
+        "settings-workspace-card-license",
+        "settings-workspace-card-license-placeholder",
+        |meta| &mut meta.license,
+    ),
 ];
 
 /// How big an exported bundle gets before the export says something about
@@ -84,22 +100,18 @@ impl SettingsWindow {
             .section(Section::new(
                 q,
                 icons::LAYOUT_DASHBOARD,
-                "Composition",
+                rox_i18n::t!("settings-workspace-section-composition"),
                 None,
                 |rows| {
                     rows.custom(
                         &["dock", "panels", "tree", "splits", "tabs", "layout"],
                         || {
-                            let mut body =
+                            let mut body = div().flex().flex_col().gap(tokens::SPACE_XS).child(
                                 div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(tokens::SPACE_XS)
-                                    .child(div().text_xs().text_color(palette::text_muted()).child(
-                                    "The window's panels as they sit in splits and tab groups; \
-                                 the arrows reorder a row among its siblings, the lock pins \
-                                 a panel in place, and the gear opens its settings",
-                                ));
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    .child(rox_i18n::t!("settings-workspace-composition-hint")),
+                            );
                             match self.workspace.upgrade() {
                                 Some(workspace) => {
                                     let root = workspace.read(cx).dock().read(cx).items().view();
@@ -108,11 +120,10 @@ impl SettingsWindow {
                                     body = body.child(div().flex().flex_col().children(rows));
                                 }
                                 None => {
-                                    body = body.child(
-                                        div()
-                                            .text_color(palette::text_muted())
-                                            .child("The workspace window is closed"),
-                                    );
+                                    body =
+                                        body.child(div().text_color(palette::text_muted()).child(
+                                            rox_i18n::t!("settings-workspace-composition-closed"),
+                                        ));
                                 }
                             }
                             body.into_any_element()
@@ -137,13 +148,13 @@ impl SettingsWindow {
             .gap(tokens::SPACE_XS)
             .child(Input::new(&self.workspace_name).small().w(px(150.)))
             .child(small_button(
-                "Save Current",
+                rox_i18n::t!("workspace-save-current"),
                 icons::DOWNLOAD,
                 false,
                 cx.listener(|this, _, window, cx| this.save_workspace(window, cx)),
             ))
             .child(small_button(
-                "Import",
+                rox_i18n::t!("workspace-import"),
                 icons::DOWNLOAD,
                 false,
                 cx.listener(|this, _, window, cx| this.import_workspace(window, cx)),
@@ -152,23 +163,23 @@ impl SettingsWindow {
         Section::new(
             q,
             icons::APP_WINDOW,
-            "Workspaces",
+            rox_i18n::t!("settings-workspace-section-workspaces"),
             Some(controls.into_any_element()),
             |rows| {
                 rows.custom(
                     &["look", "bundle", "theme", "import", "export", "apply"],
                     || {
                         let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
-                            div().text_xs().text_color(palette::text_muted()).child(
-                                "A workspace is a whole look - layouts, palette, appearance; \
-                             applying one replaces all three",
-                            ),
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(rox_i18n::t!("settings-workspace-hint")),
                         );
                         if entries.is_empty() {
                             list = list.child(
                                 div()
                                     .text_color(palette::text_muted())
-                                    .child("No workspaces yet"),
+                                    .child(rox_i18n::t!("settings-workspace-empty")),
                             );
                         } else {
                             // A row and, for the one whose details are open,
@@ -208,6 +219,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let name = entry.name.clone();
+        let title = entry.title.clone();
         // A shipped entry carries its author from the parse that built the
         // list; a saved one comes out of the authors read this window holds.
         let author = entry
@@ -250,47 +262,62 @@ impl SettingsWindow {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().truncate().child(SharedString::from(name.clone())))
+                    .child(div().truncate().child(title.clone()))
                     .when_some(author, |d, author| {
                         d.child(
                             div()
                                 .truncate()
                                 .text_xs()
                                 .text_color(palette::text_muted())
-                                .child(SharedString::from(format!("by {author}"))),
+                                .child(rox_i18n::t!("workspace-byline-author", author = author)),
                         )
                     }),
             )
             .when(entry.builtin, |d| d.child(shipped_tag()))
             // Applying replaces the whole look, so it routes through the
             // confirm dialog rather than acting straight off the click.
-            .child(small_button("Apply", icons::CHECK, !live, {
-                let name = name.clone();
-                cx.listener(move |this, _, _, cx| {
-                    this.pending = Some(Pending::ApplyWorkspace {
-                        card: crate::workspaces::ApplyCard::for_name(&name),
-                        imported: false,
-                    });
-                    cx.notify();
-                })
-            }))
+            .child(small_button(
+                rox_i18n::t!("workspace-dialog-apply"),
+                icons::CHECK,
+                !live,
+                {
+                    let name = name.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        this.pending = Some(Pending::ApplyWorkspace {
+                            card: crate::workspaces::ApplyCard::for_name(&name),
+                            imported: false,
+                        });
+                        cx.notify();
+                    })
+                },
+            ))
             .when(!entry.builtin, |d| {
                 // Export, overwrite and delete are the user's own workspaces
                 // only; a shipped one already lives in the app's assets, so
                 // there's nothing to save back out. Overwrite routes through
                 // the confirm dialog before the replace, matching the presets
                 // list and unlike apply and delete which are their own undo.
-                d.child(small_button("Export", icons::UPLOAD, false, {
-                    let name = name.clone();
-                    cx.listener(move |this, _, _, cx| this.export_workspace(&name, cx))
-                }))
-                .child(small_button("Overwrite", icons::REFRESH_CW, !live, {
-                    let name = name.clone();
-                    cx.listener(move |this, _, _, cx| {
-                        this.pending = Some(Pending::OverwriteWorkspace(name.clone()));
-                        cx.notify();
-                    })
-                }))
+                d.child(small_button(
+                    rox_i18n::t!("workspace-dialog-export"),
+                    icons::UPLOAD,
+                    false,
+                    {
+                        let name = name.clone();
+                        cx.listener(move |this, _, _, cx| this.export_workspace(&name, cx))
+                    },
+                ))
+                .child(small_button(
+                    rox_i18n::t!("workspace-dialog-overwrite"),
+                    icons::REFRESH_CW,
+                    !live,
+                    {
+                        let name = name.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            this.pending = Some(Pending::OverwriteWorkspace(name.clone()));
+                            cx.notify();
+                        })
+                    },
+                ))
                 .child(icon_button(icons::TRASH, false, {
                     let name = name.clone();
                     cx.listener(move |this, _, _, cx| this.delete_workspace(&name, cx))
@@ -322,20 +349,16 @@ impl SettingsWindow {
             .pl(px(14.) + tokens::SPACE_XS * 2. + tokens::SPACE_SM);
         match card.fields.as_ref() {
             Some(fields) => {
-                body = body.child(muted(
-                    "The card travels inside the file, so whoever you share this look \
-                     with sees it"
-                        .into(),
-                ));
+                body = body.child(muted(rox_i18n::t!("settings-workspace-card-hint")));
                 for ((label, _, _), input) in CARD_FIELDS.iter().zip(fields) {
                     body = body.child(panel::setting_row(
-                        *label,
+                        rox_i18n::t!(*label),
                         None,
                         Input::new(input).small().w(px(240.)),
                     ));
                 }
                 body = body.child(div().flex().flex_row().justify_end().child(small_button(
-                    "Save Card",
+                    rox_i18n::t!("settings-workspace-card-save"),
                     icons::CHECK,
                     false,
                     cx.listener(|this, _, _, cx| this.save_workspace_card(cx)),
@@ -345,7 +368,7 @@ impl SettingsWindow {
             // nothing to write back to. Fork it with Save Current under a
             // name of your own and the copy's card is yours to fill in.
             None if card.meta.is_empty() => {
-                body = body.child(muted("This workspace carries no card".into()));
+                body = body.child(muted(rox_i18n::t!("settings-workspace-card-empty")));
             }
             None => {
                 for (label, _, field) in CARD_FIELDS {
@@ -354,7 +377,7 @@ impl SettingsWindow {
                     if value.trim().is_empty() {
                         continue;
                     }
-                    body = body.child(card_readout_line(label, value));
+                    body = body.child(card_readout_line(rox_i18n::t!(label), value));
                 }
             }
         }
@@ -363,12 +386,21 @@ impl SettingsWindow {
         // above.
         let dates = match (card.meta.created.trim(), card.meta.updated.trim()) {
             ("", "") => None,
-            ("", updated) => Some(format!("Updated {updated}")),
-            (created, "") => Some(format!("Created {created}")),
-            (created, updated) => Some(format!("Created {created}, updated {updated}")),
+            ("", updated) => Some(rox_i18n::t!(
+                "settings-workspace-card-updated",
+                date = rox_i18n::format::format_iso_date(updated)
+            )),
+            (created, "") => Some(rox_i18n::t!(
+                "settings-workspace-card-created",
+                date = rox_i18n::format::format_iso_date(created)
+            )),
+            (created, updated) => Some(rox_i18n::t!(
+                "settings-workspace-card-created-updated",
+                created = rox_i18n::format::format_iso_date(created),
+                updated = rox_i18n::format::format_iso_date(updated)
+            )),
         };
-        body.children(dates.map(|dates| muted(dates.into())))
-            .into_any_element()
+        body.children(dates.map(muted)).into_any_element()
     }
 
     /// Open a workspace's card, or close it when it's the one already open.
@@ -403,7 +435,7 @@ impl SettingsWindow {
                     let value = field(&mut seed).clone();
                     cx.new(|cx| {
                         InputState::new(window, cx)
-                            .placeholder(*placeholder)
+                            .placeholder(rox_i18n::t!(*placeholder))
                             .default_value(value)
                     })
                 })
@@ -465,13 +497,13 @@ impl SettingsWindow {
             .gap(tokens::SPACE_XS)
             .child(Input::new(&self.layout_name).small().w(px(150.)))
             .child(small_button(
-                "Save Current",
+                rox_i18n::t!("workspace-save-current"),
                 icons::DOWNLOAD,
                 !live,
                 cx.listener(|this, _, window, cx| this.save_layout_preset(window, cx)),
             ))
             .child(small_button(
-                "Import",
+                rox_i18n::t!("workspace-import"),
                 icons::DOWNLOAD,
                 false,
                 cx.listener(|this, _, window, cx| this.import_preset(window, cx)),
@@ -480,26 +512,23 @@ impl SettingsWindow {
         Section::new(
             q,
             icons::LAYOUT_GRID,
-            "Layouts",
+            rox_i18n::t!("settings-workspace-section-layouts"),
             Some(save.into_any_element()),
             |rows| {
                 rows.custom(
                     &["preset", "dock", "panels", "mini", "primary", "save"],
                     || {
-                        let mut list =
+                        let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
                             div()
-                                .flex()
-                                .flex_col()
-                                .gap(tokens::SPACE_XS)
-                                .child(div().text_xs().text_color(palette::text_muted()).child(
-                                "Primary and mini are the two the menubar's mini-player button \
-                             swaps between",
-                            ));
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(rox_i18n::t!("settings-workspace-layouts-hint")),
+                        );
                         if presets.is_empty() {
                             list = list.child(
                                 div()
                                     .text_color(palette::text_muted())
-                                    .child("No layouts yet"),
+                                    .child(rox_i18n::t!("settings-workspace-layouts-empty")),
                             );
                         } else {
                             list = list.child(
@@ -524,49 +553,51 @@ impl SettingsWindow {
     fn panel_presets_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let presets = crate::panel_presets::saved();
 
-        Section::new(q, icons::COPY, "Panel Presets", None, |rows| {
-            rows.custom(
-                &["panel", "preset", "saved", "configured", "add panel"],
-                || {
-                    let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
-                        // Same instruction the save dialog gives, so it wears
-                        // the same keycaps for the menu path.
-                        kbd_line([
-                            Seg::Text(
-                                "One configured panel each, saved from a panel's own menu and \
-                                 added back from"
-                                    .into(),
-                            ),
-                            Seg::Key("Add Panel".into()),
-                            Seg::Text("then".into()),
-                            Seg::Key("Presets".into()),
-                            Seg::Text(
-                                "in any panel menu. They ride this workspace only, so another \
-                                 workspace won't carry them."
-                                    .into(),
-                            ),
-                        ])
-                        .text_xs(),
-                    );
-                    if presets.is_empty() {
-                        list = list.child(
-                            div()
-                                .text_color(palette::text_muted())
-                                .child("No panel presets yet"),
+        Section::new(
+            q,
+            icons::COPY,
+            rox_i18n::t!("settings-workspace-section-panel-presets"),
+            None,
+            |rows| {
+                rows.custom(
+                    &["panel", "preset", "saved", "configured", "add panel"],
+                    || {
+                        let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
+                            // Same instruction the save dialog gives, so it wears
+                            // the same keycaps for the menu path.
+                            kbd_line([
+                                Seg::Text(rox_i18n::t!(
+                                    "settings-workspace-panel-presets-hint-before"
+                                )),
+                                Seg::Key(rox_i18n::t!("workspace-context-add-panel")),
+                                Seg::Text(rox_i18n::t!("workspace-hint-then")),
+                                Seg::Key(rox_i18n::t!("menu-panels-presets")),
+                                Seg::Text(rox_i18n::t!(
+                                    "settings-workspace-panel-presets-hint-after"
+                                )),
+                            ])
+                            .text_xs(),
                         );
-                    } else {
-                        list = list.child(
-                            div().flex().flex_col().children(
-                                presets
-                                    .into_iter()
-                                    .map(|preset| self.panel_preset_row(preset, cx)),
-                            ),
-                        );
-                    }
-                    list.into_any_element()
-                },
-            )
-        })
+                        if presets.is_empty() {
+                            list = list.child(
+                                div()
+                                    .text_color(palette::text_muted())
+                                    .child(rox_i18n::t!("settings-workspace-panel-presets-empty")),
+                            );
+                        } else {
+                            list = list.child(
+                                div().flex().flex_col().children(
+                                    presets
+                                        .into_iter()
+                                        .map(|preset| self.panel_preset_row(preset, cx)),
+                                ),
+                            );
+                        }
+                        list.into_any_element()
+                    },
+                )
+            },
+        )
     }
 
     /// One panel preset's row: its name, the kind of panel inside it, and the
@@ -580,7 +611,9 @@ impl SettingsWindow {
         let kind = preset
             .panel_name()
             .map(rox_panel_api::panel::display_name)
-            .unwrap_or_else(|| "Unknown panel".into());
+            .unwrap_or_else(|| {
+                rox_i18n::t!("settings-workspace-panel-preset-unknown-kind").to_string()
+            });
         let icon = crate::panel_presets::icon_for(&preset);
         let name = preset.name;
         div()
@@ -637,32 +670,55 @@ impl SettingsWindow {
                     .truncate()
                     .child(SharedString::from(preset.name.clone())),
             )
-            .child(role_chip("Primary", is_primary, {
-                let name = name.clone();
-                cx.listener(move |this, _, _, cx| this.set_primary(&name, cx))
-            }))
-            .child(role_chip("Mini", is_mini, {
-                let name = name.clone();
-                cx.listener(move |this, _, _, cx| this.set_mini(&name, cx))
-            }))
-            .child(small_button("Apply", icons::CHECK, !live, {
-                let name = name.clone();
-                cx.listener(move |this, _, _, cx| this.apply_preset(&name, cx))
-            }))
-            .child(small_button("Export", icons::UPLOAD, false, {
-                let name = name.clone();
-                cx.listener(move |this, _, _, cx| this.export_preset(&name, cx))
-            }))
+            .child(role_chip(
+                rox_i18n::t_static("settings-workspace-role-primary"),
+                is_primary,
+                {
+                    let name = name.clone();
+                    cx.listener(move |this, _, _, cx| this.set_primary(&name, cx))
+                },
+            ))
+            .child(role_chip(
+                rox_i18n::t_static("settings-workspace-role-mini"),
+                is_mini,
+                {
+                    let name = name.clone();
+                    cx.listener(move |this, _, _, cx| this.set_mini(&name, cx))
+                },
+            ))
+            .child(small_button(
+                rox_i18n::t!("workspace-dialog-apply"),
+                icons::CHECK,
+                !live,
+                {
+                    let name = name.clone();
+                    cx.listener(move |this, _, _, cx| this.apply_preset(&name, cx))
+                },
+            ))
+            .child(small_button(
+                rox_i18n::t!("workspace-dialog-export"),
+                icons::UPLOAD,
+                false,
+                {
+                    let name = name.clone();
+                    cx.listener(move |this, _, _, cx| this.export_preset(&name, cx))
+                },
+            ))
             // Overwrite the saved preset with the live layout; the dialog
             // confirms before the replace, unlike apply and delete which are
             // their own undo.
-            .child(small_button("Overwrite", icons::REFRESH_CW, !live, {
-                let name = name.clone();
-                cx.listener(move |this, _, _, cx| {
-                    this.pending = Some(Pending::OverwritePreset(name.clone()));
-                    cx.notify();
-                })
-            }))
+            .child(small_button(
+                rox_i18n::t!("workspace-dialog-overwrite"),
+                icons::REFRESH_CW,
+                !live,
+                {
+                    let name = name.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        this.pending = Some(Pending::OverwritePreset(name.clone()));
+                        cx.notify();
+                    })
+                },
+            ))
             .child(icon_button(icons::TRASH, false, {
                 let name = name.clone();
                 cx.listener(move |this, _, _, cx| this.delete_preset(&name, cx))
@@ -834,48 +890,46 @@ impl SettingsWindow {
         // and so does a look that simply wears shaders, however many times
         // it's been applied before.
         let split = card.is_some_and(|card| card.splits_apply());
-        let (title, body, confirm): (String, SharedString, &'static str) =
+        let (title, body, confirm): (SharedString, SharedString, SharedString) =
             match self.pending.as_ref()? {
                 Pending::OverwritePreset(name) => (
-                    format!("Overwrite \"{name}\"?"),
-                    "This replaces the saved layout with the current one.".into(),
-                    "Overwrite",
+                    rox_i18n::t!("workspace-dialog-overwrite-title", name = name.as_str()),
+                    rox_i18n::t!("workspace-layout-overwrite-body"),
+                    rox_i18n::t!("workspace-dialog-overwrite"),
                 ),
                 Pending::OverwriteWorkspace(name) => (
-                    format!("Overwrite workspace \"{name}\"?"),
-                    "This replaces the saved workspace with the current state.".into(),
-                    "Overwrite",
+                    rox_i18n::t!(
+                        "settings-confirm-overwrite-workspace-title",
+                        name = name.as_str()
+                    ),
+                    rox_i18n::t!("settings-confirm-overwrite-workspace-body"),
+                    rox_i18n::t!("workspace-dialog-overwrite"),
                 ),
                 Pending::ApplyWorkspace {
                     card,
                     imported: true,
                 } => (
-                    format!("Imported \"{}\"", card.name),
-                    "It's saved to your workspaces. Applying it now replaces your layouts, \
-                     palette, and appearance with the workspace's."
-                        .into(),
-                    "Apply",
+                    rox_i18n::t!("workspace-apply-imported-title", name = card.name.as_str()),
+                    rox_i18n::t!("settings-confirm-apply-imported-body"),
+                    rox_i18n::t!("workspace-dialog-apply"),
                 ),
                 Pending::ApplyWorkspace { card, .. } => (
-                    format!("Apply \"{}\"?", card.name),
-                    "This replaces your layouts, palette, and appearance with the workspace's."
-                        .into(),
-                    "Apply",
+                    rox_i18n::t!("workspace-dialog-apply-title", name = card.name.as_str()),
+                    rox_i18n::t!("settings-confirm-apply-body"),
+                    rox_i18n::t!("workspace-dialog-apply"),
                 ),
                 Pending::ClearEmbeddings(model) => (
-                    format!("Clear what \"{model}\" described?"),
-                    "The descriptions go and the space comes back. Having them again means the \
-                     analysis pass listening to every track in the library over."
-                        .into(),
-                    "Clear",
+                    rox_i18n::t!(
+                        "settings-confirm-clear-embeddings-title",
+                        model = model.as_str()
+                    ),
+                    rox_i18n::t!("settings-confirm-clear-embeddings-body"),
+                    rox_i18n::t!("settings-confirm-clear"),
                 ),
                 Pending::ClearMeasuredBpm => (
-                    "Forget the measured tempos?".into(),
-                    "Every tempo rox worked out goes back to unmeasured; numbers from your \
-                     files' own tags stay. Having them again means the tempo pass decoding \
-                     each of those tracks over."
-                        .into(),
-                    "Clear",
+                    rox_i18n::t!("settings-confirm-clear-measured-bpm-title"),
+                    rox_i18n::t!("settings-confirm-clear-measured-bpm-body"),
+                    rox_i18n::t!("settings-confirm-clear"),
                 ),
             };
         let line = |text: SharedString| {
@@ -912,7 +966,7 @@ impl SettingsWindow {
                         .border_1()
                         .border_color(palette::border_light())
                         .shadow_md()
-                        .child(div().child(SharedString::from(title)))
+                        .child(div().child(title))
                         .children(card.and_then(|card| card.byline.clone()).map(line))
                         .children(card.and_then(|card| card.description.clone()).map(line))
                         .child(line(body))
@@ -922,12 +976,12 @@ impl SettingsWindow {
                         .children(screen.clone().map(line))
                         .children(screen.map(|_| {
                             kbd_line([
-                                Seg::Text("Turn it off any time with".into()),
+                                Seg::Text(rox_i18n::t!("workspace-screen-shader-hint-before")),
                                 Seg::Key(chord("Shift+X")),
-                                Seg::Text("or".into()),
-                                Seg::Key("Window".into()),
-                                Seg::Text("then".into()),
-                                Seg::Key("Overlay Shader".into()),
+                                Seg::Text(rox_i18n::t!("workspace-hint-or")),
+                                Seg::Key(rox_i18n::t!("menu-window")),
+                                Seg::Text(rox_i18n::t!("workspace-hint-then")),
+                                Seg::Key(rox_i18n::t!("menu-overlay-shader")),
                             ])
                             .text_xs()
                         }))
@@ -939,14 +993,9 @@ impl SettingsWindow {
                         // says that instead.
                         .children(split.then(|| {
                             line(if shaders.is_some() {
-                                "Approving lets them run on this machine. Applying without \
-                                 them leaves the look bare, with the shaders still in its pool."
-                                    .into()
+                                rox_i18n::t!("workspace-apply-shaders-approve-body")
                             } else {
-                                SharedString::from(
-                                    "Applying without them leaves the look bare, with the \
-                                     shaders still in its pool.",
-                                )
+                                rox_i18n::t!("workspace-apply-shaders-plain-body")
                             })
                         }))
                         .child(
@@ -956,7 +1005,7 @@ impl SettingsWindow {
                                 .justify_end()
                                 .gap(tokens::SPACE_SM)
                                 .child(dialog_button(
-                                    "Cancel",
+                                    rox_i18n::t!("workspace-dialog-cancel"),
                                     false,
                                     cx.listener(|this, _, _, cx| {
                                         this.pending = None;
@@ -964,7 +1013,11 @@ impl SettingsWindow {
                                     }),
                                 ))
                                 .child(dialog_button(
-                                    if split { "Without Shaders" } else { confirm },
+                                    if split {
+                                        rox_i18n::t!("workspace-dialog-without-shaders")
+                                    } else {
+                                        confirm
+                                    },
                                     !split,
                                     cx.listener(|this, _, window, cx| {
                                         this.confirm_pending(ApplyShaders::Skip, window, cx)
@@ -973,9 +1026,9 @@ impl SettingsWindow {
                                 .children(split.then(|| {
                                     dialog_button(
                                         if shaders.is_some() {
-                                            "Approve and Apply"
+                                            rox_i18n::t!("workspace-dialog-approve-apply")
                                         } else {
-                                            "With Shaders"
+                                            rox_i18n::t!("workspace-dialog-with-shaders")
                                         },
                                         true,
                                         cx.listener(|this, _, window, cx| {
@@ -1068,8 +1121,8 @@ impl SettingsWindow {
             rows.push(chrome_row(
                 depth,
                 match axis {
-                    Axis::Horizontal => "Split, side by side",
-                    Axis::Vertical => "Split, stacked",
+                    Axis::Horizontal => rox_i18n::t_static("settings-workspace-tree-split-row"),
+                    Axis::Vertical => rox_i18n::t_static("settings-workspace-tree-split-column"),
                 },
                 Some(controls),
             ));
@@ -1094,7 +1147,11 @@ impl SettingsWindow {
                 self.panel_rows(only.clone(), depth, slot, rows, cx);
                 return;
             }
-            rows.push(chrome_row(depth, "Tabs", self.move_controls(&slot, cx)));
+            rows.push(chrome_row(
+                depth,
+                rox_i18n::t_static("settings-workspace-tree-tabs"),
+                self.move_controls(&slot, cx),
+            ));
             let len = children.len();
             for (ix, child) in children.into_iter().enumerate() {
                 let child_slot = TreeSlot::Tabs {
@@ -1129,7 +1186,11 @@ impl SettingsWindow {
                     // inside a drawer), and the tree should keep going
                     // down instead of stopping at the inner line.
                     Some(child) => self.panel_rows(child, depth + 1, TreeSlot::Hosted, rows, cx),
-                    None => rows.push(chrome_row(depth + 1, "Empty slot", None)),
+                    None => rows.push(chrome_row(
+                        depth + 1,
+                        rox_i18n::t_static("settings-workspace-tree-empty-slot"),
+                        None,
+                    )),
                 }
             }
         }
@@ -1622,7 +1683,7 @@ impl SettingsWindow {
 /// editable side uses `setting_row`'s inline control instead, since an input
 /// is one line high whatever's in it, while a description comes out of the
 /// file however long its author wrote it.
-fn card_readout_line(label: &'static str, value: String) -> Div {
+fn card_readout_line(label: impl Into<SharedString>, value: String) -> Div {
     div()
         .flex()
         .flex_row()
@@ -1634,7 +1695,7 @@ fn card_readout_line(label: &'static str, value: String) -> Div {
                 .w(px(72.))
                 .flex_none()
                 .text_color(palette::text_muted())
-                .child(label),
+                .child(label.into()),
         )
         .child(div().flex_1().min_w_0().child(SharedString::from(value)))
 }

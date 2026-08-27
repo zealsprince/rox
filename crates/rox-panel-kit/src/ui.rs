@@ -7,8 +7,9 @@
 
 use gpui::{
     div, prelude::*, px, svg, AnyElement, App, Context, Div, ElementId, Interactivity, MouseButton,
-    MouseDownEvent, Pixels, SharedString, Stateful, StyleRefinement, Window,
+    MouseDownEvent, Pixels, ScrollHandle, SharedString, Stateful, StyleRefinement, Window,
 };
+use gpui_component::scroll::Scrollbar;
 use gpui_component::Selectable;
 
 use rox_design::assets::icons;
@@ -91,6 +92,40 @@ pub fn sidebar() -> Div {
         .border_color(palette::border())
 }
 
+/// The nav rows in their own scrolling column. They take the slack
+/// between whatever the sidebar pins above and below them, and a window
+/// too short for the list scrolls it instead of cutting the tail off:
+/// the sidebar is fixed to the window height, so without this the last
+/// pages are simply unreachable. Give the rows through `build`.
+pub fn nav_scroll(
+    id: impl Into<ElementId>,
+    scroll: &ScrollHandle,
+    build: impl FnOnce(Stateful<Div>) -> Stateful<Div>,
+) -> Div {
+    div()
+        .flex_1()
+        .min_h_0()
+        .relative()
+        .child(build(
+            div()
+                .id(id)
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_XS)
+                .overflow_y_scroll()
+                .track_scroll(scroll),
+        ))
+        // Same idle-fading scrollbar the pages carry, in its own bounds
+        // so it lays out over the rows rather than beside them.
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .child(Scrollbar::vertical(scroll)),
+        )
+}
+
 /// A sidebar row: the page's icon leading its name; the picked page
 /// reads like an active control.
 pub fn nav_item<P: 'static>(
@@ -100,6 +135,35 @@ pub fn nav_item<P: 'static>(
     on_pick: impl Fn(&mut P, &mut Window, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
 ) -> Div {
+    nav_row(label, icon, picked, false, on_pick, cx)
+}
+
+/// The same row a shade back: for a page that isn't one of the subjects,
+/// so it reads as somewhere you go on purpose rather than the next thing
+/// down the list.
+pub fn nav_item_quiet<P: 'static>(
+    label: impl Into<SharedString>,
+    icon: &'static str,
+    picked: bool,
+    on_pick: impl Fn(&mut P, &mut Window, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    nav_row(label, icon, picked, true, on_pick, cx)
+}
+
+fn nav_row<P: 'static>(
+    label: impl Into<SharedString>,
+    icon: &'static str,
+    picked: bool,
+    quiet: bool,
+    on_pick: impl Fn(&mut P, &mut Window, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let ink = if quiet {
+        palette::text_muted()
+    } else {
+        palette::text()
+    };
     div()
         .px(tokens::SPACE_MD)
         .py(tokens::SPACE_XS)
@@ -111,18 +175,25 @@ pub fn nav_item<P: 'static>(
         .cursor_pointer()
         .when(picked, |d| d.bg(palette::bg_control_active()))
         .when(!picked, |d| d.hover(|d| d.bg(palette::bg_menu_hover())))
+        .when(quiet, |d| d.text_color(palette::text_muted()))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, window, cx| on_pick(this, window, cx)),
         )
-        .child(
-            svg()
-                .path(icon)
-                .size(px(14.))
-                .flex_none()
-                .text_color(palette::text()),
-        )
+        .child(svg().path(icon).size(px(14.)).flex_none().text_color(ink))
         .child(label.into())
+}
+
+/// A hairline between nav rows, for the point where the list stops being
+/// one run of pages. Inset to the row text so it starts where the labels
+/// do instead of cutting the whole sidebar.
+pub fn nav_divider() -> Div {
+    div()
+        .mx(tokens::SPACE_MD)
+        .my(tokens::SPACE_XS)
+        .h(px(1.))
+        .flex_none()
+        .bg(palette::border())
 }
 
 /// A header between setting groups, the palette listing's block names.
@@ -275,10 +346,7 @@ pub struct Query {
 impl Query {
     pub fn parse(text: &str) -> Self {
         Self {
-            terms: text
-                .split_whitespace()
-                .map(|term| term.to_lowercase())
-                .collect(),
+            terms: text.split_whitespace().map(rox_i18n::fold).collect(),
         }
     }
 
@@ -289,11 +357,13 @@ impl Query {
 
     /// Whether every term appears in some of `texts`, case folded.
     fn hits(&self, texts: &[&str]) -> bool {
-        self.terms.iter().all(|term| {
-            texts
-                .iter()
-                .any(|text| text.to_lowercase().contains(term.as_str()))
-        })
+        // Fold once per candidate rather than once per (term, candidate):
+        // the box filters every page on each keystroke, so this runs over
+        // the whole settings tree between frames.
+        let folded: Vec<String> = texts.iter().map(|text| rox_i18n::fold(text)).collect();
+        self.terms
+            .iter()
+            .all(|term| folded.iter().any(|text| text.contains(term.as_str())))
     }
 }
 
@@ -401,25 +471,49 @@ pub struct Rows<'a> {
 impl Rows<'_> {
     /// A standard labeled row; the label and description are the terms.
     pub fn row(
-        self,
-        label: impl Into<SharedString>,
-        description: Option<SharedString>,
-        control: impl IntoElement,
-    ) -> Self {
-        self.keyed(&[], label, description, control)
-    }
-
-    /// [`Rows::row`] with extra terms the copy doesn't carry: "gapless"
-    /// on the crossfade row, "normalization" on the gain mode.
-    pub fn keyed(
         mut self,
-        keywords: &[&str],
         label: impl Into<SharedString>,
         description: Option<SharedString>,
         control: impl IntoElement,
     ) -> Self {
         let label = label.into();
-        if self.keep(keywords, &label, description.as_ref().map(|d| d.as_ref())) {
+        if self.keep(&[], &label, description.as_ref().map(|d| d.as_ref())) {
+            self.body = self
+                .body
+                .child(crate::setting_row_dyn(label, description, control));
+            self.hits += 1;
+        }
+        self
+    }
+
+    /// [`Rows::row`] built from its message key, with extra English terms
+    /// the copy doesn't carry: "gapless" on the crossfade row,
+    /// "normalization" on the gain mode.
+    ///
+    /// Taking the key rather than the rendered text is what lets a row
+    /// carry search terms in the active language. The label is the key,
+    /// the description its `.description` attribute when it has one, and
+    /// its `.keywords` attribute is a whitespace-separated list of
+    /// synonyms in that language.
+    ///
+    /// `keywords` stays English on purpose and always matches, on top of
+    /// whatever the locale adds. Audio terms travel untranslated - plenty
+    /// of German users look for "gapless" - so dropping them would make a
+    /// translated build harder to search than the English one.
+    pub fn keyed(
+        mut self,
+        key: &'static str,
+        keywords: &[&str],
+        control: impl IntoElement,
+    ) -> Self {
+        let label = rox_i18n::t!(key);
+        let description = rox_i18n::try_translate(&format!("{key}.description"));
+        let local = rox_i18n::try_translate(&format!("{key}.keywords"));
+        let mut terms: Vec<&str> = keywords.to_vec();
+        if let Some(local) = local.as_deref() {
+            terms.extend(local.split_whitespace());
+        }
+        if self.keep(&terms, &label, description.as_ref().map(|d| d.as_ref())) {
             self.body = self
                 .body
                 .child(crate::setting_row_dyn(label, description, control));
@@ -903,7 +997,18 @@ pub fn scalar_sized<P: 'static>(
         scrub,
         edit,
         span.fraction(value),
-        format!("{:.*}{}", span.decimals, value, span.unit),
+        // The readout is read, so its decimal mark follows the locale:
+        // a German build shows 0,5 where an English one shows 0.5. The
+        // unit carries its own leading space where it wants one, so it
+        // concatenates rather than going through format_unit.
+        format!(
+            "{}{}",
+            rox_i18n::format::format_float(value as f64, span.decimals as u8),
+            span.unit
+        ),
+        // The edit buffer is typed back and parsed as a plain f32, so it
+        // stays ASCII with a dot. The parse accepts a comma too, which is
+        // what makes the localized readout above safe to retype verbatim.
         format!("{:.*}", span.decimals, value),
         span.over,
         width,
@@ -1166,5 +1271,32 @@ mod tests {
         let percent = span(0., 100., "%").hard();
         assert_eq!(percent.over, 1.0);
         assert_eq!(percent.value(percent.over), 100.);
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::Query;
+
+    /// Folding both sides is what makes a translated row findable by
+    /// someone who types without the accents, which is most people.
+    #[test]
+    fn accents_do_not_have_to_be_typed() {
+        assert!(Query::parse("prereglages").hits(&["Préréglages"]));
+        assert!(Query::parse("uberblenden").hits(&["Überblenden"]));
+        assert!(Query::parse("GROSSE").hits(&["Größe"]));
+    }
+
+    #[test]
+    fn every_term_has_to_land_somewhere() {
+        assert!(Query::parse("row height").hits(&["Row Height"]));
+        assert!(Query::parse("row gap").hits(&["Row Height", "gap spacing"]));
+        assert!(!Query::parse("row missing").hits(&["Row Height", "gap spacing"]));
+    }
+
+    /// The empty query is the closed-search path and keeps everything.
+    #[test]
+    fn an_empty_query_is_not_a_filter() {
+        assert!(!Query::parse("   ").active());
     }
 }

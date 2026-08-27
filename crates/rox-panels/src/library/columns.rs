@@ -29,187 +29,206 @@ pub struct ColumnDef {
 
 /// Every column the library knows how to draw. Adding a column is one line
 /// here plus its arm in [`TrackTable::render_td`].
-pub const COLUMNS: &[ColumnDef] = &[
-    ColumnDef {
-        // The cover thumbnail. Not sortable (art is not a projection field),
-        // so `sort` here is never read; `sort_key` returns None for it.
-        key: "cover",
-        label: "Cover",
-        default_width: 36.,
-        right: false,
-        default_on: false,
-        sort: SortKey::TrackNo,
-    },
-    ColumnDef {
-        key: "track",
-        label: "#",
-        default_width: 44.,
-        right: true,
-        default_on: true,
-        sort: SortKey::TrackNo,
-    },
-    ColumnDef {
-        key: "title",
-        label: "Title",
-        default_width: 420.,
-        right: false,
-        default_on: true,
-        sort: SortKey::Title,
-    },
-    ColumnDef {
-        key: "artist",
-        label: "Artist",
-        default_width: 220.,
-        right: false,
-        default_on: true,
-        sort: SortKey::Artist,
-    },
-    ColumnDef {
-        key: "album_artist",
-        label: "Album Artist",
-        default_width: 220.,
-        right: false,
-        default_on: false,
-        sort: SortKey::AlbumArtist,
-    },
-    ColumnDef {
-        key: "album",
-        label: "Album",
-        default_width: 220.,
-        right: false,
-        default_on: true,
-        sort: SortKey::Album,
-    },
-    ColumnDef {
-        key: "genre",
-        label: "Genre",
-        default_width: 140.,
-        right: false,
-        default_on: false,
-        sort: SortKey::Genre,
-    },
-    ColumnDef {
-        key: "year",
-        label: "Year",
-        default_width: 56.,
-        right: true,
-        default_on: false,
-        sort: SortKey::Year,
-    },
-    ColumnDef {
-        key: "codec",
-        label: "Codec",
-        default_width: 64.,
-        right: false,
-        default_on: false,
-        sort: SortKey::Codec,
-    },
-    ColumnDef {
-        key: "bitrate",
-        label: "Kbps",
-        default_width: 64.,
-        right: true,
-        default_on: true,
-        sort: SortKey::Bitrate,
-    },
-    ColumnDef {
-        // The sample rate as kHz, the label carrying the unit so the cell
-        // stays a bare number beside the bitrate.
-        key: "sample_rate",
-        label: "kHz",
-        default_width: 64.,
-        right: true,
-        default_on: false,
-        sort: SortKey::SampleRate,
-    },
-    ColumnDef {
-        key: "bit_depth",
-        label: "Bits",
-        default_width: 48.,
-        right: true,
-        default_on: false,
-        sort: SortKey::BitDepth,
-    },
-    ColumnDef {
-        // The ReplayGain the leveling would read, in dB. Which of the two
-        // figures that is follows the Audio page's mode, so the `sort` here
-        // is the Track reading and [`sort_key`] swaps it for Album's.
-        key: "gain",
-        label: "Gain",
-        default_width: 64.,
-        right: true,
-        default_on: false,
-        sort: SortKey::TrackGain,
-    },
-    ColumnDef {
-        key: "duration",
-        label: "Time",
-        default_width: 64.,
-        right: true,
-        default_on: true,
-        sort: SortKey::Duration,
-    },
-    ColumnDef {
-        // How fast the track runs, from its own tags or from the tempo
-        // pass. Only offered while tempo analysis is switched on, per
-        // [`offered`]; a layout that already holds it keeps drawing
-        // whatever the tags brought in.
-        key: "bpm",
-        label: "BPM",
-        default_width: 56.,
-        right: true,
-        default_on: false,
-        sort: SortKey::Bpm,
-    },
-    ColumnDef {
-        key: "rating",
-        label: "Rating",
-        default_width: 110.,
-        right: false,
-        default_on: true,
-        sort: SortKey::Rating,
-    },
-    ColumnDef {
-        // The heart toggle. Not sortable (favourites live in a playlist, not
-        // the projection the sort runs over), so `sort` here is never read;
-        // `sort_key` returns None for it.
-        key: "favourite",
-        label: "Fav",
-        default_width: 44.,
-        right: false,
-        default_on: false,
-        sort: SortKey::Rating,
-    },
-    ColumnDef {
-        key: "plays",
-        label: "Plays",
-        default_width: 56.,
-        right: true,
-        default_on: false,
-        sort: SortKey::Plays,
-    },
-    ColumnDef {
-        key: "added",
-        label: "Scanned",
-        default_width: 84.,
-        right: true,
-        default_on: false,
-        sort: SortKey::Added,
-    },
-    ColumnDef {
-        // How much each track resembles the one playing, off the acoustic
-        // vectors. Not a projection field, so `sort_key` returns None and
-        // `compute_view` orders it on the delegate's own score map; the
-        // `sort` here is never read. Only offered while acoustic analysis
-        // is switched on, per [`offered`].
-        key: "similar",
-        label: "Similar",
-        default_width: 64.,
-        right: true,
-        default_on: false,
-        sort: SortKey::Title,
-    },
-];
+///
+/// A function rather than a `const`: `t_static` isn't const-evaluable, and
+/// [`offered`]/[`column_def`] hand out `&'static ColumnDef` references, so
+/// this rebuilds and leaks once per active locale rather than on every
+/// call, mirroring `rox_i18n::t_static`'s own per-locale cache.
+pub fn columns() -> &'static [ColumnDef] {
+    static CACHE: std::sync::Mutex<Option<(&'static str, &'static [ColumnDef])>> =
+        std::sync::Mutex::new(None);
+    let locale = rox_i18n::locale();
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((cached_locale, cached_columns)) = *cache {
+        if cached_locale == locale {
+            return cached_columns;
+        }
+    }
+    let built: Vec<ColumnDef> = vec![
+        ColumnDef {
+            // The cover thumbnail. Not sortable (art is not a projection field),
+            // so `sort` here is never read; `sort_key` returns None for it.
+            key: "cover",
+            label: rox_i18n::t_static("columns-cover"),
+            default_width: 36.,
+            right: false,
+            default_on: false,
+            sort: SortKey::TrackNo,
+        },
+        ColumnDef {
+            key: "track",
+            label: "#",
+            default_width: 44.,
+            right: true,
+            default_on: true,
+            sort: SortKey::TrackNo,
+        },
+        ColumnDef {
+            key: "title",
+            label: rox_i18n::t_static("info-item-title"),
+            default_width: 420.,
+            right: false,
+            default_on: true,
+            sort: SortKey::Title,
+        },
+        ColumnDef {
+            key: "artist",
+            label: rox_i18n::t_static("head-piece-artist"),
+            default_width: 220.,
+            right: false,
+            default_on: true,
+            sort: SortKey::Artist,
+        },
+        ColumnDef {
+            key: "album_artist",
+            label: rox_i18n::t_static("filter-field-album-artist"),
+            default_width: 220.,
+            right: false,
+            default_on: false,
+            sort: SortKey::AlbumArtist,
+        },
+        ColumnDef {
+            key: "album",
+            label: rox_i18n::t_static("head-piece-album"),
+            default_width: 220.,
+            right: false,
+            default_on: true,
+            sort: SortKey::Album,
+        },
+        ColumnDef {
+            key: "genre",
+            label: rox_i18n::t_static("head-piece-genre"),
+            default_width: 140.,
+            right: false,
+            default_on: false,
+            sort: SortKey::Genre,
+        },
+        ColumnDef {
+            key: "year",
+            label: rox_i18n::t_static("head-piece-year"),
+            default_width: 56.,
+            right: true,
+            default_on: false,
+            sort: SortKey::Year,
+        },
+        ColumnDef {
+            key: "codec",
+            label: rox_i18n::t_static("columns-codec"),
+            default_width: 64.,
+            right: false,
+            default_on: false,
+            sort: SortKey::Codec,
+        },
+        ColumnDef {
+            key: "bitrate",
+            label: rox_i18n::t_static("columns-kbps"),
+            default_width: 64.,
+            right: true,
+            default_on: true,
+            sort: SortKey::Bitrate,
+        },
+        ColumnDef {
+            // The sample rate as kHz, the label carrying the unit so the cell
+            // stays a bare number beside the bitrate.
+            key: "sample_rate",
+            label: rox_i18n::t_static("columns-khz"),
+            default_width: 64.,
+            right: true,
+            default_on: false,
+            sort: SortKey::SampleRate,
+        },
+        ColumnDef {
+            key: "bit_depth",
+            label: rox_i18n::t_static("columns-bits"),
+            default_width: 48.,
+            right: true,
+            default_on: false,
+            sort: SortKey::BitDepth,
+        },
+        ColumnDef {
+            // The ReplayGain the leveling would read, in dB. Which of the two
+            // figures that is follows the Audio page's mode, so the `sort` here
+            // is the Track reading and [`sort_key`] swaps it for Album's.
+            key: "gain",
+            label: rox_i18n::t_static("columns-gain"),
+            default_width: 64.,
+            right: true,
+            default_on: false,
+            sort: SortKey::TrackGain,
+        },
+        ColumnDef {
+            key: "duration",
+            label: rox_i18n::t_static("head-piece-time"),
+            default_width: 64.,
+            right: true,
+            default_on: true,
+            sort: SortKey::Duration,
+        },
+        ColumnDef {
+            // How fast the track runs, from its own tags or from the tempo
+            // pass. Only offered while tempo analysis is switched on, per
+            // [`offered`]; a layout that already holds it keeps drawing
+            // whatever the tags brought in.
+            key: "bpm",
+            label: rox_i18n::t_static("columns-bpm"),
+            default_width: 56.,
+            right: true,
+            default_on: false,
+            sort: SortKey::Bpm,
+        },
+        ColumnDef {
+            key: "rating",
+            label: rox_i18n::t_static("info-item-rating"),
+            default_width: 110.,
+            right: false,
+            default_on: true,
+            sort: SortKey::Rating,
+        },
+        ColumnDef {
+            // The heart toggle. Not sortable (favourites live in a playlist, not
+            // the projection the sort runs over), so `sort` here is never read;
+            // `sort_key` returns None for it.
+            key: "favourite",
+            label: rox_i18n::t_static("columns-fav"),
+            default_width: 44.,
+            right: false,
+            default_on: false,
+            sort: SortKey::Rating,
+        },
+        ColumnDef {
+            key: "plays",
+            label: rox_i18n::t_static("status-item-plays"),
+            default_width: 56.,
+            right: true,
+            default_on: false,
+            sort: SortKey::Plays,
+        },
+        ColumnDef {
+            key: "added",
+            label: rox_i18n::t_static("columns-scanned"),
+            default_width: 84.,
+            right: true,
+            default_on: false,
+            sort: SortKey::Added,
+        },
+        ColumnDef {
+            // How much each track resembles the one playing, off the acoustic
+            // vectors. Not a projection field, so `sort_key` returns None and
+            // `compute_view` orders it on the delegate's own score map; the
+            // `sort` here is never read. Only offered while acoustic analysis
+            // is switched on, per [`offered`].
+            key: "similar",
+            label: rox_i18n::t_static("columns-similar"),
+            default_width: 64.,
+            right: true,
+            default_on: false,
+            sort: SortKey::Title,
+        },
+    ];
+    let leaked: &'static [ColumnDef] = Box::leak(built.into_boxed_slice());
+    *cache = Some((locale, leaked));
+    leaked
+}
 
 /// The columns a picker should offer: the registry, minus the ones whose
 /// feature is switched off. Only discovery is gated, the same way the panel
@@ -219,7 +238,7 @@ pub const COLUMNS: &[ColumnDef] = &[
 pub fn offered() -> impl Iterator<Item = &'static ColumnDef> {
     let acoustic = crate::settings::acoustic_analysis();
     let tempo = crate::settings::tempo_analysis();
-    COLUMNS
+    columns()
         .iter()
         .filter(move |def| acoustic || def.key != "similar")
         .filter(move |def| tempo || def.key != "bpm")
@@ -227,7 +246,24 @@ pub fn offered() -> impl Iterator<Item = &'static ColumnDef> {
 
 /// The registry entry for a key.
 pub fn column_def(key: &str) -> Option<&'static ColumnDef> {
-    COLUMNS.iter().find(|c| c.key == key)
+    columns().iter().find(|c| c.key == key)
+}
+
+/// Reword built columns in the active language, in place.
+///
+/// A header's label is resolved once and then stored on the column, so
+/// it doesn't follow a language switch the way a string resolved at
+/// render time does. Only the wording moves: order, widths, and the
+/// active sort are the arrangement the user built and mean the same
+/// thing in every language, so rebuilding outright would throw away a
+/// layout to fix a label. A key the registry no longer offers keeps
+/// whatever it had, the same way [`track_columns`] skips it.
+pub fn reword(columns: &mut [Column]) {
+    for column in columns {
+        if let Some(def) = column_def(&column.key) {
+            column.name = def.label.into();
+        }
+    }
 }
 
 /// One shown column: its registry key and current width. The order of the
@@ -241,7 +277,7 @@ pub struct ColumnSpec {
 
 /// The registry's default visible columns, in registry order.
 fn default_layout() -> Vec<ColumnSpec> {
-    COLUMNS
+    columns()
         .iter()
         .filter(|c| c.default_on)
         .map(|c| ColumnSpec {
@@ -676,9 +712,62 @@ pub fn sort_key(key: &str) -> Option<SortKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        fold_head_lines, mirror_sort, settings_ui, track_columns, ColumnSort, ColumnSpec,
+        fold_head_lines, mirror_sort, reword, settings_ui, track_columns, ColumnSort, ColumnSpec,
         HeadPiece, LibraryConfig, SharedString, HEAD_HEIGHT_MAX, HEAD_LINE_SLOTS, ROW_HEIGHT_MIN,
     };
+
+    /// A language switch rewords the headers and leaves the layout alone.
+    ///
+    /// The labels are stored on the built column rather than resolved as
+    /// the header draws, so they used to sit in whatever language the
+    /// panel was opened in while the menu hanging off each header, which
+    /// reads the registry every frame, showed the new one. The two
+    /// disagreeing on screen is the bug this pins.
+    #[test]
+    fn a_language_switch_rewords_headers_without_moving_them() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        let layout: Vec<ColumnSpec> = ["title", "artist", "year"]
+            .iter()
+            .map(|key| ColumnSpec {
+                key: key.to_string(),
+                width: 64.,
+            })
+            .collect();
+        rox_i18n::set_locale(Some("en-CA"));
+        let sort = Some((SharedString::from("title"), true));
+        let mut columns = track_columns(&layout, &sort);
+        let english: Vec<String> = columns.iter().map(|c| c.name.to_string()).collect();
+        let order: Vec<String> = columns.iter().map(|c| c.key.to_string()).collect();
+        let sorts: Vec<Option<ColumnSort>> = columns.iter().map(|c| c.sort).collect();
+
+        rox_i18n::set_locale(Some("ja"));
+        reword(&mut columns);
+        let japanese: Vec<String> = columns.iter().map(|c| c.name.to_string()).collect();
+        assert_ne!(english, japanese, "the headers should follow the language");
+        assert_eq!(
+            order,
+            columns.iter().map(|c| c.key.to_string()).collect::<Vec<_>>(),
+            "rewording must not reorder the columns"
+        );
+        assert_eq!(
+            sorts,
+            columns.iter().map(|c| c.sort).collect::<Vec<_>>(),
+            "rewording must not disturb the active sort"
+        );
+        assert!(
+            columns.iter().all(|c| c.width == gpui::px(64.)),
+            "rewording must not resize the columns"
+        );
+
+        // And back, so the switch is not a one-way trip.
+        rox_i18n::set_locale(Some("en-CA"));
+        reword(&mut columns);
+        assert_eq!(
+            english,
+            columns.iter().map(|c| c.name.to_string()).collect::<Vec<_>>()
+        );
+        rox_i18n::set_locale(None);
+    }
 
     /// Sorting leaves the show-only columns alone. The table reads the
     /// delegate's columns back into its own column groups on a refresh, so

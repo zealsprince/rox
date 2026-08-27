@@ -175,9 +175,12 @@ pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMe
     };
     let open = host.open.clone();
     menu.item(
-        PopupMenuItem::new(SharedString::from(format!("{} Settings", host.label)))
-            .icon(Icon::default().path(icons::LAYOUT_DASHBOARD))
-            .on_click(move |_, _, cx| open(cx)),
+        PopupMenuItem::new(rox_i18n::t!(
+            "composite-host-settings",
+            host = host.label.to_string()
+        ))
+        .icon(Icon::default().path(icons::LAYOUT_DASHBOARD))
+        .on_click(move |_, _, cx| open(cx)),
     )
 }
 
@@ -326,7 +329,8 @@ fn pick_item(
     disabled: bool,
     on_pick: impl Fn(Arc<dyn PanelView>, &mut Window, &mut App) + Clone + 'static,
 ) -> PopupMenu {
-    let item = PopupMenuItem::new(def.label).icon(Icon::default().path(def.icon));
+    let item =
+        PopupMenuItem::new(rox_i18n::t!(def.label)).icon(Icon::default().path(def.icon));
     if disabled {
         return menu.item(item.disabled(true));
     }
@@ -363,7 +367,7 @@ pub fn empty_slot(
             this.child(
                 Button::new(id)
                     .icon(Icon::default().path(icons::PLUS))
-                    .label("Add Panel")
+                    .label(rox_i18n::t!("composite-add-panel"))
                     .small()
                     .outline()
                     .dropdown_menu(move |menu, window, cx| {
@@ -444,7 +448,10 @@ pub fn parent_controls() -> Div {
 /// own menu, not the parent's; this button is how the parent stays
 /// managed once that body route is handed to the children. Sits under the
 /// layout mark so the grip reads as the container, not a child.
-pub fn parent_button<P: Panel>(tooltip: &'static str, cx: &mut Context<P>) -> impl IntoElement {
+pub fn parent_button<P: Panel>(
+    tooltip: impl Into<SharedString>,
+    cx: &mut Context<P>,
+) -> impl IntoElement {
     let weak = cx.entity().downgrade();
     Button::new("composite-parent")
         .icon(Icon::default().path(icons::LAYOUT_DASHBOARD))
@@ -506,12 +513,12 @@ pub fn slot_button<P: 'static>(
                 menu
             } else {
                 menu.item(
-                    PopupMenuItem::submenu("Replace", submenu)
+                    PopupMenuItem::submenu(rox_i18n::t!("composite-replace"), submenu)
                         .icon(Icon::default().path(icons::REFRESH_CW)),
                 )
             };
             let menu = menu.item(
-                PopupMenuItem::new("Panel Settings")
+                PopupMenuItem::new(rox_i18n::t!("panel-settings"))
                     .icon(Icon::default().path(icons::SETTINGS))
                     .on_click(move |_, _, cx| {
                         panel_settings::open_for_view(&settings_child, cx);
@@ -521,7 +528,7 @@ pub fn slot_button<P: 'static>(
                 return menu;
             }
             menu.item(
-                PopupMenuItem::new("Remove")
+                PopupMenuItem::new(rox_i18n::t!("composite-remove"))
                     .icon(Icon::default().path(icons::CLOSE))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = remove_weak.upgrade() {

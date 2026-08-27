@@ -266,14 +266,14 @@ impl GroupPanel {
                         return menu;
                     }
                     let (back_label, back_icon) = if stacked {
-                        ("Move Up", icons::ARROW_UP)
+                        (rox_i18n::t!("group-panel-move-up"), icons::ARROW_UP)
                     } else {
-                        ("Move Left", icons::CHEVRON_LEFT)
+                        (rox_i18n::t!("composite-move-left"), icons::CHEVRON_LEFT)
                     };
                     let (fwd_label, fwd_icon) = if stacked {
-                        ("Move Down", icons::ARROW_DOWN)
+                        (rox_i18n::t!("group-panel-move-down"), icons::ARROW_DOWN)
                     } else {
-                        ("Move Right", icons::CHEVRON_RIGHT)
+                        (rox_i18n::t!("composite-move-right"), icons::CHEVRON_RIGHT)
                     };
                     let back = weak.clone();
                     let forward = weak;
@@ -311,7 +311,7 @@ impl GroupPanel {
                         .icon(Icon::default().path(icons::CLOSE))
                         .small()
                         .ghost()
-                        .tooltip("Remove Slot")
+                        .tooltip(rox_i18n::t!("group-panel-remove-slot"))
                         .on_click(move |_, _, cx| {
                             if let Some(this) = weak.upgrade() {
                                 this.update(cx, |this, cx| this.remove_slot(ix, cx));
@@ -338,9 +338,10 @@ impl GroupPanel {
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
         // Let the children reach this host from their own menus; the
         // dock never sees a hosted panel, so nothing else offers it.
+        let group_title = rox_i18n::t!("group-panel-title");
         composite::report_hosted(
             self.slots.iter().flatten(),
-            self.config.chrome.title.as_deref().unwrap_or("Group"),
+            self.config.chrome.title.as_deref().unwrap_or(&group_title),
             cx,
         );
 
@@ -453,8 +454,12 @@ impl GroupPanel {
             }
         }
 
-        let parent = (!self.config.chrome.controls_hidden())
-            .then(|| composite::parent_controls().child(composite::parent_button("Group", cx)));
+        let parent = (!self.config.chrome.controls_hidden()).then(|| {
+            composite::parent_controls().child(composite::parent_button(
+                rox_i18n::t!("group-panel-title"),
+                cx,
+            ))
+        });
         div()
             .size_full()
             .relative()
@@ -541,7 +546,10 @@ impl Panel for GroupPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Group")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("group-panel-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -619,9 +627,15 @@ impl Panel for GroupPanel {
         // The toggle names the arrangement a click lands on, not the
         // current one.
         let (flip_label, flip_icon) = if self.config.stacked {
-            ("Split Side by Side", icons::MOVE_HORIZONTAL)
+            (
+                rox_i18n::t!("group-panel-split-side-by-side"),
+                icons::MOVE_HORIZONTAL,
+            )
         } else {
-            ("Split Stacked", icons::MOVE_VERTICAL)
+            (
+                rox_i18n::t!("group-panel-split-stacked"),
+                icons::MOVE_VERTICAL,
+            )
         };
         let flip = cx.entity().downgrade();
         let add = cx.entity().downgrade();
@@ -639,7 +653,7 @@ impl Panel for GroupPanel {
                     }),
             )
             .item(
-                PopupMenuItem::new("Add Slot")
+                PopupMenuItem::new(rox_i18n::t!("group-panel-add-slot"))
                     .icon(Icon::default().path(icons::PLUS))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = add.upgrade() {
@@ -652,7 +666,7 @@ impl Panel for GroupPanel {
         let menu = if self.slots.len() == 2 {
             let swap = cx.entity().downgrade();
             menu.item(
-                PopupMenuItem::new("Swap Panels")
+                PopupMenuItem::new(rox_i18n::t!("group-panel-swap-panels"))
                     .icon(Icon::default().path(icons::REFRESH_CW))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = swap.upgrade() {

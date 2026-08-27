@@ -179,7 +179,11 @@ impl Render for QueueTooltip {
             .shadow_md()
             .text_color(palette::text())
             .text_xs()
-            .child(div().text_color(palette::text_muted()).child("Up Next"))
+            .child(
+                div()
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("queue-widget-up-next")),
+            )
             .children(self.rows.iter().map(|(title, artist)| {
                 div()
                     .flex()
@@ -202,7 +206,7 @@ impl Render for QueueTooltip {
                 d.child(
                     div()
                         .text_color(palette::text_muted())
-                        .child(SharedString::from(format!("+{} more", self.more))),
+                        .child(rox_i18n::t!("queue-widget-more", count = self.more as u64)),
                 )
             })
     }
@@ -228,23 +232,27 @@ impl PanelSettings for QueueWidgetPanel {
     }
 
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mut rows = div().flex().flex_col().gap(tokens::SPACE_MD).child(setting_row(
-            "Open Queue on Click",
-            Some("Click the widget to jump to an open queue panel, or open the queue in a window when none is up".into()),
-            toggle(
-                self.config.open_on_click,
-                |this: &mut Self, on, cx| {
-                    this.config.open_on_click = on;
-                    cx.notify();
-                },
-                cx,
-            ),
-        ));
+        let mut rows = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(setting_row(
+                rox_i18n::t!("queue-widget-open-on-click"),
+                Some(rox_i18n::t!("queue-widget-open-on-click.description")),
+                toggle(
+                    self.config.open_on_click,
+                    |this: &mut Self, on, cx| {
+                        this.config.open_on_click = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ));
         // The modal-always knob only matters once clicking opens the queue.
         if self.config.open_on_click {
             rows = rows.child(setting_row(
-                "Always Open as a Modal",
-                Some("Open the queue in a modal every time, instead of jumping to a queue panel that is already open".into()),
+                rox_i18n::t!("queue-widget-always-modal"),
+                Some(rox_i18n::t!("queue-widget-always-modal.description")),
                 toggle(
                     self.config.always_modal,
                     |this: &mut Self, on, cx| {
@@ -255,7 +263,10 @@ impl PanelSettings for QueueWidgetPanel {
                 ),
             ));
         }
-        Some(settings_ui::section("Click", None, rows).into_any_element())
+        Some(
+            settings_ui::section(rox_i18n::t!("queue-widget-section-click"), None, rows)
+                .into_any_element(),
+        )
     }
 }
 
@@ -273,7 +284,10 @@ impl Panel for QueueWidgetPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Queue Widget")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("queue-widget-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -330,7 +344,7 @@ impl Panel for QueueWidgetPanel {
     ) -> PopupMenu {
         let state = self.state.clone();
         let menu = menu.item(
-            PopupMenuItem::new("Clear Queue")
+            PopupMenuItem::new(rox_i18n::t!("queue-widget-clear-queue"))
                 .icon(Icon::default().path(icons::TRASH))
                 .disabled(self.count == 0)
                 .on_click(move |_, _, cx| {

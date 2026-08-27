@@ -149,7 +149,14 @@ impl Focusable for QuickPlay {
 
 impl QuickPlay {
     pub fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| SearchBox::new("Search the library", "", window, cx));
+        let search = cx.new(|cx| {
+            SearchBox::new(
+                rox_i18n::t!("quick-play-search-placeholder"),
+                "",
+                window,
+                cx,
+            )
+        });
         let _input_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // A scan finishing mid-search would leave the hits pointing into
         // the old projection; recompute over the new one, suggestions
@@ -432,7 +439,7 @@ impl QuickPlay {
                             Head::Artist { album_artist, .. } => (
                                 projection.album_artists.strings[album_artist as usize].clone(),
                                 String::new(),
-                                "Artist",
+                                rox_i18n::t!("quick-play-tag-artist"),
                             ),
                             Head::Album {
                                 album_artist,
@@ -441,14 +448,14 @@ impl QuickPlay {
                             } => (
                                 projection.albums.strings[album as usize].clone(),
                                 projection.album_artists.strings[album_artist as usize].clone(),
-                                "Album",
+                                rox_i18n::t!("quick-play-tag-album"),
                             ),
                         };
                         return Some(RowInfo {
                             ix,
                             title: SharedString::from(title),
                             sub: SharedString::from(sub),
-                            trailing: SharedString::from(tag),
+                            trailing: tag,
                             path: cover_path(head.row()),
                             is_head: true,
                         });
@@ -575,7 +582,7 @@ impl QuickPlay {
             .gap(tokens::SPACE_XS)
             .text_xs()
             .text_color(palette::text_muted())
-            .child("Narrow By")
+            .child(rox_i18n::t!("quick-play-narrow-by"))
             .children(QUERY_FIELDS.iter().map(|(name, _)| {
                 let term = SharedString::from(format!("{name}:"));
                 div()
@@ -633,8 +640,8 @@ impl QuickPlay {
             .border_t_1()
             .border_color(palette::border())
             .child(panel::setting_row(
-                "Cover",
-                Some("Show a cover thumbnail at the left of each result".into()),
+                rox_i18n::t!("quick-play-cover"),
+                Some(rox_i18n::t!("quick-play-cover.description")),
                 panel::toggle(
                     self.config.show_cover,
                     |this: &mut Self, on, cx| {
@@ -644,8 +651,8 @@ impl QuickPlay {
                 ),
             ))
             .child(panel::setting_row(
-                "Subtitle",
-                Some("Show the artist and album under each result".into()),
+                rox_i18n::t!("quick-play-subtitle"),
+                Some(rox_i18n::t!("quick-play-subtitle.description")),
                 panel::toggle(
                     self.config.show_subtitle,
                     |this: &mut Self, on, cx| {
@@ -655,8 +662,8 @@ impl QuickPlay {
                 ),
             ))
             .child(panel::setting_row(
-                "Duration",
-                Some("Show each result's length on the right".into()),
+                rox_i18n::t!("quick-play-duration"),
+                Some(rox_i18n::t!("quick-play-duration.description")),
                 panel::toggle(
                     self.config.show_duration,
                     |this: &mut Self, on, cx| {
@@ -666,8 +673,8 @@ impl QuickPlay {
                 ),
             ))
             .child(panel::setting_row(
-                "Comfortable Rows",
-                Some("Give each result more height".into()),
+                rox_i18n::t!("quick-play-comfortable-rows"),
+                Some(rox_i18n::t!("quick-play-comfortable-rows.description")),
                 panel::toggle(
                     self.config.comfortable,
                     |this: &mut Self, on, cx| {

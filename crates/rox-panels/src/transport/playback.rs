@@ -321,8 +321,8 @@ impl RandomMode {
     /// The label the dropdown shows.
     fn label(self) -> &'static str {
         match self {
-            RandomMode::Random => "Random",
-            RandomMode::Similar => "Play Similar",
+            RandomMode::Random => rox_i18n::t_static("playback-item-random"),
+            RandomMode::Similar => rox_i18n::t_static("library-play-similar"),
         }
     }
 
@@ -471,11 +471,11 @@ fn is_length(a: f32, b: f32) -> bool {
 /// number is one, and a tenth where the scrub left it between.
 fn length_label(secs: f32) -> String {
     if secs <= 0.0 {
-        "Off".to_string()
+        rox_i18n::t!("panel-size-off").to_string()
     } else if is_length(secs, secs.round()) {
-        format!("{secs:.0} s")
+        format!("{} s", rox_i18n::format::format_int(secs.round() as i64))
     } else {
-        format!("{secs:.1} s")
+        format!("{} s", rox_i18n::format::format_float(f64::from(secs), 1))
     }
 }
 
@@ -553,14 +553,26 @@ impl TransportPanel {
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
-            ("Stop Button", PlaybackItem::Stop),
-            ("Volume Button", PlaybackItem::Volume),
-            ("Continue Button", PlaybackItem::Continue),
-            ("Crossfade Button", PlaybackItem::Crossfade),
-            ("Random Button", PlaybackItem::Random),
-            ("Stop After Button", PlaybackItem::StopAfter),
-            ("Favourite Button", PlaybackItem::Favourite),
-            ("Rating Stars", PlaybackItem::Rating),
+            (rox_i18n::t!("playback-menu-stop"), PlaybackItem::Stop),
+            (rox_i18n::t!("playback-menu-volume"), PlaybackItem::Volume),
+            (
+                rox_i18n::t!("playback-menu-continue"),
+                PlaybackItem::Continue,
+            ),
+            (
+                rox_i18n::t!("playback-menu-crossfade"),
+                PlaybackItem::Crossfade,
+            ),
+            (rox_i18n::t!("playback-menu-random"), PlaybackItem::Random),
+            (
+                rox_i18n::t!("playback-menu-stop-after"),
+                PlaybackItem::StopAfter,
+            ),
+            (
+                rox_i18n::t!("playback-menu-favourite"),
+                PlaybackItem::Favourite,
+            ),
+            (rox_i18n::t!("playback-menu-rating"), PlaybackItem::Rating),
         ] {
             let weak = cx.entity().downgrade();
             menu = menu.item(
@@ -627,9 +639,11 @@ impl TransportPanel {
         let tip = panel::Tip::keyed(
             key,
             match button {
-                ModeButton::Shuffle => format!("{tip}. Hold to pick an order"),
-                ModeButton::Crossfade => format!("{tip}. Hold to pick a length"),
-                ModeButton::Random => format!("{tip}. Hold to pick a draw"),
+                ModeButton::Shuffle => rox_i18n::t!("playback-hold-order", tip = tip).to_string(),
+                ModeButton::Crossfade => {
+                    rox_i18n::t!("playback-hold-length", tip = tip).to_string()
+                }
+                ModeButton::Random => rox_i18n::t!("playback-hold-draw", tip = tip).to_string(),
             },
         );
         tip.apply(
@@ -864,7 +878,7 @@ impl TransportPanel {
                         .justify_between()
                         .gap(tokens::SPACE_MD)
                         .w_full()
-                        .child("Inside Albums")
+                        .child(rox_i18n::t!("playback-crossfade-inside-albums"))
                         // The switch is the row's face, not a control of its
                         // own: the menu item takes the click, so a press
                         // anywhere along the row flips it.
@@ -896,11 +910,12 @@ impl TransportPanel {
         // it because nothing beside this button carries a readout, and the
         // right-click gets named since a slider nobody finds is a slider
         // nobody uses.
-        let tip = format!(
-            "{}, {}%. Right-click for the slider",
-            if muted { "Unmute" } else { "Mute" },
-            (volume * 100.0).round() as u32
-        );
+        let percent = (volume * 100.0).round() as u64;
+        let tip = if muted {
+            rox_i18n::t!("playback-volume-tip-muted", percent = percent).to_string()
+        } else {
+            rox_i18n::t!("playback-volume-tip-unmuted", percent = percent).to_string()
+        };
         panel::Tip::keyed("volume", tip).apply(
             div()
                 .flex_none()
@@ -1009,7 +1024,9 @@ impl TransportPanel {
                     .flex_none()
                     .whitespace_nowrap()
                     .text_color(palette::text_muted())
-                    .child(format!("{}%", (volume * 100.0).round() as u32)),
+                    .child(rox_i18n::format::format_percent(
+                        (volume * 100.0).round() as f64
+                    )),
             );
         deferred(
             anchored().child(
@@ -1178,12 +1195,8 @@ impl PanelSettings for TransportPanel {
                 cx,
             ))
             .child(panel::setting_block(
-                "Buttons",
-                Some(
-                    "Drag along the bar to reorder; drag between the rows, \
-                     or use a chip's x and plus, to hide and show"
-                        .into(),
-                ),
+                rox_i18n::t!("playback-buttons"),
+                Some(rox_i18n::t!("playback-buttons.description")),
                 None,
                 panel::arrange_editor(
                     "playback-items",
@@ -1198,13 +1211,19 @@ impl PanelSettings for TransportPanel {
             ))
             .when(self.config.items.contains(&PlaybackItem::Play), |d| {
                 d.child(panel::setting_row(
-                    "Play Highlight",
-                    Some("The play button's accent fill: a circle, a soft square, or none".into()),
-                    panel::choices(
+                    rox_i18n::t!("playback-play-highlight"),
+                    Some(rox_i18n::t!("playback-play-highlight.description")),
+                    panel::choices_shared(
                         &[
-                            ("Circle", PlayHighlight::Circle),
-                            ("Square", PlayHighlight::Square),
-                            ("None", PlayHighlight::None),
+                            (
+                                rox_i18n::t!("playback-highlight-circle"),
+                                PlayHighlight::Circle,
+                            ),
+                            (
+                                rox_i18n::t!("playback-highlight-square"),
+                                PlayHighlight::Square,
+                            ),
+                            (rox_i18n::t!("shader-pick-none"), PlayHighlight::None),
                         ],
                         self.config.play_highlight,
                         |this: &mut Self, highlight, cx| {
@@ -1245,9 +1264,21 @@ impl TransportPanel {
         // tooltip carries the same state in words, since a dim glyph and an
         // accent one only differ once you've seen both.
         let (loop_icon, loop_color, loop_tip) = match player.loop_mode() {
-            LoopMode::Off => (icons::REPEAT, palette::text_faint(), "Loop off"),
-            LoopMode::All => (icons::REPEAT, palette::accent(), "Loop the queue"),
-            LoopMode::One => (icons::REPEAT_1, palette::accent(), "Loop this track"),
+            LoopMode::Off => (
+                icons::REPEAT,
+                palette::text_faint(),
+                rox_i18n::t!("playback-loop-off"),
+            ),
+            LoopMode::All => (
+                icons::REPEAT,
+                palette::accent(),
+                rox_i18n::t!("playback-loop-queue"),
+            ),
+            LoopMode::One => (
+                icons::REPEAT_1,
+                palette::accent(),
+                rox_i18n::t!("playback-loop-track"),
+            ),
         };
         // Shuffle reads the same way: dim while off, the accent while on.
         // Its glyph follows the mode rather than the on/off state, so the
@@ -1260,9 +1291,13 @@ impl TransportPanel {
             palette::text_faint()
         };
         let shuffle_tip = if player.shuffle() {
-            format!("Shuffle on, {} order", shuffle_mode.label().to_lowercase())
+            rox_i18n::t!(
+                "playback-shuffle-on",
+                order = shuffle_mode.label().to_lowercase()
+            )
+            .to_string()
         } else {
-            "Shuffle off".to_string()
+            rox_i18n::t!("playback-shuffle-off").to_string()
         };
         // Continuation the same: dim while off, the accent while something
         // is standing by to refill the queue.
@@ -1274,9 +1309,9 @@ impl TransportPanel {
         // Which strategy is refilling matters here in a way the one glyph
         // can't show, so the tooltip names it.
         let continue_tip = match player.continuation_mode() {
-            continuation::Mode::Off => "Keep playing off",
-            continuation::Mode::Continue => "Keep playing, on down the list",
-            continuation::Mode::Weighted => "Keep playing, never played first",
+            continuation::Mode::Off => rox_i18n::t!("playback-continue-off"),
+            continuation::Mode::Continue => rox_i18n::t!("playback-continue-down-list"),
+            continuation::Mode::Weighted => rox_i18n::t!("playback-continue-weighted"),
         };
         // Crossfade reads the same way: dim at zero length, the accent once
         // boundaries are overlapping.
@@ -1287,17 +1322,21 @@ impl TransportPanel {
             palette::text_faint()
         };
         let crossfade_tip = if crossfade_secs > 0.0 {
-            format!("Crossfade {}", length_label(crossfade_secs))
+            rox_i18n::t!(
+                "playback-crossfade-tip",
+                length = length_label(crossfade_secs)
+            )
+            .to_string()
         } else {
-            "Crossfade off".to_string()
+            rox_i18n::t!("playback-crossfade-off").to_string()
         };
         // The draw button carries no on/off state, so nothing about it is
         // dim; what changes is which draw a press does, in the glyph and in
         // the words.
         let random_mode = self.random_mode();
         let random_tip = match random_mode {
-            RandomMode::Random => "Play a random track",
-            RandomMode::Similar => "Play a track like this one",
+            RandomMode::Random => rox_i18n::t!("playback-random-tip-random"),
+            RandomMode::Similar => rox_i18n::t!("playback-random-tip-similar"),
         };
         // Stop-after too: dim until armed, the accent while it waits.
         let stop_after_color = if player.stop_after() {
@@ -1306,9 +1345,9 @@ impl TransportPanel {
             palette::text_faint()
         };
         let stop_after_tip = if player.stop_after() {
-            "Stop after this track, armed"
+            rox_i18n::t!("playback-stop-after-armed")
         } else {
-            "Stop after this track"
+            rox_i18n::t!("playback-stop-after-tip")
         };
         // A crossfade in flight sweeps across the button that started it,
         // so the overlap the ear is hearing is visible and reads in the
@@ -1358,7 +1397,7 @@ impl TransportPanel {
                 PlaybackItem::Prev => panel::icon_control_fading(
                     icons::SKIP_BACK,
                     palette::text(),
-                    "Previous",
+                    panel::Tip::keyed("prev", rox_i18n::t!("playback-item-previous")),
                     fade.filter(|fade| fade.back),
                     outro
                         .filter(|(back, _)| *back)
@@ -1370,7 +1409,7 @@ impl TransportPanel {
                 PlaybackItem::SeekBack => panel::icon_control(
                     icons::REWIND,
                     palette::text(),
-                    "Back 10 seconds",
+                    panel::Tip::keyed("seek-back", rox_i18n::t!("playback-seek-back-tip")),
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
                     cx,
                 )
@@ -1381,53 +1420,58 @@ impl TransportPanel {
                 // neighbors.
                 // The one button here that has a key of its own, so its tip
                 // trails the shortcut.
-                PlaybackItem::Play => {
-                    panel::Tip::keyed("play", if playing { "Pause" } else { "Play" })
-                        .action(&TogglePlayback, PLAYBACK_TIP_SCOPE)
-                        .apply(
-                            div()
-                                .size(tokens::PLAY_SIZE)
-                                .flex_none()
-                                .map(|d| match highlight {
-                                    PlayHighlight::Circle => d
-                                        .rounded_full()
-                                        .bg(palette::accent())
-                                        .hover(|d| d.bg(palette::accent_hover())),
-                                    PlayHighlight::Square => d
-                                        .rounded(tokens::RADIUS)
-                                        .bg(palette::accent())
-                                        .hover(|d| d.bg(palette::accent_hover())),
-                                    PlayHighlight::None => d
-                                        .rounded(tokens::RADIUS)
-                                        .hover(|d| d.bg(palette::bg_control())),
-                                })
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this: &mut Self, _, _, cx| {
-                                        this.state.player.update(cx, |p, _| p.toggle_pause())
-                                    }),
-                                )
-                                .child(
-                                    svg()
-                                        .path(if playing { icons::PAUSE } else { icons::PLAY })
-                                        .size_4()
-                                        .text_color(if highlight == PlayHighlight::None {
-                                            palette::text()
-                                        } else {
-                                            palette::text_on_accent()
-                                        }),
-                                ),
+                PlaybackItem::Play => panel::Tip::keyed(
+                    "play",
+                    if playing {
+                        rox_i18n::t!("playback-pause")
+                    } else {
+                        rox_i18n::t!("playback-item-play")
+                    },
+                )
+                .action(&TogglePlayback, PLAYBACK_TIP_SCOPE)
+                .apply(
+                    div()
+                        .size(tokens::PLAY_SIZE)
+                        .flex_none()
+                        .map(|d| match highlight {
+                            PlayHighlight::Circle => d
+                                .rounded_full()
+                                .bg(palette::accent())
+                                .hover(|d| d.bg(palette::accent_hover())),
+                            PlayHighlight::Square => d
+                                .rounded(tokens::RADIUS)
+                                .bg(palette::accent())
+                                .hover(|d| d.bg(palette::accent_hover())),
+                            PlayHighlight::None => d
+                                .rounded(tokens::RADIUS)
+                                .hover(|d| d.bg(palette::bg_control())),
+                        })
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this: &mut Self, _, _, cx| {
+                                this.state.player.update(cx, |p, _| p.toggle_pause())
+                            }),
                         )
-                        .into_any_element()
-                }
+                        .child(
+                            svg()
+                                .path(if playing { icons::PAUSE } else { icons::PLAY })
+                                .size_4()
+                                .text_color(if highlight == PlayHighlight::None {
+                                    palette::text()
+                                } else {
+                                    palette::text_on_accent()
+                                }),
+                        ),
+                )
+                .into_any_element(),
                 PlaybackItem::SeekForward => panel::icon_control(
                     icons::FAST_FORWARD,
                     palette::text(),
-                    "Forward 10 seconds",
+                    panel::Tip::keyed("seek-forward", rox_i18n::t!("playback-seek-forward-tip")),
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
                     cx,
                 )
@@ -1435,7 +1479,7 @@ impl TransportPanel {
                 PlaybackItem::Next => panel::icon_control_fading(
                     icons::SKIP_FORWARD,
                     palette::text(),
-                    "Next",
+                    panel::Tip::keyed("next", rox_i18n::t!("playback-item-next")),
                     fade.filter(|fade| !fade.back),
                     outro
                         .filter(|(back, _)| !*back)
@@ -1453,7 +1497,7 @@ impl TransportPanel {
                     } else {
                         palette::text_faint()
                     },
-                    "Stop and unload the track",
+                    panel::Tip::keyed("stop", rox_i18n::t!("playback-stop-tip")),
                     |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.stop(cx)),
                     cx,
                 )
@@ -1464,7 +1508,7 @@ impl TransportPanel {
                     loop_color,
                     // Keyed, since the glyph and the words both follow the
                     // mode and the id has to sit still under them.
-                    panel::Tip::keyed("loop", loop_tip),
+                    panel::Tip::keyed("loop", loop_tip.clone()),
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
                     cx,
                 )
@@ -1489,7 +1533,7 @@ impl TransportPanel {
                 PlaybackItem::Continue => panel::icon_control(
                     icons::INFINITY,
                     continue_color,
-                    panel::Tip::keyed("continue", continue_tip),
+                    panel::Tip::keyed("continue", continue_tip.clone()),
                     |this: &mut Self, cx| {
                         this.state
                             .player
@@ -1525,7 +1569,7 @@ impl TransportPanel {
                 PlaybackItem::StopAfter => panel::icon_control(
                     icons::SQUARE_DASHED,
                     stop_after_color,
-                    panel::Tip::keyed("stop-after", stop_after_tip),
+                    panel::Tip::keyed("stop-after", stop_after_tip.clone()),
                     |this: &mut Self, cx| {
                         this.state
                             .player
@@ -1542,9 +1586,9 @@ impl TransportPanel {
                     // says something is wrong with the button, where
                     // "nothing to favourite" says there's no track under it.
                     let tip = match (heart_id.is_some(), heart_on) {
-                        (false, _) => "Nothing to favourite",
-                        (true, true) => "Remove from favourites",
-                        (true, false) => "Add to favourites",
+                        (false, _) => rox_i18n::t!("transport-favourite-nothing"),
+                        (true, true) => rox_i18n::t!("transport-favourite-remove"),
+                        (true, false) => rox_i18n::t!("transport-favourite-add"),
                     };
                     panel::Tip::keyed("favourite", tip)
                         .apply(
@@ -1656,7 +1700,7 @@ impl TransportPanel {
 transport_panel!(
     TransportPanel,
     "playback",
-    "Playback",
+    rox_i18n::t!("panel-title-playback"),
     min_w = |_: &TransportPanel| rox_dock::resizable::PANEL_MIN_SIZE
 );
 

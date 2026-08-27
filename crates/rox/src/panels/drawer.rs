@@ -37,7 +37,7 @@ use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
 use rox_panel_api::panel_settings;
 use rox_panel_kit::ui as settings_ui;
-use rox_panel_kit::{choices, setting_row, ScrubState};
+use rox_panel_kit::{choices_shared, setting_row, ScrubState};
 use rox_services::selection::SelectionEvent;
 
 /// The handle strip's thickness: enough for the grip and label to read,
@@ -70,13 +70,6 @@ impl DrawerEdge {
     }
 }
 
-const EDGE_CHOICES: &[(&str, DrawerEdge)] = &[
-    ("Top", DrawerEdge::Top),
-    ("Bottom", DrawerEdge::Bottom),
-    ("Left", DrawerEdge::Left),
-    ("Right", DrawerEdge::Right),
-];
-
 /// What slides the drawer out. Resting on the handle always works; this
 /// picks whether a pick in the main panel is a second way in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -89,11 +82,6 @@ pub enum DrawerTrigger {
     /// selection slides it home. The chaining mode.
     Selection,
 }
-
-const TRIGGER_CHOICES: &[(&str, DrawerTrigger)] = &[
-    ("Hover", DrawerTrigger::Hover),
-    ("Selection", DrawerTrigger::Selection),
-];
 
 /// Which picks a selection-triggered drawer answers. The selection is
 /// app-wide, so without a scope every selection drawer in a layout opens on
@@ -111,11 +99,6 @@ pub enum DrawerScope {
     /// excluded, main included.
     Any,
 }
-
-const SCOPE_CHOICES: &[(&str, DrawerScope)] = &[
-    ("Main Panel", DrawerScope::Main),
-    ("Elsewhere", DrawerScope::Any),
-];
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -573,9 +556,10 @@ impl DrawerPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // Let the children reach this host from their own menus; the
         // dock never sees a hosted panel, so nothing else offers it.
+        let drawer_title = rox_i18n::t!("drawer-title");
         composite::report_hosted(
             self.slots.iter().flatten(),
-            self.config.chrome.title.as_deref().unwrap_or("Drawer"),
+            self.config.chrome.title.as_deref().unwrap_or(&drawer_title),
             cx,
         );
 
@@ -744,7 +728,7 @@ impl DrawerPanel {
                         .icon(Icon::default().path(icons::PANEL_BOTTOM))
                         .small()
                         .ghost()
-                        .tooltip("Add Drawer Panel")
+                        .tooltip(rox_i18n::t!("drawer-add-tooltip"))
                         .dropdown_menu(move |menu, window, cx| {
                             let add_weak = add_weak.clone();
                             composite::pick_items(
@@ -776,7 +760,7 @@ impl DrawerPanel {
                     cx,
                 )
             }));
-        let parent = composite::parent_button("Drawer", cx);
+        let parent = composite::parent_button(rox_i18n::t!("drawer-title"), cx);
         root.child(controls)
             .child(composite::parent_controls().child(parent))
     }
@@ -837,10 +821,15 @@ impl PanelSettings for DrawerPanel {
                 .flex_col()
                 .gap(tokens::SPACE_MD)
                 .child(setting_row(
-                    "Edge",
-                    Some("The edge the drawer rests against and slides out from".into()),
-                    choices(
-                        EDGE_CHOICES,
+                    rox_i18n::t!("drawer-edge"),
+                    Some(rox_i18n::t!("drawer-edge.description")),
+                    choices_shared(
+                        &[
+                            (rox_i18n::t!("drawer-edge-top"), DrawerEdge::Top),
+                            (rox_i18n::t!("drawer-edge-bottom"), DrawerEdge::Bottom),
+                            (rox_i18n::t!("side-left"), DrawerEdge::Left),
+                            (rox_i18n::t!("side-right"), DrawerEdge::Right),
+                        ],
                         self.config.edge,
                         |this: &mut Self, edge, cx| {
                             this.config.edge = edge;
@@ -850,10 +839,16 @@ impl PanelSettings for DrawerPanel {
                     ),
                 ))
                 .child(setting_row(
-                    "Open On",
-                    Some("Resting on the handle always opens the drawer; selection adds a pick in the main panel".into()),
-                    choices(
-                        TRIGGER_CHOICES,
+                    rox_i18n::t!("drawer-open-on"),
+                    Some(rox_i18n::t!("drawer-open-on.description")),
+                    choices_shared(
+                        &[
+                            (rox_i18n::t!("drawer-trigger-hover"), DrawerTrigger::Hover),
+                            (
+                                rox_i18n::t!("drawer-trigger-selection"),
+                                DrawerTrigger::Selection,
+                            ),
+                        ],
                         self.config.open_on,
                         |this: &mut Self, trigger, cx| {
                             this.config.open_on = trigger;
@@ -864,8 +859,8 @@ impl PanelSettings for DrawerPanel {
                 ))
                 .when(self.config.open_on == DrawerTrigger::Selection, |d| {
                     d.child(setting_row(
-                        "Handle",
-                        Some("Show the grip at the panel's edge. Hidden, nothing of the drawer shows until a pick, and the grip then stays while the selection holds so a drawer that folded closed can be pulled back out".into()),
+                        rox_i18n::t!("drawer-handle"),
+                        Some(rox_i18n::t!("drawer-handle.description")),
                         panel::toggle(
                             !self.config.hide_handle,
                             |this: &mut Self, shown, cx| {
@@ -876,10 +871,13 @@ impl PanelSettings for DrawerPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Answers",
-                        Some("Which picks open the drawer: only its own main panel, or any panel outside it".into()),
-                        choices(
-                            SCOPE_CHOICES,
+                        rox_i18n::t!("drawer-answers"),
+                        Some(rox_i18n::t!("drawer-answers.description")),
+                        choices_shared(
+                            &[
+                                (rox_i18n::t!("drawer-scope-main"), DrawerScope::Main),
+                                (rox_i18n::t!("drawer-scope-elsewhere"), DrawerScope::Any),
+                            ],
                             self.config.scope,
                             |this: &mut Self, scope, cx| {
                                 this.config.scope = scope;
@@ -890,8 +888,8 @@ impl PanelSettings for DrawerPanel {
                     ))
                 })
                 .child(setting_row(
-                    "Reveal",
-                    Some("How much of the panel the open drawer covers".into()),
+                    rox_i18n::t!("drawer-reveal"),
+                    Some(rox_i18n::t!("drawer-reveal.description")),
                     settings_ui::scalar(
                         &self.reveal_scrub,
                         &self.value_edit,
@@ -902,8 +900,8 @@ impl PanelSettings for DrawerPanel {
                     ),
                 ))
                 .child(setting_row(
-                    "Dim",
-                    Some("How hard the main panel dims behind the open drawer".into()),
+                    rox_i18n::t!("drawer-dim"),
+                    Some(rox_i18n::t!("drawer-dim.description")),
                     settings_ui::scalar(
                         &self.dim_scrub,
                         &self.value_edit,
@@ -932,7 +930,10 @@ impl Panel for DrawerPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Drawer")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("drawer-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1015,7 +1016,7 @@ impl Panel for DrawerPanel {
         // The pin also lives on the handle; the row is here for the drawer
         // that is already out and under the pointer.
         let menu = menu.item(panel::check_row(
-            "Pin Open",
+            rox_i18n::t!("drawer-pin-open"),
             Some(icons::PIN),
             |this: &Self| this.pinned,
             |this, cx| this.toggle_pin(cx),

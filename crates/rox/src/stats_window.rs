@@ -120,31 +120,22 @@ impl StatsRange {
     /// chart's left edge is called.
     fn card(self) -> &'static str {
         match self {
-            StatsRange::All => "All Time",
-            StatsRange::Year => "This Year",
-            StatsRange::Month => "This Month",
-            StatsRange::Week => "This Week",
+            StatsRange::All => rox_i18n::t_static("stats-range-all"),
+            StatsRange::Year => rox_i18n::t_static("stats-range-year"),
+            StatsRange::Month => rox_i18n::t_static("stats-range-month"),
+            StatsRange::Week => rox_i18n::t_static("stats-range-week"),
         }
     }
 
-    fn chart_start(self) -> &'static str {
+    fn chart_start(self) -> SharedString {
         match self {
-            StatsRange::All => "First listen",
-            StatsRange::Year => "A year ago",
-            StatsRange::Month => "30 days ago",
-            StatsRange::Week => "7 days ago",
+            StatsRange::All => rox_i18n::t!("stats-chart-start-all"),
+            StatsRange::Year => rox_i18n::t!("stats-chart-start-year"),
+            StatsRange::Month => rox_i18n::t!("stats-chart-start-month"),
+            StatsRange::Week => rox_i18n::t!("stats-chart-start-week"),
         }
     }
 }
-
-/// The range picker's options, the segmented control's labels, widest
-/// window first.
-const RANGES: &[(&str, StatsRange)] = &[
-    ("All Time", StatsRange::All),
-    ("This Year", StatsRange::Year),
-    ("This Month", StatsRange::Month),
-    ("This Week", StatsRange::Week),
-];
 
 /// The shape a rollup row's art takes: a face reads as a circle, a
 /// record as a rounded square, the artist and album walls' own tells.
@@ -184,7 +175,7 @@ pub fn open(state: AppState, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        "rox - Stats",
+        rox_i18n::t!("stats-window-title"),
         bounds,
         Some(settings_ui::MIN_SIZE),
         move |window, cx| cx.new(|cx| StatsWindow::new(state, window, cx)),
@@ -430,14 +421,14 @@ impl StatsWindow {
     /// is what ties the rest of the page to a card.
     fn listens_section(&self) -> Div {
         let cards = [
-            ("This Week", self.data.week),
-            ("This Month", self.data.month),
-            ("This Year", self.data.year),
-            ("All Time", self.data.total),
+            (rox_i18n::t_static("stats-range-week"), self.data.week),
+            (rox_i18n::t_static("stats-range-month"), self.data.month),
+            (rox_i18n::t_static("stats-range-year"), self.data.year),
+            (rox_i18n::t_static("stats-range-all"), self.data.total),
         ];
         let scoped = self.range.card();
         section(
-            "Listens",
+            rox_i18n::t!("stats-section-listens"),
             None,
             div().flex().flex_row().gap(tokens::SPACE_SM).children(
                 cards
@@ -453,7 +444,11 @@ impl StatsWindow {
     /// ends.
     fn chart_section(&self, cx: &mut Context<Self>) -> Div {
         if self.data.range_total == 0 {
-            return section("Listens Over Time", None, empty_note(self.range));
+            return section(
+                rox_i18n::t!("stats-section-listens-over-time"),
+                None,
+                empty_note(self.range),
+            );
         }
         let start = self.range.chart_start();
         // The hovered bucket's readout: its count and how long ago the
@@ -465,8 +460,8 @@ impl StatsWindow {
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
             let began = self.data.chart_since + ix as i64 * self.data.bucket;
-            let noun = if count == 1 { "listen" } else { "listens" };
-            Some(format!("{count} {noun}, {}", fmt_ago(now - began)))
+            let ago = fmt_ago(now - began);
+            Some(rox_i18n::t!("stats-bucket-listens", count = count, ago = ago).to_string())
         });
         let chart = charts::bars(
             self.data.bars.clone(),
@@ -496,9 +491,9 @@ impl StatsWindow {
                                 .child(SharedString::from(picked)),
                         )
                     })
-                    .child("Now"),
+                    .child(rox_i18n::t!("stats-now")),
             );
-        section("Listens Over Time", None, body)
+        section(rox_i18n::t!("stats-section-listens-over-time"), None, body)
     }
 
     /// One name rollup as art-led rows: the rank, the artist's face or
@@ -570,7 +565,7 @@ impl StatsWindow {
                     )
                     .child(play_button(
                         (label, i),
-                        "Play these tracks",
+                        rox_i18n::t_static("stats-play-these-tracks"),
                         move |this, cx| this.play_name(by, &name, cx),
                         cx,
                     ))
@@ -585,7 +580,11 @@ impl StatsWindow {
     /// count set on it. Clicking a card plays the genre.
     fn genre_section(&self, rows: &[NamePlays], cx: &mut Context<Self>) -> Div {
         if rows.is_empty() {
-            return section("Top Genres", None, empty_note(self.range));
+            return section(
+                rox_i18n::t!("stats-section-top-genres"),
+                None,
+                empty_note(self.range),
+            );
         }
         let mut grid = div().flex().flex_col().gap(tokens::SPACE_SM);
         for (lane, chunk) in rows.chunks(GENRE_COLS).enumerate() {
@@ -600,7 +599,7 @@ impl StatsWindow {
             }
             grid = grid.child(cards);
         }
-        section("Top Genres", None, grid)
+        section(rox_i18n::t!("stats-section-top-genres"), None, grid)
     }
 
     /// One genre card: the gradient the genre grid gives that name, its
@@ -733,7 +732,7 @@ impl StatsWindow {
                     )
                     .child(play_button(
                         ("recent", ix),
-                        "Play this track",
+                        rox_i18n::t_static("stats-play-this-track"),
                         move |this, cx| this.play_recent(ix, cx),
                         cx,
                     ))
@@ -746,7 +745,7 @@ impl StatsWindow {
                     ),
             );
         }
-        section("Recent Listens", None, body)
+        section(rox_i18n::t!("stats-section-recent-listens"), None, body)
     }
 }
 
@@ -773,7 +772,9 @@ fn stat_card(label: &'static str, count: u64, scoped: bool) -> Div {
                 .text_xl()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(palette::text_bright())
-                .child(SharedString::from(count.to_string())),
+                .child(SharedString::from(rox_i18n::format::format_int(
+                    count as i64,
+                ))),
         )
         .child(
             div()
@@ -883,16 +884,14 @@ fn plays_readout(plays: u64) -> Div {
         .min_w(px(30.))
         .text_right()
         .text_color(palette::text_muted())
-        .child(SharedString::from(plays.to_string()))
+        .child(SharedString::from(rox_i18n::format::format_int(
+            plays as i64,
+        )))
 }
 
 /// A count with its noun, singular at one, for the genre cards.
 fn plays_label(plays: u64) -> String {
-    if plays == 1 {
-        "1 play".to_string()
-    } else {
-        format!("{plays} plays")
-    }
+    rox_i18n::t!("stats-plays-count", count = plays).to_string()
 }
 
 /// A row's play control: invisible until the row is hovered, queueing
@@ -926,8 +925,8 @@ fn empty_note(range: StatsRange) -> Div {
         .py(tokens::SPACE_XS)
         .text_color(palette::text_muted())
         .child(match range {
-            StatsRange::All => "No listens yet",
-            _ => "No listens in this range",
+            StatsRange::All => rox_i18n::t!("stats-empty-all"),
+            _ => rox_i18n::t!("stats-empty-range"),
         })
 }
 
@@ -955,10 +954,15 @@ impl Render for StatsWindow {
                 .border_color(palette::border())
                 .child(
                     panel::setting_row(
-                        "Range",
+                        rox_i18n::t!("stats-range-label"),
                         None,
-                        panel::choices(
-                            RANGES,
+                        panel::choices_shared(
+                            &[
+                                (rox_i18n::t!("stats-range-all"), StatsRange::All),
+                                (rox_i18n::t!("stats-range-year"), StatsRange::Year),
+                                (rox_i18n::t!("stats-range-month"), StatsRange::Month),
+                                (rox_i18n::t!("stats-range-week"), StatsRange::Week),
+                            ],
                             self.range,
                             |this: &mut Self, range, cx| this.set_range(range, cx),
                             cx,
@@ -974,14 +978,14 @@ impl Render for StatsWindow {
                 .child(self.listens_section())
                 .child(self.chart_section(cx))
                 .child(self.name_section(
-                    "Top Artists",
+                    rox_i18n::t_static("stats-section-top-artists"),
                     Rollup::Artist,
                     &self.data.artists,
                     ArtShape::Circle,
                     cx,
                 ))
                 .child(self.name_section(
-                    "Top Albums",
+                    rox_i18n::t_static("stats-section-top-albums"),
                     Rollup::Album,
                     &self.data.albums,
                     ArtShape::Square,

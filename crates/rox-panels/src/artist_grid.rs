@@ -38,7 +38,6 @@ use gpui::{
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{h_virtual_list, v_virtual_list, Icon, Side, VirtualListScrollHandle};
-use rox_core::fmt::plural;
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
@@ -107,10 +106,10 @@ pub enum ArtistGroup {
 }
 
 impl ArtistGroup {
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            ArtistGroup::AlbumArtist => "Album Artist",
-            ArtistGroup::Artist => "Track Artist",
+            ArtistGroup::AlbumArtist => rox_i18n::t!("filter-field-album-artist"),
+            ArtistGroup::Artist => rox_i18n::t!("artist-grid-track-artist"),
         }
     }
 
@@ -399,7 +398,8 @@ impl ArtistGridPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let search =
+            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // The shared query and the shared filter both land here: our own
         // picks come back around this way, which is what keeps the outlines
@@ -1298,16 +1298,17 @@ impl ArtistGridPanel {
         // An untagged shelf reads as Unknown, the filter panel's wording,
         // while the pick it writes stays the real empty string.
         let name = if name.is_empty() {
-            "Unknown".to_string()
+            rox_i18n::t!("filter-unknown").to_string()
         } else {
             name
         };
         let tally = if self.config.counts {
-            format!(
-                "{}, {}",
-                plural(cell.albums, "album"),
-                plural(cell.len, "track")
+            rox_i18n::t!(
+                "artist-grid-tally",
+                albums = cell.albums as u64,
+                tracks = cell.len as u64
             )
+            .to_string()
         } else {
             String::new()
         };
@@ -1488,8 +1489,8 @@ impl PanelSettings for ArtistGridPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "Vertical Layout",
-                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height".into()),
+                rox_i18n::t!("grid-vertical-layout"),
+                Some(rox_i18n::t!("grid-vertical-layout.description")),
                 toggle(
                     self.config.vertical,
                     |this: &mut Self, on, cx| {
@@ -1508,15 +1509,21 @@ impl PanelSettings for ArtistGridPanel {
                 .flex_col()
                 .gap(settings_ui::SECTION_GAP)
                 .child(settings_ui::section(
-                    "Grouping",
+                    rox_i18n::t!("artist-grid-section-grouping"),
                     None,
                     setting_row(
-                        "One Tile Per",
-                        Some("The credited album artist keeps a record's guests on the act that released it; the track artist splits every feature onto a tile of its own".into()),
-                        panel::choices(
+                        rox_i18n::t!("artist-grid-group-mode"),
+                        Some(rox_i18n::t!("artist-grid-group-mode.description")),
+                        panel::choices_shared(
                             &[
-                                ("Album Artist", ArtistGroup::AlbumArtist),
-                                ("Track Artist", ArtistGroup::Artist),
+                                (
+                                    rox_i18n::t!("filter-field-album-artist"),
+                                    ArtistGroup::AlbumArtist,
+                                ),
+                                (
+                                    rox_i18n::t!("artist-grid-track-artist"),
+                                    ArtistGroup::Artist,
+                                ),
                             ],
                             self.config.group,
                             |this: &mut Self, group, cx| this.set_group(group, cx),
@@ -1525,11 +1532,11 @@ impl PanelSettings for ArtistGridPanel {
                     ),
                 ))
                 .child(settings_ui::section(
-                    "Picking",
+                    rox_i18n::t!("wall-section-picking"),
                     None,
                     setting_row(
-                        "Pick Filters the Library",
-                        Some("Clicking an artist narrows every panel following the shared search to them; off leaves the click as a plain selection".into()),
+                        rox_i18n::t!("artist-grid-pick-filters"),
+                        Some(rox_i18n::t!("artist-grid-pick-filters.description")),
                         toggle(
                             self.config.pick_filters,
                             |this: &mut Self, on, cx| {
@@ -1561,7 +1568,7 @@ impl PanelSettings for ArtistGridPanel {
                 ))
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Scroll to the playing artist whenever the track changes".into(),
+                    rox_i18n::t!("artist-grid-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         if on {
@@ -1570,13 +1577,13 @@ impl PanelSettings for ArtistGridPanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Slide back to the playing artist after you stop browsing".into(),
+                    rox_i18n::t!("artist-grid-resume-description"),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the artist instead of jumping".into(),
+                    rox_i18n::t!("artist-grid-smooth-description"),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1584,15 +1591,15 @@ impl PanelSettings for ArtistGridPanel {
                     cx,
                 ))
                 .child(settings_ui::section(
-                    "Dimming",
+                    rox_i18n::t!("grid-section-dimming"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
-                            "Dim While Playing",
-                            Some("Fade every tile but the playing artist's; hovering lights a tile back up".into()),
+                            rox_i18n::t!("artist-grid-dim-while-playing"),
+                            Some(rox_i18n::t!("artist-grid-dim-while-playing.description")),
                             toggle(
                                 self.config.dim_playing,
                                 |this: &mut Self, on, cx| {
@@ -1605,8 +1612,8 @@ impl PanelSettings for ArtistGridPanel {
                         ))
                         .when(self.config.dim_playing, |d| {
                             d.child(setting_row(
-                                "Dim Amount",
-                                Some("How far the other tiles fade; 100% hides them".into()),
+                                rox_i18n::t!("wall-dim-amount"),
+                                Some(rox_i18n::t!("wall-dim-amount.description")),
                                 settings_ui::scalar(
                                     &self.dim_scrub,
                                     &self.value_edit,
@@ -1622,8 +1629,8 @@ impl PanelSettings for ArtistGridPanel {
                             ))
                         })
                         .child(setting_row(
-                            "Desaturate While Playing",
-                            Some("Drain every tile but the playing artist's to grayscale; hovering brings a tile's color back".into()),
+                            rox_i18n::t!("artist-grid-desaturate"),
+                            Some(rox_i18n::t!("artist-grid-desaturate.description")),
                             toggle(
                                 self.config.desaturate_playing,
                                 |this: &mut Self, on, cx| {
@@ -1633,21 +1640,24 @@ impl PanelSettings for ArtistGridPanel {
                                 cx,
                             ),
                         ))
-                        .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
-                            d.child(setting_row(
-                                "Always",
-                                Some("Keep the tiles pushed back even when nothing plays; only a hovered tile shows in full".into()),
-                                toggle(
-                                    self.config.dim_always,
-                                    |this: &mut Self, on, cx| {
-                                        this.config.dim_always = on;
-                                        this.dim_fading = true;
-                                        cx.notify();
-                                    },
-                                    cx,
-                                ),
-                            ))
-                        }),
+                        .when(
+                            self.config.dim_playing || self.config.desaturate_playing,
+                            |d| {
+                                d.child(setting_row(
+                                    rox_i18n::t!("wall-dim-always"),
+                                    Some(rox_i18n::t!("wall-dim-always.description")),
+                                    toggle(
+                                        self.config.dim_always,
+                                        |this: &mut Self, on, cx| {
+                                            this.config.dim_always = on;
+                                            this.dim_fading = true;
+                                            cx.notify();
+                                        },
+                                        cx,
+                                    ),
+                                ))
+                            },
+                        ),
                 ))
                 .into_any_element(),
         )
@@ -1661,15 +1671,15 @@ impl PanelSettings for ArtistGridPanel {
         let rounding = self.config.rounding;
         Some(
             settings_ui::section(
-                "Tiles",
+                rox_i18n::t!("grid-section-tiles"),
                 None,
                 div()
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
-                        "Artist Portraits",
-                        Some("Show each artist's own picture, looked up once per name and kept on disk; off shows the first album's cover".into()),
+                        rox_i18n::t!("artist-grid-portraits"),
+                        Some(rox_i18n::t!("artist-grid-portraits.description")),
                         toggle(
                             self.config.portraits,
                             |this: &mut Self, on, cx| {
@@ -1680,8 +1690,8 @@ impl PanelSettings for ArtistGridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Show Names",
-                        Some("Print the artist under every tile instead of only on hover".into()),
+                        rox_i18n::t!("artist-grid-show-names"),
+                        Some(rox_i18n::t!("artist-grid-show-names.description")),
                         toggle(
                             self.config.labels,
                             |this: &mut Self, on, cx| {
@@ -1693,8 +1703,8 @@ impl PanelSettings for ArtistGridPanel {
                     ))
                     .when(self.config.labels, |d| {
                         d.child(setting_row(
-                            "Name Alignment",
-                            Some("Line the captions up under their tiles".into()),
+                            rox_i18n::t!("wall-name-alignment"),
+                            Some(rox_i18n::t!("wall-name-alignment.description")),
                             panel::icon_choices(
                                 &[
                                     (icons::ALIGN_LEFT, TitleAlign::Left),
@@ -1711,8 +1721,8 @@ impl PanelSettings for ArtistGridPanel {
                         ))
                     })
                     .child(setting_row(
-                        "Show Counts",
-                        Some("The album and track tally under each name".into()),
+                        rox_i18n::t!("wall-show-counts"),
+                        Some(rox_i18n::t!("wall-show-counts.description")),
                         toggle(
                             self.config.counts,
                             |this: &mut Self, on, cx| {
@@ -1723,8 +1733,8 @@ impl PanelSettings for ArtistGridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Tile Size",
-                        Some("The tiles' widest edge; columns split the panel width evenly".into()),
+                        rox_i18n::t!("wall-tile-size"),
+                        Some(rox_i18n::t!("wall-tile-size.description")),
                         settings_ui::scalar(
                             &self.tile_scrub,
                             &self.value_edit,
@@ -1738,8 +1748,8 @@ impl PanelSettings for ArtistGridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Gap",
-                        Some("Space between the tiles".into()),
+                        rox_i18n::t!("wall-gap"),
+                        Some(rox_i18n::t!("wall-gap.description")),
                         settings_ui::scalar(
                             &self.gap_scrub,
                             &self.value_edit,
@@ -1753,8 +1763,8 @@ impl PanelSettings for ArtistGridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Rounding",
-                        Some("Round each tile's corners; 100% is a circle".into()),
+                        rox_i18n::t!("wall-rounding"),
+                        Some(rox_i18n::t!("wall-rounding.description")),
                         settings_ui::scalar(
                             &self.rounding_scrub,
                             &self.value_edit,
@@ -1832,7 +1842,10 @@ impl Panel for ArtistGridPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Artists")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-artists"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1927,7 +1940,7 @@ impl Panel for ArtistGridPanel {
         let menu = menu
             .check_side(Side::Right)
             .item(
-                PopupMenuItem::new("Clear Picked Artists")
+                PopupMenuItem::new(rox_i18n::t!("artist-grid-clear-picked"))
                     .icon(Icon::default().path(icons::CLOSE))
                     .disabled(!picked)
                     .on_click(move |_, _, cx| {
@@ -1938,7 +1951,7 @@ impl Panel for ArtistGridPanel {
             )
             .separator()
             .item(
-                PopupMenuItem::new("Jump to Playing")
+                PopupMenuItem::new(rox_i18n::t!("grid-jump-to-playing"))
                     .icon(Icon::default().path(icons::DISC))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = weak.upgrade() {
@@ -1947,7 +1960,7 @@ impl Panel for ArtistGridPanel {
                     }),
             )
             .item(
-                PopupMenuItem::new("Follow Playing")
+                PopupMenuItem::new(rox_i18n::t!("tracking-follow"))
                     .icon(Icon::default().path(icons::LOCATE))
                     .checked(follow)
                     .on_click(move |_, _, cx| {
@@ -1959,14 +1972,22 @@ impl Panel for ArtistGridPanel {
 
         // Display section: the view knobs group under flyouts so the menu
         // stays short, the same shape as the album grid's.
-        let menu = menu.separator().label("Display");
+        let menu = menu.separator().label(rox_i18n::t!("library-menu-display"));
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
             submenu = submenu.check_side(Side::Right);
             for (name, icon, is_vertical) in [
-                ("Vertical Scroll", icons::MOVE_VERTICAL, true),
-                ("Horizontal Scroll", icons::MOVE_HORIZONTAL, false),
+                (
+                    rox_i18n::t!("grid-vertical-scroll"),
+                    icons::MOVE_VERTICAL,
+                    true,
+                ),
+                (
+                    rox_i18n::t!("grid-horizontal-scroll"),
+                    icons::MOVE_HORIZONTAL,
+                    false,
+                ),
             ] {
                 submenu = submenu.item(panel::check_row(
                     name,
@@ -1978,7 +1999,10 @@ impl Panel for ArtistGridPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Scroll", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("grid-menu-scroll"),
+            submenu,
+        ));
         // What a tile stands for, a checked pair so the current rule reads
         // at a glance.
         let panel = cx.entity();
@@ -1996,10 +2020,13 @@ impl Panel for ArtistGridPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("One Tile Per", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("artist-grid-group-mode"),
+            submenu,
+        ));
         let panel = cx.entity();
         let menu = menu.item(panel::check_row(
-            "Artist Portraits",
+            rox_i18n::t!("artist-grid-portraits"),
             Some(icons::USER),
             |this: &Self| this.config.portraits,
             |this, cx| {
@@ -2194,11 +2221,11 @@ impl ArtistGridPanel {
                 .on_click(cx.listener(|this, _, _, cx| {
                     crate::catalog::browse(&this.state.library, cx);
                 }))
-                .child(div().text_lg().child("Open a music folder"))
+                .child(div().text_lg().child(rox_i18n::t!("library-empty-title")))
                 .child(
                     div()
                         .text_color(palette::text_muted())
-                        .child("It gets scanned into the library (flac, mp3, wav)"),
+                        .child(rox_i18n::t!("library-empty-note")),
                 )
                 .into_any_element()
         } else if self.cells.is_empty() {
@@ -2210,9 +2237,9 @@ impl ArtistGridPanel {
                 .text_color(palette::text_muted())
                 .child(
                     if self.effective_query(cx).is_empty() && self.browse_filter(cx).is_empty() {
-                        "The library is empty"
+                        rox_i18n::t!("grid-library-empty")
                     } else {
-                        "No matches"
+                        rox_i18n::t!("picker-no-matches")
                     },
                 )
                 .into_any_element()
@@ -2346,9 +2373,10 @@ impl ArtistGridPanel {
                             ixs
                         });
                         let label = if ixs.len() > 1 {
-                            format!("Play {} Artists", ixs.len())
+                            rox_i18n::t!("artist-grid-play-artists", count = ixs.len() as u64)
+                                .to_string()
                         } else {
-                            "Play".to_string()
+                            rox_i18n::t!("library-play").to_string()
                         };
                         // The picked artists' tracks as db ids, resolved now
                         // for the editors, the library rows' move.

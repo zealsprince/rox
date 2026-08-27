@@ -93,9 +93,12 @@ apply and the `-32000` range for rox's own:
 
 ## roxctl
 
-The bundled CLI is the reference client and the scriptable test surface. One call
-per invocation; `--json` prints raw results for scripts, the default output is
-lines for people.
+The reference client, for developing against the socket and testing it. It
+doesn't ship with releases: transport control is already scriptable through
+MPRIS and the system media keys, and the rest of the surface is plain JSON-RPC
+any language speaks in a few lines. Build it from the repo with
+`cargo build --release --package rox-cli`. One call per invocation; `--json`
+prints raw results for scripts, the default output is lines for people.
 
 ```
 roxctl [options] <command> [args]

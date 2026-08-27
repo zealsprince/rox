@@ -32,7 +32,6 @@ use gpui::{
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{h_virtual_list, v_virtual_list, Icon, Side, VirtualListScrollHandle};
-use rox_core::fmt::plural;
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
@@ -317,7 +316,8 @@ impl GenreGridPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let search =
+            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         let _query_changed = cx.subscribe(
             &state.query,
@@ -1070,7 +1070,7 @@ impl GenreGridPanel {
         let seed = palette::genre_seed(&name);
         let card = |background: gpui::Background, base: gpui::Rgba| {
             let title = if name.is_empty() {
-                SharedString::from("Unknown")
+                rox_i18n::t!("filter-unknown")
             } else {
                 SharedString::from(name.clone())
             };
@@ -1286,16 +1286,17 @@ impl GenreGridPanel {
         // An untagged bucket reads as Unknown, the filter panel's wording,
         // while the pick it writes stays the real empty string.
         let name = if cell.name.is_empty() {
-            "Unknown".to_string()
+            rox_i18n::t!("filter-unknown").to_string()
         } else {
             cell.name.clone()
         };
         let tally = if self.config.counts {
-            format!(
-                "{}, {}",
-                plural(cell.albums, "album"),
-                plural(cell.rows.len() as u32, "track")
+            rox_i18n::t!(
+                "genre-grid-tally",
+                albums = cell.albums as u64,
+                tracks = cell.rows.len() as u64
             )
+            .to_string()
         } else {
             String::new()
         };
@@ -1474,8 +1475,8 @@ impl PanelSettings for GenreGridPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "Vertical Layout",
-                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height".into()),
+                rox_i18n::t!("grid-vertical-layout"),
+                Some(rox_i18n::t!("grid-vertical-layout.description")),
                 toggle(
                     self.config.vertical,
                     |this: &mut Self, on, cx| {
@@ -1494,11 +1495,11 @@ impl PanelSettings for GenreGridPanel {
                 .flex_col()
                 .gap(settings_ui::SECTION_GAP)
                 .child(settings_ui::section(
-                    "Picking",
+                    rox_i18n::t!("wall-section-picking"),
                     None,
                     setting_row(
-                        "Pick Filters the Library",
-                        Some("Clicking a genre narrows every panel following the shared search to it; off leaves the click as a plain selection".into()),
+                        rox_i18n::t!("genre-grid-pick-filters"),
+                        Some(rox_i18n::t!("genre-grid-pick-filters.description")),
                         toggle(
                             self.config.pick_filters,
                             |this: &mut Self, on, cx| {
@@ -1527,7 +1528,7 @@ impl PanelSettings for GenreGridPanel {
                 ))
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Scroll to the playing genre whenever the track changes".into(),
+                    rox_i18n::t!("genre-grid-follow-description"),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         if on {
@@ -1536,13 +1537,13 @@ impl PanelSettings for GenreGridPanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Slide back to the playing genre after you stop browsing".into(),
+                    rox_i18n::t!("genre-grid-resume-description"),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the genre instead of jumping".into(),
+                    rox_i18n::t!("genre-grid-smooth-description"),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1550,15 +1551,15 @@ impl PanelSettings for GenreGridPanel {
                     cx,
                 ))
                 .child(settings_ui::section(
-                    "Dimming",
+                    rox_i18n::t!("grid-section-dimming"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
-                            "Dim While Playing",
-                            Some("Fade every tile but the playing genre's; hovering lights a tile back up".into()),
+                            rox_i18n::t!("genre-grid-dim-while-playing"),
+                            Some(rox_i18n::t!("genre-grid-dim-while-playing.description")),
                             toggle(
                                 self.config.dim_playing,
                                 |this: &mut Self, on, cx| {
@@ -1571,8 +1572,8 @@ impl PanelSettings for GenreGridPanel {
                         ))
                         .when(self.config.dim_playing, |d| {
                             d.child(setting_row(
-                                "Dim Amount",
-                                Some("How far the other tiles fade; 100% hides them".into()),
+                                rox_i18n::t!("wall-dim-amount"),
+                                Some(rox_i18n::t!("wall-dim-amount.description")),
                                 settings_ui::scalar(
                                     &self.dim_scrub,
                                     &self.value_edit,
@@ -1588,8 +1589,8 @@ impl PanelSettings for GenreGridPanel {
                             ))
                         })
                         .child(setting_row(
-                            "Desaturate While Playing",
-                            Some("Drain every tile but the playing genre's to grayscale; hovering brings a tile's color back".into()),
+                            rox_i18n::t!("genre-grid-desaturate"),
+                            Some(rox_i18n::t!("genre-grid-desaturate.description")),
                             toggle(
                                 self.config.desaturate_playing,
                                 |this: &mut Self, on, cx| {
@@ -1599,21 +1600,24 @@ impl PanelSettings for GenreGridPanel {
                                 cx,
                             ),
                         ))
-                        .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
-                            d.child(setting_row(
-                                "Always",
-                                Some("Keep the tiles pushed back even when nothing plays; only a hovered tile shows in full".into()),
-                                toggle(
-                                    self.config.dim_always,
-                                    |this: &mut Self, on, cx| {
-                                        this.config.dim_always = on;
-                                        this.dim_fading = true;
-                                        cx.notify();
-                                    },
-                                    cx,
-                                ),
-                            ))
-                        }),
+                        .when(
+                            self.config.dim_playing || self.config.desaturate_playing,
+                            |d| {
+                                d.child(setting_row(
+                                    rox_i18n::t!("wall-dim-always"),
+                                    Some(rox_i18n::t!("wall-dim-always.description")),
+                                    toggle(
+                                        self.config.dim_always,
+                                        |this: &mut Self, on, cx| {
+                                            this.config.dim_always = on;
+                                            this.dim_fading = true;
+                                            cx.notify();
+                                        },
+                                        cx,
+                                    ),
+                                ))
+                            },
+                        ),
                 ))
                 .into_any_element(),
         )
@@ -1625,21 +1629,21 @@ impl PanelSettings for GenreGridPanel {
         let rounding = self.config.rounding;
         Some(
             settings_ui::section(
-                "Tiles",
+                rox_i18n::t!("grid-section-tiles"),
                 None,
                 div()
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
-                        "Tile Face",
-                        Some("What a tile wears: the genre's album covers, the covers washed in the genre's own color, or a flat color card with the name set on it".into()),
-                        panel::choices(
+                        rox_i18n::t!("genre-grid-tile-face"),
+                        Some(rox_i18n::t!("genre-grid-tile-face.description")),
+                        panel::choices_shared(
                             &[
-                                ("Mosaic", TileFace::Mosaic),
-                                ("Tinted", TileFace::Tinted),
-                                ("Gradient", TileFace::Gradient),
-                                ("Color", TileFace::Color),
+                                (rox_i18n::t!("genre-face-mosaic"), TileFace::Mosaic),
+                                (rox_i18n::t!("genre-face-tinted"), TileFace::Tinted),
+                                (rox_i18n::t!("genre-face-gradient"), TileFace::Gradient),
+                                (rox_i18n::t!("genre-face-color"), TileFace::Color),
                             ],
                             self.config.face,
                             |this: &mut Self, face, cx| {
@@ -1650,8 +1654,8 @@ impl PanelSettings for GenreGridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Show Names",
-                        Some("Print the genre under every tile instead of only on hover".into()),
+                        rox_i18n::t!("genre-grid-show-names"),
+                        Some(rox_i18n::t!("genre-grid-show-names.description")),
                         toggle(
                             self.config.labels,
                             |this: &mut Self, on, cx| {
@@ -1663,8 +1667,8 @@ impl PanelSettings for GenreGridPanel {
                     ))
                     .when(self.config.labels, |d| {
                         d.child(setting_row(
-                            "Name Alignment",
-                            Some("Line the captions up under their tiles".into()),
+                            rox_i18n::t!("wall-name-alignment"),
+                            Some(rox_i18n::t!("wall-name-alignment.description")),
                             panel::icon_choices(
                                 &[
                                     (icons::ALIGN_LEFT, TitleAlign::Left),
@@ -1681,8 +1685,8 @@ impl PanelSettings for GenreGridPanel {
                         ))
                     })
                     .child(setting_row(
-                        "Show Counts",
-                        Some("The album and track tally under each name".into()),
+                        rox_i18n::t!("wall-show-counts"),
+                        Some(rox_i18n::t!("wall-show-counts.description")),
                         toggle(
                             self.config.counts,
                             |this: &mut Self, on, cx| {
@@ -1693,8 +1697,8 @@ impl PanelSettings for GenreGridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Tile Size",
-                        Some("The tiles' widest edge; columns split the panel width evenly".into()),
+                        rox_i18n::t!("wall-tile-size"),
+                        Some(rox_i18n::t!("wall-tile-size.description")),
                         settings_ui::scalar(
                             &self.tile_scrub,
                             &self.value_edit,
@@ -1708,8 +1712,8 @@ impl PanelSettings for GenreGridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Gap",
-                        Some("Space between the tiles".into()),
+                        rox_i18n::t!("wall-gap"),
+                        Some(rox_i18n::t!("wall-gap.description")),
                         settings_ui::scalar(
                             &self.gap_scrub,
                             &self.value_edit,
@@ -1723,8 +1727,8 @@ impl PanelSettings for GenreGridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Rounding",
-                        Some("Round each tile's corners; 100% is a circle".into()),
+                        rox_i18n::t!("wall-rounding"),
+                        Some(rox_i18n::t!("wall-rounding.description")),
                         settings_ui::scalar(
                             &self.rounding_scrub,
                             &self.value_edit,
@@ -1802,7 +1806,10 @@ impl Panel for GenreGridPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Genres")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-genres"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1895,7 +1902,7 @@ impl Panel for GenreGridPanel {
         let menu = menu
             .check_side(Side::Right)
             .item(
-                PopupMenuItem::new("Clear Picked Genres")
+                PopupMenuItem::new(rox_i18n::t!("genre-grid-clear-picked"))
                     .icon(Icon::default().path(icons::CLOSE))
                     .disabled(!picked)
                     .on_click(move |_, _, cx| {
@@ -1906,7 +1913,7 @@ impl Panel for GenreGridPanel {
             )
             .separator()
             .item(
-                PopupMenuItem::new("Jump to Playing")
+                PopupMenuItem::new(rox_i18n::t!("grid-jump-to-playing"))
                     .icon(Icon::default().path(icons::DISC))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = weak.upgrade() {
@@ -1915,7 +1922,7 @@ impl Panel for GenreGridPanel {
                     }),
             )
             .item(
-                PopupMenuItem::new("Follow Playing")
+                PopupMenuItem::new(rox_i18n::t!("tracking-follow"))
                     .icon(Icon::default().path(icons::LOCATE))
                     .checked(follow)
                     .on_click(move |_, _, cx| {
@@ -1927,14 +1934,22 @@ impl Panel for GenreGridPanel {
 
         // Display section: the view knobs group under flyouts so the menu
         // stays short, the artist grid's shape.
-        let menu = menu.separator().label("Display");
+        let menu = menu.separator().label(rox_i18n::t!("library-menu-display"));
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
             submenu = submenu.check_side(Side::Right);
             for (name, icon, is_vertical) in [
-                ("Vertical Scroll", icons::MOVE_VERTICAL, true),
-                ("Horizontal Scroll", icons::MOVE_HORIZONTAL, false),
+                (
+                    rox_i18n::t!("grid-vertical-scroll"),
+                    icons::MOVE_VERTICAL,
+                    true,
+                ),
+                (
+                    rox_i18n::t!("grid-horizontal-scroll"),
+                    icons::MOVE_HORIZONTAL,
+                    false,
+                ),
             ] {
                 submenu = submenu.item(panel::check_row(
                     name,
@@ -1946,7 +1961,10 @@ impl Panel for GenreGridPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Scroll", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("grid-menu-scroll"),
+            submenu,
+        ));
         // What the tiles wear, a checked triple so the current face reads
         // at a glance, the artist grid's grouping flyout shape.
         let panel = cx.entity();
@@ -1972,7 +1990,10 @@ impl Panel for GenreGridPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Tile Face", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("genre-grid-tile-face"),
+            submenu,
+        ));
         // Follow the shared search query, or filter by this wall's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
@@ -2129,11 +2150,11 @@ impl GenreGridPanel {
                 .on_click(cx.listener(|this, _, _, cx| {
                     crate::catalog::browse(&this.state.library, cx);
                 }))
-                .child(div().text_lg().child("Open a music folder"))
+                .child(div().text_lg().child(rox_i18n::t!("library-empty-title")))
                 .child(
                     div()
                         .text_color(palette::text_muted())
-                        .child("It gets scanned into the library (flac, mp3, wav)"),
+                        .child(rox_i18n::t!("library-empty-note")),
                 )
                 .into_any_element()
         } else if self.cells.is_empty() {
@@ -2145,9 +2166,9 @@ impl GenreGridPanel {
                 .text_color(palette::text_muted())
                 .child(
                     if self.effective_query(cx).is_empty() && self.browse_filter(cx).is_empty() {
-                        "The library is empty"
+                        rox_i18n::t!("grid-library-empty")
                     } else {
-                        "No matches"
+                        rox_i18n::t!("picker-no-matches")
                     },
                 )
                 .into_any_element()
@@ -2262,9 +2283,10 @@ impl GenreGridPanel {
                             ixs
                         });
                         let label = if ixs.len() > 1 {
-                            format!("Play {} Genres", ixs.len())
+                            rox_i18n::t!("genre-grid-play-genres", count = ixs.len() as u64)
+                                .to_string()
                         } else {
-                            "Play".to_string()
+                            rox_i18n::t!("library-play").to_string()
                         };
                         let ids: Vec<i64> = this.update(cx, |this, cx| {
                             ixs.iter()
@@ -2329,9 +2351,19 @@ impl GenreGridPanel {
                             let library = this.read(cx).state.library.clone();
                             let target = hovered_name.clone();
                             let label = if sources.len() == 1 {
-                                format!("Merge \"{}\" Into \"{}\"", sources[0], target)
+                                rox_i18n::t!(
+                                    "genre-grid-merge-one",
+                                    source = sources[0].clone(),
+                                    target = target.clone()
+                                )
+                                .to_string()
                             } else {
-                                format!("Merge {} Genres Into \"{}\"", sources.len(), target)
+                                rox_i18n::t!(
+                                    "genre-grid-merge-many",
+                                    count = sources.len() as u64,
+                                    target = target.clone()
+                                )
+                                .to_string()
                             };
                             menu = menu.item(
                                 PopupMenuItem::new(label)
@@ -2346,7 +2378,9 @@ impl GenreGridPanel {
                         if !folded.is_empty() {
                             let library = this.read(cx).state.library.clone();
                             let target = hovered_name.clone();
-                            let label = format!("Unmerge {}", plural(folded.len() as u32, "value"));
+                            let label =
+                                rox_i18n::t!("genre-grid-unmerge", count = folded.len() as u64)
+                                    .to_string();
                             menu = menu.item(
                                 PopupMenuItem::new(label)
                                     .icon(Icon::default().path(icons::CLOSE))

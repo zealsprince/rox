@@ -259,12 +259,16 @@ pub fn khz(hz: u32) -> String {
     // needs, and the zeros come off after, so nothing grows a decimal it
     // didn't earn.
     let hundredths = (hz + 5) / 10;
-    let whole = hundredths / 100;
-    match hundredths % 100 {
-        0 => whole.to_string(),
-        rest if rest % 10 == 0 => format!("{whole}.{}", rest / 10),
-        rest => format!("{whole}.{rest:02}"),
-    }
+    // How many places the rate has earned, still decided on the integers.
+    // Only the decimal mark itself is a locale question, and a German
+    // spec sheet writes 44,1 kHz, so the join goes through ICU rather
+    // than a hardcoded dot.
+    let places = match hundredths % 100 {
+        0 => 0,
+        rest if rest % 10 == 0 => 1,
+        _ => 2,
+    };
+    rox_i18n::format::format_float(f64::from(hundredths) / 100.0, places)
 }
 
 /// The stream's shape the way a spec sheet writes it: "16/44.1 kHz" for a
@@ -739,18 +743,30 @@ mod tests {
     /// wouldn't be the rate.
     #[test]
     fn a_rate_reads_as_khz() {
+        // The decimal mark comes from the locale now, so the assertions
+        // pin one rather than reading whatever the OS negotiated to.
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some("en-CA"));
         assert_eq!(khz(44100), "44.1");
         assert_eq!(khz(48000), "48");
         assert_eq!(khz(96000), "96");
         assert_eq!(khz(88200), "88.2");
         assert_eq!(khz(22050), "22.05");
         assert_eq!(khz(0), "");
+        // The same rate in a comma locale, which is the whole point of
+        // routing the join through ICU.
+        rox_i18n::set_locale(Some("de"));
+        assert_eq!(khz(44100), "44,1");
+        assert_eq!(khz(48000), "48");
+        rox_i18n::set_locale(None);
     }
 
     /// The stream shape pairs the depth with the rate, and drops whichever
     /// half is missing: a lossy file has no depth to name.
     #[test]
     fn the_stream_shape_drops_what_it_lacks() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some("en-CA"));
         assert_eq!(stream_format(16, 44100), "16/44.1 kHz");
         assert_eq!(stream_format(24, 96000), "24/96 kHz");
         assert_eq!(stream_format(0, 44100), "44.1 kHz");
@@ -763,6 +779,8 @@ mod tests {
     /// once the run has nothing in common.
     #[test]
     fn the_group_line_joins_what_agrees() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some("en-CA"));
         assert_eq!(
             quality(Some("flac"), 1006, 1006, 16, 44100),
             "flac 16/44.1 kHz 1006 kbps"

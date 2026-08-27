@@ -36,19 +36,14 @@ impl SettingsWindow {
         page.section(Section::new(
             q,
             icons::REFRESH_CW,
-            "Defaults",
+            rox_i18n::t!("settings-keymap-section-defaults"),
             None,
             |rows| {
                 rows.keyed(
+                    "settings-keymap-restore-all",
                     &["reset", "restore", "revert", "keymap"],
-                    "Restore Every Chord",
-                    Some(
-                        "Put every command back on the keys it ships with, including any this \
-                         build no longer has a row for"
-                            .into(),
-                    ),
                     small_button(
-                        "Restore",
+                        rox_i18n::t!("settings-keymap-restore"),
                         icons::REFRESH_CW,
                         self.keymap.is_empty(),
                         cx.listener(|this, _, _, cx| {
@@ -59,11 +54,10 @@ impl SettingsWindow {
                     ),
                 )
                 .keyed(
+                    "settings-keymap-undo-last",
                     &["undo", "reset", "restore", "keymap"],
-                    "Undo the Last Reset",
-                    Some("Bring back the chords the last reset threw out, row or all".into()),
                     small_button(
-                        "Undo",
+                        rox_i18n::t!("settings-keymap-undo"),
                         icons::SEEK_BACK,
                         self.keymap_undo.is_none(),
                         cx.listener(|this, _, _, cx| {
@@ -124,14 +118,9 @@ impl SettingsWindow {
                     control,
                 ));
             for (chord, other) in clashes {
-                row = row.child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child(format!(
-                            "{chord} is also {other}; only one of them will fire"
-                        )),
-                );
+                row = row.child(div().text_xs().text_color(palette::text_muted()).child(
+                    rox_i18n::t!("settings-keymap-clash", chord = chord, other = other),
+                ));
             }
             row.into_any_element()
         })
@@ -165,7 +154,7 @@ impl SettingsWindow {
                 div()
                     .text_xs()
                     .text_color(palette::text_faint())
-                    .child("Not bound"),
+                    .child(rox_i18n::t!("settings-keymap-not-bound")),
             );
         }
         for chord in chords {
@@ -177,10 +166,10 @@ impl SettingsWindow {
                     div()
                         .text_xs()
                         .text_color(palette::text())
-                        .child("Press the keys"),
+                        .child(rox_i18n::t!("settings-keymap-recording")),
                 )
                 .child(small_button(
-                    "Cancel",
+                    rox_i18n::t!("workspace-dialog-cancel"),
                     icons::CLOSE,
                     false,
                     cx.listener(|this, _, _, cx| {

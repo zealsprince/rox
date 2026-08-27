@@ -87,7 +87,7 @@ impl WindowControlsPanel {
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Traffic Lights")
+            PopupMenuItem::new(rox_i18n::t!("window-controls-traffic-lights"))
                 .checked(self.config.style == ControlStyle::Traffic)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -102,7 +102,7 @@ impl WindowControlsPanel {
         );
         let weak = cx.entity().downgrade();
         menu.item(
-            PopupMenuItem::new("Mini Toggle")
+            PopupMenuItem::new(rox_i18n::t!("window-controls-mini-toggle"))
                 .checked(self.config.mini)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
@@ -126,9 +126,9 @@ impl WindowControlsPanel {
             return None;
         }
         let (icon, tip) = if ws.read(cx).on_mini() {
-            (icons::MAXIMIZE, "Back to the full layout")
+            (icons::MAXIMIZE, rox_i18n::t!("mini-tip-back"))
         } else {
-            (icons::MINIMIZE, "Shrink to the mini player")
+            (icons::MINIMIZE, rox_i18n::t!("mini-tip-shrink"))
         };
         Some(
             panel::Tip::keyed("mini-toggle", tip).apply(
@@ -195,15 +195,21 @@ impl WindowControlsPanel {
                 // Windows order: minimize, maximize, close.
                 ControlStyle::Icons => d
                     .gap(tokens::SPACE_XS)
-                    .child(icon_button(icons::MINUS, "Minimize", |_, w, _| {
-                        w.minimize_window()
-                    }))
+                    .child(icon_button(
+                        icons::MINUS,
+                        rox_i18n::t_static("window-controls-minimize"),
+                        |_, w, _| w.minimize_window(),
+                    ))
                     .child(icon_button(
                         maximize_icon(window),
                         maximize_tip(window),
                         maximize,
                     ))
-                    .child(icon_button(icons::CLOSE, "Close", cx.listener(close))),
+                    .child(icon_button(
+                        icons::CLOSE,
+                        rox_i18n::t_static("panel-close"),
+                        cx.listener(close),
+                    )),
                 // macOS order: close, minimize, zoom.
                 ControlStyle::Traffic => d
                     .gap(tokens::SPACE_SM)
@@ -271,12 +277,18 @@ impl PanelSettings for WindowControlsPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Style",
-                Some("Flat icons, or the macOS traffic lights".into()),
-                panel::choices(
+                rox_i18n::t!("window-controls-style"),
+                Some(rox_i18n::t!("window-controls-style.description")),
+                panel::choices_shared(
                     &[
-                        ("Icons", ControlStyle::Icons),
-                        ("Traffic Lights", ControlStyle::Traffic),
+                        (
+                            rox_i18n::t!("window-controls-style-icons"),
+                            ControlStyle::Icons,
+                        ),
+                        (
+                            rox_i18n::t!("window-controls-traffic-lights"),
+                            ControlStyle::Traffic,
+                        ),
                     ],
                     self.config.style,
                     |this: &mut Self, style, cx| {
@@ -287,10 +299,8 @@ impl PanelSettings for WindowControlsPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Mini Toggle",
-                Some(
-                    "Lead with the mini-layout toggle; shows once a mini layout is assigned".into(),
-                ),
+                rox_i18n::t!("window-controls-mini-toggle"),
+                Some(rox_i18n::t!("window-controls-mini-toggle.description")),
                 panel::toggle(
                     self.config.mini,
                     |this: &mut Self, mini, cx| {
@@ -333,7 +343,10 @@ impl Panel for WindowControlsPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Window Controls")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("window-controls-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<gpui::SharedString> {

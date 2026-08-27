@@ -44,63 +44,71 @@ const ROW_H: f32 = 30.;
 
 /// The track columns, in render order. Number here is the queue position.
 /// Every key is one the shared [`track_columns::cell`] draws.
-const COLUMNS: &[Column] = &[
-    Column {
-        key: "cover",
-        label: "Cover",
-        default_on: false,
-    },
-    Column {
-        key: "number",
-        label: "Number",
-        default_on: true,
-    },
-    Column {
-        key: "name",
-        label: "Name",
-        default_on: true,
-    },
-    Column {
-        key: "artist",
-        label: "Artist",
-        default_on: true,
-    },
-    Column {
-        key: "album",
-        label: "Album",
-        default_on: false,
-    },
-    Column {
-        key: "year",
-        label: "Year",
-        default_on: false,
-    },
-    Column {
-        key: "genre",
-        label: "Genre",
-        default_on: false,
-    },
-    Column {
-        key: "duration",
-        label: "Duration",
-        default_on: false,
-    },
-    Column {
-        key: "plays",
-        label: "Plays",
-        default_on: false,
-    },
-    Column {
-        key: "rating",
-        label: "Rating",
-        default_on: false,
-    },
-    Column {
-        key: "favourite",
-        label: "Favourite",
-        default_on: false,
-    },
-];
+///
+/// A function rather than a `const`: `t_static` isn't const-evaluable, and
+/// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
+/// this rebuilds and leaks once per active locale, the same fix already
+/// applied in `metadata.rs`/`history.rs`/`playlists.rs`. See
+/// `.i18n-work/widen-content-panels.md`.
+fn columns() -> Vec<Column> {
+    vec![
+        Column {
+            key: "cover",
+            label: rox_i18n::t!("columns-cover"),
+            default_on: false,
+        },
+        Column {
+            key: "number",
+            label: rox_i18n::t!("columns-number"),
+            default_on: true,
+        },
+        Column {
+            key: "name",
+            label: rox_i18n::t!("columns-name"),
+            default_on: true,
+        },
+        Column {
+            key: "artist",
+            label: rox_i18n::t!("head-piece-artist"),
+            default_on: true,
+        },
+        Column {
+            key: "album",
+            label: rox_i18n::t!("head-piece-album"),
+            default_on: false,
+        },
+        Column {
+            key: "year",
+            label: rox_i18n::t!("head-piece-year"),
+            default_on: false,
+        },
+        Column {
+            key: "genre",
+            label: rox_i18n::t!("head-piece-genre"),
+            default_on: false,
+        },
+        Column {
+            key: "duration",
+            label: rox_i18n::t!("info-item-duration"),
+            default_on: false,
+        },
+        Column {
+            key: "plays",
+            label: rox_i18n::t!("status-item-plays"),
+            default_on: false,
+        },
+        Column {
+            key: "rating",
+            label: rox_i18n::t!("info-item-rating"),
+            default_on: false,
+        },
+        Column {
+            key: "favourite",
+            label: rox_i18n::t!("info-item-favourite"),
+            default_on: false,
+        },
+    ]
+}
 
 /// The queue panel's config: the shared chrome, the album heading mode, and
 /// which per-track columns show.
@@ -143,7 +151,7 @@ impl Default for QueueConfig {
         QueueConfig {
             chrome: PanelChrome::default(),
             headers: Headers::Off,
-            columns: track_columns::default_columns(COLUMNS),
+            columns: track_columns::default_columns(&columns()),
             search: false,
             query_source: QuerySource::default(),
             query: String::new(),
@@ -371,7 +379,8 @@ impl QueuePanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let search =
+            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // Follow the shared query while global: re-filter and reset the box
         // to it on the next render.
@@ -1234,7 +1243,7 @@ impl QueuePanel {
             plays: t.plays,
             cover,
         };
-        for col in COLUMNS {
+        for col in columns() {
             if !self.column_shown(col.key) {
                 continue;
             }
@@ -1366,19 +1375,19 @@ impl PanelSettings for QueuePanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_block(
-                "Columns",
-                Some("Which track columns show".into()),
+                rox_i18n::t!("library-columns"),
+                Some(rox_i18n::t!("panel-columns-description")),
                 None,
-                track_columns::checklist(COLUMNS, self, cx),
+                track_columns::checklist(&columns(), self, cx),
             ))
             .child(panel::setting_row(
-                "Headings",
-                Some("Break the queue into album runs; Expanded adds the cover and stats".into()),
-                panel::choices(
+                rox_i18n::t!("panel-headings"),
+                Some(rox_i18n::t!("queue-headings")),
+                panel::choices_shared(
                     &[
-                        ("Off", Headers::Off),
-                        ("Compact", Headers::Compact),
-                        ("Expanded", Headers::Expanded),
+                        (rox_i18n::t!("headers-off"), Headers::Off),
+                        (rox_i18n::t!("headers-compact"), Headers::Compact),
+                        (rox_i18n::t!("headers-expanded"), Headers::Expanded),
                     ],
                     self.config.headers,
                     |this: &mut Self, headers, cx| this.set_headers(headers, cx),
@@ -1422,7 +1431,10 @@ impl Panel for QueuePanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Queue")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("queue-title"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1504,7 +1516,7 @@ impl Panel for QueuePanel {
     ) -> PopupMenu {
         let clear = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Clear Queue")
+            PopupMenuItem::new(rox_i18n::t!("queue-clear"))
                 .icon(Icon::default().path(icons::TRASH))
                 .disabled(self.tracks.is_empty())
                 .on_click(move |_, _, cx| {
@@ -1516,13 +1528,13 @@ impl Panel for QueuePanel {
         // Display section: the view knobs under their own label, ahead of the
         // Panel section, the library's shape.
         let menu = menu
-            .label("Display")
+            .label(rox_i18n::t!("panel-menu-display"))
             .item(PopupMenuItem::submenu(
-                "Columns",
-                track_columns::columns_submenu(COLUMNS, window, cx),
+                rox_i18n::t!("library-columns"),
+                track_columns::columns_submenu(columns(), window, cx),
             ))
             .item(PopupMenuItem::submenu(
-                "Headings",
+                rox_i18n::t!("panel-headings"),
                 track_columns::headings_submenu(window, cx),
             ));
         // Follow the shared search query, or filter by this panel's own box.
@@ -1627,7 +1639,7 @@ impl QueuePanel {
                 .items_center()
                 .gap(tokens::SPACE_SM)
                 .bg(palette::alpha(palette::highlight(), 0x12));
-            for col in COLUMNS {
+            for col in columns() {
                 if !self.column_shown(col.key) {
                     continue;
                 }
@@ -1664,9 +1676,9 @@ impl QueuePanel {
         let content = if self.rows.is_empty() {
             // Entries hidden by the query read differently from an empty queue.
             let message = if !self.tracks.is_empty() {
-                "No matches"
+                rox_i18n::t!("picker-no-matches")
             } else {
-                "Queue is empty"
+                rox_i18n::t!("queue-empty")
             };
             div().flex_1().min_h_0().flex().flex_col().child(
                 div()
@@ -1748,14 +1760,10 @@ impl QueuePanel {
             };
             let jump_panel = weak.clone();
             let remove_panel = weak.clone();
-            let remove_label = if count > 1 {
-                format!("Remove {count} from Queue")
-            } else {
-                "Remove from Queue".to_string()
-            };
+            let remove_label = rox_i18n::t!("queue-remove", count = count as u64).to_string();
             let mut menu = menu
                 .item(
-                    PopupMenuItem::new("Play")
+                    PopupMenuItem::new(rox_i18n::t!("library-play"))
                         .icon(Icon::default().path(icons::PLAY))
                         .on_click(move |_, _, cx| {
                             if let Some(this) = jump_panel.upgrade() {
@@ -1781,7 +1789,7 @@ impl QueuePanel {
                     menu.separator(),
                     state,
                     track_ids,
-                    "Play Now",
+                    rox_i18n::t!("queue-play-now"),
                     window,
                     cx,
                     {

@@ -2,15 +2,15 @@
 //! sends them, and the connect flow's state. All of it blocks, so the
 //! app runs it on the background executor. The api key and secret come
 //! from the build's own identity ([`keys`]), with the settings file's
-//! pair as the override for builds that ship none. The scrobbler that
-//! rides the player on top of this lives in rox.
+//! pair as the override for builds that ship none. The scrobbler built
+//! on top of this, the part that tracks player state, is in rox.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 pub mod keys;
 
-/// Whether this build carries its own api identity; without one the
+/// Whether this build has its own api identity; without one the
 /// settings page asks for the user's pair.
 // The pair are consts baked in at compile time, so clippy can const-eval
 // this and calls it a constant condition. That's exactly the question
@@ -35,10 +35,9 @@ fn sign(params: &BTreeMap<String, String>, secret: &str) -> String {
     format!("{:x}", md5::compute(base.as_bytes()))
 }
 
-/// A call that didn't land: Last.fm's own error code where the service
-/// answered, none where the request never got that far. The message is
-/// the part worth showing; the code is what tells a retry from a waste
-/// of time.
+/// A failed call: Last.fm's own error code where the service answered,
+/// none where the request never got that far. The message is the part
+/// worth showing; the code tells a retry from a waste of time.
 pub struct ApiError {
     code: Option<i64>,
     message: String,
@@ -92,13 +91,13 @@ pub fn call(
         .collect();
     // A request that never reached the service, or a body that won't read
     // or parse, gets no code: the next try may well go through, so these
-    // land as retryable rather than as a rejection.
+    // count as retryable rather than as a rejection.
     let transport = |message: String| ApiError {
         code: None,
         message,
     };
-    // An API error still carries a JSON body worth reading, so a status
-    // failure parses like a success. Ride the shared provider agent for its
+    // An API error still has a JSON body worth reading, so a status
+    // failure parses like a success. Use the shared provider agent for its
     // User-Agent and timeout; a bare ureq::post has neither, so a hung endpoint
     // parks the connect flow in Confirming forever.
     let text = match crate::providers::agent().post(API_ROOT).send_form(&pairs) {
@@ -155,7 +154,8 @@ mod tests {
             code: Some(code),
             message: "api said no".to_string(),
         };
-        // No code at all is the offline case: the request never landed.
+        // No code at all is the offline case: the request never reached
+        // the service.
         assert!(ApiError {
             code: None,
             message: "no connection".to_string(),

@@ -1,10 +1,10 @@
-//! The output panel: what the device actually agreed to, kept on screen
+//! The output panel: what the device actually accepted, kept on screen
 //! instead of behind the Audio settings page. Same readout the settings
 //! window's status block draws and the track info chip abbreviates, in a
 //! panel a layout can park somewhere permanent. ADR 19 is blunt that a
-//! bit-perfect claim nobody checked is decoration, so every line here is
-//! the negotiated stream talking back: the mode that's running, the rate
-//! the card landed on, and whether anything is converting on the way out.
+//! bit-perfect claim nobody checked is decoration, so every line here comes
+//! from the negotiated stream: the mode that's running, the rate the card
+//! settled on, and whether anything is converting on the way out.
 
 use gpui::{
     div, prelude::*, px, App, Context, Div, EventEmitter, FocusHandle, Focusable, Rgba,
@@ -31,7 +31,7 @@ pub enum OutputDetail {
     #[default]
     Badge,
     /// The headline alone on one colored line, the track info chip's
-    /// weight. Fits a strip; the reasons live in the other one.
+    /// weight. Fits a strip; the reasons are in the expanded mode.
     Compact,
     /// The full callout: the headline, then every line the state earns.
     Expanded,
@@ -72,7 +72,7 @@ pub struct OutputPanel {
     config: OutputConfig,
     scroll: ScrollHandle,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _output_changed: Subscription,
 }
@@ -82,7 +82,7 @@ impl OutputPanel {
         // Two things move this panel: what the stream negotiated, and the
         // failure standing in when nothing opened. `player::observe_output`
         // watches the first alone, and an open that fails while nothing was
-        // playing never moves the status off None, so the error rides along
+        // playing never moves the status off None, so the error is included
         // in the same comparison. The clock, the volume, and the queue move
         // the player without moving this panel.
         let mut last = watched(state.player.read(cx));
@@ -103,8 +103,8 @@ impl OutputPanel {
         }
     }
 
-    /// What the device agreed to, as a tone, a headline, and the lines the
-    /// state earns; [`OutputStatus::lines`] carries the reasoning behind
+    /// What the device accepted, as a tone, a headline, and the lines the
+    /// state earns; [`OutputStatus::lines`] documents the reasoning behind
     /// each line.
     fn readout(&self, cx: &App) -> (Tone, SharedString, Vec<SharedString>) {
         let player = self.state.player.read(cx);
@@ -171,7 +171,7 @@ impl OutputPanel {
     }
 
     /// The panel's own dropdown entries: the detail pick and the two line
-    /// toggles the settings window also carries, for a quick flip.
+    /// toggles the settings window also has, for a quick flip.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -241,7 +241,7 @@ fn watched(player: &Player) -> (Option<OutputStatus>, Option<SharedString>) {
 /// The callout's tone, and whether the device is running at a rate the file
 /// isn't. The two bad cases aren't the same size. A claim that failed is a
 /// setting that didn't take, which is an error: exclusive is switched on and
-/// you are not hearing it. Resampling is the mode working and still not
+/// you aren't hearing it. Resampling is the mode working and still not
 /// being bit-perfect, which is worth flagging without crying wolf.
 fn tone_for(status: &OutputStatus) -> (Tone, bool) {
     let resampling = status
@@ -257,7 +257,7 @@ fn tone_for(status: &OutputStatus) -> (Tone, bool) {
     (tone, resampling)
 }
 
-/// [`Tone`] keeps its own color to itself, so the compact line maps the four
+/// [`Tone`] doesn't define a color, so the compact line maps the four
 /// tones onto the palette roles the callout paints with. Info reads as the
 /// quiet state rather than a color, the way the track info chip stays muted
 /// until something is worth interrupting for.
@@ -387,7 +387,7 @@ impl Panel for OutputPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
@@ -455,7 +455,7 @@ impl Render for OutputPanel {
 impl OutputPanel {
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
         let (tone, headline, lines) = self.readout(cx);
-        // Centering lives on this column rather than on the scroll box: a
+        // Centering is on this column rather than on the scroll box: a
         // percent height collapses inside an overflow_y_scroll, so the box
         // takes a max instead and this holds it in the middle.
         let root = div()
@@ -529,8 +529,8 @@ fn badge_label(negotiated: &Negotiated) -> SharedString {
 }
 
 /// The badge's hover note: the callout it's standing in for, headline and
-/// all. The chip is deliberately too small to say why it's colored, so this
-/// is where the reason lives.
+/// all. The chip is too small to say why it's colored, so the reason goes
+/// here.
 #[derive(Clone)]
 struct BadgeNote {
     headline: SharedString,
@@ -616,7 +616,7 @@ mod tests {
     }
 
     /// The chip says the mode and the numbers that change between files,
-    /// and nothing a hover can carry instead.
+    /// and nothing a hover can show instead.
     #[test]
     fn the_badge_drops_everything_but_the_mode_and_the_numbers() {
         let mut negotiated = status(None, 44100, None).negotiated;

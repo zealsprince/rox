@@ -1,6 +1,6 @@
 //! The few acoustic-analysis constants the settings file is written in terms
 //! of. The extractors themselves, the model catalog, and the download that
-//! installs one live in `rox-acoustic`, which depends on this crate and so
+//! installs one are in `rox-acoustic`, which depends on this crate and so
 //! reads them from here rather than the other way around.
 
 /// What produced the vectors, and the name they're stored under. Change the

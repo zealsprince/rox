@@ -1,6 +1,6 @@
 //! The way up into the app's windows. Panels and the shared helpers need to
-//! open a tag editor, a stats page, a rename flyout - all of which live in
-//! the binary, a crate above this one. Rather than depend upward, the binary
+//! open a tag editor, a stats page, a rename flyout, all of which are defined
+//! in the binary, a crate above this one. Rather than depend upward, the binary
 //! hands down a table of function pointers once at startup and everything
 //! here calls through it.
 //!
@@ -35,7 +35,7 @@ pub struct Openers {
     /// The convert dialog over a track selection.
     pub convert_dialog: fn(AppState, Vec<i64>, &mut App),
     /// Whether converting is possible on this machine at all, which is
-    /// whether ffmpeg is installed. The menus ask before they offer a
+    /// whether ffmpeg is installed. The menus check before they offer a
     /// "Convert...", so a machine without it never sees one.
     pub convert_available: fn() -> bool,
     /// The new-playlist prompt, seeded with the tracks to file into it.
@@ -66,8 +66,8 @@ pub struct Openers {
     /// The Add Panel flyout, built from the app's panel catalog.
     pub add_panel_submenu:
         fn(PopupMenu, Option<WeakEntity<TabPanel>>, &mut Window, &mut App) -> PopupMenu,
-    /// The "Group Settings" row a hosted panel's menu carries, so the
-    /// composite it sits in is reachable from the child.
+    /// The "Group Settings" row a hosted panel's menu includes, so the
+    /// composite containing it is reachable from the child.
     pub host_settings_item: fn(PopupMenu, EntityId, &App) -> PopupMenu,
     /// Put up the confirm a pinned panel's Close needs, and close from
     /// there. Needs a workspace behind the window to float the dialog, so

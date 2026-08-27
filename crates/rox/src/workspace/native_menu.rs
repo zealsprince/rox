@@ -12,8 +12,8 @@
 use super::*;
 
 /// Whether the Play row should read "Pause", kept here rather than read off
-/// the player. Most rebuilds run from inside a workspace update - a menu
-/// toggle, the player observer - and reaching the player means reading the
+/// the player. Most rebuilds run from inside a workspace update (a menu
+/// toggle, the player observer), and getting to the player means reading the
 /// workspace that holds it, which panics while that workspace is the one
 /// being updated. So the player pushes its state in through
 /// [`sync_playback`] and the builder only ever reads this.
@@ -34,9 +34,9 @@ pub(crate) fn sync_playback(playing: bool, cx: &mut App) {
 pub(crate) fn sync_playback(_playing: bool, _cx: &mut App) {}
 
 /// Rebuild the macOS system menu bar from the current state. Cheap enough to
-/// call on any change that touches a label or a saved set - it walks the menu
-/// table and allocates a few dozen strings. Reads no entities, so it is safe
-/// to call from inside any update.
+/// call on any change that touches a label or a saved set: it iterates over
+/// the menu table and allocates a few dozen strings. Reads no entities, so
+/// it's safe to call from inside any update.
 #[cfg(target_os = "macos")]
 pub(crate) fn rebuild(cx: &mut App) {
     let playing = MENU_PLAYING.load(std::sync::atomic::Ordering::Relaxed);
@@ -65,7 +65,7 @@ fn entry_items(entry: &'static MenuEntry, playing: bool) -> Vec<gpui::MenuItem> 
     match entry {
         MenuEntry::Item(item) => action_item(*item, playing).into_iter().collect(),
         MenuEntry::Section(_) => vec![gpui::MenuItem::separator()],
-        // A gated-off section contributes nothing, so the bar doesn't carry
+        // A gated-off section contributes nothing, so the bar doesn't get
         // an empty submenu. The bar is rebuilt when the flag flips.
         MenuEntry::Panels(section) if !crate::workspace::section_shows(section) => Vec::new(),
         MenuEntry::Panels(section) => match section.group {
@@ -117,9 +117,9 @@ fn entry_items(entry: &'static MenuEntry, playing: bool) -> Vec<gpui::MenuItem> 
     }
 }
 
-/// A plain row as a native item. The four rows that already carry a
+/// A plain row as a native item. The four rows that already have a
 /// keybinding emit their own action, so AppKit draws the shortcut beside
-/// them; everything else rides the [`MenuCommand`] bridge.
+/// them; everything else goes through the [`MenuCommand`] bridge.
 #[cfg(target_os = "macos")]
 fn action_item(item: MenuItem, playing: bool) -> Option<gpui::MenuItem> {
     let label = native_label(item, playing);
@@ -138,7 +138,7 @@ fn action_item(item: MenuItem, playing: bool) -> Option<gpui::MenuItem> {
     Some(native)
 }
 
-/// The label a native row shows. There is no checkmark on a native menu
+/// The label a native row shows. There's no checkmark on a native menu
 /// item, so the toggle rows name what picking them does rather than what
 /// they are, and Play/Pause follows the player like it does in-window.
 #[cfg(target_os = "macos")]
@@ -173,7 +173,7 @@ fn native_label(item: MenuItem, playing: bool) -> String {
             settings::quit_to_tray(),
             rox_i18n::t!("menu-remain-in-tray"),
         ),
-        // `item.label` is an i18n key, not display text - see `menu_section`
+        // `item.label` is an i18n key, not display text; see `menu_section`
         // in workspace.rs.
         _ => rox_i18n::t_static(item.label).into(),
     }
@@ -200,9 +200,9 @@ fn switching(on: bool, what: impl std::fmt::Display) -> String {
 }
 
 /// The saved layouts as native rows, read now because the native bar can't
-/// read them later. Mirrors the in-window flyout: an optional "New..." lead
+/// read them later. Matches the in-window flyout: an optional "New..." lead
 /// row, then the presets, or a disabled-looking placeholder when there are
-/// none and no New row to carry the flyout.
+/// none and no New row to fill the flyout.
 #[cfg(target_os = "macos")]
 fn layout_items(target: LayoutTarget, with_new: bool) -> Vec<gpui::MenuItem> {
     let kind = match target {
@@ -351,7 +351,7 @@ fn panel_window_items() -> Vec<gpui::MenuItem> {
 }
 
 /// An empty flyout's one row, matching the in-window "No layouts" text. It
-/// carries a command that decodes to nothing, so picking it does nothing.
+/// has a command that decodes to nothing, so picking it does nothing.
 /// It reads enabled rather than greyed: enablement goes by action type and
 /// [`MenuCommand`] has a handler, so there's no way to disable one row.
 #[cfg(target_os = "macos")]

@@ -1,8 +1,8 @@
 //! Disc dress-up shared by the art surfaces: the cover panel bakes one
 //! disc for the playing track, the art shelf bakes a rack of them. The
-//! bake itself is a pure pixel pass - crop the art square, composite the
-//! CD or vinyl overlay, cut the hole - so it lives here once, with the
-//! cache the shelf needs sitting beside it.
+//! bake itself is a pure pixel pass (crop the art square, composite the
+//! CD or vinyl overlay, cut the hole), so it's defined here once, with the
+//! cache the shelf needs beside it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,9 +30,9 @@ const VINYL_HOLE: f32 = 0.024;
 /// The mask edges' anti-alias falloff, in bake pixels.
 const DISC_AA: f32 = 1.5;
 
-/// The dress-up a panel persists: what look the artwork wears. Cd and
-/// Vinyl bake the picture into the disc each name carries: the face of a
-/// CD under its translucent plastic, or the label of a vinyl record. Off
+/// The dress-up a panel persists: what look the artwork is drawn with. Cd
+/// and Vinyl bake the picture into the disc their names describe: the face
+/// of a CD under its translucent plastic, or a vinyl record's label. Off
 /// leaves the picture flat.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -44,8 +44,8 @@ pub enum DiscStyle {
 }
 
 /// The shape a disc bake takes: the styles above, plus the bare circular
-/// crop a spinning disc scan gets, since a real scan carries its own hole
-/// and label.
+/// crop a spinning disc scan gets, since a real scan already has its own
+/// hole and label.
 #[derive(Clone, Copy, PartialEq)]
 pub enum DiscShape {
     Crop,
@@ -53,17 +53,18 @@ pub enum DiscShape {
     Vinyl,
 }
 
-/// The labelled disc styles, the settings rows' and the flyouts' one
-/// list.
+/// The disc styles, the settings rows' and the flyouts' one list. The
+/// first element of each pair is an i18n key, not display text; resolve
+/// through `rox_i18n::t!` at the point a menu or picker renders it.
 pub const DISC_STYLES: [(&str, DiscStyle); 3] = [
-    ("Off", DiscStyle::Off),
-    ("CD", DiscStyle::Cd),
-    ("Vinyl", DiscStyle::Vinyl),
+    ("cover-disc-off", DiscStyle::Off),
+    ("cover-disc-cd", DiscStyle::Cd),
+    ("cover-disc-vinyl", DiscStyle::Vinyl),
 ];
 
 /// Bake artwork into a disc: the square center crop of the art, masked
 /// and dressed by shape. Crop is the bare circle, since a real disc scan
-/// carries its own hole and label. CD lays the translucent plastic
+/// already has its own hole and label. CD lays the translucent plastic
 /// overlay over the art and cuts the hole; Vinyl shrinks the art into
 /// the record's label window and punches the spindle. With an overlay
 /// missing or unreadable the styles fall back to the bare crop.
@@ -97,7 +98,7 @@ pub fn bake_disc(bytes: &[u8], shape: DiscShape) -> Option<RgbaImage> {
         }
         (DiscShape::Vinyl, Some(overlay)) => {
             // The art shrinks to the label window; its square corners
-            // reach past the window's circle but stay under the opaque
+            // extend past the window's circle but stay under the opaque
             // record, so the window's own edge does the masking.
             let label = (VINYL_LABEL * DISC_SIZE as f32) as u32;
             let label_art = art.thumbnail_exact(label, label).into_rgba8();
@@ -184,8 +185,8 @@ const CACHE_CAP: usize = 128;
 
 /// A shelf's baked disc faces, keyed by art path. The cover panel gets
 /// away with a one-slot swap because it shows one track; the art shelf
-/// shows a dozen covers and streams more under a scrub, so its bakes sit
-/// behind a small LRU. The style isn't in the key: flipping it clears the
+/// shows a dozen covers and streams more under a scrub, so its bakes go
+/// through a small LRU. The style isn't in the key: flipping it clears the
 /// cache outright. A cover edit mid-session keeps its old face until
 /// then, the staleness the thumbs already accept.
 #[derive(Default)]
@@ -209,8 +210,8 @@ enum Slot {
 }
 
 impl DiscCache {
-    /// The baked face, once it has landed. Touches the entry, so the
-    /// eviction sees what the shelf still shows.
+    /// The baked face, once the bake has finished. Touches the entry, so
+    /// eviction keeps what the shelf still shows.
     pub fn ready(&mut self, path: &Path) -> Option<Arc<RenderImage>> {
         self.clock += 1;
         let entry = self.entries.get_mut(path)?;
@@ -222,7 +223,7 @@ impl DiscCache {
     }
 
     /// Claim a bake: true means the caller starts one, false that this
-    /// path is already in flight or already answered.
+    /// path is already in flight or already settled.
     pub fn begin(&mut self, path: &Path) -> bool {
         if self.entries.contains_key(path) {
             return false;
@@ -239,7 +240,7 @@ impl DiscCache {
         true
     }
 
-    /// Land a bake, or its failure, which sticks so bad art doesn't
+    /// Store a bake, or its failure, which sticks so bad art doesn't
     /// re-bake every frame.
     pub fn finish(&mut self, path: &Path, disc: Option<Arc<RenderImage>>) {
         if let Some(entry) = self.entries.get_mut(path) {
@@ -257,7 +258,7 @@ impl DiscCache {
 
     /// Hold the map at the cap by dropping the longest-unseen settled
     /// entries. Pending bakes stay; their tasks are already running and
-    /// `finish` needs somewhere to land.
+    /// `finish` needs an entry to write into.
     fn evict(&mut self) {
         while self.entries.len() >= CACHE_CAP {
             let oldest = self
@@ -292,7 +293,7 @@ mod tests {
     }
 
     /// Each shape masks as its physical object: the crop keeps its center
-    /// (a scan carries its own hole), the CD shows the art through the
+    /// (a scan already has its own hole), the CD shows the art through the
     /// plastic and cuts the hole, the vinyl shrinks the art to the label
     /// window, stays dark across the grooves, and punches the spindle.
     #[test]
@@ -371,7 +372,7 @@ mod tests {
     }
 
     /// One claim per path: the first begin starts the bake, the rest wait
-    /// on it, and the finish is what ready hands back.
+    /// on it, and ready hands back what finish stored.
     #[test]
     fn the_cache_claims_once_and_lands_once() {
         let mut cache = DiscCache::default();

@@ -1,11 +1,11 @@
 //! The update check: ask GitHub for the newest published release and weigh
-//! its tag against the running build. The check itself only reports - a
-//! newer release, its page, its artifacts - and caches the result in
+//! its tag against the running build. The check itself only reports what it
+//! found (a newer release, its page, its artifacts) and caches the result in
 //! settings; a launch runs it at most once a day, and only when the
 //! settings toggle leaves it on. The About page's button checks now
-//! regardless. Acting on the answer is [`updater`](crate::startup::updater)'s
-//! job, reached from the About page or, opted in, straight from the launch
-//! check here.
+//! regardless. [`updater`](crate::startup::updater) acts on the answer,
+//! called from the About page or, opted in, straight from the launch check
+//! here.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,27 +20,27 @@ use crate::startup::updater;
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 /// GitHub's "latest" endpoint points at the newest published, non-draft,
-/// non-prerelease release, which is exactly what a stable tag push lands.
+/// non-prerelease release, which is exactly what a stable tag push publishes.
 const LATEST: &str = "https://api.github.com/repos/zealsprince/rox/releases/latest";
 
-/// How long a cached check stands before a launch runs another: a day.
+/// How long a cached check is good for before a launch runs another: a day.
 const CHECK_INTERVAL: u64 = 24 * 60 * 60;
 
 /// A published release as the check reads it: the version its tag names,
-/// the page a user opens to get it, and the files hanging off it for the
+/// the page a user opens to get it, and the files attached to it for the
 /// updater to resolve against.
 #[derive(Clone)]
 pub struct Release {
     /// The tag's version, the leading v stripped: "1.2.0".
     pub version: String,
-    /// The release page on GitHub, where the artifacts hang.
+    /// The release page on GitHub, where the artifacts are published.
     pub url: String,
     /// The release's files. Empty on a release rebuilt from the settings
     /// cache, which stores none; the updater refetches when it needs them.
     pub assets: Vec<Asset>,
 }
 
-/// One file hanging off a release.
+/// One file attached to a release.
 #[derive(Clone)]
 pub struct Asset {
     pub name: String,
@@ -52,14 +52,14 @@ pub struct Asset {
 impl Release {
     /// Whether this release is newer than the running build. A tag that
     /// somehow doesn't parse reads as not newer, so a bad cache never
-    /// nags.
+    /// prompts an update.
     pub fn is_new(&self) -> bool {
         is_newer(&self.version, CURRENT).unwrap_or(false)
     }
 }
 
 /// Ask GitHub for the latest release. Err is the network or the API
-/// failing, or a tag that doesn't parse as a version - callers never
+/// failing, or a tag that doesn't parse as a version, so callers never
 /// cache a junk tag. Background executor only, it blocks.
 pub fn fetch_latest() -> Result<Release, String> {
     #[derive(Deserialize)]
@@ -75,8 +75,8 @@ pub fn fetch_latest() -> Result<Release, String> {
         browser_download_url: String,
         size: u64,
     }
-    // The shared agent already carries the app User-Agent the API wants;
-    // the Accept header pins the versioned media type GitHub asks for.
+    // The shared agent already sets the app User-Agent the API requires;
+    // the Accept header pins the versioned media type GitHub documents.
     let text = agent()
         .get(LATEST)
         .set("Accept", "application/vnd.github+json")
@@ -107,11 +107,11 @@ pub fn fetch_latest() -> Result<Release, String> {
 /// Run the daily check at launch if it's due, off the UI thread, caching
 /// the result in settings. The toggle and the one-day spacing both gate
 /// it, so a normal start usually does nothing. A failed fetch leaves the
-/// old cache and its timestamp alone, so the next launch simply retries.
+/// old cache and its timestamp alone, so the next launch just retries.
 ///
 /// With the download toggle opted in, a check that finds a newer release
-/// rolls straight into the updater on the same background task - but only
-/// where the install can update itself, so a distro package or a read-only
+/// rolls straight into the updater on the same background task, but only
+/// where the install can update itself. A distro package or a read-only
 /// home stays notify-only whatever the toggle says.
 pub fn check_on_launch(cx: &mut gpui::App) {
     let settings = Settings::load();
@@ -136,7 +136,7 @@ pub fn check_on_launch(cx: &mut gpui::App) {
         .detach();
 }
 
-/// The cache entry a landed check writes: the release stamped with now.
+/// The cache entry a finished check writes: the release stamped with now.
 pub fn cache(release: &Release) -> UpdateCache {
     UpdateCache {
         checked_at: now(),
@@ -156,7 +156,7 @@ fn auto_check_due(settings: &Settings) -> bool {
             .is_none_or(|c| now().saturating_sub(c.checked_at) >= CHECK_INTERVAL)
 }
 
-/// Now as unix seconds, the cache's clock. Zero if the system clock sits
+/// Now as unix seconds, the cache's clock. Zero if the system clock is set
 /// before the epoch, which just makes the next check read as due.
 pub fn now() -> u64 {
     SystemTime::now()

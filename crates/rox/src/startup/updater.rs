@@ -2,18 +2,18 @@
 //! [`updates`](crate::startup::updates) is the check half. Given a newer
 //! release it resolves this platform's artifact, downloads it with a
 //! checksum verify against the release's SHA256SUMS.txt, stages the new
-//! build next to the running one, and swaps it into place - rename-over on
+//! build next to the running one, and swaps it into place: rename-over on
 //! Linux, the rename-aside dance on Windows where a running exe can't be
-//! replaced, and a bundle swap on macOS. The swap lands on disk at once;
-//! the running process keeps its old build until a restart, which is what
-//! the About page's restart prompt is for.
+//! replaced, and a bundle swap on macOS. The swap takes effect on disk at
+//! once; the running process keeps its old build until a restart, which is
+//! what the About page's restart prompt is for.
 //!
 //! ## What can update
 //!
 //! Only an install that owns its own folder: the write probe in
 //! [`can_update`] is the gate, so a distro package in /usr/bin, a nix store
 //! path, or any other read-only home stays notify-only. A portable install
-//! passes the probe by construction - portable requires a writable folder -
+//! passes the probe by construction (portable requires a writable folder)
 //! and updates in place beside its data. Platforms the release workflow
 //! doesn't build for resolve no artifact and stay notify-only too.
 //!
@@ -83,7 +83,7 @@ pub fn status() -> Status {
 }
 
 /// Live progress of the download: the worker writes it, the UI polls it.
-/// Shaped after `rox_acoustic::models::Progress` minus the cancel - a
+/// Shaped after `rox_acoustic::models::Progress` minus the cancel: a
 /// download this size finishing unwanted costs nothing, the swap is only
 /// ever wanted, and quitting kills the process anyway.
 #[derive(Default)]
@@ -104,7 +104,7 @@ impl Progress {
 }
 
 /// Whether this install can replace itself: the platform has an artifact
-/// and the install's folder takes writes. Probed once per run - the answer
+/// and the install's folder takes writes. Probed once per run: the answer
 /// is about where the executable lives, which doesn't move mid-run.
 pub fn can_update() -> bool {
     static CAN: OnceLock<bool> = OnceLock::new();
@@ -141,9 +141,9 @@ pub fn begin(release: &Release) -> Option<impl FnOnce() + Send + 'static> {
     })
 }
 
-/// Sweep what an update can leave behind: the temp workspace, and the
-/// rename-aside remains in the install folder - the `.old` build Windows
-/// can't delete while it runs, and a `.new` stage a crash stranded. Launch
+/// Sweep what an update can leave behind: the temp workspace, plus the
+/// rename-aside remains in the install folder (the `.old` build Windows
+/// can't delete while it runs, and a `.new` stage a crash stranded). Launch
 /// calls this; every miss just waits for the next one.
 pub fn clean_leftovers() {
     let _ = std::fs::remove_dir_all(work_dir());
@@ -163,8 +163,8 @@ pub fn clean_leftovers() {
 /// The whole blocking journey: resolve, download, verify, stage, swap.
 /// Returns the version now on disk.
 fn download_and_apply(release: &Release, progress: &Progress) -> Result<String, String> {
-    // A release rebuilt from the settings cache carries no asset list, so
-    // ask GitHub again; whatever is latest now is what the user asked for.
+    // A release rebuilt from the settings cache has no asset list, so ask
+    // GitHub again; the user asked for whatever is latest now.
     let release = if release.assets.is_empty() {
         updates::fetch_latest()?
     } else {
@@ -215,7 +215,7 @@ fn fetch_verified(release: &Release, progress: &Progress) -> Result<PathBuf, Str
     Ok(archive)
 }
 
-/// The agent the download rides. Not `rox_net::providers::agent`: that one
+/// The agent the download uses. Not `rox_net::providers::agent`: that one
 /// caps every request at ten seconds total, right for a metadata lookup and
 /// fatal for tens of megabytes on a slow link. Bounding the connect and
 /// each read instead means a stalled transfer still gives up while a
@@ -260,7 +260,7 @@ fn expected_sum(manifest: &str, name: &str) -> Option<String> {
 
 /// Stream the artifact to a `.part` file, hashing as the bytes go by, and
 /// rename to `path` only once the size and checksum both match. The part
-/// file dies with any failure, so nothing half-written survives.
+/// file is removed on any failure, so nothing half-written is left behind.
 fn download(
     url: &str,
     bytes: u64,
@@ -297,8 +297,8 @@ fn download(
     }
 }
 
-/// Copy the body into the part file, counting and hashing, then judge what
-/// landed against the release's own numbers.
+/// Copy the body into the part file, counting and hashing, then check what
+/// arrived against the release's own numbers.
 fn stream(
     mut body: impl std::io::Read,
     part: &Path,
@@ -350,7 +350,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// What the swap replaces: the executable itself, or on macOS the whole
-/// app bundle, since a build is the bundle - Info.plist's version and all.
+/// app bundle, since a build is the whole bundle, Info.plist's version and all.
 #[cfg(not(target_os = "macos"))]
 fn install_target() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("can't locate the running executable: {e}"))
@@ -361,7 +361,7 @@ fn install_target() -> Result<PathBuf, String> {
     bundle_root().ok_or_else(|| "not running from an app bundle".into())
 }
 
-/// The .app the running executable sits in, walking up from the binary.
+/// The .app the running executable is inside, walking up from the binary.
 /// None for a bare binary, which stays notify-only: the artifact is a
 /// bundle, and a dev build has no install to keep current.
 #[cfg(target_os = "macos")]
@@ -393,15 +393,15 @@ fn remove_any(path: &Path) {
 }
 
 /// Whether the install's folder takes writes, probed with a real file the
-/// way the portable gate does: permission bits don't answer reliably
-/// across platforms.
+/// way the portable gate does: permission bits aren't reliable across
+/// platforms.
 #[cfg(not(target_os = "macos"))]
 fn install_writable() -> bool {
     rox_core::settings::portable_available()
 }
 
 /// On macOS the swap renames the bundle, so the probe belongs in the
-/// folder holding it - /Applications, usually - not in MacOS/ inside.
+/// folder holding it (/Applications, usually), not in MacOS/ inside.
 #[cfg(target_os = "macos")]
 fn install_writable() -> bool {
     let Some(dir) = bundle_root().and_then(|app| app.parent().map(Path::to_path_buf)) else {
@@ -419,8 +419,8 @@ fn install_writable() -> bool {
 
 /// Stage the verified archive's build beside the running one and swap it
 /// into place. The stage is the last thing that can fail big; the swap is
-/// renames within one folder. On macOS the bundle carries rox-mcp inside,
-/// so the one swap covers both.
+/// renames within one folder. On macOS the bundle contains rox-mcp, so the
+/// one swap covers both.
 #[cfg(target_os = "macos")]
 fn apply(archive: &Path) -> Result<(), String> {
     let target = install_target()?;
@@ -431,10 +431,10 @@ fn apply(archive: &Path) -> Result<(), String> {
 }
 
 /// The bare-binary flavor: the app and the rox-mcp proxy beside it, each
-/// staged then swapped. Both stages land before anything moves, and the
+/// staged then swapped. Both stages finish before anything moves, and the
 /// helper swaps first: if it can't, the app hasn't moved and a retry
-/// starts clean. The reverse partial - new helper under an old app - the
-/// socket's generation check turns into a plain error rather than silence.
+/// starts clean. For the reverse partial, a new helper under an old app,
+/// the socket's generation check gives a plain error rather than silence.
 #[cfg(not(target_os = "macos"))]
 fn apply(archive: &Path) -> Result<(), String> {
     let target = install_target()?;
@@ -464,7 +464,7 @@ fn helper_name() -> String {
 
 /// Pull one file out of the Linux tarball by name, written out executable
 /// and synced before the caller renames it live. False when the archive
-/// doesn't carry it.
+/// doesn't contain it.
 #[cfg(target_os = "linux")]
 fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
     use std::os::unix::fs::PermissionsExt;
@@ -507,8 +507,8 @@ fn stage(archive: &Path, name: &str, staged: &Path) -> Result<bool, String> {
 }
 
 /// And the whole bundle out of the macOS disk image: mount read-only, copy
-/// rox.app beside the installed one with ditto - which keeps the code
-/// signature intact - then unmount whatever happened.
+/// rox.app beside the installed one with ditto (which keeps the code
+/// signature intact) then unmount whatever happened.
 #[cfg(target_os = "macos")]
 fn stage(archive: &Path, staged: &Path) -> Result<(), String> {
     use std::process::Command;
@@ -616,7 +616,7 @@ mod tests {
             sibling(Path::new("/opt/rox/rox"), "new"),
             Path::new("/opt/rox/rox.new")
         );
-        // The suffix lands after the extension, never instead of it:
+        // The suffix goes after the extension, never instead of it:
         // rox.exe steps aside as rox.exe.old, not rox.old.
         assert_eq!(
             sibling(Path::new("/opt/rox/rox.exe"), "old"),
@@ -654,7 +654,7 @@ mod tests {
 
         // A body of the right length but the wrong bytes is refused for the
         // checksum, not for a length: the digest is in the message so the
-        // whole string can't be predicted, but it is neither of these two.
+        // whole string can't be predicted, but it's neither of these two.
         let wrong = stream(&b"abd"[..], &part, 3, sum, &progress).unwrap_err();
         assert_ne!(wrong, short, "{wrong}");
         assert_ne!(
@@ -674,7 +674,7 @@ mod tests {
     }
 
     /// The real resolve-download-verify, end to end against the latest
-    /// published release. Ignored, so `cargo test` never reaches for the
+    /// published release. Ignored, so `cargo test` never touches the
     /// network or pulls a whole artifact; run it by hand
     /// (`cargo test -- --ignored downloads_and`) after the workflow
     /// change ships, since a release without SHA256SUMS.txt, a renamed

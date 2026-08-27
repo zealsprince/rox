@@ -1,5 +1,5 @@
 //! The about window: one OS window opened from the Application menu beside
-//! Welcome. The build's identity - logo, name, running version - a link
+//! Welcome. The build's identity (logo, name, running version), a link
 //! back to the project, and the update check with the updater behind it:
 //! where the install can replace itself the announcement grows a Download
 //! button, progress while the download runs, and a restart prompt once the
@@ -40,7 +40,7 @@ struct OpenAbout(WindowHandle<Root>);
 impl Global for OpenAbout {}
 
 /// Open the about window, or bring the open one to the front. The state
-/// carries the shared art bake the backdrop paints from.
+/// holds the shared art bake the backdrop paints from.
 pub fn open(state: AppState, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenAbout>() {
         let handle = open.0;
@@ -67,7 +67,7 @@ pub fn open(state: AppState, cx: &mut App) {
 }
 
 /// The update check as it moves along: nothing asked yet, the request in
-/// flight, or a landed result. The result variants carry what the status
+/// flight, or a finished result. The result variants hold what the status
 /// line beside the button shows.
 enum UpdateCheck {
     Idle,
@@ -132,7 +132,7 @@ impl AboutWindow {
         }
     }
 
-    /// Kick off the update check on the background executor, landing the
+    /// Kick off the update check on the background executor, putting the
     /// result on the status line and refreshing the cache so it persists and
     /// a launch treats it as recent. Ignored while one is already in flight.
     fn check_for_updates(&mut self, cx: &mut Context<Self>) {
@@ -170,8 +170,8 @@ impl AboutWindow {
     }
 
     /// Hand the release to the updater on the background executor and
-    /// start mirroring its progress. The updater holds the one download
-    /// slot, so a second ask while one runs is a no-op.
+    /// start polling its progress. The updater holds the one download
+    /// slot, so a second request while one runs is a no-op.
     fn download(release: &updates::Release, cx: &mut Context<Self>) {
         if let Some(job) = updater::begin(release) {
             cx.background_executor()
@@ -184,8 +184,8 @@ impl AboutWindow {
 
     /// The announcement row for a newer release. Where the install can
     /// replace itself it offers the download with the release page demoted
-    /// to notes; everywhere else - a distro package, a read-only home, a
-    /// platform without an artifact - the page link is the whole offer,
+    /// to notes; everywhere else (a distro package, a read-only home, a
+    /// platform without an artifact) the page link is the whole offer,
     /// notify-only as before.
     fn release_row(release: &updates::Release, note: String, cx: &mut Context<Self>) -> AnyElement {
         let url = release.url.clone();
@@ -221,7 +221,7 @@ impl AboutWindow {
         }
     }
 
-    /// Repaint on a timer while the download runs: the progress lives in
+    /// Repaint on a timer while the download runs: the progress is stored in
     /// atomics the render reads, so the window just needs frames until the
     /// updater settles. The last tick paints the settled state on its way
     /// out.
@@ -247,7 +247,7 @@ fn line(text: impl Into<SharedString>) -> Div {
     div().text_color(palette::text_muted()).child(text.into())
 }
 
-/// An inline link: accent, underlined, opening its URL on click. Sits in a
+/// An inline link: accent, underlined, opening its URL on click. Placed in a
 /// wrapping row beside the muted prose around it.
 fn link(text: impl Into<SharedString>, url: &'static str) -> Div {
     div()
@@ -261,7 +261,7 @@ fn link(text: impl Into<SharedString>, url: &'static str) -> Div {
         .child(text.into())
 }
 
-/// A link that ends a sentence. The period rides inside a gapless row with the
+/// A link that ends a sentence. The period goes inside a gapless row with the
 /// link so the paragraph's gap doesn't open a space before the full stop.
 fn link_end(text: impl Into<SharedString>, url: &'static str) -> Div {
     div().flex().flex_row().child(link(text, url)).child(".")
@@ -291,8 +291,8 @@ impl Render for AboutWindow {
             let checking = matches!(self.update_check, UpdateCheck::Checking);
 
             // The status line beside the button, one wording per state. The
-            // updater's state outranks the check's: once a download moves or
-            // lands, that's the story, whatever the last check said.
+            // updater's state outranks the check's: once a download is
+            // running or done, that's the story, whatever the last check said.
             let status: Option<AnyElement> = match updater::status() {
                 updater::Status::Applied { version } => Some(
                     div()
@@ -318,7 +318,7 @@ impl Render for AboutWindow {
                 ),
                 updater::Status::Failed { error } => match &self.update_check {
                     // The release the download failed for is still the cached
-                    // one, so the retry rides beside the reason.
+                    // one, so the retry button appears beside the reason.
                     UpdateCheck::Available(release) => Some(Self::release_row(
                         release,
                         rox_i18n::t!("about-update-failed", error = error).to_string(),
@@ -436,7 +436,7 @@ impl Render for AboutWindow {
                         .min_h_0()
                         .relative()
                         // The page's own surface over the backdrop, the same
-                        // one the settings pages sit on: opaque at full
+                        // one the settings pages use: opaque at full
                         // surface opacity, so the art only reads through as
                         // the surfaces thin, never straight under the copy.
                         .bg(palette::bg_elevated())
@@ -449,9 +449,9 @@ impl Render for AboutWindow {
                                 .p(tokens::SPACE_MD)
                                 .child(page),
                         )
-                        // The scrollbar rides over the page, the same overlay
-                        // the settings pages use: it only bites when a large
-                        // font pushes the copy past the window.
+                        // The scrollbar is overlaid on the page, the same way
+                        // the settings pages do it: it only does anything when
+                        // a large font pushes the copy past the window.
                         .child(div().absolute().inset_0().child(
                             Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
                         )),

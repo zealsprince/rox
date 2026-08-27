@@ -40,7 +40,7 @@ pub fn fmt_time_padded(secs: f64, digits: usize) -> String {
 pub fn fmt_ago(secs: i64) -> String {
     let secs = secs.max(0);
     // The unit suffix is part of the sentence, not notation: German wants
-    // "vor 2 Wo." where English wants "2w ago", and the number does not
+    // "vor 2 Wo." where English wants "2w ago", and the number doesn't
     // always lead. So each unit is its own message with the value in it,
     // rather than a shared "{value}{unit} ago" frame.
     let (value, key) = match secs {
@@ -56,7 +56,7 @@ pub fn fmt_ago(secs: i64) -> String {
 
 /// A long running time in words: the largest unit that fits and the one
 /// under it, "3 weeks, 2 days". The clock readouts stop meaning much past
-/// a day, so the library totals carry this beside them.
+/// a day, so the library totals show this beside them.
 ///
 /// Each unit is its own message rather than a shared "{count} {noun}"
 /// frame, for the reason [`fmt_ago`] is: a noun that only ever gains an
@@ -107,7 +107,7 @@ mod tests {
     /// Asserted as composition rather than against English text: the
     /// wording belongs to the locale files, and pinning it here would
     /// make the suite fail on a machine whose OS locale isn't English.
-    /// What's actually under test is which units get picked.
+    /// These assertions check which units get picked.
     #[test]
     fn spans_read_in_two_units() {
         // Held even though nothing here sets a locale: the assertions

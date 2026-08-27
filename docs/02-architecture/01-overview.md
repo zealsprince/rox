@@ -1,8 +1,8 @@
 # Architecture Overview
 
-How rox is structured, where the boundaries sit, and the trades each choice makes. This
+How rox is structured, where the boundaries are, and the trades each choice makes. This
 consumes the [product spec](../01-product/) and hands contracts down to
-[implementation](../03-implementation/). It does not write the code and it does not
+[implementation](../03-implementation/). It doesn't write the code and it doesn't
 sequence the build.
 
 ## Constraints inherited from product
@@ -21,12 +21,12 @@ The requirements this structure has to honor, from [scope](../01-product/03-scop
   on the network. Enrichment (scrobbling, tag lookup, lyrics) is allowed on top. Built
   on gpui.
 - Streaming sources are extensions, so track identity is source-qualified and playback
-  keeps a command-in, state-out seam a second source engine can sit behind. See
+  keeps a command-in, state-out seam a second source engine can implement. See
   [source extensibility](#source-extensibility).
 - Broad-format local playback and tagging, with MP3 and FLAC as the core formats and
   contracts that stay format-agnostic.
-- Listening history as a durable record: real listens land on disk as events keyed to
-  track identity, off the audio path, never as bare counters.
+- Listening history as a durable record: real listens are written to disk as events keyed
+  to track identity, off the audio path, never as bare counters.
 
 ## System overview
 
@@ -68,10 +68,10 @@ The four domains:
   state.
 - **Library** owns the catalog: the SQLite store on disk, an in-memory projection for
   instant browse, the filesystem scanner, and search. It answers queries and emits change
-  events. The play history record lives in the same store, appended from playback state
+  events. The play history record is stored in the same SQLite database, appended from playback state
   and queried for stats ([components](02-components.md#play-history)).
 - **Support services** (metadata writer, artwork, visualizer analysis) are narrower and
-  hang off the two big domains.
+  attach to the two big domains.
 
 Each component's responsibility, boundary, and contract is in
 [Components](02-components.md). The cross-cutting performance, failure, platform, and
@@ -86,21 +86,21 @@ not a redesign:
 
 - **Track identity is source-qualified.** The library keys tracks by (source, id), and
   local files are the first source. This is the part that's cheap in the initial schema
-  and a painful migration to retrofit, and it's what keeps a unified multi-source
-  library possible.
+  and a painful migration to retrofit, and it keeps a unified multi-source library
+  possible.
 - **Playback is already a contract.** Commands in, state out, PCM tap out. A source
-  that can hand rox decodable audio (Tidal streams, yt-dlp, librespot's decoded
+  that can provide rox decodable audio (Tidal streams, yt-dlp, librespot's decoded
   samples) feeds the existing engine and gets everything: gapless, ReplayGain,
   visualizers. A source that can't gets remote control, with local output capture as a
   fallback tap so visualizers still work when the audio plays on this machine. The
-  visualizer subsystem drains the same ring either way and never knows the difference.
+  visualizer subsystem drains the same ring either way.
 
 The extension host mechanism (WASM in the style of Zed, or a subprocess model) is
 undecided.
 
 ## Decisions (ADRs)
 
-Each ADR records the call, the alternatives weighed, and what it costs. They live in
+Each ADR records the call, the alternatives weighed, and what it costs. They're in
 [decisions/](decisions/), one file each.
 
 | ADR | Call | Status |

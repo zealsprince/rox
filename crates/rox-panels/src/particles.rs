@@ -47,16 +47,16 @@ const BURST_REARM: f32 = 0.3;
 /// until the older ones age out.
 const MAX_PARTICLES: usize = 4000;
 
-/// How far outside the panel a particle may drift before it is culled, as
+/// How far outside the panel a particle may drift before it's culled, as
 /// a fraction of the panel's larger side with a floor in px. Generous
 /// enough that one thrown past the edge can still arc back under gravity.
 const CULL_MARGIN: f32 = 0.25;
 const CULL_MARGIN_MIN: f32 = 64.0;
 
 /// The emission rate slider's span, particles per second. The floor is
-/// zero because the rate is the whole story now that emitters carry no
+/// zero because the rate is the whole story now that emitters have no
 /// threshold of their own: a route resting at its Quiet end has to be
-/// able to stop the emitter outright, and a hand-dragged rate reaches
+/// able to stop the emitter outright, and a hand-dragged rate gets to
 /// silence the same way.
 const RATE_MIN: f32 = 0.0;
 const RATE_MAX: f32 = 300.0;
@@ -106,8 +106,8 @@ pub enum Shape {
 }
 
 /// Where a particle heads when it spawns: the emitter's fixed angle, or
-/// away from the emitter's center. Outward is what makes a ring burst and
-/// a point spray in every direction.
+/// away from the emitter's center. Outward makes a ring burst and a point
+/// spray in every direction.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Aim {
@@ -154,11 +154,11 @@ fn trigger_choices() -> [(SharedString, Trigger); 2] {
 }
 
 /// One scene or force knob a route may drive: the persisted id, the label
-/// the target list shows, and how a route's factor lands on it. The
+/// the target list shows, and how a route's factor applies to it. The
 /// factor scales the knob's own setting, so the slider stays the
 /// reference a route works against rather than going dead once bound, and
 /// a knob set to zero is off, route or no route. The ids only ever grow;
-/// a config carrying an unknown one goes quiet rather than misfiring.
+/// a config with an unknown one goes quiet rather than misfiring.
 /// Making a new value bindable is one entry here plus wrapping its
 /// settings row in [`crate::signal_ui::bindable_row`].
 struct BindTarget {
@@ -198,7 +198,7 @@ const BIND_TARGETS: &[BindTarget] = &[
     },
 ];
 
-/// [`BindTarget`]'s per-emitter counterpart: the knob id rides in an
+/// [`BindTarget`]'s per-emitter counterpart: the knob id is part of an
 /// `e<id>.<knob>` target against the emitter's stable id, and the factor
 /// scales that emitter's own setting.
 struct EmitterBindTarget {
@@ -241,14 +241,14 @@ const EMITTER_BIND_TARGETS: &[EmitterBindTarget] = &[
     },
 ];
 
-/// One emitter: pure geometry and throw. It carries no audio of its own;
+/// One emitter: pure geometry and throw. It has no audio of its own;
 /// reactivity arrives by routing pool signals onto its knobs, and unbound
 /// it just runs at its sliders, a fountain independent of the music.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Emitter {
     /// A stable handle routes point at, unique within the panel and
-    /// persisted, so a route survives removals shifting the list under it.
+    /// persisted, so a route holds up when removals shift the list under it.
     /// 0 is unassigned; the panel assigns on load and on add.
     pub id: u64,
     /// Whether the emitter fires. Off keeps it in the list, tuned, silent.
@@ -268,7 +268,7 @@ pub struct Emitter {
     /// The footprint particles spawn across.
     pub shape: Shape,
     /// The footprint's center, as fractions of the panel, so a resize
-    /// carries the arrangement instead of scattering it.
+    /// keeps the arrangement instead of scattering it.
     pub x: f32,
     pub y: f32,
     /// The footprint's extent, as fractions of the panel. A line uses
@@ -382,7 +382,7 @@ impl Emitter {
     }
 }
 
-/// The scene: what the whole field sits in, apart from any one emitter.
+/// The scene: the settings the whole field runs in, apart from any one emitter.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Scene {
@@ -482,9 +482,9 @@ pub struct ParticlesConfig {
 }
 
 impl Default for ParticlesConfig {
-    /// A fresh panel carries one emitter rather than an empty field, so it
-    /// draws something the moment it lands in the dock. An emptied list is
-    /// still respected: the layout dump carries `"emitters": []` explicitly,
+    /// A fresh panel gets one emitter rather than an empty field, so it
+    /// draws something the moment it's dropped into the dock. An emptied
+    /// list is still respected: the layout dump writes `"emitters": []`,
     /// and only a config missing the field falls back to this.
     fn default() -> Self {
         ParticlesConfig {
@@ -498,7 +498,7 @@ impl Default for ParticlesConfig {
 }
 
 /// Give every emitter a unique id, keeping the ones a loaded config
-/// carries: zeroes (configs from before ids existed) and hand-edited
+/// already has: zeroes (configs from before ids existed) and hand-edited
 /// duplicates get fresh ones, and any binding that pointed at a replaced
 /// id goes quiet rather than firing at the wrong emitter.
 fn assign_emitter_ids(emitters: &mut [Emitter]) {
@@ -512,13 +512,13 @@ fn assign_emitter_ids(emitters: &mut [Emitter]) {
     }
 }
 
-/// A binding target's emitter route, `e<id>.<knob>`, if that is what it is.
+/// A binding target's emitter route, `e<id>.<knob>`, if it's one of those.
 fn emitter_route(target: &str) -> Option<(u64, &str)> {
     let (id, knob) = target.strip_prefix('e')?.split_once('.')?;
     Some((id.parse().ok()?, knob))
 }
 
-/// The frame's working copies the routes land on, dispatching plain ids
+/// The frame's working copies the routes write into, dispatching plain ids
 /// through the scene and force table and `e<id>.<knob>` ids through the
 /// emitter table. Unknown ids fall through quietly, the tables' contract.
 struct Modulated {
@@ -596,7 +596,7 @@ fn heading(degrees: f32) -> (f32, f32) {
     (r.sin(), -r.cos())
 }
 
-/// xorshift32. The field wants scatter, not statistics, and rolling it here
+/// xorshift32. The field needs scatter, not statistics, and rolling it here
 /// keeps the crate's dependency list where it is, the same call the FFT in
 /// rox-viz makes.
 fn rand01(state: &mut u32) -> f32 {
@@ -618,8 +618,8 @@ fn hash2(x: i32, y: i32, seed: u32) -> f32 {
 }
 
 /// Smoothed value noise over that lattice, 0..1. Neighbouring particles
-/// read nearly the same value, which is what makes the drift look like
-/// wind rather than per-particle jitter.
+/// read nearly the same value, so the drift looks like wind rather than
+/// per-particle jitter.
 fn noise2(x: f32, y: f32, seed: u32) -> f32 {
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
@@ -649,11 +649,11 @@ struct Particle {
 
 /// Per-panel sim state, shared with the paint closure the way the spectrum
 /// shares its bars: the entity holds the handle, the closure does the
-/// per-frame work where the bounds are known. The audio analysis itself
-/// lives in the app's shared [`SignalHub`]; the sim only reads values.
+/// per-frame work where the bounds are known. The audio analysis itself is
+/// in the app's shared [`SignalHub`]; the sim only reads values.
 struct Sim {
     last_tick: Option<Instant>,
-    /// The fraction of a particle each emitter carried past the last tick,
+    /// The fraction of a particle each emitter carried over from the last tick,
     /// so a slow rate still fires at its average instead of rounding to
     /// zero.
     carry: Vec<f32>,
@@ -731,7 +731,7 @@ impl Sim {
                     self.carry[i] -= due;
                     due as usize
                 }
-                // The pop lands on the routed signal's rising edge, with
+                // The pop fires on the routed signal's rising edge, with
                 // hysteresis so one swell can't stutter-fire. No route on
                 // the burst knob means no trigger at all.
                 Trigger::Burst => {
@@ -767,8 +767,8 @@ impl Sim {
         let (fx, fy) = emitter.center();
         let (cx, cy) = (fx * w, fy * h);
         let rot = emitter.rotation.to_radians();
-        // Where on the footprint the particle appears, and how far it sits
-        // from the center, which is what Outward aims along.
+        // Where on the footprint the particle appears, and how far it is
+        // from the center, the direction Outward aims along.
         let (ox, oy) = match emitter.shape {
             Shape::Point => (0.0, 0.0),
             Shape::Line => {
@@ -855,7 +855,7 @@ impl Sim {
             // by dimming instead of blinking off mid-flight.
             let t = (p.age / p.life).clamp(0.0, 1.0);
             let fade = ((1.0 - t) * 2.0).min(1.0);
-            // A dim, wide halo under the core carries the same fade, so a
+            // A dim, wide halo under the core uses the same fade, so a
             // particle glows out instead of blinking off.
             if scene.glow {
                 let halo = p.size * 2.5;
@@ -904,7 +904,7 @@ const GRAB_RADIUS: f32 = 24.0;
 /// The editor overlay: every emitter's footprint dotted onto the field and
 /// its center as the grab handle, in the emitter's own color so the markers
 /// read against the settings list. Disabled emitters dim; the dragged one
-/// swells. Dots are the one outline every shape can wear under
+/// swells. Dots are the one outline every shape can be drawn with under
 /// axis-aligned quads, rotation included.
 fn paint_markers(
     config: &ParticlesConfig,
@@ -1041,12 +1041,12 @@ pub struct ParticlesPanel {
     /// The editor overlay: markers over the field for arranging emitters
     /// by hand. Session state, deliberately not persisted.
     edit: bool,
-    /// The emitter riding the pointer while the editor is on.
+    /// The emitter following the pointer while the editor is on.
     drag: Option<usize>,
     /// The field canvas's painted bounds, for mapping editor presses into
     /// emitter fractions, the scrub strips' arrangement.
     canvas_bounds: Arc<Mutex<Bounds<Pixels>>>,
-    /// The tab panel this panel currently sits in, for duplicate and
+    /// The tab panel that currently hosts this panel, for duplicate and
     /// pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Wakes the panel when a session starts, so an idle window resumes
@@ -1097,8 +1097,8 @@ impl ParticlesPanel {
         }
     }
 
-    /// A press in the editor: pick the emitter whose center sits nearest,
-    /// within the grab radius, and let it ride the pointer.
+    /// A press in the editor: pick the emitter whose center is nearest,
+    /// within the grab radius, and let it follow the pointer.
     fn editor_grab(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
         let bounds = *self.canvas_bounds.lock().unwrap();
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
@@ -1210,8 +1210,8 @@ impl SignalHost for ParticlesPanel {
     }
 }
 
-/// The routes are this view's own, unlike the pool they ride: two particles
-/// panels bind their own knobs to the same signals.
+/// The routes are this view's own, unlike the pool they read from: two
+/// particles panels bind their own knobs to the same signals.
 impl RouteHost for ParticlesPanel {
     fn routes_mut(&mut self) -> &mut Vec<Route> {
         &mut self.config.routes
@@ -1729,7 +1729,7 @@ impl ParticlesPanel {
     }
 
     /// The Forces page: the drift laid over the scene's steady pull. Every
-    /// knob here is a binding target, so each row carries the bind toggle.
+    /// knob here is a binding target, so each row has the bind toggle.
     fn forces_page(&mut self, cx: &mut Context<Self>) -> Div {
         let turbulence = self.config.forces.turbulence();
         let scale = self.config.forces.scale();
@@ -1808,8 +1808,8 @@ impl ParticlesPanel {
         ))
     }
 
-    /// The Scene page: what the whole field sits in, apart from any one
-    /// emitter.
+    /// The Scene page: the settings the whole field runs in, apart from any
+    /// one emitter.
     fn scene_page(&mut self, cx: &mut Context<Self>) -> Div {
         let gravity = self.config.scene.gravity();
         let angle = self.config.scene.gravity_angle.rem_euclid(360.0);
@@ -1987,7 +1987,7 @@ impl Panel for ParticlesPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
@@ -2021,7 +2021,7 @@ impl Panel for ParticlesPanel {
     ) -> PopupMenu {
         let menu = self.config_menu(menu, window, cx);
         // Icon on the row so it lines up with Rename and the rest of the tail
-        // and the tick lands on the right, the way every other top-level
+        // and the tick is on the right, the way every other top-level
         // check row in the app reads. The icon-less form is for flyouts.
         let menu = menu.item(panel::check_row(
             rox_i18n::t!("particles-edit-emitters"),
@@ -2076,7 +2076,7 @@ impl ParticlesPanel {
         let session = player.now_playing().is_some();
         let playing = player.is_playing();
         // Read here rather than in the paint closure, which has no cx: the
-        // hub wants it to spot a song change for the aggregates that reset
+        // hub needs it to spot a song change for the aggregates that reset
         // on one, and a render happens every frame audio moves.
         let track = player.playing_entry();
         // Freeze on pause holds the standing field: paused mid-session, not
@@ -2114,7 +2114,7 @@ impl ParticlesPanel {
             )
             .size_full(),
         );
-        // The editor rides the panel itself: press near a center to grab,
+        // The editor runs on the panel itself: press near a center to grab,
         // drag to place, release to drop. The markers paint in the same
         // canvas, so arranging happens against the live field.
         if edit {

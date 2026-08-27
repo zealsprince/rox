@@ -1,5 +1,5 @@
 //! Last.fm scrobbling: the scrobbler entity that watches the player and
-//! sends the signed calls rox-net makes. The scrobbler rides the
+//! sends the signed calls rox-net makes. The scrobbler runs off the
 //! player's pump ticks, accumulates how much of the playing track has
 //! actually sounded (seeks don't count), sends the now-playing update
 //! when a track starts, and scrobbles once the listened time crosses the
@@ -11,20 +11,20 @@
 //! flow is Last.fm's desktop dance: fetch a token, authorize it in the
 //! browser, trade it for a permanent session key.
 //!
-//! Which session that lands under follows from the identity signing for
+//! Which session it files under follows from the identity signing for
 //! it, per ADR 26: Last.fm binds a session to its api key, rox ships a
 //! different one per channel, and they all read the same file. So the
 //! scrobbler reads the session filed under the key it signs with, and
 //! treats a refusal (error 9) as that session being gone rather than as
-//! one more failed call, which is the only way a dead connection reaches
-//! the screen instead of the log.
+//! one more failed call, which is the only way a dead connection shows on
+//! screen instead of in the log.
 //!
-//! The same session key carries the favourites mirror: with it armed, a
+//! The favourites mirror uses the same session key: with it armed, a
 //! heart in rox becomes a love on Last.fm and taking the heart back
-//! unloves it. That half doesn't ride the player at all. It watches the
+//! unloves it. That half doesn't follow the player at all. It watches the
 //! library's favourite set and pushes what moved, through a queue that
 //! retries, because a love that quietly failed to send leaves the two
-//! sides disagreeing with nothing on screen to say so. The mirror only
+//! sides out of sync with nothing on screen to say so. The mirror only
 //! pushes: nothing here reads Last.fm's loved list back.
 
 use std::collections::{BTreeMap, HashSet};
@@ -41,16 +41,16 @@ use crate::catalog::{Library, LibraryEvent};
 use crate::player::Player;
 
 // The signing, the call that sends it, and the identity it signs with all
-// live in rox-net now; the scrobbler reaches them through the same paths it
+// are in rox-net now; the scrobbler uses them through the same paths it
 // always did.
 pub use rox_net::lastfm::{call, has_builtin_keys, keys, ApiError, AuthPhase};
 
-/// Last.fm refuses scrobbles for tracks this short, so the scrobbler
+/// Last.fm rejects scrobbles for tracks this short, so the scrobbler
 /// doesn't try; the listen signal draws the same line, so history and
-/// scrobbling agree on what counts.
+/// scrobbling use the same rule for what counts.
 const MIN_TRACK_SECS: f64 = 30.0;
 
-/// The fixed listen rule that feeds history, the scrobble standard: a
+/// The fixed listen rule behind history, the scrobble standard: a
 /// track counts once half of it has sounded. The user's scrobble
 /// threshold is a separate knob and doesn't move this line.
 const LISTEN_FRACTION: f64 = 0.5;
@@ -67,7 +67,7 @@ pub struct Listened {
     /// name one track of a cue rip.
     pub key: TrackKey,
     /// The library row the watch resolved to, None for a file the library
-    /// doesn't hold. Carried rather than looked up again by the recorder,
+    /// doesn't hold. Included rather than looked up again by the recorder,
     /// which would only have the path to ask with.
     pub track_id: Option<i64>,
     /// The tag snapshot the event row keeps, off that same lookup.
@@ -102,11 +102,11 @@ const LOVE_BACKOFF: [Duration; 3] = [
 /// has actually sounded so far.
 struct Watch {
     key: TrackKey,
-    /// The library row behind the key, None for a file it doesn't know.
+    /// The library row behind the key, None for a file it has no row for.
     /// Resolved once with the tags below, since both come out of the same
     /// (path, sub) lookup.
     id: Option<i64>,
-    /// The library's tags, or None for a file it doesn't know; Last.fm
+    /// The library's tags, or None for a file it has no row for; Last.fm
     /// needs at least an artist and a title, so untagged tracks watch
     /// silently.
     meta: Option<TrackMeta>,
@@ -129,9 +129,9 @@ struct Watch {
 }
 
 impl Watch {
-    /// Project where the scrobble crossing lands, 0 to 1: the current
+    /// Project where the scrobble crossing falls, 0 to 1: the current
     /// position plus the listening still owed against the threshold.
-    /// Seeked past the end it returns None - this play can't reach the
+    /// Seeked past the end it returns None: this play can't reach the
     /// threshold anymore. A crossed threshold pins the line where it
     /// happened; seeks after the fact have nothing left to move.
     fn marker(&self, threshold: f32) -> Option<f32> {
@@ -147,11 +147,11 @@ impl Watch {
     }
 }
 
-/// A heart waiting to reach Last.fm. The track it belongs to is the
+/// A heart waiting to be sent to Last.fm. The track it belongs to is the
 /// queue's key, so this is only which way it went and how the sending has
 /// gone so far.
 struct Love {
-    /// True loves, false unloves: where the heart landed, not how many
+    /// True loves, false unloves: where the heart ended up, not how many
     /// times it was clicked getting there.
     on: bool,
     /// Failed sends so far, the index into [`LOVE_BACKOFF`].
@@ -160,7 +160,7 @@ struct Love {
 
 /// The hearts still to send, one entry per track, keyed by the artist and
 /// title Last.fm names it by. Keyed rather than a list because the queue's
-/// job is to carry where a heart ended up, not the clicking that got it
+/// job is to record where a heart ended up, not the clicking that got it
 /// there: flip one twice while the network is down and Last.fm should hear
 /// about it once.
 #[derive(Default)]
@@ -230,10 +230,10 @@ pub struct Scrobbler {
     /// every favourite having just been taken back.
     favourites: Option<HashSet<i64>>,
     loves: LoveQueue,
-    /// Whether a drain task is already walking the queue.
+    /// Whether a drain task is already working through the queue.
     sending: bool,
     /// Why the last push gave up, for the settings page. A love that fails
-    /// silently is two sides disagreeing with nothing on screen to say so.
+    /// silently is two sides out of sync with nothing on screen to say so.
     love_error: Option<SharedString>,
     _player_changed: Subscription,
     _library_changed: Subscription,
@@ -248,7 +248,7 @@ impl Scrobbler {
         let _player_changed = cx.observe(player, |this: &mut Self, player, cx| {
             this.tick(&player, cx);
         });
-        // The mirror rides the library's own events rather than a call
+        // The mirror watches the library's own events rather than a call
         // site. Every path that moves a heart ends in a playlist change:
         // the favourite panel, the track menu, a drag onto the favourites
         // playlist, delete over a row in it. Diffing the set catches all of
@@ -294,15 +294,15 @@ impl Scrobbler {
     }
 
     /// Why the last push gave up, if one did. Cleared by the next push
-    /// that lands.
+    /// that succeeds.
     pub fn love_error(&self) -> Option<SharedString> {
         self.love_error.clone()
     }
 
-    /// Where the threshold marker sits, 0 to 1 - or None while scrobbling
+    /// Where the threshold marker goes, 0 to 1, or None while scrobbling
     /// couldn't happen anyway, so the panels never draw a line that lies.
     /// Only audio that actually sounds counts toward the threshold, so
-    /// the line rides the watch: seeks shift where the crossing lands.
+    /// the line follows the watch: seeks shift where the crossing falls.
     pub fn marker(&self) -> Option<f32> {
         if !self.armed() {
             return None;
@@ -339,9 +339,9 @@ impl Scrobbler {
         self.config.session(self.api_key())
     }
 
-    /// The session key the signed calls carry, empty where this build
+    /// The session key the signed calls send, empty where this build
     /// holds none. The armed switches gate every caller, so an empty one
-    /// never actually reaches the wire.
+    /// never actually goes out.
     fn session_key(&self) -> String {
         self.session().map(|s| s.key.clone()).unwrap_or_default()
     }
@@ -369,7 +369,7 @@ impl Scrobbler {
         self.config.scrobbling && self.connected()
     }
 
-    /// Whether a heart would actually reach Last.fm. Its own switch beside
+    /// Whether a heart would actually be sent to Last.fm. Its own switch beside
     /// the scrobble one: someone who turns scrobbling off for an evening
     /// hasn't asked for their hearts to stop travelling too.
     fn loves_armed(&self) -> bool {
@@ -382,7 +382,7 @@ impl Scrobbler {
     }
 
     /// Persist once the edit burst settles, the store-then-settle shape the
-    /// EQ curve uses: the config field already carries the value, so only
+    /// EQ curve uses: the config field already holds the value, so only
     /// the file write waits out the drag. A settings write reloads and
     /// reserializes every shard, and per scrub tick that stutters the app.
     fn persist_soon(&self, cx: &mut Context<Self>) {
@@ -439,7 +439,7 @@ impl Scrobbler {
         // The same band the settings loader enforces; the slider's low end
         // stops short of a threshold that scrobbles on the first note.
         self.config.threshold = threshold.clamp(0.1, 1.0);
-        // Settled, not straight through: this rides a slider scrub, the one
+        // Settled, not straight through: this happens during a slider scrub, the one
         // scrobbler write that can fire per mouse move.
         self.persist_soon(cx);
         cx.notify();
@@ -545,7 +545,7 @@ impl Scrobbler {
     }
 
     /// Drop the session locally. Last.fm keeps its side until the user
-    /// revokes rox there; a fresh connect just lands a new session. Only
+    /// revokes rox there; a fresh connect just stores a new session. Only
     /// this build's session goes: another install signing with a
     /// different api key keeps the one it authorized itself.
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
@@ -555,7 +555,7 @@ impl Scrobbler {
     /// Last.fm refused the session, so it's worthless to this build: the
     /// user revoked rox on the site, or the session was minted under
     /// another install's api key. Same teardown as a disconnect, minus
-    /// the user having asked for it, so the phase carries why.
+    /// the user having asked for it, so the phase records why.
     fn session_rejected(&mut self, cx: &mut Context<Self>) {
         log::warn!("lastfm: the session was rejected, reconnecting is the fix");
         self.drop_session(AuthPhase::Rejected, cx);
@@ -576,9 +576,9 @@ impl Scrobbler {
         cx.notify();
     }
 
-    /// One call came back clean. The only thing riding on that beyond the
-    /// call itself is the unattributed session: a landed call is the
-    /// proof of who minted it, so this is where it gets claimed.
+    /// One call came back clean. The only thing that depends on that beyond
+    /// the call itself is the unattributed session: a successful call proves
+    /// who minted it, so this is where it gets claimed.
     fn call_landed(&mut self, cx: &mut Context<Self>) {
         let api_key = self.api_key().to_string();
         if self.config.attribute(&api_key) {
@@ -591,14 +591,14 @@ impl Scrobbler {
     /// them. They came from Last.fm in the first place, so pushing them
     /// back would be thousands of calls repeating what it just told us.
     ///
-    /// The import calls this in the same update pass as its write, which is
-    /// what puts it ahead of the library event the mirror diffs on.
+    /// The import calls this in the same update pass as its write, which
+    /// puts it ahead of the library event the mirror diffs on.
     pub fn absorb_favourites(&mut self, cx: &mut Context<Self>) {
         self.seed_favourites(cx);
     }
 
     /// Take the favourite snapshot fresh, sending nothing: what arming the
-    /// mirror wants, and what a rescan leaves it needing.
+    /// mirror calls for, and what a rescan leaves it needing.
     fn seed_favourites(&mut self, cx: &mut Context<Self>) {
         if !self.loves_armed() {
             self.favourites = None;
@@ -628,8 +628,8 @@ impl Scrobbler {
         if loved.is_empty() && unloved.is_empty() {
             return;
         }
-        // Names, not ids: Last.fm knows nothing about this library, and a
-        // track it can't name never makes it out of here.
+        // Names, not ids: this library's ids mean nothing to Last.fm, and
+        // a track it can't name never makes it out of here.
         let (loved, unloved) = {
             let library = self.library.read(cx);
             (library.names_for(&loved), library.names_for(&unloved))
@@ -671,7 +671,7 @@ impl Scrobbler {
         })
     }
 
-    /// One push came back. A landed call clears the last complaint; a
+    /// One push came back. A successful call clears the last complaint; a
     /// failure worth another go returns the wait before it; anything else
     /// is dropped with its reason kept where the user can see it.
     fn love_result(
@@ -779,8 +779,8 @@ impl Scrobbler {
                 // and doesn't count as listening.
                 watch.played += delta;
             } else if delta < -5.0 && watch.listened && now.position_secs < 5.0 {
-                // Back to the top after a counted listen - a loop restart
-                // or a deliberate replay - counts as a fresh play.
+                // Back to the top after a counted listen (a loop restart
+                // or a replay) counts as a fresh play.
                 self.begin_watch(now.key.clone(), now.duration_secs, now.position_secs, cx);
                 return;
             }
@@ -788,7 +788,7 @@ impl Scrobbler {
         }
 
         // Stamp the start the first time audio is seen moving, not when
-        // the watch was created - a launch-restored track sits paused, and
+        // the watch was created: a launch-restored track starts paused, and
         // Last.fm reads the timestamp as when the track started playing.
         if let Some(watch) = self.watch.as_mut() {
             if watch.started == 0 && playing {
@@ -854,7 +854,7 @@ impl Scrobbler {
             return;
         };
         // The now-playing update waits for audio to actually move, so a
-        // restored track sitting paused announces nothing.
+        // restored track that starts paused announces nothing.
         if !watch.now_playing_sent && playing {
             watch.now_playing_sent = true;
             self.submit("track.updateNowPlaying", cx);
@@ -869,7 +869,7 @@ impl Scrobbler {
         }
     }
 
-    /// The listen rule that feeds history, the scrobble standard: the
+    /// The listen rule behind history, the scrobble standard: the
     /// track is long enough to count and enough of it has sounded, half
     /// its length or four minutes, whichever comes first.
     fn qualifies_listen(watch: &Watch) -> bool {
@@ -889,7 +889,7 @@ impl Scrobbler {
     }
 
     /// Point the watch at a track that just came up. The listened clock
-    /// starts empty no matter where the position sits, so a track opened
+    /// starts empty no matter where the position is, so a track opened
     /// mid-way still has to play its share.
     fn begin_watch(
         &mut self,
@@ -921,13 +921,13 @@ impl Scrobbler {
     }
 
     /// Send the watched track to the API: the params the two track
-    /// methods share, the timestamp only where the scrobble wants it.
-    /// Missing tags skip quietly - Last.fm can't take a track without an
+    /// methods share, the timestamp only where the scrobble needs it.
+    /// Missing tags skip quietly: Last.fm can't take a track without an
     /// artist and a title.
     ///
-    /// The result comes back rather than being dropped where it lands.
+    /// The result comes back rather than being dropped.
     /// Nothing here retries, and a track that failed to send is gone
-    /// either way, but a refused session is the app's to notice: without
+    /// either way, but a rejected session is the app's to notice: without
     /// this the connection reads as fine on screen while every scrobble
     /// falls into the log.
     fn submit(&self, method: &'static str, cx: &mut Context<Self>) {
@@ -1000,19 +1000,19 @@ mod tests {
 
     #[test]
     fn the_marker_sits_at_the_threshold_on_a_straight_play() {
-        // Played and position agree: nobody seeked, the line is the knob.
+        // Played and position match: nobody seeked, the line is the knob.
         assert_eq!(watch(200.0, 50.0, 50.0).marker(0.5), Some(0.5));
     }
 
     #[test]
     fn a_seek_forward_pushes_the_crossing_out() {
-        // 50s sounded, then a jump to 120s: 50s still owed, landing at 170s.
+        // 50s sounded, then a jump to 120s: 50s still owed, crossing at 170s.
         assert_eq!(watch(200.0, 50.0, 120.0).marker(0.5), Some(0.85));
     }
 
     #[test]
     fn a_seek_back_pulls_the_crossing_in() {
-        // 80s sounded, rewound to 30s: 20s owed, the line lands at 50s.
+        // 80s sounded, rewound to 30s: 20s owed, the line falls at 50s.
         assert_eq!(watch(200.0, 80.0, 30.0).marker(0.5), Some(0.25));
     }
 

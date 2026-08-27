@@ -7,18 +7,18 @@
 //! autocorrelation, and a comb over fractional lags that scores each
 //! candidate with what its own multiples are worth.
 //!
-//! What the comb finds is a repeat, which is not yet a tempo. Three steps
-//! turn it into one: `grid` divides the winner down to the shortest thing
+//! The comb finds a repeat, which isn't yet a tempo. Three steps turn it
+//! into one: `grid` divides the winner down to the shortest thing
 //! the track repeats at, `stretch` measures that grid again against the
 //! furthest multiple of itself the correlation reaches, and
 //! `fold_into_band` picks which octave of it the range a tempo is quoted
 //! in gets. The octave is the one question the full-band curve can't
 //! answer, since a hat between two kicks makes as much flux as a third
-//! kick would, so a second novelty curve of just the low band rides along:
-//! kick and snare land in it, hats and strums don't, and whether the drums
-//! repeat at a candidate lag or between it is what tells a fast beat from
-//! a subdivision. Two windows a third and two thirds into the track do all
-//! of that separately, and `combine` wants them to agree.
+//! kick would, so a second novelty curve of just the low band is computed
+//! alongside it: kick and snare land in it, hats and strums don't, and
+//! whether the drums repeat at a candidate lag or between it tells a fast
+//! beat from a subdivision. Two windows a third and two thirds into the
+//! track do all of that separately, and `combine` requires them to agree.
 //!
 //! ## What it's good at, and what it isn't
 //!
@@ -27,7 +27,7 @@
 //! tempo the producer typed into the DAW, give or take the grid this
 //! transform can resolve.
 //!
-//! It is not a beat tracker and it doesn't pretend to follow music that
+//! It isn't a beat tracker and it doesn't pretend to follow music that
 //! moves. Rubato, a ritardando, a live drummer drifting, a track that
 //! changes tempo halfway: when the two windows disagree, the search
 //! widens a pair of windows at a time until a majority settles it or the
@@ -39,12 +39,12 @@
 //! The octave is the error this class of estimator makes constantly, and
 //! the drum band reads most of it: a backbeat under strummed eighths folds
 //! to the beat the drums are on, and a fast four on the floor keeps its
-//! own tempo instead of the half the prior would rather hear. What's left
-//! is genuinely unreadable. Half time, where the whole kit marks every
+//! own tempo instead of the half the prior would rather hear. The rest is
+//! unreadable. Half time, where the whole kit marks every
 //! fourth grid unit, still reads at the grid the track actually runs on.
 //! Triplet and waltz material has its own version: the fold into the band
-//! only ever halves, so a grid counted in threes lands wherever a power of
-//! two from it lands.
+//! only ever halves, so a grid counted in threes ends up wherever a power
+//! of two from it does.
 //!
 //! Nothing here decides what a missing answer means. [`estimate`] returns
 //! None and the caller stores NULL, which is how a track that was measured
@@ -57,9 +57,10 @@ use crate::{novelty_split, HOP, RATE};
 /// How much audio one window reads. Thirty seconds is sixty beats at 120
 /// BPM, enough for a lag to repeat often enough to stand out of the noise;
 /// a ten second window, which is all the sketch needs, votes on whatever
-/// fill it happened to land in.
+/// fill it happened to cover.
 const WINDOW_SECS: f64 = 30.0;
-/// Where the windows sit across the span a window can still start in. A
+/// Where the windows are placed across the span a window can still start
+/// in. A
 /// third and two thirds in: past the intro, before the outro, and far
 /// enough apart that a tempo change between them shows up as disagreement.
 const PROBES: [f64; 2] = [1.0 / 3.0, 2.0 / 3.0];
@@ -80,10 +81,10 @@ const SINGLE_SECS: f64 = 35.0;
 /// double-length window over the middle was tried first and measured
 /// worse, because a window straddling two tempos doesn't vote for either,
 /// it invents a compromise between them (75 seconds of 128 against 85 of
-/// 90 read back as a confident-enough 135). Separate windows each land in
-/// one section and vote for what's actually there, and the majority
+/// 90 read back as a confident-enough 135). Separate windows each fall
+/// inside one section and vote for what's actually there, and the majority
 /// decides. The pairing and the missing middle follow from the same two
-/// facts: a lone extra window would hand whichever half it landed in a
+/// facts: a lone extra window would hand whichever half it fell in a
 /// majority a two-tempo track didn't earn, and the middle of a track
 /// whose halves disagree is the seam itself, the one place a window is
 /// guaranteed to straddle.
@@ -96,7 +97,7 @@ const FPS: f32 = RATE as f32 / HOP as f32;
 /// half time and anything much faster than 200 as double, so the answer is
 /// folded into here by octaves rather than reported outside it.
 ///
-/// The top sits above 200 rather than at it because a measurement lands
+/// The top is above 200 rather than at it because a measurement lands
 /// near a tempo, not on it: happy hardcore written at 200 reads back at
 /// 200.1, and a cap at exactly 200 would rule the true octave out and file
 /// the track at 100. The headroom stays under the ~216 where the prior's
@@ -109,10 +110,10 @@ const MAX_BPM: f32 = 210.0;
 /// The fastest grid the search looks for. Not a tempo: the shortest thing
 /// the track repeats at, which for a track with sixteenth hats is four
 /// times its tempo. Finding that first and folding it into the band by
-/// halving is what keeps a 120 BPM house track off 80, which is where a
-/// search that only looked at plausible tempos lands it (the lag one and a
-/// half beats long has a real peak two beats out to lean on, and no beat
-/// halfway through it to give it away).
+/// halving keeps a 120 BPM house track off 80, where a search that only
+/// looked at plausible tempos puts it (the lag one and a half beats long
+/// has a real peak two beats out to lean on, and no beat halfway through
+/// it to give it away).
 const FAST_BPM: f32 = 400.0;
 /// The lags that band is, in frames: 6.5 to 43.1 at 44.1 kHz.
 const LAG_MIN: f32 = FPS * 60.0 / FAST_BPM;
@@ -123,21 +124,21 @@ const LAG_MAX: f32 = FPS * 60.0 / MIN_BPM;
 /// for the division to be taken.
 ///
 /// The lag that scores best is whatever repeat the correlation reads most
-/// cleanly, and that is regularly a grouping rather than a beat: two bars,
+/// cleanly, and that's regularly a grouping rather than a beat: two bars,
 /// or three beats of a house track whose kick and hat alternate. Dividing
-/// it back down is what finds the grid, and taking the longest division
-/// that still holds finds the smallest grid unit rather than an arbitrary
-/// grouping of it. The threshold is a share of the winner's own
-/// correlation, so it asks whether the shorter lag is nearly as good a
-/// repeat rather than whether it clears some absolute bar.
+/// it back down finds the grid, and taking the longest division that still
+/// holds gives the smallest grid unit rather than an arbitrary grouping of
+/// it. The threshold is a share of the winner's own correlation, so the
+/// test is whether the shorter lag is nearly as good a repeat rather than
+/// whether it clears some absolute bar.
 ///
 /// Two fifths, which is lower than it looks. A backbeat makes every second
 /// beat carry a snare, so a bar correlates with itself far better than a
 /// beat does with the beat after it: measured over synthesized kit patterns
 /// the beat only reaches half to two thirds of the bar's correlation, and a
-/// stricter threshold reads every one of them at half speed. What the
-/// threshold is really there to reject is a division with nothing at it at
-/// all, which is what the sign test above it catches.
+/// stricter threshold reads every one of them at half speed. The threshold
+/// is really there to reject a division with nothing at it at all, which
+/// the sign test above it catches.
 const DIVISORS: [f32; 4] = [5.0, 4.0, 3.0, 2.0];
 const SUPPORT: f32 = 0.4;
 
@@ -147,26 +148,26 @@ const SUPPORT: f32 = 0.4;
 const OCTAVES: u32 = 3;
 /// What each halving costs against the prior. A tempo the track actually
 /// repeats at is the answer unless half of it is a great deal better
-/// supported, and this is what stops a 174 BPM track reading 87 because 87
-/// is nearer 120.
+/// supported, and it stops a 174 BPM track reading 87 because 87 is nearer
+/// 120.
 ///
 /// Strong enough that the prior alone can never halve an in-band grid: the
 /// prior's ratio across one octave tops out around 0.75 at the band's
 /// edges, so a halving has to bring more correlation with it to win, which
 /// a subdivision's halving does and a real beat's doesn't. At 0.85, where
-/// this sat first, the arithmetic crossed over around 186 BPM and every
+/// this started, the arithmetic crossed over around 186 BPM and every
 /// happy hardcore track in the band's top stripe read at half itself.
 const OCTAVE_BIAS: f32 = 0.65;
 
-/// How finely the lag range is walked, in frames.
+/// How finely the lag range is scanned, in frames.
 ///
-/// A fiftieth of a frame, and the reason the comb is walked at all rather
+/// A fiftieth of a frame, and the reason the comb is scanned at all rather
 /// than read off the integer lags. A beat at 120 BPM repeats every 21.53
 /// frames, so a candidate at 21.5 has its second multiple at 43.07 and a
 /// candidate at 21 has its at 42, which is between two beats: the multiples
-/// are what separate one candidate from its neighbour, and they only line
+/// separate one candidate from its neighbour, and they only line
 /// up if the candidate can be a fraction. The step is well under the width
-/// of a peak, because the peak's shape is what [`refine`] reads.
+/// of a peak, because [`refine`] reads the peak's shape.
 const STEP: f32 = 0.02;
 const STEPS: usize = ((LAG_MAX - LAG_MIN) / STEP) as usize + 1;
 
@@ -191,7 +192,7 @@ const LOCAL_MEAN: usize = 16;
 ///
 /// A hit shows up in exactly one frame of flux, since only the frame where
 /// the magnitude first rises counts as a rise, and one-frame spikes make a
-/// correlation that is all or nothing: a beat every 21.53 frames lands on
+/// correlation that's all or nothing: a beat every 21.53 frames lands on
 /// frame 21 sometimes and 22 others, so both lags read half strength while
 /// the lag at four beats, 43.07, reads nearly full, and the track is read
 /// at a quarter speed. Spreading each peak over five frames costs timing
@@ -201,8 +202,8 @@ const SMEAR: [f32; 5] = [1.0 / 9.0, 2.0 / 9.0, 3.0 / 9.0, 2.0 / 9.0, 1.0 / 9.0];
 
 /// What a candidate lag's own multiples are worth to it. A real beat period
 /// repeats: the correlation peaks at the period, then again at twice and
-/// three times it. Half tempo scores just as well on that test, which is
-/// what [`HALF_PENALTY`] is for.
+/// three times it. Half tempo scores just as well on that test, which
+/// [`HALF_PENALTY`] is for.
 const HARMONIC_2: f32 = 0.5;
 const HARMONIC_3: f32 = 0.25;
 /// What a peak halfway through the candidate period costs it. If the
@@ -211,14 +212,14 @@ const HARMONIC_3: f32 = 0.25;
 /// hats between the kicks, would be pushed to double time by a hard one.
 const HALF_PENALTY: f32 = 0.4;
 /// What a candidate scores when it and both its multiples correlate
-/// perfectly, which is what a confidence is a fraction of.
+/// perfectly, which a confidence is a fraction of.
 const FULL_SCORE: f32 = 1.0 + HARMONIC_2 + HARMONIC_3;
 
 /// The prior over tempo, as a Gaussian on log2 BPM: where it's centred, and
-/// how many octaves wide. Ninety percent of an octave is deliberately
-/// loose, since its only job is picking which halving of a measured grid to
-/// report. 70 to 180 BPM all sit above three quarters weight, so inside
-/// that range it barely leans at all.
+/// how many octaves wide. Ninety percent of an octave is loose, since its
+/// only job is picking which halving of a measured grid to report. 70 to
+/// 180 BPM are all above three quarters weight, so inside that range it
+/// barely leans at all.
 const PRIOR_CENTRE: f32 = 120.0;
 const PRIOR_OCTAVES: f32 = 0.9;
 
@@ -234,7 +235,7 @@ const AGREE: f32 = 0.04;
 /// about 0.06, a held tone about 0.09, and clicks at random intervals,
 /// which have real onsets and no grid at all, about 0.15. The kit patterns
 /// the tests synthesize score between 0.45 and 1.0, the busier and more
-/// syncopated ones at the bottom of that. A quarter sits in the gap, and
+/// syncopated ones at the bottom of that. A quarter is in the gap, and
 /// real music is messier than any of this, so it's the loose side of the
 /// gap rather than the middle.
 const CONFIDENCE_FLOOR: f32 = 0.25;
@@ -258,13 +259,13 @@ struct Vote {
 /// same way the sketch does it, so this costs a minute of decoding per
 /// track on top of whatever else the pass reads. A track whose windows
 /// split pays for the widening a minute-long pair at a time, most often
-/// one before a majority lands and [`WIDEN`]'s whole list only for a
+/// one before a majority forms and [`WIDEN`]'s whole list only for a
 /// track that never finds one. Nothing is cached between the two passes
 /// today: they run at different times over different windows.
 ///
 /// `duration_ms` is the track's length as the library knows it, used only
 /// to place the probes. A cue subsong is measured from the top of the image
-/// it lives in, exactly as [`crate::extract`] probes it, so a subsong's
+/// it's part of, exactly as [`crate::extract`] probes it, so a subsong's
 /// tempo is really the image's tempo at the same offsets. The acoustic
 /// pass has always described cue tracks that way, and fixing it is one
 /// change to [`rox_playback::engine::decode_window`]'s span argument, for
@@ -323,8 +324,8 @@ pub fn estimate(path: &Path, duration_ms: u32) -> Option<f32> {
 
 /// One probe's vote: a window decoded off the track at `at` seconds,
 /// downmixed, and measured. None for a window that won't decode or won't
-/// answer; the decode failure goes to the log, since a track this pass
-/// couldn't read isn't a track without a tempo.
+/// produce a vote; the decode failure goes to the log, since a track this
+/// pass couldn't read isn't a track without a tempo.
 fn probe_window(path: &Path, at: f64) -> Option<Vote> {
     let frames = (WINDOW_SECS * RATE as f64) as usize;
     match rox_playback::engine::decode_window(&path.to_path_buf(), at, RATE, frames) {
@@ -351,8 +352,8 @@ fn window(mono: &[f32]) -> Option<Vote> {
 }
 
 /// One novelty curve's vote: the lag it repeats at, folded into a tempo.
-/// The drum curve rides along for the octave decisions; the search itself
-/// runs on the full band, which is the one that always has something in it.
+/// The drum curve is passed in for the octave decisions; the search itself
+/// runs on the full band, the one that always has something in it.
 fn vote(curve: &[f32], drums: &[f32]) -> Option<Vote> {
     if curve.len() < MIN_FRAMES {
         return None;
@@ -378,17 +379,17 @@ fn vote(curve: &[f32], drums: &[f32]) -> Option<Vote> {
         }
     }
     let top = scores[best];
-    // No lag at all correlated positively, so there is no period to divide
+    // No lag at all correlated positively, so there's no period to divide
     // down. A window of NaN samples arrives here too, since nothing
     // compares true against it.
     if !top.is_finite() || top <= 0.0 {
         return None;
     }
     // Parabolic interpolation through the winner and its neighbours, for
-    // the part of the answer that falls between two steps of the walk.
+    // the part of the answer that falls between two steps of the scan.
     // Dividing that down to the grid rather than measuring the grid
     // directly is the more precise way around: a lag measured at four beats
-    // carries a quarter of the error per beat.
+    // has a quarter of the error per beat.
     let lag = LAG_MIN + (best as f32 + refine(&scores, best)) * STEP;
 
     let bpm = fold_into_band(&r, &low, stretch(&r, grid(&r, &low, lag)))?;
@@ -405,9 +406,9 @@ fn vote(curve: &[f32], drums: &[f32]) -> Option<Vote> {
 /// still repeats at nearly as strongly, or `lag` itself if nothing repeats
 /// at anything shorter.
 ///
-/// This is what keeps a house track off three quarters of its tempo. The
+/// This keeps a house track off three quarters of its tempo. The
 /// lag three beats long is a real repeat and an unusually clean one, since
-/// nothing sits halfway through it to give it away, but a third of it is a
+/// nothing is halfway through it to give it away, but a third of it is a
 /// repeat too, and that third is the beat.
 ///
 /// Each curve is measured against its own strength at the winner rather
@@ -442,7 +443,7 @@ fn grid(r: &[f32], drums: &[f32], lag: f32) -> f32 {
 /// eight, and the correlation out there is a real peak as long as the track
 /// holds its tempo across the three seconds the lags cover, which is the
 /// case this estimator is for in the first place. The search stays inside
-/// one beat of where it expects the multiple, so it can't wander onto a
+/// one beat of the expected multiple, so it can't wander onto a
 /// neighbouring one.
 fn stretch(r: &[f32], lag: f32) -> f32 {
     if r.len() < 4 || lag < 2.0 {
@@ -478,9 +479,9 @@ fn stretch(r: &[f32], lag: f32) -> f32 {
 /// repeats at that candidate on either curve. The last one is where the
 /// drums come in. A kick-and-snare alternation at 200 correlates weakly at
 /// one beat in the full band, exactly like a kick-and-hat alternation an
-/// octave too fast does, and the low band is what tells them apart: the
-/// drums repeat at every beat of the first and only at every other event
-/// of the second.
+/// octave too fast does, and the low band tells them apart: the drums
+/// repeat at every beat of the first and only at every other event of the
+/// second.
 fn fold_into_band(r: &[f32], drums: &[f32], lag: f32) -> Option<f32> {
     let mut best: Option<(f32, f32)> = None;
     for octave in 0..=OCTAVES {
@@ -559,7 +560,7 @@ fn sharpen(curve: &[f32]) -> Vec<f32> {
 /// products went into it so a long lag isn't penalized for reaching past
 /// the end of the window, and the whole thing divided by lag zero so a
 /// value is a correlation rather than a level. None for a curve with no
-/// energy at all, which is the one case that division can't survive.
+/// energy at all, the one case that division can't handle.
 ///
 /// Cost is `max_lag` passes over the curve, which at 30 seconds and 131
 /// lags is under two hundred thousand multiplies, nothing next to the
@@ -621,7 +622,7 @@ fn prior(bpm: f32) -> f32 {
     (-0.5 * octaves * octaves).exp()
 }
 
-/// Where the peak really sits, as an offset in frames from the sampled
+/// Where the peak really is, as an offset in frames from the sampled
 /// winner. Clamped to half a frame either way, since a parabola through
 /// three points of a noisy curve can otherwise claim the peak is at a
 /// neighbour it scored below.
@@ -650,7 +651,7 @@ fn fold(bpm: f32, toward: f32) -> f32 {
 ///
 /// Every vote anchors a candidate reading: itself plus every other vote
 /// that lands within [`AGREE`] of it once folded to its octave. The
-/// reading carrying the most confidence wins, and comes out as the
+/// reading with the most confidence wins, and comes out as the
 /// confidence-weighted mean of its members, so two windows either side of
 /// 128 answer between them and a window that heard 87 joins one that heard
 /// 174 where it belongs.
@@ -659,12 +660,12 @@ fn fold(bpm: f32, toward: f32) -> f32 {
 /// confidence floor is a window that couldn't really hear a tempo and
 /// counts for nothing either way; confident votes outside the winning
 /// reading count against it, and the answer stands only while the reading
-/// outnumbers them. One against one refuses, which is what sends
+/// outnumbers them. One against one refuses, which sends
 /// [`estimate`] for its third window; two against one is a majority and a
 /// track's tempo; and windows that all heard something different stay
 /// refused, since a number that describes one window of a track that moves
-/// isn't the track's tempo. That last case is what keeps a symphony's
-/// windows from filing whichever pseudo-beat scored highest.
+/// isn't the track's tempo. That last case keeps a symphony's windows from
+/// filing whichever pseudo-beat scored highest.
 fn combine(votes: &[Vote]) -> Option<f32> {
     let agrees = |anchor: &Vote, v: &Vote| {
         (fold(v.bpm, anchor.bpm) - anchor.bpm).abs() <= anchor.bpm * AGREE
@@ -761,10 +762,10 @@ mod tests {
 
     /// A whole kit: kick on every beat, a snare and a bright hit on two and
     /// four, a hat on every offbeat, and a bass note under each beat. The
-    /// backbeat is what makes this different from [`kit`] - a bar
-    /// correlates with itself better than a beat does with the next beat,
-    /// so the strongest repeat in this signal is two beats long and the
-    /// tempo is only found by dividing it.
+    /// backbeat makes this different from [`kit`]: a bar correlates with
+    /// itself better than a beat does with the next beat, so the strongest
+    /// repeat in this signal is two beats long and the tempo is only found
+    /// by dividing it.
     fn band(bpm: f32, secs: f32) -> Vec<f32> {
         let n = (secs * RATE as f32) as usize;
         let mut buf = vec![0.0; n];
@@ -901,7 +902,7 @@ mod tests {
     /// track written at the top of the band has to read back at itself
     /// rather than at the half the prior finds more plausible. None of
     /// these periods is a whole number of frames (174 BPM is 14.85 of
-    /// them), so passing is a claim about the fractional lag walk and the
+    /// them), so passing is a claim about the fractional lag scan and the
     /// multiple it's measured against, not just about finding a peak.
     #[test]
     fn a_click_track_reads_back_at_the_tempo_it_was_written_at() {
@@ -938,7 +939,7 @@ mod tests {
     /// it that only correlates about half as well. The fast end is the
     /// happy hardcore case twice over: past about 185 the beat's own
     /// correlation gets too weak for the full-band division and the kicks
-    /// have to carry it, and the fold has to keep the answer's octave
+    /// have to make the case, and the fold has to keep the answer's octave
     /// where the prior alone would halve it.
     #[test]
     fn a_full_kit_reads_the_beat_and_not_the_bar() {
@@ -968,8 +969,8 @@ mod tests {
     /// The Creedence case: a rock backbeat with strummed eighths riding
     /// over it. The strums put a real grid at double the tempo, and at the
     /// loud end that grid outright wins the full-band comb; the drums
-    /// repeating at the beat and landing between the strum grid's units is
-    /// what folds the answer back to the kit's tempo.
+    /// repeating at the beat and landing between the strum grid's units
+    /// folds the answer back to the kit's tempo.
     #[test]
     fn strummed_eighths_dont_double_a_backbeat() {
         for strum in [0.6, 0.9] {
@@ -985,10 +986,9 @@ mod tests {
     /// about it. Half time puts the kick four beats from the next kick,
     /// which at 85 is past the longest lag the search reads, so the drums
     /// have no repeat inside the band to vouch with and the eighth grid
-    /// the hats ride carries the answer: 85 comes back as 170. What's
-    /// asserted is that it's an octave and not something in between, since
-    /// 170 is a reading a listener would recognize and 113 is a wrong
-    /// answer.
+    /// the hats mark gives the answer: 85 comes back as 170. The assertion
+    /// is that it's an octave and not something in between, since 170 is a
+    /// reading a listener would recognize and 113 is a wrong answer.
     #[test]
     fn a_halftime_pattern_is_read_an_octave_out() {
         let got = answer(&halftime(85.0, 20.0)).expect("a kit pattern has a tempo");
@@ -1123,8 +1123,8 @@ mod tests {
     }
 
     /// What the windows do with each other: agree and the answer is their
-    /// weighted mean, split one against one and there is no answer, which
-    /// is what sends [`estimate`] for a third whose majority decides. The
+    /// weighted mean, split one against one and there's no answer, which
+    /// sends [`estimate`] for a third whose majority decides. The
     /// octave case is the point of the fold: a window that heard 87 and a
     /// window that heard 174 heard the same track.
     #[test]
@@ -1176,8 +1176,8 @@ mod tests {
     }
 
     /// The answer is always a tempo, whatever the windows said. Two votes
-    /// an octave apart that both survive the fold still can't average into
-    /// something outside the band.
+    /// an octave apart that both come through the fold still can't average
+    /// into something outside the band.
     #[test]
     fn an_answer_is_always_inside_the_band() {
         for bpm in [60.0, 85.0, 120.0, 174.0, 200.0] {

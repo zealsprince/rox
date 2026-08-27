@@ -33,7 +33,7 @@ impl ScrubState {
         Arc::as_ptr(&self.bounds) as usize
     }
 
-    /// Remember where the strip landed, from its prepaint.
+    /// Remember where the strip was laid out, from its prepaint.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) {
         *self.bounds.lock().unwrap() = Some(bounds);
     }
@@ -51,7 +51,7 @@ impl ScrubState {
         self.dragging.load(Ordering::Relaxed)
     }
 
-    /// Where `x` lands along the strip, 0 to 1; positions off the ends
+    /// `x` as a fraction along the strip, 0 to 1; positions off the ends
     /// clamp, so a drag can overshoot without letting go of the value.
     pub fn fraction(&self, x: Pixels) -> Option<f32> {
         let bounds = (*self.bounds.lock().unwrap())?;
@@ -207,7 +207,7 @@ pub struct FlickState {
 struct FlickInner {
     /// The pointer's recent path, (y, when) with the newest last. The
     /// release reads its velocity off this window, so speed built up
-    /// earlier in the drag can't survive a pause at the end.
+    /// earlier in the drag doesn't outlast a pause at the end.
     samples: VecDeque<(f32, Instant)>,
     /// Total pointer travel this drag; past the dead zone it counts as a
     /// scroll and the release swallows the click.
@@ -230,7 +230,7 @@ const FLICK_REST: f32 = 12.0;
 const FLICK_WINDOW: f32 = 0.1;
 
 impl FlickState {
-    /// A press landed: start tracking, stop any coast.
+    /// A press: start tracking, stop any coast.
     pub fn begin(&self, y: Pixels) {
         let mut inner = self.inner.lock().unwrap();
         inner.samples.clear();
@@ -319,8 +319,8 @@ impl FlickState {
 
 /// Keep a live drag-scroll following the pointer along `axis`: scroll by the
 /// pointer's travel on every move, end the drag on release. Call from the
-/// surface's paint pass, the [`scrub_on_paint`] idiom - window handlers only
-/// live one frame. Applying must notify an entity so the next frame re-arms
+/// surface's paint pass, the [`scrub_on_paint`] idiom: window handlers last
+/// only one frame. Applying must notify an entity so the next frame re-arms
 /// the handlers.
 pub fn flick_on_paint_axis(
     flick: &FlickState,
@@ -337,7 +337,7 @@ pub fn flick_on_paint_axis(
             if !phase.bubble() || !flick.is_dragging() {
                 return;
             }
-            // A release outside the window never reaches the up handler;
+            // A release outside the window never fires the up handler;
             // a move without the button still held ends the drag instead.
             if event.pressed_button != Some(MouseButton::Left) {
                 flick.end();
@@ -359,7 +359,7 @@ pub fn flick_on_paint_axis(
     });
 }
 
-/// Where a uniform list's offset should sit to center item `ix` of
+/// Where a uniform list's offset should be to center item `ix` of
 /// `count`, for the follow-playing glide: item extent times index, pulled
 /// back by half the viewport, clamped to the scrollable range. The item
 /// extent derives from the content height (the handle's `item` size is
@@ -400,7 +400,7 @@ pub fn glide_step(handle: &UniformListScrollHandle, target: Pixels, dt: f32) -> 
 }
 
 /// [`glide_target`] for a virtual list's plain scroll handle: where the
-/// offset should sit to center item `ix` of `count` along `axis`. The
+/// offset should be to center item `ix` of `count` along `axis`. The
 /// viewport and content extents come off the handle rather than a uniform
 /// list's item size, so it fits either scroll axis. None before the list's
 /// first layout gives it a viewport.
@@ -426,7 +426,7 @@ pub fn glide_target_axis(
 }
 
 /// [`glide_target_axis`] for a list whose items aren't uniform: where the
-/// offset should sit to center an item spanning `origin..origin + extent`
+/// offset should be to center an item spanning `origin..origin + extent`
 /// along `axis`, from the item's real position instead of an averaged
 /// stride. None before the list's first layout gives it a viewport.
 pub fn glide_target_at(
@@ -473,8 +473,8 @@ pub fn glide_step_axis(handle: &ScrollHandle, axis: Axis, target: Pixels, dt: f3
 }
 
 /// Keep a live drag following the pointer: apply the strip fraction on
-/// every move, end the drag on release. Call from the strip's paint pass -
-/// window handlers only live one frame, the same idiom the dock's resize
+/// every move, end the drag on release. Call from the strip's paint pass:
+/// window handlers last only one frame, the same idiom the dock's resize
 /// handles use. Applying must notify an entity so the next frame re-arms
 /// the handlers.
 pub fn scrub_on_paint(
@@ -491,7 +491,7 @@ pub fn scrub_on_paint(
             if !phase.bubble() || !scrub.is_dragging() {
                 return;
             }
-            // A release outside the window never reaches the up handler;
+            // A release outside the window never fires the up handler;
             // a move without the button still held ends the drag instead.
             if event.pressed_button != Some(MouseButton::Left) {
                 scrub.end();

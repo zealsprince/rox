@@ -3,16 +3,16 @@
 //! [`rox_library::thumbs`]. Renders ask by track path and get a texture,
 //! a pending marker, or a definitive miss; a miss kicks a load on the
 //! background executor, bounded to a few in flight. There is no request
-//! queue: a visible row re-asks every paint and a landing load repaints
-//! the panels, so freed slots refill with whatever is still on screen -
-//! work for rows that scrolled away is simply never picked back up,
-//! which is the contract's off-screen cancellation. The texture cache is
+//! queue: a visible row re-asks every paint and a finished load repaints
+//! the panels, so freed slots refill with whatever is still on screen.
+//! Work for rows that scrolled away is never picked back up, the
+//! contract's off-screen cancellation. The texture cache is
 //! an LRU sized to viewports, not the library, and evicted covers leave
 //! gpui's asset cache explicitly, since it never evicts on its own (the
 //! cover panel's lesson). A catalog change marks the cache stale instead
-//! of clearing it: entries keep painting while they re-read behind the
-//! answer, so a track landing in a watched folder never flashes the wall
-//! blank on its way back to the same covers.
+//! of clearing it: entries keep painting while they re-read in the
+//! background, so a track arriving in a watched folder never flashes the
+//! wall blank on its way back to the same covers.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -33,16 +33,17 @@ const CAP: usize = 512;
 /// loads are stat-plus-point-lookup cheap, so the bound is really a
 /// cap on concurrent cover decodes when the store is cold.
 const POOL: usize = 16;
-/// Background tasks the post-refresh sweep splits the wall across. Low
-/// on purpose: the sweep warms the durable store for tiles nobody is
+/// Background tasks the post-refresh sweep splits the wall across. Kept
+/// low: the sweep warms the durable store for tiles nobody is
 /// looking at yet, so it should never crowd the interactive pool or
 /// the machine.
 const SWEEP_WORKERS: usize = 4;
-/// How still the catalog has to sit before the sweep starts. A download
-/// landing tracks one at a time refreshes the catalog every few seconds,
-/// and a sweep restarted that often never gets past the first albums:
-/// it walks the whole order to plan, then gets cancelled mid-warm. One
-/// settle wait folds a burst into a single pass at the end of it.
+/// How long the catalog has to stay unchanged before the sweep starts. A
+/// download saving tracks one at a time refreshes the catalog every few
+/// seconds, and a sweep restarted that often never gets past the first
+/// albums: it iterates the whole order to plan, then gets cancelled
+/// mid-warm. One settle wait folds a burst into a single pass at the end
+/// of it.
 const SWEEP_SETTLE: Duration = Duration::from_secs(5);
 
 /// What a render gets for a track's thumbnail.
@@ -85,7 +86,7 @@ pub struct Thumbs {
     /// leaves a fresh one behind.
     sweep_cancel: Arc<AtomicBool>,
     /// The settle wait ahead of the next sweep; replaced (and so cancelled)
-    /// by each catalog change, which is what folds a burst into one pass.
+    /// by each catalog change, which folds a burst into one pass.
     sweep_settle: Option<Task<()>>,
     _library_changed: Subscription,
 }
@@ -94,7 +95,7 @@ impl Thumbs {
     pub fn new(library: &Entity<Library>, cx: &mut Context<Self>) -> Self {
         // A rescan can rewrite tags, art files, and id -> path mappings, so
         // every texture has to prove itself again through the store's
-        // (path, mtime, size) identity check - but it keeps painting while
+        // (path, mtime, size) identity check, but it keeps painting while
         // it does. A catalog that then stays put kicks the sweep that warms
         // the store for the whole wall.
         let _library_changed = cx.subscribe(
@@ -124,10 +125,10 @@ impl Thumbs {
 
     /// The thumbnail for `path`, from cache or on its way. A miss starts
     /// a load when a pool slot is free and reports Pending either way;
-    /// the landing notifies, so visible rows re-ask and drain the misses
-    /// without a queue. A stale entry answers with what it holds and
-    /// re-reads behind the answer, so a catalog change repaints the same
-    /// cover rather than a blank tile.
+    /// the finished load notifies, so visible rows re-ask and drain the
+    /// misses without a queue. A stale entry is still served with what it
+    /// holds and re-reads in the background, so a catalog change repaints
+    /// the same cover rather than a blank tile.
     pub fn get(&mut self, path: &Path, cx: &mut Context<Self>) -> Thumb {
         self.clock += 1;
         if let Some(entry) = self.entries.get_mut(path) {
@@ -150,8 +151,8 @@ impl Thumbs {
 
     /// Read `path` through the store on the background executor, if a pool
     /// slot is free and no read is already running for it. A first load and
-    /// a revalidation take the same route; only what the landing does with
-    /// the result differs.
+    /// a revalidation take the same route; only what happens with the
+    /// result differs.
     fn load(&mut self, path: &Path, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else {
             return;
@@ -185,7 +186,7 @@ impl Thumbs {
         .detach();
     }
 
-    /// File a landed store read. gpui keys an image by a hash of its bytes,
+    /// File a finished store read. gpui keys an image by a hash of its bytes,
     /// so a revalidation that came back with the same cover keys the same
     /// decode as the handle it replaces, and retiring that would drop a
     /// bitmap still on screen; only a cover that really changed releases
@@ -211,10 +212,10 @@ impl Thumbs {
         }
     }
 
-    /// Hold the sweep until the catalog has sat still for
+    /// Hold the sweep until the catalog has been unchanged for
     /// [`SWEEP_SETTLE`]. Each catalog change replaces the pending wait, so
-    /// a burst - an album arriving a track at a time, each landing its own
-    /// refresh - pays one sweep after the last of them instead of a
+    /// a burst (an album arriving a track at a time, each with its own
+    /// refresh) pays one sweep after the last of them instead of a
     /// full-order plan and a cancelled warm per file.
     fn queue_sweep(&mut self, library: Entity<Library>, cx: &mut Context<Self>) {
         self.sweep_settle = Some(cx.spawn(async move |this, cx| {
@@ -324,8 +325,8 @@ impl Thumbs {
     /// The catalog moved: every entry has to prove itself again, and none
     /// of them are dropped to do it. The loads in flight read the store
     /// before the change, so they're orphaned here and the next ask for
-    /// each path starts a fresh one. Nothing repaints off this - the
-    /// panels have their own subscription to the same event - and a
+    /// each path starts a fresh one. Nothing repaints off this (the
+    /// panels have their own subscription to the same event), and a
     /// re-read for an unchanged file is a stat plus a point lookup.
     fn stale(&mut self) {
         for entry in self.entries.values_mut() {

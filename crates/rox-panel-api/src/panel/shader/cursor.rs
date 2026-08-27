@@ -1,9 +1,9 @@
 //! Cursor presence: how much the pointer still counts for, as the one
-//! `meta` float a shader reads to know the hand has left the mouse.
+//! `meta` float a shader reads to tell that the hand has left the mouse.
 //!
 //! A shader that reads `params.mouse` can't tell a cursor parked over the
 //! window from one that walked off to another app an hour ago. The uniform
-//! carries the last position either way, so a light that follows the
+//! holds the last position either way, so a light that follows the
 //! pointer stays lit wherever it last saw it, usually pinned to whichever
 //! edge the pointer left by. Presence is the missing fact: 1 while the
 //! pointer is moving, held at 1 for [`CURSOR_HOLD`] after it stops, then
@@ -13,11 +13,11 @@
 //! hand, never popping at either end.
 //!
 //! Sampled, not listened to. [`cursor_presence`] compares the window's
-//! pointer against where it stood on the last frame that asked, so the
+//! pointer against where it stood on the last frame that sampled it, so the
 //! whole thing costs one map lookup per shaded surface per frame and needs
 //! no event plumbing to work. [`watch_cursor`] adds the two things
 //! sampling on its own can't see: a pointer that left the window, which
-//! stops producing moves to compare and would otherwise sit out the full
+//! stops producing moves to compare and would otherwise wait out the full
 //! hold first, and a pointer that comes back after a surface has faded to
 //! nothing and parked its frames.
 
@@ -36,8 +36,8 @@ pub const CURSOR_HOLD: Duration = Duration::from_millis(1500);
 pub const CURSOR_FADE: Duration = Duration::from_millis(1000);
 
 /// How long the ease back to full takes when the hand returns to a
-/// surface that had faded. Short enough to read as the surface answering,
-/// long enough that the answer swells instead of popping on.
+/// surface that had faded. Short enough to read as the surface responding,
+/// long enough that the response swells instead of popping on.
 pub const CURSOR_RISE: Duration = Duration::from_millis(250);
 
 /// How long an untouched window sticks around before the next insert drops
@@ -57,7 +57,7 @@ struct Watch {
     /// so the fade skips the hold and starts from `at`.
     gone: bool,
     /// When the current rise started and the level it started from: a
-    /// move landing mid-fade swells back from wherever the fade stood
+    /// move arriving mid-fade swells back from wherever the fade stood
     /// rather than snapping to full.
     rose: Instant,
     from: f32,
@@ -91,7 +91,7 @@ pub fn cursor_presence(window: &Window) -> f32 {
     });
     watch.touched = now;
     if watch.position != position {
-        // A move landing while presence was falling starts a rise from
+        // A move that arrives while presence was falling starts a rise from
         // wherever the fall had gotten to. A move during the hold or an
         // unfinished rise changes nothing but the clock, so continuous
         // movement doesn't pin the level to its own start.
@@ -119,8 +119,8 @@ pub fn cursor_presence(window: &Window) -> f32 {
 
 /// Presence as the fall capped by the rise: full through the hold and off
 /// over the fade, but never above the swell easing back in from wherever
-/// the last fade left off. Both ends are smoothsteps, so the hand's
-/// answer lands and leaves at zero slope.
+/// the last fade left off. Both ends are smoothsteps, so the response
+/// starts and ends at zero slope.
 fn level(idle: Duration, gone: bool, since_rise: Duration, from: f32) -> f32 {
     let up = (since_rise.as_secs_f32() / CURSOR_RISE.as_secs_f32()).clamp(0.0, 1.0);
     let rise = from + (1.0 - from) * (up * up * (3.0 - 2.0 * up));
@@ -145,9 +145,9 @@ fn ease(idle: Duration, gone: bool) -> f32 {
 /// once per shaded view, and only worth calling for a source that
 /// [`reads_cursor`].
 ///
-/// Two window listeners, both cheap. A move wakes the view, which is what
-/// brings a shader that faded to nothing and stopped asking for frames
-/// back when the hand comes back; without it the surface waits for
+/// Two window listeners, both cheap. A move wakes the view, which brings
+/// a shader that faded to nothing and stopped requesting frames back
+/// when the hand returns; without it the surface waits for
 /// whatever else happens to dirty it. A window exit starts the fade
 /// straight away instead of after the hold, which is the case that reads
 /// worst: the pointer leaves by an edge and the light sticks to it.
@@ -187,10 +187,10 @@ fn left(id: WindowId) {
     }
 }
 
-/// Whether a shader source cares where the pointer is, so the drivers know
-/// whether to keep frames coming for a fade nothing would otherwise see.
+/// Whether a shader source uses the pointer position, so the drivers can
+/// tell whether to keep frames coming for a fade nothing would otherwise see.
 ///
-/// A text scan, like the cover binding's. It reads wide on purpose: the
+/// A text scan, like the cover binding's. It reads wide: the
 /// mouse arrives as `params.mouse` and presence as `params.user_meta[1]`,
 /// but either can be pulled into a local first, and the cost of a false
 /// yes is a couple of seconds of frames after the pointer stops while the
@@ -262,7 +262,7 @@ mod tests {
         assert!(!reads_cursor(
             "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(params.time); }"
         ));
-        // The content shape lane: a shader that only wants where the
+        // The content shape lane: a shader that only needs where the
         // picture ends isn't watching the hand.
         assert!(!reads_cursor("let shape = params.user_meta[1].w;"));
         assert!(reads_cursor(

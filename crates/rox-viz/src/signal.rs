@@ -1,11 +1,11 @@
 //! The app's shared modulation layer: named signals over the playback
-//! spectrum that any parameter anywhere can ride. A [`Signal`] is one
+//! spectrum that any parameter anywhere can bind to. A [`Signal`] is one
 //! source (a frequency band's energy, the whole mix's level, a transient
 //! detector, a threshold trigger, or a running total of another signal) with its response
 //! smoothing and its gate; a [`Route`] attaches one signal to one
 //! host-defined parameter with an output span. The pool
-//! lives in a [`SignalHub`] evaluated once per frame off the shared
-//! [`crate::AudioFeed`], so ten panels riding the same kick read the same
+//! is held in a [`SignalHub`] evaluated once per frame off the shared
+//! [`crate::AudioFeed`], so ten panels bound to the same kick read the same
 //! value from one FFT. What a target id means, and how a span fraction
 //! maps into a parameter's native units, stays with the host.
 //!
@@ -22,7 +22,7 @@ use crate::analysis::{log_bands, Analyzer};
 use crate::AudioFeed;
 
 /// dB window signals normalize into, on magnitudes where a full-scale sine
-/// sits at 0 dB. The same window the spectrum's bars draw against, so a
+/// reads 0 dB. The same window the spectrum's bars draw against, so a
 /// signal level means the same loudness everywhere.
 pub const FLOOR_DB: f32 = -66.0;
 pub const MAX_DB: f32 = -12.0;
@@ -36,9 +36,10 @@ pub const BAND_MAX_HZ: f32 = 20_000.0;
 /// resolving single bins, so a short reactive window beats a fine one.
 const HUB_FFT: usize = 2048;
 
-/// How long the feed may sit still before it reads as stopped audio rather
-/// than the gap between pump ticks; the same reasoning as the spectrum's
-/// hold, so signals never strobe between ticks on high-refresh displays.
+/// How long the feed may go without new samples before it reads as stopped
+/// audio rather than the gap between pump ticks; the same reasoning as the
+/// spectrum's hold, so signals never strobe between ticks on high-refresh
+/// displays.
 const SILENT_AFTER: f32 = 0.15;
 
 /// Two hub ticks closer together than this are one frame asking twice:
@@ -57,13 +58,13 @@ pub enum Source {
     Level,
     /// A pulse on each transient in the band: 1 the moment the band jumps
     /// past its own recent average, decaying at the response rate. The
-    /// signal a hit rides, where Band is the signal a swell rides.
+    /// signal for a hit, where Band is the signal for a swell.
     Onset { lo: f32, hi: f32 },
-    /// A pulse when the band reaches a line the user drew: 1 the moment it
-    /// crosses the signal's threshold, decaying at the response rate,
+    /// A pulse when the band crosses a line the user drew: 1 the moment it
+    /// passes the signal's threshold, decaying at the response rate,
     /// armed again once the band falls back under. Onset with the
     /// judgment moved from a moving reference to a fixed level, for
-    /// material where the reference never gets to drop - a kick over
+    /// material where the reference never gets to drop: a kick over
     /// sustained sub fires here where Onset arms once and goes quiet.
     Trigger { lo: f32, hi: f32 },
     /// A running total of another signal's output: music-driven time. It
@@ -74,14 +75,14 @@ pub enum Source {
     ///
     /// Its own signal rather than a second channel on `of`: a route, a
     /// meter and a shader slot all address one id and read one number, and
-    /// a signal carrying two values would break that everywhere at once.
+    /// a signal with two values would break that everywhere at once.
     /// Wanting both the level and its total is two pool entries.
     Aggregate { of: u64, rate: f32 },
 }
 
 impl Source {
     /// The watched bin span for this source, clamped so a hand-edited file
-    /// can't invert the band or walk off the spectrum.
+    /// can't invert the band or step outside the spectrum.
     fn bins(&self, sample_rate: u32, half: usize) -> (usize, usize) {
         let (lo, hi) = match *self {
             Source::Band { lo, hi } | Source::Onset { lo, hi } | Source::Trigger { lo, hi } => {
@@ -117,18 +118,18 @@ pub struct Signal {
     pub smooth: f32,
     /// The gate: anything under this reads as nothing, 0 to 1 against the
     /// signal's own output, 0 for no gate. What it buys is silence between
-    /// the hits - a band riding room tone holds every knob on it slightly
+    /// the hits: a band picking up room tone holds every knob on it slightly
     /// off its slider forever, and a gate is how the quiet parts get to be
     /// quiet. Above the threshold the output isn't the raw value but a
     /// smoothstep of it across what's left of the range, 0 at the cross
-    /// and 1 at full scale, so clearing the gate hands over nothing rather
+    /// and 1 at full scale, so clearing the gate outputs nothing rather
     /// than a jump, and a level hovering right on it ripples instead of
     /// strobing. On a trigger source this is the fire level instead of a
     /// gate: the pulse fires the moment the band reaches it.
     pub threshold: f32,
     /// Aggregates only: drain back to zero when the track changes, so a
-    /// phase doesn't carry a song's worth of accumulation into the next
-    /// one. A drain rather than a snap, since a shader riding the phase
+    /// phase doesn't take a song's worth of accumulation into the next
+    /// one. A drain rather than a snap, since a shader driven by the phase
     /// would pop on a jump.
     pub reset_on_track: bool,
 }
@@ -169,12 +170,12 @@ impl Signal {
     /// The gate's transfer: what leaves for a running value. Ungated
     /// passes exactly, so a signal nobody thresholded costs nothing and
     /// loses nothing. Gated remaps the span above the threshold to the
-    /// whole output, through a smoothstep so both ends land flat: the
-    /// cross hands over zero rather than a jump, and full scale still
-    /// reads as full. Triggers step around it entirely: their threshold
+    /// whole output, through a smoothstep so both ends flatten out: the
+    /// cross outputs zero rather than a jump, and full scale still
+    /// reads as full. Triggers skip it entirely: their threshold
     /// is the fire level and their pulse leaves whole. A pure curve of
-    /// the value, no state, which is what
-    /// lets the value's own smoothing be the only clock involved.
+    /// the value, no state, which lets the value's own smoothing be the
+    /// only clock involved.
     pub fn gated(&self, value: f32) -> f32 {
         let threshold = self.threshold();
         if threshold <= 0.0 {
@@ -208,17 +209,16 @@ impl Signal {
             Source::Trigger { lo, hi } => format!("Trigger {} - {} Hz", hz(lo), hz(hi)),
             Source::Level => "Level".to_string(),
             // What it follows can't be named from here without the pool,
-            // so the rate is what distinguishes two of them at a glance.
-            // Anything more wants a name typed in, which is what names are
-            // for.
+            // so the rate distinguishes two of them at a glance. Anything
+            // more needs a name typed in.
             Source::Aggregate { rate, .. } => format!("Aggregate {rate:.2}/s"),
         }
     }
 }
 
 /// One attachment of a signal to a parameter. `from`/`to` are fractions of
-/// the target parameter's own range - the value at silence and the value
-/// at full signal - so a route sweeps exactly what a hand on the slider
+/// the target parameter's own range (the value at silence and the value
+/// at full signal), so a route sweeps exactly what a hand on the slider
 /// could, and an inverted span modulates downward. Unknown target ids and
 /// missing signals are skipped, so configs degrade quietly.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -226,7 +226,7 @@ impl Signal {
 pub struct Route {
     /// Whether the route applies. Off keeps it in place, tuned, silent.
     pub enabled: bool,
-    /// The pool signal this rides, by id.
+    /// The pool signal this route reads, by id.
     pub signal: u64,
     /// The parameter this drives: an id the host panel defines.
     pub target: String,
@@ -273,13 +273,13 @@ const ONSET_FLOOR: f32 = 0.15;
 const TRIGGER_REARM: f32 = 0.75;
 
 /// Where a falling value stops counting as motion. An exponential release
-/// never actually lands on zero, so the tail needs a floor to end at or a
+/// never actually reaches zero, so the tail needs a floor to end at or a
 /// surface drawing it out would never park.
 const SETTLED: f32 = 0.004;
 
 /// How fast a flushed aggregate falls back to zero, and how near zero ends
 /// the fall. Quick enough to read as the cycle collapsing rather than as a
-/// slow fade, slow enough that a shader riding the phase doesn't pop.
+/// slow fade, slow enough that a shader driven by the phase doesn't pop.
 const FLUSH_DRAIN: f32 = 8.0;
 const FLUSH_DONE: f32 = 0.002;
 
@@ -292,13 +292,13 @@ struct Slot {
     /// Whether an onset or trigger slot is ready to fire again.
     armed: bool,
     /// An aggregate on its way back to zero: set by a flush or a track
-    /// change, cleared when it lands. Accumulation pauses while it drains,
-    /// so a flush during a loud passage still gets there.
+    /// change, cleared when it reaches zero. Accumulation pauses while it
+    /// drains, so a flush during a loud passage still gets there.
     draining: bool,
     /// What actually leaves the slot: the value through its signal's gate
     /// curve, or on a trigger the pulse itself, where the value is the
     /// band the fire level judges. Written on the tick rather than
-    /// derived at read time only because the readers don't carry the
+    /// derived at read time only because the readers don't have the
     /// pool; for a trigger it's real state, the ringing pulse.
     output: f32,
 }
@@ -329,8 +329,8 @@ impl Signals {
     }
 
     /// The signal's running value before its gate, `None` for an id the
-    /// pool doesn't carry, which is what lets routes to deleted signals
-    /// skip quietly.
+    /// pool doesn't have, which lets routes to deleted signals skip
+    /// quietly.
     pub fn value(&self, id: u64) -> Option<f32> {
         self.slots.get(&id).map(|slot| slot.value)
     }
@@ -344,8 +344,8 @@ impl Signals {
 
     /// Whether anything in the pool is still on its way down. An aggregate
     /// parks wherever its phase stopped and never falls, so it only counts
-    /// while it's draining; everything else releases toward zero, and the
-    /// release is exactly what a consumer has to keep drawing through.
+    /// while it's draining; everything else releases toward zero, and a
+    /// consumer has to keep drawing through that release.
     pub fn settling(&self, pool: &[Signal]) -> bool {
         pool.iter().any(|signal| {
             let Some(slot) = self.slots.get(&signal.id) else {
@@ -359,7 +359,7 @@ impl Signals {
     }
 
     /// Fold one frame into the signals. `mags` is the newest half-spectrum
-    /// when a fresh window landed this frame, `None` between windows, where
+    /// when a fresh window arrived this frame, `None` between windows, where
     /// values hold rather than dip; `stopped` releases everything toward
     /// zero once the feed has actually gone quiet.
     pub fn step(
@@ -400,7 +400,7 @@ impl Signals {
                 Source::Onset { .. } => {
                     // The pulse decays on every frame; the trigger reads
                     // against the reference before the reference catches
-                    // up, so a jump lands whole.
+                    // up, so a jump registers whole.
                     let decay =
                         ONSET_DECAY_FAST * (ONSET_DECAY_SLOW / ONSET_DECAY_FAST).powf(smooth);
                     slot.value -= slot.value * (decay * dt).min(1.0);
@@ -424,7 +424,7 @@ impl Signals {
                     }
                 }
                 Source::Trigger { .. } => {
-                    // The pulse lives in the output and rings down every
+                    // The pulse is kept in the output and rings down every
                     // frame; the value stays the band itself, so the
                     // meter shows the level the fire line is judging and
                     // the mark reads as "fires here". No threshold set
@@ -469,10 +469,10 @@ impl Signals {
             }
             slot.output = signal.gated(slot.value);
         }
-        // Third pass: the aggregates, reading what the sources landed on
+        // Third pass: the aggregates, reading what the sources settled on
         // this frame. An aggregate pointed at another aggregate reads last
-        // frame's value instead, which is what keeps a chain (or a ring)
-        // from being an ordering problem or a hang.
+        // frame's value instead, which keeps a chain (or a ring) from
+        // being an ordering problem or a hang.
         for signal in pool {
             let Some((of, rate)) = signal.aggregate() else {
                 continue;
@@ -525,7 +525,7 @@ impl Default for Signals {
 /// their paint (the first call per frame does the work, the rest read),
 /// edit it from their settings surfaces, and the app persists whatever
 /// [`SignalHub::pool`] returns. Shared by `Arc` in the app state, so a
-/// tray adoption carries it the way it carries the player.
+/// tray adoption keeps it the way it keeps the player.
 pub struct SignalHub {
     inner: Mutex<Hub>,
 }
@@ -562,16 +562,16 @@ impl SignalHub {
     }
 
     /// Advance the engine one frame off the feed. Cheap to call from every
-    /// consumer: calls landing within the same frame window return
+    /// consumer: calls arriving within the same frame window return
     /// immediately, so the clock only moves once however many panels ask.
     ///
-    /// `track` is what's playing, so the hub can see a song change for the
-    /// aggregates that reset on one. Every ticker passes it rather than
+    /// `track` is the id of what's playing, so the hub can see a song change
+    /// for the aggregates that reset on one. Every ticker passes it rather than
     /// one privileged caller owning the edge: whichever surface happens to
     /// be painting has to be the one that notices.
     pub fn tick(&self, feed: &AudioFeed, track: Option<u64>) {
         let mut hub = self.inner.lock().unwrap();
-        // Ahead of the throttle below, so a change never rides on which
+        // Ahead of the throttle below, so a change never depends on which
         // caller won the frame.
         if let Some(track) = track {
             if hub.last_track.replace(track) != Some(track) {
@@ -631,23 +631,24 @@ impl SignalHub {
     }
 
     /// The signal's current value with its gate applied, `None` for an id
-    /// the pool doesn't carry. Everything riding a signal reads it through
-    /// here, so the gate lands on routes, meters and the shader alike.
+    /// the pool doesn't have. Everything bound to a signal reads it through
+    /// here, so the gate applies to routes, meters and the shader alike.
     pub fn value(&self, id: u64) -> Option<f32> {
         self.inner.lock().unwrap().engine.output(id)
     }
 
     /// The value before the gate, for the meter that draws the threshold as
     /// a mark across it: a readout that only ever showed the gated value
-    /// would sit at nothing under the mark, which is the one place the gate
-    /// wants watching.
+    /// would show nothing under the mark, the one place the gate is worth
+    /// watching.
     pub fn raw_value(&self, id: u64) -> Option<f32> {
         self.inner.lock().unwrap().engine.value(id)
     }
 
     /// Send one aggregate back to zero by hand, the debugging way out of
     /// "what is this phase actually at". Drains rather than snaps, so
-    /// pressing it while a shader rides the phase doesn't tear the frame.
+    /// pressing it while a shader is reading the phase doesn't tear the
+    /// frame.
     pub fn flush(&self, id: u64) {
         self.inner.lock().unwrap().engine.flush(id);
     }
@@ -678,7 +679,7 @@ impl SignalHub {
     }
 
     /// Replace the pool wholesale: what a workspace apply or a settings
-    /// load does. Engine state for surviving ids carries over.
+    /// load does. Engine state for ids still in the pool is kept.
     pub fn set_pool(&self, pool: Vec<Signal>) {
         self.inner.lock().unwrap().pool = pool;
     }
@@ -731,7 +732,7 @@ mod tests {
         }
         assert!(engine.value(1).unwrap() > 0.9);
         assert!(engine.value(2).unwrap() < 0.05);
-        // An id the pool never carried resolves to nothing.
+        // An id the pool never had resolves to nothing.
         assert!(engine.value(99).is_none());
     }
 
@@ -752,11 +753,11 @@ mod tests {
         assert!(engine.value(1).unwrap() < 0.05, "stop should release");
     }
 
-    /// The release is motion, and a surface riding a signal has to keep
-    /// drawing for as long as it lasts. Without this the fade a smoothed
-    /// signal exists to give you is the one thing nobody ever sees: the
-    /// audio stops, the frames stop with it, and the effect freezes at
-    /// whatever the last live push happened to carry.
+    /// The release is motion, and a surface bound to a signal has to keep
+    /// drawing for as long as it lasts. Without this nobody ever sees the
+    /// fade a smoothed signal exists to give you: the audio stops, the
+    /// frames stop with it, and the effect freezes at whatever value the
+    /// last live push happened to leave.
     #[test]
     fn a_falling_signal_reads_as_settling_until_it_lands() {
         let mut engine = Signals::new();
@@ -964,8 +965,8 @@ mod tests {
         );
         assert_eq!(hub.value(1), Some(ungated), "no gate lets it all through");
 
-        // Gated above where it sits: nothing leaves, and what the engine
-        // holds is untouched, so lifting the gate restores it at once.
+        // Gated above where the value is: nothing leaves, and what the
+        // engine holds is untouched, so lifting the gate restores it at once.
         // The curve is stateless, so one frame is the whole story.
         quiet.threshold = ungated + 0.1;
         hub.set_pool(vec![quiet.clone()]);
@@ -1004,8 +1005,8 @@ mod tests {
             low > 0.0 && low < 0.1,
             "just over the cross eases in rather than jumping, got {low}"
         );
-        // And through the engine: a loud band over a mid gate still lands
-        // wide open, since the remap tops out where the value does.
+        // And through the engine: a loud band over a mid gate still comes
+        // out wide open, since the remap tops out where the value does.
         let mut engine = Signals::new();
         let mut mags = vec![0.0f32; 2048];
         mags[100] = 1.0;
@@ -1034,7 +1035,7 @@ mod tests {
         let mut mags = vec![0.0f32; 2048];
         mags[100] = 1.0;
         // Rate 2/s over a source pinned near 1: a full wrap every half
-        // second, so a second of frames laps twice and lands mid-ramp
+        // second, so a second of frames laps twice and ends mid-ramp
         // rather than at 2.0.
         let pool = vec![band(1, 800.0, 2000.0), aggregate(2, 1, 2.0)];
         for _ in 0..10 {
@@ -1086,7 +1087,7 @@ mod tests {
         for _ in 0..60 {
             engine.step(Some(&mags), 48_000, false, 0.016, &pool);
         }
-        // Landed, and accumulating again: the drain releases the slot
+        // Back at zero, and accumulating again: the drain releases the slot
         // rather than pinning it at zero.
         let after = engine.value(2).unwrap();
         assert!(after > 0.0 && after < mid, "it should resume from zero");
@@ -1096,8 +1097,8 @@ mod tests {
     fn an_aggregate_over_a_missing_or_circular_source_stays_put() {
         let mut engine = Signals::new();
         let mags = vec![0.0f32; 2048];
-        // One pointed at an id nobody carries, and a pair pointed at each
-        // other. Neither should hang or panic; the ring reads last frame's
+        // One pointed at an id that isn't in the pool, and a pair pointed at
+        // each other. Neither should hang or panic; the ring reads last frame's
         // values, which are zero, so nothing climbs.
         let pool = vec![
             aggregate(1, 99, 1.0),

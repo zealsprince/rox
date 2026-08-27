@@ -4,7 +4,7 @@
 
 Decision: a cue rip's tracks are ordinary rows in `tracks` under the subsong identity
 `(source, path, sub)`, where `sub` is 0 for a plain file and the sheet's 1-based TRACK
-number for a span of an image. The span itself lives in a `cue_tracks` side table keyed
+number for a span of an image. The span itself is stored in a `cue_tracks` side table keyed
 by track id, rows existing only for cue tracks. The engine plays a span by opening the
 image, seeking to the start, and treating the end boundary exactly as end-of-file.
 
@@ -13,13 +13,13 @@ in a sidecar sheet. Supporting it means a track stops being a file, and the ques
 where that break in the file-equals-track assumption gets absorbed.
 
 Making cue tracks real rows absorbs it in one place. Playlists snapshot by track id,
-listens attach by id, search and sort walk the projection's rows, and none of them care
+listens attach by id, search and sort scan the projection's rows, and none of them care
 that three rows share a path. The alternatives absorb it everywhere: synthetic fragment
 paths (`album.flac#3` as the stored path) keep the row shape untouched but move the
 burden onto every consumer that opens the file, where a missed fragment strip is a
 silent bug that reads tag bytes out of nothing.
 
-The `sub` column rides `tracks` itself because identity can't live in a side table: the
+The `sub` column is on `tracks` itself because identity can't be stored in a side table: the
 rescan upsert needs a conflict target, and a unique constraint doesn't span tables. A
 nullable span column in the key fails quietly instead, since SQLite treats NULLs as
 distinct in unique indexes, so every plain file would stop conflicting with itself and
@@ -39,7 +39,7 @@ path so gapless, crossfade, stop-after, and loop semantics hold without knowing 
 exist. The head trim matters because an accurate seek lands on a packet boundary, and
 without dropping the frames between the landing and the span start, each track replays
 the tail of the one before it. Consecutive cue tracks of one image share an album group,
-which is what keeps the crossfade rule from fading over a rip's gapless splices.
+which keeps the crossfade rule from fading over a rip's gapless splices.
 
 Scan-side, the sheet claims its image: the image file gets no row of its own while a cue
 lists it, and rows key their freshness off the later of the sheet's and the image's
@@ -49,8 +49,8 @@ ReplayGain, where only the album pair is carried, since a whole-disc image's tra
 describe the disc rather than any one span.
 
 Ratings and tag edits for a cue row never write to the file. The image is shared by
-every track of the disc, so a per-track write would stamp them all; the writer refuses
+every track of the disc, so a per-track write would stamp them all; the writer skips
 the file half and the database keeps the value. Cue sheet editing, per-span waveform
 peaks, per-span ReplayGain measurement, and embedded cuesheets (the FLAC CUESHEET block)
-are all deliberately out: each is additive on top of this identity and none of them
+are all out of scope: each is additive on top of this identity and none of them
 bends it.

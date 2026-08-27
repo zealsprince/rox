@@ -1,12 +1,12 @@
 //! The Keymap settings page: every chord rox binds, one row per command,
 //! grouped the way the registry groups them. `impl SettingsWindow`
-//! methods in a child module, reaching back into the window's private
-//! state, the Workspace page's shape.
+//! methods in a child module, with access to the window's private state,
+//! the Workspace page's shape.
 //!
 //! A row is its chords as keycap chips, each with a way off, plus a
 //! button that records another. Recording is the only unusual part: the
 //! keys someone wants to bind are mostly keys that already do something,
-//! so a plain key listener would never see them - the binding fires
+//! so a plain key listener would never see them, since the binding fires
 //! first. The window instead holds a keystroke interceptor, which runs
 //! ahead of binding resolution, and swallows the press while a row is
 //! waiting for one.
@@ -74,7 +74,7 @@ impl SettingsWindow {
     }
 
     /// One command's row: the chips, the record button, the reset, and the
-    /// clash note underneath when two commands want the same keys.
+    /// clash note underneath when two commands are bound to the same keys.
     fn command_row<'a>(
         &self,
         command: &'static Command,
@@ -85,7 +85,7 @@ impl SettingsWindow {
         // The row renders through `custom`, which matches keywords only, so
         // the label and description go in by hand or search never sees them.
         // The chords find the row too, both as typed and as printed, so
-        // searching "ctrl-p" and searching "Ctrl+P" both land here.
+        // searching "ctrl-p" and searching "Ctrl+P" both turn it up.
         let mut keywords: Vec<String> = vec![command.label.into(), command.description.into()];
         keywords.extend(chords.iter().map(|chord| chord.to_string()));
         keywords.extend(chords.iter().map(|chord| keymap::display(chord)));
@@ -135,11 +135,10 @@ impl SettingsWindow {
         is_default: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // No wrap here, deliberately: a setting row's control slot is
-        // content-sized, and a wrapping box with no definite width lays
-        // its children out one per line. A command carries a chord or two
-        // plus the two buttons, which fits a line at any window width the
-        // settings page opens at.
+        // No wrap here: a setting row's control slot is content-sized, and
+        // a wrapping box with no definite width lays its children out one
+        // per line. A command has a chord or two plus the two buttons,
+        // which fits a line at any window width the settings page opens at.
         let mut control = div()
             .flex()
             .flex_row()
@@ -147,8 +146,8 @@ impl SettingsWindow {
             .items_center()
             .gap(tokens::SPACE_XS);
         // The chords stay up while a row records, because recording is
-        // adding to them: what's already bound is what someone needs to
-        // see to pick a chord that isn't taken.
+        // adding to them: someone needs to see what's already bound to
+        // pick a chord that isn't taken.
         if chords.is_empty() {
             control = control.child(
                 div()
@@ -203,7 +202,7 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// One keycap chip with the way to take it off. The × sits inside the
+    /// One keycap chip with the way to take it off. The × goes inside the
     /// chip rather than beside it, so a row of three chords doesn't read
     /// as six separate controls.
     fn chord_chip(&self, command: &'static Command, chord: &str, cx: &mut Context<Self>) -> Div {
@@ -238,7 +237,7 @@ impl SettingsWindow {
             )
     }
 
-    /// Re-read the file after an edit. The page draws off this mirror
+    /// Re-read the file after an edit. The page draws off this copy
     /// rather than loading settings per render, the way every other page
     /// that reads a setting does.
     pub(super) fn keymap_changed(&mut self, cx: &mut Context<Self>) {
@@ -255,7 +254,7 @@ impl SettingsWindow {
         let handle = window.window_handle();
         cx.intercept_keystrokes(move |event, window, cx| {
             // Only this window records, so a chord pressed in the
-            // workspace while the page sits open still plays music.
+            // workspace while the page is open still plays music.
             if window.window_handle() != handle {
                 return;
             }
@@ -281,7 +280,7 @@ impl SettingsWindow {
                     return;
                 };
                 // A bare Escape backs out. Modified, it's a chord like any
-                // other - Shift+Escape is already one of the defaults.
+                // other: Shift+Escape is already one of the defaults.
                 if keystroke.key == "escape" && !keystroke.modifiers.modified() {
                     cx.notify();
                     return;

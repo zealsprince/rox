@@ -1,9 +1,9 @@
 //! The embed dialog: which of the three stored sources to write into the
 //! files, and what that would come to.
 //!
-//! The three save settings each speak for the next write and nothing else, so
-//! a library described under Database and then switched to Tags carries none
-//! of it in the files. This is the catch-up, and it exists as a dialog rather
+//! The three save settings each apply to the next write and nothing else, so
+//! a library described under Database and then switched to Tags has none of
+//! it in the files. This is the catch-up, and it exists as a dialog rather
 //! than a button because the honest answer to "what would this do" is three
 //! different numbers.
 //!
@@ -14,7 +14,7 @@
 //! embed" and "lyrics aren't offered here" are different answers.
 //!
 //! The run itself belongs to [`crate::bake`], which is app-global: the dialog
-//! closes on the press and the tasks window carries the progress and the Stop,
+//! closes on the press and the tasks window shows the progress and the Stop,
 //! the same as a conversion.
 
 use std::sync::Arc;
@@ -35,8 +35,8 @@ use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 
 /// The run and the survey behind this window. Aliased because
-/// [`rox_library::bake`] is what a bake *is* and this is what drives one, and
-/// the two names would otherwise be the same word twice in every line.
+/// [`rox_library::bake`] defines what a bake is and this drives one, and the
+/// two names would otherwise be the same word twice in every line.
 use crate::bake as job;
 
 /// The dialog's floor. Wide enough that a source's line doesn't wrap, tall
@@ -56,9 +56,9 @@ actions!(bake_dialog, [Embed]);
 /// The key context the window's own bindings scope to.
 const CONTEXT: &str = "BakeDialog";
 
-/// The dialog's embed binding; call once at startup. It sits on the window
-/// root, so enter embeds wherever focus is - a checkbox row, the window
-/// itself - rather than only where a button happens to be.
+/// The dialog's embed binding; call once at startup. It's bound on the
+/// window root, so Enter embeds wherever focus is (a checkbox row, the
+/// window itself) rather than only where a button happens to be.
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("enter", Embed, Some(CONTEXT))]);
 }
@@ -102,9 +102,9 @@ pub struct BakeDialog {
     /// The survey while it runs, so the readout has a count and closing the
     /// window can call it off.
     survey: Option<Arc<job::Survey>>,
-    /// What the survey found, empty until it lands.
+    /// What the survey found, empty until it finishes.
     candidates: Vec<Candidate>,
-    /// Why there is nothing to show, when the survey couldn't run at all.
+    /// Why there's nothing to show, when the survey couldn't run at all.
     error: Option<SharedString>,
     /// One tick per source, in [`Source::ALL`] order.
     picked: [bool; 3],
@@ -125,7 +125,7 @@ impl BakeDialog {
         window.on_window_should_close(cx, move |window, cx| {
             if let Some(this) = this.upgrade() {
                 this.update(cx, |this, cx| {
-                    // Nobody is waiting for the answer any more, and the
+                    // Nobody is waiting for the result any more, and the
                     // survey is a file open per candidate.
                     if let Some(survey) = &this.survey {
                         survey.abandon();
@@ -187,7 +187,7 @@ impl BakeDialog {
         .detach();
     }
 
-    /// Take the survey's answer and tick every source that has something to
+    /// Take the survey's result and tick every source that has something to
     /// write. Ticking them is the right default: someone who opened this
     /// wants what rox is holding to be in the files, and the counts beside
     /// each row are there to untick one by.
@@ -307,8 +307,8 @@ impl BakeDialog {
 
     /// Why the embed won't run yet, when it won't: the read that failed, how
     /// far the survey has got, or that there's nothing left to write. None
-    /// once the press would do something, which is when the footer says so
-    /// with the shortcut instead.
+    /// once the press would do something, which is when the footer shows the
+    /// shortcut instead.
     fn status(&self) -> Option<(SharedString, gpui::Rgba)> {
         if let Some(e) = &self.error {
             return Some((

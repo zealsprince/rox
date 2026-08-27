@@ -1,11 +1,11 @@
 //! The app-wide search query and the per-view knob that opts a panel into
-//! following it. The query lives in one [`SharedQuery`] entity on the app
+//! following it. The query is stored in one [`SharedQuery`] entity on the app
 //! state, shared the way [`rox_services::selection::Selection`] is: a
 //! global-following panel publishes its box's text here and every other
 //! follower reads it back, so one box drives them all. [`QuerySource`] is the
 //! panel-config knob, own or shared, and [`QueryFilter`] is the trait a
 //! searching panel implements to get the whole follow-and-mirror behavior for
-//! free - the library, the grids, and the art shelf all ride it. Shared is the
+//! free; the library, the grids, and the art shelf all use it. Shared is the
 //! default, so a fresh panel follows the search box out of the box; a panel
 //! set to its own query keeps an independent filter, the duplicate-with-config
 //! story.
@@ -31,9 +31,9 @@ pub enum SharedQueryEvent {
 }
 
 /// The one app-wide search query. Global-following panels write it from
-/// their box and read it back to filter. The structured filter rides
-/// along: the filter panel writes its exact-value picks here, and the
-/// same followers narrow by both.
+/// their box and read it back to filter. The structured filter is stored
+/// alongside it: the filter panel writes its exact-value picks here, and
+/// the same followers narrow by both.
 #[derive(Default)]
 pub struct SharedQuery {
     text: String,
@@ -42,7 +42,7 @@ pub struct SharedQuery {
     filter: FilterSet,
     /// How many search panels are alive to show this query. A jump-to action
     /// from a follower checks this to decide whether the filter already has a
-    /// box to land in, or whether it has to open the follower's own.
+    /// box to show in, or whether it has to open the follower's own.
     boxes: usize,
 }
 
@@ -68,10 +68,10 @@ impl SharedQuery {
         self.boxes > 0
     }
 
-    /// Set the query. A no-op when unchanged, which is what stops the echo:
-    /// a follower mirrors the new value back into its own box, that fires a
+    /// Set the query. A no-op when unchanged, which stops the echo: a
+    /// follower copies the new value back into its own box, that fires a
     /// change, and the change publishes the same text right back here, where
-    /// it lands equal and goes no further.
+    /// it compares equal and goes no further.
     pub fn set(&mut self, text: String, cx: &mut Context<Self>) {
         if self.text == text {
             return;
@@ -140,7 +140,7 @@ pub fn toggle_pick(query: &Entity<SharedQuery>, field: FilterField, value: &str,
 }
 
 /// Add a `field:"value"` term to the query text for the fields the filter
-/// has no column for - the title. Appends rather than replaces, so it reads
+/// has no column for: the title. Appends rather than replaces, so it reads
 /// like a filter pick: what's already typed stays and the term narrows it
 /// further. Already there, it comes back off, the pick's toggle.
 pub fn toggle_term(query: &Entity<SharedQuery>, field: &str, value: &str, cx: &mut App) {
@@ -174,7 +174,7 @@ fn toggled_term(text: &str, term: &str) -> String {
 /// shared filter, then a Clear that drops the lot. Returns None on an empty
 /// filter so a host only spends the space when there's a filter to show.
 /// Clicking a chip drops just its value, Clear drops the whole filter; the
-/// text query is left alone either way. Every write lands on the shared
+/// text query is left alone either way. Every write goes to the shared
 /// filter, which every follower already watches, so the views narrow and
 /// widen with the chips.
 pub fn filter_chips(query: &Entity<SharedQuery>, cx: &App) -> Option<Div> {
@@ -254,7 +254,7 @@ pub fn filter_chips(query: &Entity<SharedQuery>, cx: &App) -> Option<Div> {
 /// panel filters a fresh layout with no per-panel setup.
 ///
 /// Selection is the chaining source: the view shows the tracks another panel
-/// last picked, which is what turns an album wall and a track list into one
+/// last picked, which turns an album wall and a track list into one
 /// surface. It keeps its own box like [`QuerySource::Local`] does, so text
 /// still narrows within the pick.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -356,7 +356,7 @@ pub fn search_flyout<P: 'static>(
 
 /// The shared "search" section for a searching panel's Behavior page: the
 /// box toggle over the source picker, one header so the library, the grids,
-/// and the art shelf all read the same. The show toggle carries the panel's
+/// and the art shelf all read the same. The show toggle runs the panel's
 /// own side effects (rebuild, retitle); the source pick routes to
 /// [`pick_query_source`](QueryFilter) the same way everywhere.
 pub fn search_section<P: 'static>(
@@ -410,8 +410,8 @@ pub fn source_row<P: 'static>(
 
 /// A searching panel's shared query behavior, so the library, the grids, and
 /// the art shelf don't each hand-roll the follow-and-mirror logic. A panel
-/// wires the accessors to its own fields; the provided methods do the rest -
-/// resolve the effective query, mirror the box, publish edits, and react to a
+/// wires the accessors to its own fields; the provided methods do the rest:
+/// resolve the effective query, sync the box, publish edits, and react to a
 /// shared-query change. The panel still owns the plumbing: subscribe to the
 /// shared query and route it to [`QueryFilter::on_shared_query_changed`],
 /// route the box's `Changed` to [`QueryFilter::on_query_box_changed`], and
@@ -423,7 +423,7 @@ pub trait QueryFilter: Sized + 'static {
     fn selection(&self) -> &Entity<Selection>;
     /// The track ids this panel is pinned to while following the selection.
     /// Held rather than read live because the panel's own picks must not
-    /// move it - see [`QueryFilter::on_selection_changed`].
+    /// move it. See [`QueryFilter::on_selection_changed`].
     fn selection_ids(&self) -> &[i64];
     fn set_selection_ids(&mut self, ids: Vec<i64>);
     /// The panel's search box.
@@ -466,10 +466,10 @@ pub trait QueryFilter: Sized + 'static {
 
     /// The structured filter the view narrows by, alongside the effective
     /// query: the shared picks while following the shared query, nothing on
-    /// a panel's own - the filter is a shared-search surface, so an
-    /// own-query panel stays out of its reach. Following the selection pins
-    /// the view to the picked tracks instead, which rides the same filter
-    /// down to every panel's row scan.
+    /// a panel's own, since the filter is a shared-search surface and an
+    /// own-query panel is outside it. Following the selection pins the view
+    /// to the picked tracks instead, using the same filter every panel's
+    /// row scan applies.
     fn effective_filter(&self, cx: &App) -> FilterSet {
         match self.query_source() {
             QuerySource::Global => self.shared_query().read(cx).filter().clone(),
@@ -490,7 +490,7 @@ pub trait QueryFilter: Sized + 'static {
 
     /// Reset the box to the active source's text, cursor to the end. Guarded
     /// on drift so the box the user is typing in keeps its cursor, which also
-    /// stops the mirror echo. Call from render, where a window exists.
+    /// stops the sync echo. Call from render, where a window exists.
     fn sync_query_box(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.query_box_text(cx);
         self.query_box().clone().update(cx, |box_, cx| {
@@ -507,7 +507,7 @@ pub trait QueryFilter: Sized + 'static {
             return;
         }
         self.set_query_source_value(source);
-        // Switching onto the selection lands on whatever is picked now,
+        // Switching onto the selection picks up whatever is selected now,
         // rather than an empty view until the next pick.
         if source == QuerySource::Selection {
             let ids = self.selection().read(cx).tracks().to_vec();
@@ -577,10 +577,10 @@ pub trait QueryFilter: Sized + 'static {
     /// Route the selection subscription here: re-pin and re-filter while
     /// following the selection, ignore it otherwise.
     ///
-    /// A panel's own picks are ignored on purpose. A selection-following
-    /// view still publishes what you click in it, which is what keeps the
-    /// chain running - click a track in the drawer and the cover art and
-    /// track info follow. If it also re-pinned itself to that click it would
+    /// A panel's own picks are ignored. A selection-following view still
+    /// publishes what you click in it, which keeps the chain running: click
+    /// a track in the drawer and the cover art and track info follow. If it
+    /// also re-pinned itself to that click it would
     /// narrow to the one row every time, and there would be no way back.
     fn on_selection_changed(&mut self, source: EntityId, cx: &mut Context<Self>) {
         if self.query_source() != QuerySource::Selection || source == cx.entity().entity_id() {

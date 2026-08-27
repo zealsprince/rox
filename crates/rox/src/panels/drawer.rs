@@ -1,16 +1,16 @@
 //! The drawer panel: a main panel with a second tucked against one edge,
 //! only a labeled handle showing until the pointer rests on it, then the
 //! drawer slides out over the main and slides home when the pointer
-//! leaves. For the surfaces worth a glance but not a slot of their own -
+//! leaves. For the surfaces worth a glance but not a slot of their own:
 //! the queue rising over a transport group, filters over a library. The
 //! edge and how much of the panel the open drawer covers are per-panel
 //! settings. Hosted through [`crate::composite`]; the drawer costs
-//! nothing once it settles home.
+//! nothing once it's settled home.
 //!
-//! A drawer can also open on a pick rather than a hover, which is what
-//! chains two panels into one surface: an album wall in the main slot, a
-//! track list in the drawer, and clicking a cover slides the tracks out
-//! over the wall. The pick that opens it lands outside the drawer, so a
+//! A drawer can also open on a pick rather than a hover, which chains two
+//! panels into one surface: an album wall in the main slot, a track list
+//! in the drawer, and clicking a cover slides the tracks out over the
+//! wall. The pick that opens it lands outside the drawer, so a
 //! selection-opened drawer waits for the pointer to arrive before it
 //! treats leaving as a dismissal, and a click on the handle pins it out
 //! for the times the drawer is somewhere to work rather than glance.
@@ -71,7 +71,7 @@ impl DrawerEdge {
 }
 
 /// What slides the drawer out. Resting on the handle always works; this
-/// picks whether a pick in the main panel is a second way in.
+/// sets whether a pick in the main panel is a second way in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DrawerTrigger {
@@ -83,18 +83,18 @@ pub enum DrawerTrigger {
     Selection,
 }
 
-/// Which picks a selection-triggered drawer answers. The selection is
+/// Which picks a selection-triggered drawer responds to. The selection is
 /// app-wide, so without a scope every selection drawer in a layout opens on
 /// every pick anywhere in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DrawerScope {
     /// Only picks made in this drawer's own main panel, nested hosts
-    /// included. What chains one wall to one list.
+    /// included. Chains one wall to one list.
     #[default]
     Main,
-    /// Picks made anywhere else in the layout, for the drawer that answers a
-    /// panel it doesn't host - real dock tabs can't live in a slot, so a
+    /// Picks made anywhere else in the layout, for the drawer that responds
+    /// to a panel it doesn't host. Real dock tabs can't go in a slot, so a
     /// tabbed browser drives its drawer this way. Its own contents are still
     /// excluded, main included.
     Any,
@@ -115,14 +115,14 @@ pub struct DrawerConfig {
     pub dim: f32,
     /// What slides the drawer out, on top of the handle.
     pub open_on: DrawerTrigger,
-    /// Which picks the selection trigger answers.
+    /// Which picks the selection trigger responds to.
     pub scope: DrawerScope,
     /// Drop the handle strip, so nothing of the drawer shows until a pick
     /// brings it out. The edge lane stays reserved either way: the grip
     /// comes back with the first pick, and if the lane came back with it the
     /// main would relayout under the very click that opened the drawer. Only
-    /// honored on the selection trigger: with no handle and no pick there
-    /// would be nothing left to open it.
+    /// honored on the selection trigger: with no handle and no pick there'd
+    /// be nothing left to open it.
     pub hide_handle: bool,
 }
 
@@ -166,28 +166,28 @@ pub struct DrawerPanel {
     /// Main at 0, drawer at 1.
     slots: [Slot; 2],
     /// Whether the hosted children have been told which tab panel this
-    /// drawer sits under; see [`composite::introduce_slots`].
+    /// drawer is under; see [`composite::introduce_slots`].
     introduced: bool,
     /// Whether the panel itself is active, so the hover toggle can hand
     /// the drawer the right active state without waiting on the dock.
     active: bool,
-    /// Whether the drawer is out. Hover-transient - never persisted, a
-    /// restore always lands home.
+    /// Whether the drawer is out. Hover-transient: never persisted, so a
+    /// restore always starts home.
     open: bool,
-    /// Held out by a click on the handle, until it is clicked again. As
-    /// transient as `open`: a restore lands home and unpinned.
+    /// Held out by a click on the handle, until it's clicked again. As
+    /// transient as `open`: a restore starts home and unpinned.
     pinned: bool,
     /// Whether the pointer has been inside the drawer since it opened. A
     /// pick opens the drawer with the pointer still out on the row that was
     /// clicked, so the leave check has to wait for the pointer to arrive
-    /// before leaving can mean dismissal. A hover open sets it outright -
-    /// the pointer is on the handle already.
+    /// before leaving can mean dismissal. A hover open sets it outright,
+    /// since the pointer is on the handle already.
     entered: bool,
-    /// A pick landed with no window in hand to hand the child its active
+    /// A pick came in with no window in hand to give the child its active
     /// state; the next render opens or closes on it. The grid's resync
     /// idiom, for the same reason.
     pending_open: Option<bool>,
-    /// Whether something this drawer answers is picked. A dropped handle
+    /// Whether something this drawer responds to is picked. A dropped handle
     /// comes back once it is, so the drawer stays reachable after it folds
     /// home; clearing the selection takes the grip away again. Transient
     /// like `open`, and only ever set by picks this drawer's scope lets
@@ -279,8 +279,8 @@ impl DrawerPanel {
         self.from + (target - self.from) * u
     }
 
-    /// Slide the drawer out or home. The drawer runs only while it is
-    /// out; the main below keeps running the whole time.
+    /// Slide the drawer out or home. The drawer runs only while it's out;
+    /// the main below keeps running the whole time.
     fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.open == open {
             return;
@@ -294,7 +294,7 @@ impl DrawerPanel {
         cx.notify();
     }
 
-    /// A pick landed on the app-wide selection. In selection mode it slides
+    /// A pick came through the app-wide selection. In selection mode it slides
     /// the drawer out, and an emptied selection slides it home; the work
     /// waits for the next render, which has the window the child's active
     /// state needs.
@@ -308,18 +308,18 @@ impl DrawerPanel {
             return;
         }
         // Either way a pick inside the open drawer is ignored: clicking a row
-        // in there is working, not chaining, and re-answering it would pin
-        // the drawer to its own contents.
+        // in there is working, not chaining, and responding to it again would
+        // pin the drawer to its own contents.
         match self.config.scope {
-            // Scoped to the main, so the rest of the layout can't reach it
-            // and two chained drawers don't both answer one pick.
+            // Scoped to the main, so the rest of the layout can't trigger it
+            // and two chained drawers don't both respond to one pick.
             DrawerScope::Main => {
                 if !self.slot_holds(0, source, cx) {
                     return;
                 }
             }
             // Driven from anywhere else in the layout, but never from its own
-            // contents - a main that publishes picks of its own (a queue, a
+            // contents. A main that publishes picks of its own (a queue, a
             // library) would otherwise slide the drawer over itself.
             DrawerScope::Any => {
                 if self.slot_holds(0, source, cx) || self.slot_holds(1, source, cx) {
@@ -336,8 +336,8 @@ impl DrawerPanel {
     }
 
     /// Whether `id` is the panel in slot `ix` or anything nested under it. A
-    /// slot can host composites of its own, so this walks the whole subtree
-    /// rather than checking the one panel.
+    /// slot can host composites of its own, so this searches the whole
+    /// subtree rather than checking the one panel.
     fn slot_holds(&self, ix: usize, id: EntityId, cx: &App) -> bool {
         fn walk(slot: &Slot, id: EntityId, cx: &App) -> bool {
             let Some(panel) = slot else {
@@ -406,12 +406,12 @@ impl DrawerPanel {
         let axis = edge.axis();
         let extent = px(self.extent(u));
 
-        // The handle names what waits behind it - the better hint than a
-        // bare grip. Resting the pointer on it slides the drawer out.
+        // The handle names what's behind it, a better hint than a bare
+        // grip. Resting the pointer on it slides the drawer out.
         let name = child
             .tab_name(cx)
             .unwrap_or_else(|| SharedString::from(panel::display_name(child.panel_name(cx))));
-        // The grip takes the accent while pinned: the one mark that says the
+        // The grip takes the accent while pinned: the one mark that shows the
         // drawer is being held out rather than hovered out.
         let grip = div()
             .rounded_full()
@@ -437,8 +437,9 @@ impl DrawerPanel {
             .bg(palette::alpha(palette::bg_control(), 0xa0))
             .hover(|d| d.bg(palette::bg_control()))
             .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, cx| {
-                // The pointer is on the handle, so the drawer opens already
-                // arrived: leaving from here can dismiss it right away.
+                // The pointer is on the handle, so the drawer opens with the
+                // pointer already inside: leaving from here can dismiss it
+                // right away.
                 this.entered = true;
                 this.set_open(true, window, cx);
             }))
@@ -489,10 +490,10 @@ impl DrawerPanel {
             })
             // No fill of its own: the hosted panel's surface is the
             // background, so its opacity override (the Appearance page)
-            // decides how much of the main shows through the drawer.
+            // sets how much of the main shows through the drawer.
             .border_color(palette::border())
-            // The border rides the inner edge, where the drawer meets the
-            // main.
+            // The border is drawn on the inner edge, where the drawer meets
+            // the main.
             .map(|d| match edge {
                 DrawerEdge::Top => d.border_b_1(),
                 DrawerEdge::Bottom => d.border_t_1(),
@@ -513,8 +514,8 @@ impl DrawerPanel {
             DrawerEdge::Top | DrawerEdge::Left => boxed.child(content).children(handle),
         };
         // The host chrome's surface shader, painted over the box instead
-        // of the panel (see render): the box is what reads as one pane, so
-        // the handle strip gets shaded with the content. Last child, so
+        // of the panel (see render): the box reads as one pane, so the
+        // handle strip gets shaded with the content. Last child, so
         // the screen pass samples both already drawn.
         let surface = panel::shader::PanelSurface::build(&self.config.chrome, Sides::default());
         boxed.when_some(surface, |boxed, surface| {
@@ -531,8 +532,8 @@ impl DrawerPanel {
 
     /// The drawer's extent along its axis at openness `u`: the handle
     /// alone at home, the reveal fraction of the slot fully out. The slot
-    /// size comes off the last paint; before one lands the drawer is home
-    /// and the handle needs no measurement.
+    /// size comes off the last paint; before the first one the drawer is
+    /// home and the handle needs no measurement.
     fn extent(&self, u: f32) -> f32 {
         let axis = self.config.edge.axis();
         let slot = self
@@ -554,7 +555,7 @@ impl DrawerPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // Let the children reach this host from their own menus; the
+        // Let the children open this host from their own menus; the
         // dock never sees a hosted panel, so nothing else offers it.
         let drawer_title = rox_i18n::t!("drawer-title");
         composite::report_hosted(
@@ -563,12 +564,12 @@ impl DrawerPanel {
             cx,
         );
 
-        // A pick from the last frame lands here, where there is a window to
-        // hand the child its active state.
+        // A pick from the last frame is applied here, where there's a window
+        // to give the child its active state.
         if let Some(open) = self.pending_open.take() {
             if open {
-                // The click that opened it landed out on the main panel, so
-                // the pointer has not arrived yet and the leave check stays
+                // The click that opened it was out on the main panel, so
+                // the pointer hasn't arrived yet and the leave check stays
                 // disarmed until it does.
                 self.entered = false;
             } else {
@@ -594,7 +595,7 @@ impl DrawerPanel {
             // The main panel is always the base, at full weight. When a
             // drawer is present the handle keeps a lane on its edge:
             // without it the occluding handle floats over the main's own
-            // scrollbar and swallows its clicks. No drawer, no lane - the
+            // scrollbar and swallows its clicks. No drawer, no lane: the
             // main fills.
             .child({
                 let edge = self.config.edge;
@@ -629,15 +630,15 @@ impl DrawerPanel {
         };
 
         // The measuring canvas, and while the drawer is out, the armed
-        // leave check: window handlers only live one frame (the scrub
-        // strips' idiom), and hover alone can't close it - a press inside
+        // leave check. Window handlers only last one frame (the scrub
+        // strips' idiom), and hover alone can't close it: a press inside
         // the drawer parks the container's hover state, and an occluding
         // child (a scrollbar mid-drag) drops it outright. The bounds
-        // check stays true wherever the pointer sits inside the drawer.
+        // check stays true wherever the pointer is inside the drawer.
         let root = if self.slots[1].is_some() {
             let bounds_store = self.bounds.clone();
             let weak = cx.entity().downgrade();
-            // A pinned drawer is held out on purpose, so nothing arms
+            // A pinned drawer is held out by the user, so nothing arms
             // against it.
             let armed = (self.open || u > 0.001) && !self.pinned;
             let entered = self.entered;
@@ -666,8 +667,8 @@ impl DrawerPanel {
                             if region.contains(&event.position) {
                                 // The pointer arrived. Mark it and repaint,
                                 // so the next frame's handler is the one
-                                // that can close - this closure captured
-                                // the old value and would never fire.
+                                // that can close. This closure captured the
+                                // old value and would never fire.
                                 if !entered {
                                     if let Some(this) = weak.upgrade() {
                                         this.update(cx, |this, cx| {
@@ -700,8 +701,8 @@ impl DrawerPanel {
 
         let root = match self.slots[1].clone() {
             // A dropped handle leaves the box nothing to draw at home, but
-            // its border and shadow would still line the empty lane. It sits
-            // the frame out entirely until the glide starts.
+            // its border and shadow would still line the empty lane. It's
+            // skipped entirely until the glide starts.
             Some(_) if handle_dropped(&self.config, self.primed) && u <= 0.001 => root,
             Some(drawer) => root.child(self.drawer_box(drawer, u, cx)),
             None => root,
@@ -714,9 +715,9 @@ impl DrawerPanel {
             return root;
         }
 
-        // The corner controls: fill the drawer slot while it is empty,
-        // and the shown slot's menu - the drawer's while it is out, the
-        // main's otherwise.
+        // The corner controls: fill the drawer slot while it's empty, and
+        // the shown slot's menu, the drawer's while it's out and the main's
+        // otherwise.
         let shown = usize::from(self.open && self.slots[1].is_some());
         let controls = composite::corner_controls()
             .when(self.slots[1].is_none(), |d| {
@@ -766,7 +767,7 @@ impl DrawerPanel {
     }
 }
 
-/// Where the drawer box sits inside the panel's painted bounds: the edge
+/// Where the drawer box is inside the panel's painted bounds: the edge
 /// strip `extent` deep, the region the pointer can rest in without the
 /// drawer sliding home.
 fn drawer_region(edge: DrawerEdge, extent: Pixels, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -1013,8 +1014,8 @@ impl Panel for DrawerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The pin also lives on the handle; the row is here for the drawer
-        // that is already out and under the pointer.
+        // The pin is also on the handle; the row is here for the drawer
+        // that's already out and under the pointer.
         let menu = menu.item(panel::check_row(
             rox_i18n::t!("drawer-pin-open"),
             Some(icons::PIN),
@@ -1044,8 +1045,8 @@ impl Render for DrawerPanel {
             window,
             cx,
         );
-        // The chrome shader is worn by the drawer box, handle included,
-        // rather than by the whole panel: the host's rect spans the main
+        // The chrome shader is applied to the drawer box, handle included,
+        // rather than to the whole panel: the host's rect spans the main
         // slot too, and a surface over that would shade the panel the
         // drawer merely covers. `drawer_box` paints it over the box.
         let mut chrome = self.config.chrome.clone();
@@ -1058,9 +1059,9 @@ impl Render for DrawerPanel {
 mod tests {
     use super::*;
 
-    /// A layout saved before the trigger knobs existed still loads, and lands
-    /// on the old behavior: hover only, so no drawer starts answering picks
-    /// on its own after an upgrade.
+    /// A layout saved before the trigger knobs existed still loads, with the
+    /// old behavior: hover only, so no drawer starts responding to picks on
+    /// its own after an upgrade.
     #[test]
     fn old_dumps_load_as_hover_drawers() {
         let dump = serde_json::json!({
@@ -1101,8 +1102,8 @@ mod tests {
     /// A dropped handle is only dropped until something is picked. Once the
     /// drawer has been primed the grip stays, which is the whole point: the
     /// drawer folds home when the pointer leaves, and without a grip left
-    /// behind there would be no way back to it short of picking the same
-    /// album again.
+    /// behind there'd be no way back to it short of picking the same album
+    /// again.
     #[test]
     fn a_pick_brings_the_dropped_handle_back() {
         let config = DrawerConfig {
@@ -1170,9 +1171,9 @@ mod tests {
         let mut drawers = Vec::new();
         collect(&doc["layouts"][0]["dump"]["center"], &mut drawers);
         // Two per browser tab. One drawer is one edge and one pair of slots,
-        // so a wall that wants a list from the left and filters from the
-        // right needs the two nested; and a dock tab can't live in a slot, so
-        // each tab carries its own pair rather than sharing.
+        // so a wall that needs a list from the left and filters from the
+        // right needs the two nested; and a dock tab can't go in a slot, so
+        // each tab has its own pair rather than sharing.
         assert_eq!(drawers.len(), 6);
 
         let mut titles = Vec::new();
@@ -1188,7 +1189,7 @@ mod tests {
             assert_eq!(config.edge, DrawerEdge::Right);
             titles.push(config.chrome.title.clone().expect("the tab is named"));
             assert_eq!(outer["children"][1]["panel_name"], "queue");
-            // Metro ships finished, so no builder's buttons sit in its
+            // Metro ships finished, so no builder's buttons show in its
             // corners.
             assert!(config.chrome.hide_controls);
 
@@ -1196,8 +1197,8 @@ mod tests {
             let inner_config: DrawerConfig =
                 serde_json::from_value(inner["info"]["panel"].clone()).unwrap();
             assert_eq!(inner_config.open_on, DrawerTrigger::Selection);
-            // The wall it hosts is exactly what drives it, so the two tabs
-            // stay independent and nothing else in the layout reaches them.
+            // Only the wall it hosts drives it, so the two tabs stay
+            // independent and nothing else in the layout can reach them.
             assert_eq!(inner_config.scope, DrawerScope::Main);
             assert_eq!(inner_config.edge, DrawerEdge::Left);
             assert!(inner_config.chrome.hide_controls);
@@ -1207,8 +1208,8 @@ mod tests {
             // The queue keeps its grip: hover is the only way to that one.
             assert!(!config.handle_hidden());
 
-            // Slot 0 is the wall that publishes picks; slot 1 is what slides
-            // out, and it only shows the pick if it follows the selection.
+            // Slot 0 is the wall that publishes picks; slot 1 slides out,
+            // and it only shows the pick if it follows the selection.
             assert!(inner["children"][0]["panel_name"]
                 .as_str()
                 .is_some_and(|name| name.ends_with("grid")));
@@ -1219,8 +1220,8 @@ mod tests {
         assert_eq!(titles, ["Albums", "Artists", "Genres"]);
     }
 
-    /// The query source is what a chained drawer's hosted panel rides, so its
-    /// wire name has to survive too.
+    /// A chained drawer's hosted panel is driven by the query source, so its
+    /// wire name has to round-trip too.
     #[test]
     fn selection_query_source_round_trips() {
         use rox_panel_api::query::shared_query::QuerySource;

@@ -1,7 +1,7 @@
 //! The lyrics panel: the current track's words, timed against playback
-//! when the file carries an LRC-style sheet, plain scrolling text when it
-//! does not. Which track is per-view config through [`TrackSource`], the
-//! same knob the cover and metadata panels carry, so a duplicate can watch
+//! when the file has an LRC-style sheet, plain scrolling text when it
+//! doesn't. Which track is per-view config through [`TrackSource`], the
+//! same knob the cover and metadata panels have, so a duplicate can watch
 //! each. A synced sheet highlights the line under the playhead and, with
 //! follow on, glides it to the middle the way the library's now-playing
 //! row does; clicking a timed line seeks to it.
@@ -10,7 +10,7 @@
 //! the raw text becomes a multi-line input over a baseline read off the
 //! file, and a save writes it back where it came from: the embedded tag
 //! through the writer's atomic layer, or the `.lrc` sidecar or app lyrics
-//! store as a plain file. Lyrics do not ride the library projection, so a
+//! store as a plain file. Lyrics aren't in the library projection, so a
 //! save just re-reads the file.
 
 use std::ops::Range;
@@ -46,7 +46,7 @@ use crate::settings::lyrics_dir;
 use crate::settings::ui as settings_ui;
 use crate::source::{self, ResolvedTrack, TrackSource};
 
-// The stamp action rides down with the rest of the panel seam; the editor
+// The stamp action moved down with the rest of the panel seam; the editor
 // window up here binds and handles it at the path it always did.
 pub use rox_panel_api::actions::StampLine;
 
@@ -62,7 +62,7 @@ const FADE_SECS: f32 = 0.35;
 const FADE_FLOOR: f32 = 0.15;
 
 /// How much of its own slot a word takes to fade fully in once the read
-/// head reaches it, as a fraction of that slot. Smaller is snappier.
+/// head gets to it, as a fraction of that slot. Smaller is snappier.
 const WORD_FADE: f32 = 0.5;
 
 /// How far a word rises into place as it fades in, as a fraction of the
@@ -89,7 +89,7 @@ const GAP_MAX: f32 = 20.0;
 const EMPTY_INLINE_MAX_H: f32 = 120.0;
 
 /// Only auto-save a searched sheet this confident or better, so an
-/// automatic write never lands a loose guess on the track the way a manual
+/// automatic write never puts a loose guess on the track the way a manual
 /// look would catch. Below it, the empty face waits for the manual search.
 const AUTO_SAVE_CONFIDENCE: f32 = 0.9;
 
@@ -187,10 +187,10 @@ pub struct LyricsConfig {
     /// Fade a synced line up from dim as it becomes the active one.
     pub fade_lines: bool,
     /// Build the active synced line word by word across its span, the rest
-    /// of the words waiting dim until the playhead reaches them.
+    /// of the words waiting dim until the playhead gets to them.
     pub word_by_word: bool,
     /// Weave a blank rest before a first sung line that opens past the
-    /// [`gap_secs`] threshold, so the sheet has a lead-in to sit on and the
+    /// [`gap_secs`] threshold, so the sheet has a lead-in and the
     /// first line fades in when it arrives.
     pub intro_rest: bool,
     /// Weave a blank rest into each instrumental gap between sung lines
@@ -209,7 +209,7 @@ pub struct LyricsConfig {
     /// provider is enabled. Off leaves the empty face just the quiet line,
     /// the right-click menu still reaching the search.
     pub search_button: bool,
-    /// When a shown track carries no lyrics, search online in the
+    /// When a shown track has no lyrics, search online in the
     /// background and save a confident match without opening the picker.
     /// Off leaves the empty face to the manual search.
     pub auto_search: bool,
@@ -258,7 +258,7 @@ pub struct LyricsPanel {
     state: AppState,
     config: LyricsConfig,
     /// The loaded lyrics keyed by the track they belong to; None inside
-    /// means that track carries none. Cleared on a library update or a
+    /// means that track has none. Cleared on a library update or a
     /// save, so the next render re-reads.
     loaded: Option<(PathBuf, Option<Arc<Lyrics>>)>,
     /// The track a load is running for, so a render can tell "already
@@ -270,7 +270,7 @@ pub struct LyricsPanel {
     /// turn into selection lookups.
     resolved: ResolvedTrack,
     /// The loaded sheet with the configured rests woven in, what the synced
-    /// face actually walks. Keyed by the raw sheet's pointer and a rest-knob
+    /// face actually steps through. Keyed by the raw sheet's pointer and a rest-knob
     /// signature so it rebuilds only when the sheet or a knob changes.
     display: Option<((usize, u64), Arc<Lyrics>)>,
     /// The synced line under the playhead this render, for the highlight
@@ -284,7 +284,7 @@ pub struct LyricsPanel {
     /// The active line's word-build fraction, 0 to 1; None when nothing is
     /// building.
     reveal: Option<f32>,
-    /// The playhead sits on the shown track this render. Word-by-word only
+    /// The playhead is on the shown track this render. Word-by-word only
     /// hides un-reached lines while this holds; a sheet viewed with no
     /// playhead on it still reads whole.
     positioned: bool,
@@ -298,7 +298,7 @@ pub struct LyricsPanel {
     /// The synced list's scroll, driven by the glide.
     scroll: UniformListScrollHandle,
     /// Wheel delta banked toward the next lyric-line step, so a slow scroll
-    /// still lands one line at a time and the remainder carries over.
+    /// still steps one line at a time and the remainder is kept.
     scroll_accum: f32,
     /// The unsynced sheet's own scroll, so wrapped text scrolls freely.
     text_scroll: ScrollHandle,
@@ -354,7 +354,7 @@ impl LyricsPanel {
                 cx.notify();
             },
         );
-        // A sheet saved anywhere reaches every panel, not just the one whose
+        // A sheet saved anywhere refreshes every panel, not just the one whose
         // pencil opened the window.
         rox_panel_api::openers::lyrics_watch(cx.weak_entity().into(), cx);
         LyricsPanel {
@@ -417,7 +417,7 @@ impl LyricsPanel {
                 }
                 this.pending = None;
                 // A different track's sheet reads from the top, not from
-                // wherever the previous track's scroll sat.
+                // wherever the previous track's scroll was.
                 if this.loaded.as_ref().map(|(p, _)| p.as_path()) != Some(path.as_path()) {
                     let base = this.scroll.0.borrow().base_handle.clone();
                     base.set_offset(Default::default());
@@ -433,7 +433,7 @@ impl LyricsPanel {
     }
 
     /// The lyrics loaded for `path`, or None while still loading or when
-    /// the track carries none.
+    /// the track has none.
     fn lyrics_for(&self, path: &Path) -> Option<&Arc<Lyrics>> {
         self.loaded
             .as_ref()
@@ -441,7 +441,7 @@ impl LyricsPanel {
             .and_then(|(_, lyrics)| lyrics.as_ref())
     }
 
-    /// The version of `raw` the synced face walks: the same sheet with the
+    /// The version of `raw` the synced face steps through: the same sheet with the
     /// configured rests woven in. Cached by the raw sheet's identity and the
     /// rest knobs, so it rebuilds only when the sheet or a knob changes and
     /// every frame between reuses the woven lines. A reload hands a fresh
@@ -533,7 +533,7 @@ impl LyricsPanel {
     /// None when there is no loaded sheet, no timed lines, or the step
     /// would run off the top during the intro before the first line lights.
     fn walk_lines(&self, steps: i32) -> Option<f64> {
-        // The woven sheet, so a step lands on the rests too.
+        // The woven sheet, so a step can land on the rests too.
         let lyrics = self.display_arc()?;
         // Only the timed lines can be seeked to; blanks and section marks
         // fall between them.
@@ -560,7 +560,7 @@ impl LyricsPanel {
         Some(timed[(target as usize).min(timed.len() - 1)])
     }
 
-    /// Where playback sits within `key`, or None when a different track
+    /// Where playback is within `key`, or None when a different track
     /// (or nothing) is playing. The stamp button and the synced highlight
     /// both key off this. The whole key, so a boundary between two tracks of
     /// one image reads as the track change it is.
@@ -620,7 +620,7 @@ impl LyricsPanel {
     /// and the embedded tag, and marked so nothing puts them back. Both
     /// halves matter. Clearing alone leaves the next automatic lookup free
     /// to refill it, and marking alone would hide words the file still
-    /// carries.
+    /// has.
     fn wipe(&mut self, cx: &mut Context<Self>) {
         self.set_none(true, cx);
     }
@@ -673,7 +673,7 @@ impl LyricsPanel {
 
     /// Drop the cached sheet for `path` and repaint, so a save made
     /// outside the panel (the edit or match window, in this panel or any
-    /// other) shows on the next render. Lyrics do not ride the projection,
+    /// other) shows on the next render. Lyrics aren't in the projection,
     /// so the lyrics reload broadcast is the panel's only signal to re-read.
     pub fn reload(&mut self, path: &Path, cx: &mut Context<Self>) {
         if self.loaded.as_ref().is_some_and(|(p, _)| p == path) {
@@ -921,13 +921,13 @@ impl PanelSettings for LyricsPanel {
             .into_any_element()
     }
 
-    // The lyric appearance section carries its own font picker beside the
+    // The lyric appearance section has its own font picker beside the
     // weight and size knobs, so the shared page leaves off its generic one.
     fn has_own_font(&self) -> bool {
         true
     }
 
-    /// The lyric type controls live on the Appearance page beside the
+    /// The lyric type controls are on the Appearance page beside the
     /// shared frame and color knobs, the grid's tile-size move: the font
     /// family, weight, and size.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1113,7 +1113,7 @@ impl Panel for LyricsPanel {
         let menu = self.config_menu(menu, window, cx);
         let menu = menu.separator();
         // Opens the edit window, the same one the title-bar pencil drives,
-        // so a right click reaches it too.
+        // so a right click gets to it too.
         let weak = cx.entity().downgrade();
         let menu = menu.item(
             PopupMenuItem::new(rox_i18n::t!("lyrics-edit-lyrics"))
@@ -1141,8 +1141,8 @@ impl Panel for LyricsPanel {
         };
         // Getting rid of a wrong sheet, and keeping it gone. The two read
         // as one switch and only ever one of them applies: a marked track
-        // loads as empty, so a sheet showing means it is not marked, and
-        // the wipe is what marks it.
+        // loads as empty, so a sheet showing means it isn't marked, and
+        // the wipe is the thing that marks it.
         let menu = match self.resolved.get(self.config.source, &self.state, cx) {
             Some(key) if self.lyrics_for(&key.path).is_some() => {
                 let weak = cx.entity().downgrade();
@@ -1211,9 +1211,9 @@ impl Render for LyricsPanel {
 impl LyricsPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // Solo there is no tab bar to host the edit pencil, but a body
-        // toolbar just to carry it eats space that reads as chrome; the
+        // toolbar just to hold it eats space that reads as chrome; the
         // right-click menu's Edit Lyrics opens the edit window instead.
-        // Tabbed, the pencil rides the tab bar through the title suffix.
+        // Tabbed, the pencil goes on the tab bar through the title suffix.
         div()
             .size_full()
             .flex()
@@ -1225,7 +1225,7 @@ impl LyricsPanel {
     }
 
     /// The panel body: the display face, a synced karaoke list, a plain
-    /// sheet, or a quiet placeholder. Editing lives in its own window.
+    /// sheet, or a quiet placeholder. Editing happens in its own window.
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             // With the name showing, a track stands in for the panel's face,
@@ -1240,7 +1240,7 @@ impl LyricsPanel {
 
         self.ensure_loaded(&key.path, cx);
         let Some(lyrics) = self.lyrics_for(&key.path).cloned() else {
-            // Still loading, or the track carries none.
+            // Still loading, or the track has none.
             return if self.pending.as_deref() == Some(key.path.as_path()) {
                 loading()
             } else {
@@ -1279,7 +1279,7 @@ impl LyricsPanel {
         });
         // The track's name over the quiet line, so a wordless track still
         // says what it is. Title falls back to the file stem, the artist
-        // trailing it when the tags carry one.
+        // trailing it when the tags have one.
         let name = self
             .config
             .show_name
@@ -1344,7 +1344,7 @@ impl LyricsPanel {
     }
 
     /// The shown track's name for the empty face: its title, then the
-    /// artist when the tags carry one, the file stem standing in for a
+    /// artist when the tags have one, the file stem standing in for a
     /// missing title.
     fn track_name(&self, key: &TrackKey, cx: &App) -> SharedString {
         let meta = self.state.library.read(cx).meta_for_key(key);
@@ -1370,9 +1370,9 @@ impl LyricsPanel {
     /// alone for the manual search, which shows every candidate. Runs once
     /// per track path so a repaint never re-queries.
     ///
-    /// A track marked as carrying no lyrics is skipped: the mark is there
-    /// precisely because a lookup got it wrong, and this is what would
-    /// otherwise put the wrong sheet back every session.
+    /// A track marked as having no lyrics is skipped: the mark is there
+    /// precisely because a lookup got it wrong, and this search is what
+    /// would otherwise put the wrong sheet back every session.
     fn maybe_auto_search(&mut self, key: &TrackKey, cx: &mut Context<Self>) {
         if !self.config.auto_search || !providers::lyrics_online() {
             return;
@@ -1426,10 +1426,10 @@ impl LyricsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        // Walk the woven sheet, not the raw one: the rests are real timed
-        // lines to the follow, the highlight, and the scroll step.
+        // Step through the woven sheet, not the raw one: the rests are real
+        // timed lines to the follow, the highlight, and the scroll step.
         let lyrics = self.display_lyrics(lyrics);
-        // The playhead only speaks for the track it is on; a Selected
+        // The playhead only applies to the track it's on; a Selected
         // source pointed elsewhere reads no position and just scrolls.
         let position = self.playback_position(key, cx);
         let active = position.and_then(|secs| active_line(&lyrics, secs));
@@ -1605,7 +1605,7 @@ impl LyricsPanel {
         // where the read head is headed (the first timed line) so a live
         // intro shows the sheet already dimmed toward the edge instead of
         // sitting flat until the first word passes. With no playhead on the
-        // track there is nothing to anchor to, so the sheet reads whole.
+        // track there's nothing to anchor to, so the sheet reads whole.
         let falloff_from = active.or_else(|| {
             positioned.then(|| {
                 lyrics
@@ -1631,7 +1631,7 @@ impl LyricsPanel {
 
                 // The active line builds word by word: each word waits
                 // hidden, then fades and rises into place as the read head
-                // reaches it. No reveal (paused off a position) shows the
+                // gets to it. No reveal (paused off a position) shows the
                 // whole line.
                 let content: AnyElement = if is_active && word_by_word && !text.is_empty() {
                     let words: Vec<&str> = text.split_whitespace().collect();
@@ -1666,7 +1666,7 @@ impl LyricsPanel {
                 };
 
                 // Word-by-word keeps un-sung text out of sight: while the
-                // playhead sits on this track, every line past the active
+                // playhead is on this track, every line past the active
                 // one (and every line during the intro) waits invisible
                 // until its turn, its row still holding the space. With no
                 // playhead on the track the sheet reads whole.
@@ -1745,7 +1745,7 @@ impl LyricsPanel {
             .w_full()
             .p(tokens::SPACE_MD)
             .text_size(px(font))
-            // The spacing knob rides the text line height here, so it moves
+            // The spacing knob sets the text line height here, so it moves
             // an unsynced sheet the way it moves the synced rows.
             .line_height(px(font * spacing))
             .text_color(palette::text())
@@ -1809,8 +1809,8 @@ impl LyricsPanel {
 
 /// A non-active line's opacity under the distance falloff: `dim` shaved
 /// off per step away from the active line, compounding, on the chosen
-/// edge. Full when there is no active line to measure from, when the
-/// factor is zero, or when this line sits on the edge that does not dim.
+/// edge. Full when there's no active line to measure from, when the
+/// factor is zero, or when this line is on the edge that doesn't dim.
 fn falloff(dim: f32, edge: DimEdge, active: Option<usize>, ix: usize) -> f32 {
     let Some(active) = active else {
         return 1.0;
@@ -1821,7 +1821,7 @@ fn falloff(dim: f32, edge: DimEdge, active: Option<usize>, ix: usize) -> f32 {
     curve::falloff(dim, ix.abs_diff(active) as u32)
 }
 
-/// A quiet centered line where the sheet would sit.
+/// A quiet centered line in place of the sheet.
 fn placeholder(text: impl Into<SharedString>) -> Div {
     div()
         .size_full()

@@ -2,7 +2,7 @@
 //! distinct values for one field, for any input editing that field. The
 //! menu is the input widget's own, so arrows and enter come with it;
 //! accepting an item replaces the whole input through the item's text
-//! edit, so multi-word values land whole even from a mid-word match.
+//! edit, so multi-word values are inserted whole even from a mid-word match.
 //! Attach through [`provider`] wherever a tag field gets typed.
 
 use std::rc::Rc;
@@ -21,9 +21,9 @@ use rox_library::writer::Field;
 const CAP: usize = 20;
 
 /// The byte length of `label`'s leading chars whose case-fold matches
-/// `typed`, 0 for a non-prefix match. Feeds each item's filter_text: the
-/// menu highlights that many bytes of the label, and its fallback - the
-/// raw typed token - lands mid-char or past the end on short and
+/// `typed`, 0 for a non-prefix match. Supplies each item's filter_text: the
+/// menu highlights that many bytes of the label, and its fallback (the
+/// raw typed token) ends up mid-char or past the end on short and
 /// non-ascii labels, tripping gpui's char boundary assert.
 fn matched_prefix_len(label: &str, typed: &str) -> usize {
     if typed.is_empty() {
@@ -93,8 +93,8 @@ fn ranked_years(years: &[u16], typed: &str) -> Vec<String> {
     prefixed
 }
 
-/// The provider for `field`, when it is a name field whose values recur
-/// across a library and there is a projection to draw them from. Free
+/// The provider for `field`, when it's a name field whose values recur
+/// across a library and there's a projection to draw them from. Free
 /// text and numeric fields get none.
 pub fn provider(
     projection: Option<&Arc<Projection>>,
@@ -144,7 +144,7 @@ impl CompletionProvider for FieldSuggestions {
     ) -> Task<anyhow::Result<CompletionResponse>> {
         let full = text.to_string();
         // A genre input holds a "; " list; complete the value being
-        // typed - the segment after the last separator - and leave the
+        // typed (the segment after the last separator) and leave the
         // finished values ahead of it alone. Other fields complete whole.
         let seg_start = if self.field == Field::Genre {
             full.rfind(';').map_or(0, |i| {
@@ -185,15 +185,15 @@ impl CompletionProvider for FieldSuggestions {
         _new_text: &str,
         _cx: &mut Context<InputState>,
     ) -> bool {
-        // Every keystroke requeries - deletions too, so the list follows
+        // Every keystroke requeries, deletions too, so the list follows
         // shrinking text and an emptied field closes the menu.
-        // Programmatic fills go through the silent path and never reach
+        // Programmatic fills go through the silent path and never hit
         // this.
         true
     }
 }
 
-/// The provider for a search box speaking the query syntax: values for
+/// The provider for a search box that takes the query syntax: values for
 /// the `field:` term under the cursor, drawn from that field's table,
 /// and the field prefixes themselves for a bare word that starts one.
 /// Anything else gets no menu, so plain title searches stay quiet.
@@ -288,7 +288,7 @@ impl CompletionProvider for QuerySuggestions {
         let items = if let Some((field, value)) = field_term(raw) {
             let typed = strip(&raw[value..]);
             // Accepting rewrites the whole value span, quoted when the
-            // value has spaces so it survives the tokenizer.
+            // value has spaces so the tokenizer keeps it in one piece.
             let span = lsp_types::Range::new(
                 text.offset_to_position(start + value),
                 text.offset_to_position(end),
@@ -298,12 +298,12 @@ impl CompletionProvider for QuerySuggestions {
                 QueryField::AlbumArtist => &self.projection.album_artists,
                 QueryField::Album => &self.projection.albums,
                 // The split terms: `genre:` should offer "Shoegaze", and
-                // the substring match reaches it inside any "; " list.
+                // the substring match finds it inside any "; " list.
                 QueryField::Genre => self.projection.genre_terms(),
                 QueryField::Folder => &self.projection.folders,
                 QueryField::Codec => &self.projection.codecs,
                 // The year column has no symbol table; suggest from the
-                // distinct year list instead. Years never carry spaces, so
+                // distinct year list instead. Years never contain spaces, so
                 // they need no quoting.
                 QueryField::Year => {
                     return Task::ready(Ok(CompletionResponse::Array(
@@ -415,8 +415,8 @@ impl CompletionProvider for QuerySuggestions {
 mod tests {
     use super::*;
 
-    /// The highlight length always sits on a char boundary of the label
-    /// and never runs past it - the menu's fallback did both and
+    /// The highlight length always falls on a char boundary of the label
+    /// and never runs past it. The menu's fallback did both and
     /// panicked gpui on labels shorter than the typed token.
     #[test]
     fn matched_prefix_stays_inside_the_label() {
@@ -446,7 +446,7 @@ mod tests {
         // A prefix takes only the years that start with it.
         assert_eq!(ranked_years(&years, "20"), vec!["2021", "2019", "2010"]);
         // Prefixes lead, then a contains match that isn't a prefix (2019
-        // holds "19" but doesn't start with it).
+        // contains "19" but doesn't start with it).
         assert_eq!(ranked_years(&years, "19"), vec!["1999", "1990", "2019"]);
     }
 
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn tokens_resolve_and_classify_under_the_cursor() {
         let text = "stronger artist:daf";
-        // Cursor in the first word takes that token; it is a free term.
+        // Cursor in the first word takes that token; it's a free term.
         assert_eq!(token_at(text, 4), Some((0, 8)));
         assert_eq!(field_term("stronger"), None);
         // Cursor at the end takes the artist term; the value starts

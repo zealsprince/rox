@@ -11,7 +11,7 @@
 //!   sets the unsynchronisation flag, lofty de-unsynchronises the whole
 //!   tag stream, then de-unsynchronises each frame again for the frame's
 //!   own flag, so every stuffed `ff 00` collapses one pass too far. The
-//!   bytes shift, a UTF-16 text frame lands on an odd length, and lofty
+//!   bytes shift, a UTF-16 text frame ends up an odd length, and lofty
 //!   aborts the entire tag read. The tag is only ever unsynchronised
 //!   once, at the frame level per the v2.4 spec, so the header flag is
 //!   redundant; clearing it drops lofty to a single frame-by-frame
@@ -27,7 +27,7 @@
 //! - Junk between the declared tag end and the first MPEG frame: padding
 //!   a tagger left outside the tag size, or the headless remainder of a
 //!   frame the tag was written over (the Bandcamp shape: the declared
-//!   end lands nine bytes into the old LAME Info frame, leaving a
+//!   end falls nine bytes into the old LAME Info frame, leaving a
 //!   sync-less carcass in front of the audio). Every tool re-finds the
 //!   audio through it, and lofty's write path gives up after 1024 junk
 //!   bytes, so such a file reads fine but refuses every tag write. Reads
@@ -84,7 +84,7 @@ impl Seek for TagSource {
     }
 }
 
-/// Open `path` for a tag read. When the file carries a shape lofty reads
+/// Open `path` for a tag read. When the file has a shape lofty reads
 /// mangled, this returns an in-memory copy with the shape corrected;
 /// otherwise it hands back the file untouched. The check reads the tag
 /// region and no further, bytes lofty is about to read again anyway, so
@@ -113,7 +113,7 @@ pub(crate) fn open(path: &Path) -> io::Result<TagSource> {
         return Ok(TagSource::File(file));
     }
     // The header flag alone (a tag unsynchronised as one stream) reads
-    // fine; only a frame carrying its own flag triggers the second pass.
+    // fine; only a frame with its own flag set triggers the second pass.
     let unsync =
         header[3] == 4 && header[5] & HEADER_UNSYNC != 0 && frames_flagged(header[5], &tag);
     let trimmed = trim_odd_utf16(header[3], header[5], &mut tag);
@@ -127,20 +127,20 @@ pub(crate) fn open(path: &Path) -> io::Result<TagSource> {
         buf[5] &= !HEADER_UNSYNC;
     }
     buf.extend_from_slice(&tag);
-    // The cursor sits at the tag end; the rest of the file rides along
+    // The cursor is at the tag end; the rest of the file is copied over
     // unchanged.
     file.read_to_end(&mut buf)?;
     Ok(TagSource::Patched(Cursor::new(buf)))
 }
 
-/// Whether `path` carries a tag shape a rewrite through the writer
-/// repairs: the ID3v2.4 double-unsync shape, a UTF-16 text frame with a
-/// stray trailing null, or more junk between the declared tag end and
-/// the first MPEG sync than lofty's write probe tolerates. The first two
-/// are the exact shapes [`open`] corrects in memory, the third the
-/// writer folds into the tag on commit, so a repair pass uses this to
-/// find the files worth rewriting. Cheap on the common file: the ten-byte header rules out
-/// anything that is not an ID3v2.3/4 tag, and only a candidate has its
+/// Whether `path` has a tag shape a rewrite through the writer repairs:
+/// the ID3v2.4 double-unsync shape, a UTF-16 text frame with a stray
+/// trailing null, or more junk between the declared tag end and the first
+/// MPEG sync than lofty's write probe tolerates. The first two are the
+/// exact shapes [`open`] corrects in memory, the third the writer folds
+/// into the tag on commit, so a repair pass uses this to find the files
+/// worth rewriting. Cheap on the common file: the ten-byte header rules
+/// out anything that isn't an ID3v2.3/4 tag, and only a candidate has its
 /// tag region read. Any read or open error reads as "no repair needed",
 /// the same tolerance the scan gives a file it cannot open.
 pub fn needs_repair(path: &Path) -> bool {
@@ -172,13 +172,12 @@ fn needs_repair_inner(path: &Path) -> io::Result<bool> {
     Ok(tag_gap(&mut file)?.is_some_and(|gap| gap.junk > GAP_FLAG && gap.sync))
 }
 
-/// The junk sitting between `file`'s declared ID3v2 tag end and the
-/// first MPEG sync, for the repair gate here and the writer's fold on
-/// commit: the declared tag size, how many bytes to the sync, and
-/// whether one turned up at all within [`GAP_SCAN_CAP`]. `None` when the
-/// file is not ID3v2.3/4 or the tag carries a footer, which nothing can
-/// legally sit in front of. Seeks freely; callers position themselves
-/// after.
+/// The junk between `file`'s declared ID3v2 tag end and the first MPEG
+/// sync, for the repair gate here and the writer's fold on commit: the
+/// declared tag size, how many bytes to the sync, and whether one turned
+/// up at all within [`GAP_SCAN_CAP`]. `None` when the file isn't
+/// ID3v2.3/4 or the tag has a footer, which nothing can legally come
+/// before. Seeks freely; callers position themselves after.
 pub(crate) struct TagGap {
     pub size: u32,
     pub junk: u64,
@@ -205,7 +204,7 @@ pub(crate) fn tag_gap(file: &mut File) -> io::Result<Option<TagGap>> {
 
 /// Read forward from `file`'s cursor to the first MPEG sync pair (`ff`
 /// then a byte with its top three bits set), up to `cap` bytes: how many
-/// bytes sit before the sync, and whether one turned up at all. The scan
+/// bytes come before the sync, and whether one turned up at all. The scan
 /// the gap probe and the writer's audio span share, so the two always
 /// agree on where audio starts.
 pub(crate) fn scan_to_sync(file: &mut File, cap: u64) -> io::Result<(u64, bool)> {
@@ -229,9 +228,9 @@ pub(crate) fn scan_to_sync(file: &mut File, cap: u64) -> io::Result<(u64, bool)>
     Ok((skipped, false))
 }
 
-/// Whether any frame carries the per-frame unsync flag, the signal lofty
-/// will de-unsynchronise it a second time. Walks the stored bytes of the
-/// tag region past the ten-byte header: v2.4 frame sizes count the
+/// Whether any frame has the per-frame unsync flag set, the signal lofty
+/// will de-unsynchronise it a second time. Steps through the stored bytes
+/// of the tag region past the ten-byte header: v2.4 frame sizes count the
 /// stuffing, so the walk stays aligned without a de-sync pass, the same
 /// walk the art module's raw picture path runs.
 fn frames_flagged(flags: u8, tag: &[u8]) -> bool {
@@ -240,7 +239,7 @@ fn frames_flagged(flags: u8, tag: &[u8]) -> bool {
 
 fn frames_flagged_inner(flags: u8, tag: &[u8]) -> Option<bool> {
     let mut pos = 0;
-    // The extended header sits before the frames and counts itself in its
+    // The extended header comes before the frames and counts itself in its
     // own size.
     if flags & HEADER_EXTENDED != 0 {
         pos = synchsafe(tag.get(..4)?)? as usize;
@@ -263,7 +262,7 @@ fn frames_flagged_inner(flags: u8, tag: &[u8]) -> Option<bool> {
 }
 
 /// Trim the stray trailing null some taggers leave on a UTF-16 text
-/// frame, the byte that lands the frame on an odd length and makes lofty
+/// frame, the byte that leaves the frame an odd length and makes lofty
 /// abort the whole tag read. Fires only on the exact shape: a plain text
 /// frame (`T...`), no format flags, UTF-16 content of odd length whose
 /// last byte is null. The frame shrinks by one and the slack the shifts
@@ -292,7 +291,7 @@ fn trim_odd_utf16(version: u8, flags: u8, tag: &mut [u8]) -> bool {
         }
         let content = &tag[read + 10..read + 10 + fsize];
         // Odd text length means an even frame size: the encoding byte
-        // rides in front of the UTF-16 run.
+        // comes in front of the UTF-16 run.
         let stray = tag[read] == b'T'
             && tag[read + 9] == 0
             && fsize >= 2
@@ -330,7 +329,7 @@ fn frame_size(version: u8, bytes: &[u8]) -> Option<u32> {
     }
 }
 
-/// The write-side mirror of [`frame_size`].
+/// The write-side counterpart of [`frame_size`].
 fn encode_frame_size(version: u8, size: u32) -> [u8; 4] {
     match version {
         4 => synchsafe_encode(size),
@@ -359,7 +358,7 @@ mod tests {
         out
     }
 
-    /// A 4-byte synchsafe encode, the write-side mirror of `synchsafe`.
+    /// A 4-byte synchsafe encode, the write-side counterpart of `synchsafe`.
     fn synch(n: u32) -> [u8; 4] {
         [
             (n >> 21) as u8 & 0x7F,
@@ -417,7 +416,7 @@ mod tests {
         let file = vide_noir_file("Back from the Edge");
 
         // Straight through lofty: the double de-sync mangles the frame, so
-        // the title never survives.
+        // the title never comes through.
         let mut raw = Cursor::new(file.clone());
         let mangled = MpegFile::read_from(&mut raw, opts)
             .ok()
@@ -481,7 +480,7 @@ mod tests {
         frame
     }
 
-    /// An ID3v2.3 file: a title (optionally carrying the stray null), an
+    /// An ID3v2.3 file: a title (optionally with the stray null), an
     /// artist, then MPEG audio, with `gap` zero bytes wedged between the
     /// tag end and the first frame.
     fn v23_file(title: &str, stray: bool, gap: usize) -> Vec<u8> {

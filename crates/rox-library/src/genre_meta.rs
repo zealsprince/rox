@@ -1,13 +1,13 @@
 //! The genre metadata table: the library's own opinions about its genre
 //! values, laid over the tags without ever rewriting a file. One row per
-//! folded genre name carrying an alias target ("DnB" counts as
+//! folded genre name with an alias target ("DnB" counts as
 //! "Drum & Bass"), a display override, and a custom art path. The alias
 //! is the shipped feature; the other two columns are schema headroom for
 //! the panel's later knobs.
 //!
 //! Aliases apply at the [`crate::genre`] choke point, so every consumer
-//! of genre values - the projection's matching, the filter panel, the
-//! stats rollups, the genre grid - agrees without knowing the table
+//! of genre values (the projection's matching, the filter panel, the
+//! stats rollups, the genre grid) agrees without knowing the table
 //! exists. The app loads the flattened map after opening the library and
 //! after every edit here, then reloads the projection.
 
@@ -29,8 +29,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Point one genre at another: rows tagged `from` count under `into`
-/// everywhere. `from` folds to the row key; `into` keeps its casing, it
-/// is the display the merged value wears. A merge into itself (or into
+/// everywhere. `from` folds to the row key; `into` keeps its casing, since
+/// it's the display the merged value shows. A merge into itself (or into
 /// something that already resolves back to `from`) is refused rather
 /// than written, so the table never holds a cycle.
 pub fn set_alias(conn: &Connection, from: &str, into: &str) -> rusqlite::Result<()> {

@@ -8,9 +8,9 @@ the data directory, each holding one kind of thing.
 - `settings.json` holds preferences and the library setup. The only file a person is
   meant to open, the only one worth carrying to another machine, and the one the
   settings window hands to the system editor.
-- `workspace.json` holds the look the app is wearing: a `LookState` carrying the live
+- `workspace.json` holds the current look: a `LookState` with the live
   `WorkspaceBundle` plus the dock state being worked on top of it.
-- `windows.json` holds where this machine's windows sit: the main frame and what each
+- `windows.json` records where this machine's windows are: the main frame and what each
   auxiliary window remembers.
 - `session.json` holds what was playing and where the library stood.
 - `accounts.json` holds the account connections and their keys.
@@ -18,7 +18,7 @@ the data directory, each holding one kind of thing.
   the workspace. Shipped bundles stay compiled into the app from `assets/workspaces/`.
 
 The single file had grown to where the preferences were a tenth of it, and everything in
-it answered to a different owner. Two saved workspaces, the live dock dump, and the
+it belonged to a different owner. Two saved workspaces, the live dock dump, and the
 preset pool made up most of the bytes, so the file someone might open to check a library
 path was 126k of dock dumps pretty-printed around it. But size was only the visible
 half. The same file also held window geometry that means nothing on another machine, a
@@ -28,9 +28,9 @@ the file the app itself offers to open in a text editor.
 Three properties fall out of splitting on what a file is *for* rather than on size.
 
 **Sync.** Copying `settings.json` to another machine now carries the preferences and
-nothing else. Window frames from a 4K desktop don't land on a laptop, `last_scan` doesn't
-tell the second machine its library is already current, and credentials stay behind
-unless they're deliberately brought along.
+nothing else. Window frames from a 4K desktop don't come along to a laptop, `last_scan`
+doesn't tell the second machine its library is already current, and credentials stay
+behind unless someone brings them.
 
 **Churn.** `volume`, `last_track`, and `last_queue` move constantly while music plays;
 `theme` and `library_roots` change a few times a year. `Settings::update` compares each
@@ -42,11 +42,12 @@ the obvious: windows reopen at their defaults and playback starts cold. Neither
 `settings.json`, `accounts.json`, nor the workspaces can, which is a useful line to be
 able to draw when telling someone how to clear a bad state.
 
-Two fields sit where the shape of the data would not have put them. `last_scan`
-describes this machine's disk rather than the library setup, so it rides `session.json`
-and can't travel with a copied settings file. `queue_view` is a view, not geometry, but
-it belongs to the queue window the widget opens, and the simple rule (anything an
-auxiliary window remembers lives in `windows.json`) is worth more than the exception.
+Two fields ended up where the shape of the data wouldn't have put them. `last_scan`
+describes this machine's disk rather than the library setup, so it's stored in
+`session.json` and can't travel with a copied settings file. `queue_view` is a view, not
+geometry, but it belongs to the queue window the widget opens, and the simple rule
+(anything an auxiliary window remembers goes in `windows.json`) is worth more than the
+exception.
 
 Saved workspaces become files because a saved workspace and an exported one were already
 the same bytes. Keeping them in an array inside settings meant export wrote a copy of
@@ -64,7 +65,7 @@ and each file individually still goes through the temp-then-rename that kept a t
 write from taking everything down.
 
 Nesting the live look in the same `WorkspaceBundle` the saved files hold collapses the
-two field-by-field transcriptions that used to sit between them. Saving a workspace is
+two field-by-field transcriptions that used to run between them. Saving a workspace is
 now a clone plus the live-dock fold, and applying one is an assignment. Those two
 functions used to be the place a new appearance knob got forgotten; there's nothing left
 to forget. It also gives the look a name it didn't have, recording which workspace it was
@@ -78,7 +79,7 @@ Migration reads every piece out of the pre-split file's flat map. Each state's f
 kept their names through the move, so three of the four deserialize straight out of it
 with no field list to keep in sync; the look needs its own pass only because its
 appearance knobs went from flat siblings to a nested object, and the three window fields
-that were renamed carry a serde alias for the name they had. The saved workspaces drain
+that were renamed have a serde alias for the name they had. The saved workspaces drain
 to their own files once, leaving alone any name that already has a file, and telling apart
 a replay from two names that fold to one filename so neither is dropped. The old file is
 copied to `settings.json.bak-presplit` on the way through, and a migrated load force-writes

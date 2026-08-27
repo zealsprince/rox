@@ -1,11 +1,11 @@
 //! The app-wide selection: the tracks the user last explicitly selected in
-//! any panel, as library db ids so they survive projection reloads. Panels
+//! any panel, as library db ids so they persist across projection reloads. Panels
 //! that select (the library) publish here on click; panels that display the
 //! selection (cover art, track info) subscribe and read. The mechanics stay
 //! per-panel: duplicated panels with their own queries keep their own shift
 //! anchors and highlights, only the resolved result bubbles up.
 //!
-//! A pick carries the id of the panel that made it. Two things need to know
+//! A pick includes the id of the panel that made it. Two things need to know
 //! where a selection came from: a drawer scoped to its own main panel, which
 //! ignores picks made elsewhere in the layout, and a selection-following
 //! view, which would otherwise narrow onto its own clicks until one row is
@@ -13,7 +13,7 @@
 
 use gpui::{Context, EntityId, EventEmitter};
 
-/// The selection changed; subscribed panels re-read `tracks`. Carries the
+/// The selection changed; subscribed panels re-read `tracks`. Names the
 /// panel that published it, so a subscriber can tell its own picks from
 /// everyone else's.
 pub struct SelectionEvent {
@@ -31,7 +31,7 @@ impl EventEmitter<SelectionEvent> for Selection {}
 
 impl Selection {
     /// A fresh selection, owned by nothing. The entity's own id stands in as
-    /// the empty source: no panel carries it, so no panel mistakes the
+    /// the empty source: no panel has it, so no panel mistakes the
     /// initial state for its own pick.
     pub fn new(cx: &Context<Self>) -> Self {
         Selection {
@@ -51,8 +51,8 @@ impl Selection {
 
     /// Publish a pick from `source`. Every call fires, an unchanged set
     /// included: a pick is a gesture rather than a value, and the surfaces
-    /// that open on one - a selection drawer - have to answer a second click
-    /// on the same album the way they answered the first.
+    /// that open on one, like a selection drawer, have to respond to a second
+    /// click on the same album the way they did to the first.
     pub fn set(&mut self, tracks: Vec<i64>, source: EntityId, cx: &mut Context<Self>) {
         self.tracks = tracks;
         self.source = source;
@@ -72,8 +72,8 @@ mod tests {
     /// own to stamp picks with.
     struct Panel;
 
-    /// Every pick fires, an unchanged track set included. This is what lets a
-    /// selection drawer answer a second click on the same album: the ids come
+    /// Every pick fires, an unchanged track set included, so a selection
+    /// drawer still opens on a second click on the same album: the ids come
     /// back identical, and a value-style dedupe would swallow the gesture and
     /// leave the drawer shut.
     #[gpui::test]
@@ -100,9 +100,9 @@ mod tests {
         );
     }
 
-    /// The pick carries who made it, which is what a scoped drawer matches
-    /// against and what stops a selection-following view from narrowing onto
-    /// its own clicks.
+    /// The pick names who made it: a scoped drawer matches against that, and
+    /// it stops a selection-following view from narrowing onto its own
+    /// clicks.
     #[gpui::test]
     fn a_pick_names_its_publisher(cx: &mut TestAppContext) {
         let selection = cx.new(|cx| Selection::new(cx));

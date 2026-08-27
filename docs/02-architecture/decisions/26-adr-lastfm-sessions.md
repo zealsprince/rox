@@ -7,7 +7,7 @@ session. A build reads the entry for the identity it signs with, and finds nothi
 where another identity connected.
 
 Last.fm binds a session to the api key that authorized it. rox has more than one:
-the nix package carries a pair minted for that channel, the release workflow signs
+the nix package ships a pair minted for that channel, the release workflow signs
 with the repository secret, a local `.env` build uses whatever the developer
 registered, and a build shipping no identity at all takes the user's own pair from
 the settings page. All of them read the same data directory. One session field
@@ -23,23 +23,23 @@ the built-in one.
 Three states have to be told apart, which is why an entry can be present and
 empty. A key with a session is connected. A key with no entry has never asked. A
 key with an empty entry asked and was refused, and that's worth writing down: the
-alternative is reaching for a session already known not to be ours on every launch
+alternative is trying a session already known not to be ours on every launch
 for the life of the install.
 
-The upgrade carries one session with no record of who minted it, so it lands in an
-unattributed slot that any key may use. The first call that lands claims it, which
+The upgrade brings one session with no record of who minted it, so it goes into an
+unattributed slot that any key may use. The first call that succeeds claims it, which
 is the only proof of ownership available without asking the service; the first
 call that comes back with error 9 files that key's refusal and leaves the session
 for whichever build it belongs to. Someone running two installs keeps the one they
 authorized and connects the other once.
 
 A refusal is also the app's to notice rather than the log's. `track.scrobble` and
-`track.updateNowPlaying` are fire and forget by design (a track that failed to
+`track.updateNowPlaying` are fire and forget (a track that failed to
 send is gone, and retrying a scrobble against the wrong clock is worse than
 dropping it), but error 9 says something about the connection rather than the
 track, so the result comes back far enough to drop the session and move the
 settings page to Rejected. Before this, a dead session read as "Connected as
-<name>" with a scrobble marker on the seek bar and nothing landing.
+<name>" with a scrobble marker on the seek bar and nothing actually sent.
 
 Alternatives: keep one session and re-authorize whenever it's refused, which works
 until two installs take turns and each connect breaks the other. Key the sessions

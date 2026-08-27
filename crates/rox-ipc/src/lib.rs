@@ -1,6 +1,6 @@
 //! The control socket (ADR 22): rox's one machine interface, newline-delimited
-//! JSON-RPC over a Unix domain socket. Everything external rides this surface,
-//! with MPRIS staying the standard desktop shim in front of it.
+//! JSON-RPC over a Unix domain socket. Everything external goes through this
+//! surface, with MPRIS staying the standard desktop shim in front of it.
 //!
 //! This crate owns the wire: the frame and error types, the listener with the
 //! same staging-and-rename bind discipline as the single-instance guard, the
@@ -41,7 +41,7 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
     data_dir.hash(&mut hasher);
     let hash = hasher.finish();
     if cfg!(windows) {
-        // Named pipes live in their own flat namespace, not the
+        // Named pipes are in their own flat namespace, not the
         // filesystem; this is the canonical spelling of ours, and the
         // backends peel the prefix back off to name the pipe.
         return PathBuf::from(format!(r"\\.\pipe\rox-ipc-{hash:016x}"));
@@ -50,7 +50,7 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
     dir.join(format!("rox-ipc-{hash:016x}.sock"))
 }
 
-/// A socket path as interprocess wants it: the bare pipe name in the
+/// A socket path as interprocess requires it: the bare pipe name in the
 /// named-pipe namespace. Accepts the canonical `\\.\pipe\` spelling from
 /// [`socket_path`] and a bare name alike, so a hand-typed `--socket` works
 /// either way.

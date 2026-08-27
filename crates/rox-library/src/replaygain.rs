@@ -1,36 +1,36 @@
-//! ReplayGain as a file carries it: how far off the reference loudness an
+//! ReplayGain as a file stores it: how far off the reference loudness an
 //! analysis pass measured the track and its album, in dB, each beside the
 //! peak sample it found. rox reads these, stores them beside the rest of a
 //! row, and hands them to the engine at play time (ADR 19).
 //!
-//! Reading tags is all this module does. A file that carries none gets its
+//! Reading tags is all this module does. A file with none gets its
 //! numbers from rox's own measurement pass instead: the EBU R128 analyzer is
 //! `rox_playback::analysis`, the app drives it from `rox/src/replaygain_job.rs`
 //! over the files [`crate::store::albums_missing_replaygain`] hands back, and
-//! the result lands through [`crate::store::set_measured_replaygain`] marked
-//! [`Source::Measured`] so a later rescan can tell it apart from what a tagger
-//! wrote. The same pass writes the numbers into the files themselves through
+//! the result is written through [`crate::store::set_measured_replaygain`]
+//! marked [`Source::Measured`] so a later rescan can tell it apart from what
+//! a tagger wrote. The same pass writes the numbers into the files through
 //! [`crate::writer::commit_replay_gain`] when the setting asks for it.
 //!
-//! The tags live under the same four names everywhere lofty looks -
-//! `REPLAYGAIN_TRACK_GAIN` and friends, as TXXX frames in ID3v2, Vorbis
-//! comments in FLAC, freeform atoms in MP4 - so one generic read covers
+//! The tags use the same four names everywhere lofty looks
+//! (`REPLAYGAIN_TRACK_GAIN` and friends, as TXXX frames in ID3v2, Vorbis
+//! comments in FLAC, freeform atoms in MP4) so one generic read covers
 //! every format the scanner indexes.
 //!
 //! Two other levelling schemes exist and neither is handled here. Opus files
-//! carry `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` per RFC 7845: a Q7.8 fixed-point
+//! use `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` per RFC 7845: a Q7.8 fixed-point
 //! number of dB relative to -23 LUFS, so converting one to a ReplayGain figure
 //! means dividing by 256 and adding 5 dB for the reference difference against
 //! RG's -18. That conversion stays unwritten while `.opus` is off
-//! `scanner::EXTENSIONS`; when Opus lands, this module grows it, or the claim
+//! `scanner::EXTENSIONS`; when Opus arrives, this module grows it, or the claim
 //! above about covering every indexed format stops being true. iTunes' own
 //! `iTunNORM` atom is out of scope entirely, since nothing else writes it and
 //! its per-channel millwatt figures are not a dB gain.
 
 use lofty::tag::{ItemKey, Tag};
 
-/// One file's four ReplayGain numbers. None per field: a file carries any
-/// mix of the four, and plenty carry none at all.
+/// One file's four ReplayGain numbers. None per field: a file can hold any
+/// mix of the four, and plenty hold none at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReplayGain {
     /// The track's gain in dB, negative for a loud master.
@@ -43,8 +43,8 @@ pub struct ReplayGain {
 }
 
 impl ReplayGain {
-    /// Whether the file carries anything to level by. The peaks alone do
-    /// not count: they bound a gain, they are not one.
+    /// Whether the file has anything to level by. The peaks alone don't
+    /// count: they bound a gain, they aren't one.
     pub fn any(self) -> bool {
         self.track_db.is_some() || self.album_db.is_some()
     }

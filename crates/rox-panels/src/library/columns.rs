@@ -33,7 +33,7 @@ pub struct ColumnDef {
 /// A function rather than a `const`: `t_static` isn't const-evaluable, and
 /// [`offered`]/[`column_def`] hand out `&'static ColumnDef` references, so
 /// this rebuilds and leaks once per active locale rather than on every
-/// call, mirroring `rox_i18n::t_static`'s own per-locale cache.
+/// call, matching `rox_i18n::t_static`'s own per-locale cache.
 pub fn columns() -> &'static [ColumnDef] {
     static CACHE: std::sync::Mutex<Option<(&'static str, &'static [ColumnDef])>> =
         std::sync::Mutex::new(None);
@@ -46,7 +46,7 @@ pub fn columns() -> &'static [ColumnDef] {
     }
     let built: Vec<ColumnDef> = vec![
         ColumnDef {
-            // The cover thumbnail. Not sortable (art is not a projection field),
+            // The cover thumbnail. Not sortable (art isn't a projection field),
             // so `sort` here is never read; `sort_key` returns None for it.
             key: "cover",
             label: rox_i18n::t_static("columns-cover"),
@@ -128,7 +128,7 @@ pub fn columns() -> &'static [ColumnDef] {
             sort: SortKey::Bitrate,
         },
         ColumnDef {
-            // The sample rate as kHz, the label carrying the unit so the cell
+            // The sample rate as kHz, with the unit in the label so the cell
             // stays a bare number beside the bitrate.
             key: "sample_rate",
             label: rox_i18n::t_static("columns-khz"),
@@ -185,8 +185,8 @@ pub fn columns() -> &'static [ColumnDef] {
             sort: SortKey::Rating,
         },
         ColumnDef {
-            // The heart toggle. Not sortable (favourites live in a playlist, not
-            // the projection the sort runs over), so `sort` here is never read;
+            // The heart toggle. Not sortable (favourites are stored in a playlist,
+            // not the projection the sort runs over), so `sort` here is never read;
             // `sort_key` returns None for it.
             key: "favourite",
             label: rox_i18n::t_static("columns-fav"),
@@ -233,8 +233,8 @@ pub fn columns() -> &'static [ColumnDef] {
 /// The columns a picker should offer: the registry, minus the ones whose
 /// feature is switched off. Only discovery is gated, the same way the panel
 /// catalog gates its experimental run: a saved layout already holding the
-/// column keeps drawing it, and the cells simply read empty without vectors
-/// to score against.
+/// column keeps drawing it, and the cells read empty without vectors to
+/// score against.
 pub fn offered() -> impl Iterator<Item = &'static ColumnDef> {
     let acoustic = crate::settings::acoustic_analysis();
     let tempo = crate::settings::tempo_analysis();
@@ -267,7 +267,7 @@ pub fn reword(columns: &mut [Column]) {
 }
 
 /// One shown column: its registry key and current width. The order of the
-/// vec is the display order, so this carries visibility, order, and width
+/// vec is the display order, so this stores visibility, order, and width
 /// together. An empty layout means the registry's default set.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ColumnSpec {
@@ -328,8 +328,8 @@ impl GroupBy {
 
 /// The slider bounds for the row and header-line heights, px at the stock
 /// font size, and the stock height itself: what the rows draw at out of
-/// the box, and the height whose text sits at the stock 1 rem (the row
-/// and header text scale off their height's ratio to this).
+/// the box, and the height whose text is the stock 1 rem (the row and
+/// header text scale off their height's ratio to this).
 pub const ROW_HEIGHT_MIN: f32 = 18.;
 pub const ROW_HEIGHT_MAX: f32 = 48.;
 pub const ROW_HEIGHT_STOCK: f32 = 30.;
@@ -354,7 +354,7 @@ fn default_head_text() -> f32 {
     HEAD_TEXT_STOCK
 }
 
-/// A saved header text size read back clamped to the slider's reach;
+/// A saved header text size read back clamped to the slider's range;
 /// nonsense in a hand-edited dump falls to the stock size.
 pub fn fold_head_text(v: f32) -> f32 {
     if v.is_finite() {
@@ -367,9 +367,9 @@ pub fn fold_head_text(v: f32) -> f32 {
     }
 }
 
-/// A saved margin knob read back clamped to the band its input reaches,
-/// not the strip's own top, so a typed value survives a reload; nonsense
-/// in a hand-edited dump falls to zero.
+/// A saved margin knob read back clamped to the band its input allows,
+/// not the strip's own top, so a typed value is kept across a reload;
+/// nonsense in a hand-edited dump falls to zero.
 pub fn fold_margin(v: f32, max: f32) -> f32 {
     if v.is_finite() {
         v.clamp(0., settings_ui::ceiling(0., max))
@@ -379,7 +379,7 @@ pub fn fold_margin(v: f32, max: f32) -> f32 {
 }
 
 /// The saved row and header-line heights, the legacy density folded in: a
-/// layout from before the sliders carries Compact or Comfortable, which
+/// layout from before the sliders stores Compact or Comfortable, which
 /// map to the 30 and 40 px the Small and Large table sizes drew. Missing
 /// or nonsense values fall back to the stock shape, the header line
 /// defaulting to the row height.
@@ -401,7 +401,7 @@ pub fn fold_row_heights(config: &LibraryConfig) -> (f32, f32) {
 
 /// The panel's per-view config: what a saved layout restores, and the
 /// schema a future per-panel settings menu edits. One struct serves both,
-/// so new knobs land here.
+/// so new knobs go here.
 #[derive(Serialize, Deserialize)]
 pub struct LibraryConfig {
     /// The rename, theme override, and placement locks shared by every
@@ -460,14 +460,15 @@ pub struct LibraryConfig {
     #[serde(default)]
     pub sort_desc: bool,
     /// The view row at the top of the viewport, so a relaunch reopens the
-    /// list where it was left. An index, not pixels: it survives a density
-    /// change, and drifts at most a group's headers if the catalog shifts.
+    /// list where it was left. An index, not pixels: it persists across a
+    /// density change, and drifts at most a group's headers if the catalog
+    /// shifts.
     #[serde(default)]
     pub scroll_row: usize,
     /// Scroll to the playing row when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
-    /// After the list sits untouched for a spell, scroll back to the
+    /// After the list goes untouched for a spell, scroll back to the
     /// playing row on its own. Off by default; a browse surface only chases
     /// the player once you ask it to.
     #[serde(default)]
@@ -496,13 +497,13 @@ pub struct LibraryConfig {
     #[serde(default = "default_true")]
     pub header_art: bool,
     /// Round the artist grouping's tiles to the full circle the artist
-    /// wall wears; off keeps the shared rounding knob.
+    /// wall uses; off keeps the shared rounding knob.
     #[serde(default = "default_true")]
     pub portrait_circle: bool,
-    /// What the genre grouping's tile wears, the genre grid's faces.
+    /// What the genre grouping's tile shows, the genre grid's faces.
     #[serde(default)]
     pub genre_face: TileFace,
-    /// Sit the header rows on the list background instead of the raised
+    /// Draw the header rows on the list background instead of the raised
     /// Elevated tint. A role, not a color, so song theming moves the
     /// headers together with the list.
     #[serde(default)]
@@ -534,7 +535,7 @@ pub struct LibraryConfig {
     #[serde(default = "default_true")]
     pub row_borders: bool,
     /// Draw the column header row over the list; sorting and column
-    /// resizing live there, so hiding it freezes the current layout.
+    /// resizing happen there, so hiding it freezes the current layout.
     #[serde(default = "default_true")]
     pub column_headers: bool,
 }
@@ -582,12 +583,12 @@ impl Default for LibraryConfig {
     }
 }
 
-/// How many expanded line slots the config carries and the editors show.
+/// How many expanded line slots the config holds and the editors show.
 pub const HEAD_LINE_SLOTS: usize = 3;
 
 /// The saved header composition folded to the editors' shape: the compact
 /// row, and exactly [`HEAD_LINE_SLOTS`] expanded lines. A layout saved
-/// before composition carries the year and details toggles instead; those
+/// before composition has the year and details toggles instead; those
 /// fold into the stock lines, so old headers look unchanged. Hand-edited
 /// lists come back deduped and capped.
 pub fn fold_head_lines(config: &LibraryConfig) -> (Vec<HeadPiece>, Vec<Vec<HeadPiece>>) {
@@ -669,8 +670,8 @@ pub fn track_columns(layout: &[ColumnSpec], sort: &Option<(SharedString, bool)>)
 /// clicked column takes the new state, the rest fall back to canonical.
 /// The columns that show rather than sort stay stateless throughout, since
 /// the table hands the delegate's columns back to its own column groups on
-/// the next refresh and a cover header carrying a state is one a click can
-/// sort the list by nothing with.
+/// the next refresh, and a cover header with a sort state on it is one a
+/// click can sort the list by nothing with.
 pub fn mirror_sort(columns: &mut [Column], col_ix: usize, sort: ColumnSort) {
     for (ix, column) in columns.iter_mut().enumerate() {
         if !sortable(column.key.as_ref()) {
@@ -687,8 +688,7 @@ pub fn mirror_sort(columns: &mut [Column], col_ix: usize, sort: ColumnSort) {
 /// Whether a column's header offers a sort at all. Wider than [`sort_key`]:
 /// Similar sorts without a projection key behind it, on the delegate's own
 /// score map, and the table widget ignores a header click on a column that
-/// carries no sort state, so this is what decides whether the column gets
-/// one built.
+/// has no sort state, so this decides whether the column gets one built.
 pub fn sortable(key: &str) -> bool {
     key == "similar" || sort_key(key).is_some()
 }
@@ -719,10 +719,10 @@ mod tests {
     /// A language switch rewords the headers and leaves the layout alone.
     ///
     /// The labels are stored on the built column rather than resolved as
-    /// the header draws, so they used to sit in whatever language the
-    /// panel was opened in while the menu hanging off each header, which
-    /// reads the registry every frame, showed the new one. The two
-    /// disagreeing on screen is the bug this pins.
+    /// the header draws, so they used to stay in whatever language the
+    /// panel was opened in while the menu on each header, which reads the
+    /// registry every frame, showed the new one. The two disagreeing on
+    /// screen is the bug this pins.
     #[test]
     fn a_language_switch_rewords_headers_without_moving_them() {
         let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
@@ -746,7 +746,10 @@ mod tests {
         assert_ne!(english, japanese, "the headers should follow the language");
         assert_eq!(
             order,
-            columns.iter().map(|c| c.key.to_string()).collect::<Vec<_>>(),
+            columns
+                .iter()
+                .map(|c| c.key.to_string())
+                .collect::<Vec<_>>(),
             "rewording must not reorder the columns"
         );
         assert_eq!(
@@ -759,12 +762,15 @@ mod tests {
             "rewording must not resize the columns"
         );
 
-        // And back, so the switch is not a one-way trip.
+        // And back, so the switch isn't a one-way trip.
         rox_i18n::set_locale(Some("en-CA"));
         reword(&mut columns);
         assert_eq!(
             english,
-            columns.iter().map(|c| c.name.to_string()).collect::<Vec<_>>()
+            columns
+                .iter()
+                .map(|c| c.name.to_string())
+                .collect::<Vec<_>>()
         );
         rox_i18n::set_locale(None);
     }
@@ -821,9 +827,9 @@ mod tests {
 
     /// A restored layout has to build the Similar column sortable. Its
     /// ordering runs off the delegate's score map rather than a projection
-    /// key, so the projection's answer can't be what decides: a column with
-    /// no sort state on it is one the table widget ignores header clicks
-    /// for, and the arrow never draws.
+    /// key, so the projection's key can't be the gate: a column with no
+    /// sort state on it is one the table widget ignores header clicks for,
+    /// and the arrow never draws.
     #[test]
     fn a_restored_similar_column_sorts() {
         let layout: Vec<ColumnSpec> = ["title", "cover", "favourite", "similar"]
@@ -873,7 +879,7 @@ mod tests {
         assert!(lines[2].is_empty());
     }
 
-    /// A layout that carries composed lines uses them as-is, deduped and
+    /// A layout with composed lines uses them as-is, deduped and
     /// padded to the editors' slots, and its save drops the legacy toggles.
     #[test]
     fn composed_lines_read_ordered_and_round_trip() {
@@ -894,7 +900,7 @@ mod tests {
         assert!(back.header_lines == config.header_lines);
     }
 
-    /// A layout from before the height sliders carries a density choice;
+    /// A layout from before the height sliders has a density choice;
     /// it folds onto the pixel heights the old sizes drew, the header
     /// line following the rows.
     #[test]
@@ -907,8 +913,8 @@ mod tests {
     }
 
     /// Saved heights read back clamped to the band the readout's input
-    /// reaches, not the strip's own top, so a typed height survives the
-    /// reload. Nonsense falls to the stock shape, and a save drops the
+    /// allows, not the strip's own top, so a typed height persists across
+    /// the reload. Nonsense falls to the stock shape, and a save drops the
     /// legacy density.
     #[test]
     fn heights_clamp_and_round_trip() {

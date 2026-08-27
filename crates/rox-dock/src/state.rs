@@ -120,8 +120,8 @@ impl PanelInfo {
         Self::stack_with_seams(sizes, axis, None)
     }
 
-    /// rox addition: the stack info with the split's seam override riding
-    /// along.
+    /// rox addition: the stack info with the split's seam override
+    /// included.
     pub fn stack_with_seams(sizes: Vec<Pixels>, axis: Axis, seams: Option<bool>) -> Self {
         Self::Stack {
             sizes,
@@ -213,7 +213,7 @@ impl PanelState {
                 };
                 let sizes = sizes.iter().map(|s| Some(*s)).collect_vec();
                 let item = DockItem::split_with_sizes(axis, items, sizes, &dock_area, window, cx);
-                // The seam override rides the dump; hand it back to the
+                // The seam override is part of the dump; hand it back to the
                 // rebuilt split.
                 if let (Some(seams), DockItem::Split { view, .. }) = (seams, &item) {
                     view.update(cx, |stack, cx| stack.set_seams(Some(seams), cx));
@@ -240,7 +240,7 @@ impl PanelState {
             }
             // An empty container that an older build dumped with the default
             // `Panel(Null)` info instead of its own tabs/stack info (the bug
-            // only hit empty containers, so there are no children to carry).
+            // only hit empty containers, so there are no children to restore).
             // Rebuild it as the empty container it was, rather than routing the
             // container name through the registry and coming back as an
             // InvalidPanel.
@@ -278,7 +278,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_deserialize_item_state() {
-        // One level up from upstream: state.rs sits at src/ here, not src/dock/.
+        // One level up from upstream: state.rs is at src/ here, not src/dock/.
         let json = include_str!("../tests/fixtures/layout.json");
         let state: DockAreaState = serde_json::from_str(json).unwrap();
         assert_eq!(state.version, None);
@@ -316,7 +316,7 @@ mod tests {
     }
 
     // Build a nested layout in code, serialize it, read it back, and require
-    // it survives byte-for-byte. This guards settings.json layout persistence:
+    // it to match byte-for-byte. This guards settings.json layout persistence:
     // if a field stops round-tripping, a saved dock layout silently changes on
     // the next load.
     #[test]
@@ -377,7 +377,7 @@ mod tests {
         ));
     }
 
-    // Tiles carry per-tile bounds and z-index; those must survive a save/load
+    // Tiles have per-tile bounds and z-index; those must persist across a save/load
     // so a tiled layout doesn't reflow on restart.
     #[test]
     fn tiles_info_round_trips() {

@@ -12,9 +12,9 @@ Trade: lofty is the only maintained crate that writes across our whole format ma
 (ID3v2, Vorbis comments, MP4 atoms, APE) behind one API, including multi-picture album art
 and CJK-safe text. The per-format crates are individually mature (`id3` especially) but
 mean five APIs, five release cadences, and a dispatch layer we'd write anyway. The cost we
-take on: lofty writes in place and is not crash-atomic, the maintainer confirms a failure
+take on: lofty writes in place and isn't crash-atomic, the maintainer confirms a failure
 mid-write can leave a file unrecoverable. For bulk editing thousands of files that's a
 real data-loss exposure, so the atomic-write layer (write to a copy, verify metadata plus
-an audio-stream hash, atomically rename over the original, unlink on failure) is not
-optional, it's part of this component's definition. We keep `id3` in reserve for ID3 edge
+an audio-stream hash, atomically rename over the original, unlink on failure) is part of
+this component's definition rather than an add-on. We keep `id3` in reserve for ID3 edge
 cases.

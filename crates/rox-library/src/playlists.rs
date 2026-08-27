@@ -1,23 +1,23 @@
 //! Custom playlists in the library database (ADR 16). A playlist is a named,
-//! ordered list of member rows; a member carries the track id, its position,
-//! and a snapshot of the identifying tags at add time - the same deletion
+//! ordered list of member rows; a member holds the track id, its position,
+//! and a snapshot of the identifying tags at add time, the same deletion
 //! hedge the listen events use (ADR 11). While a track exists, reads resolve
 //! through the live catalog, so a fixed tag shows on the playlist row too;
 //! once the track is gone the snapshot keeps the row readable, though there is
-//! no file left to play. Track identity survives a rescan on the rowid
+//! no file left to play. Track identity is kept across a rescan on the rowid
 //! (ADR 5), so a playlist follows its tracks across scans.
 //!
 //! Members are addressed by their own row id, not the track id: a playlist may
 //! hold the same track more than once, so removing or moving a member acts on
 //! one occurrence, not every copy of a track.
 //!
-//! The one identity a rowid does not survive is a prune: a file missing at
-//! scan time loses its row, and coming back it lands under a fresh id the
-//! member knows nothing about. So a member also snapshots the track's path,
-//! and [`reattach`] runs after every scan to match dangling members back to
-//! the catalog - by that path first, then by the tag snapshot when it names
-//! exactly one track. A playlist survives its files leaving and returning,
-//! even at a new path.
+//! The one thing a rowid doesn't outlast is a prune: a file missing at scan
+//! time loses its row, and coming back it gets a fresh id the member knows
+//! nothing about. So a member also snapshots the track's path, and
+//! [`reattach`] runs after every scan to match dangling members back to the
+//! catalog: by that path first, then by the tag snapshot when it names
+//! exactly one track. A playlist holds together across its files leaving and
+//! returning, even at a new path.
 
 use std::sync::Arc;
 
@@ -27,9 +27,9 @@ use serde::{Deserialize, Serialize};
 use crate::projection::{FilterSet, Filterable, Projection, SortKey, TrackFields};
 
 /// The playlists and their member rows beside the tracks they key to. No
-/// foreign key on purpose, matching the listens table: deleting a track keeps
-/// its playlist rows, that is the snapshot's job. Duplicates are allowed, so
-/// there is no uniqueness on (playlist, track).
+/// foreign key here, matching the listens table: deleting a track keeps its
+/// playlist rows, which is the snapshot's job. Duplicates are allowed, so
+/// there's no uniqueness on (playlist, track).
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS playlists (
@@ -114,7 +114,7 @@ pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
 /// The store ladder's smart-playlists step: every playlist row learns
 /// which kind it is and, for a smart one, what query stands in for its
 /// members. Widening `playlists` rather than opening a side table follows
-/// the favourite column above - kind is something every row answers, and
+/// the favourite column above: kind is something every row records, and
 /// [`list`] keeps reading both kinds in one pass. The default 0 leaves
 /// every existing playlist static with a NULL definition, which is
 /// exactly what they are.
@@ -126,8 +126,8 @@ pub(crate) fn add_smart_columns(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Match member rows back to the catalog after a scan. A member keys to its
-/// track by rowid, which survives rescans and renames (ADR 5) but dies with
-/// a prune: a drive missing at scan time, an album deleted and restored, a
+/// track by rowid, which holds across rescans and renames (ADR 5) but dies
+/// with a prune: a drive missing at scan time, an album deleted and restored, a
 /// reorganize done with the app closed all bring the file back under a fresh
 /// id the member knows nothing about. Dangling members relink by their path
 /// snapshot first, then by their tag snapshot when it names exactly one
@@ -194,8 +194,8 @@ impl PlaylistKind {
 }
 
 /// What a smart playlist is: the saved query, in the same syntax the
-/// search boxes speak, plus the structured filter, sort, and cap a view
-/// carries. Held as JSON in the playlist row's `definition` column and
+/// search boxes use, plus the structured filter, sort, and cap a view
+/// takes. Held as JSON in the playlist row's `definition` column and
 /// evaluated live, so a smart playlist never holds member rows and never
 /// goes stale against the catalog.
 ///
@@ -219,7 +219,7 @@ impl SmartDef {
     ///
     /// The kernel is the same [`crate::view::view_for`] the library table
     /// runs, so a saved query means exactly what the same string typed into
-    /// a search box means. Nothing is cached - a pass is one walk of the
+    /// a search box means. Nothing is cached: a pass is one sweep of the
     /// projection, and a cache would need invalidating on every rating,
     /// play, and scan.
     pub fn ids(&self, projection: &Projection, order: Arc<Vec<u32>>) -> Vec<i64> {
@@ -253,8 +253,8 @@ impl SmartDef {
                 _ => None,
             })
             .collect();
-        // The cap lands after the sort, so "top 50" means the first fifty of
-        // the order the definition asked for.
+        // The cap applies after the sort, so "top 50" means the first fifty
+        // of the order the definition asked for.
         if let Some(limit) = self.limit {
             rows.truncate(limit as usize);
         }
@@ -694,7 +694,7 @@ pub fn reorder(
 /// This is the one primitive behind every playlist drag, single or multi,
 /// reorder or cross-playlist move. The target and any source playlists stamp
 /// updated. `before` must not name one of `members`; the caller drops a
-/// self-drop before it reaches here.
+/// self-drop before it gets here.
 pub fn place_members(
     conn: &mut Connection,
     playlist_id: i64,
@@ -759,9 +759,9 @@ pub fn place_members(
     tx.commit()
 }
 
-/// Drop several members at once by row id, across whatever playlists they sit
-/// in. Each playlist they leave stamps updated. Positions keep their gaps, the
-/// same as the single remove; the next reorder closes them.
+/// Drop several members at once by row id, across whatever playlists they
+/// belong to. Each playlist they leave stamps updated. Positions keep their
+/// gaps, the same as the single remove; the next reorder closes them.
 pub fn remove_members(conn: &mut Connection, member_ids: &[i64], now: i64) -> rusqlite::Result<()> {
     if member_ids.is_empty() {
         return Ok(());
@@ -934,7 +934,7 @@ mod tests {
         .unwrap()
     }
 
-    /// The smart-playlists rung lands its columns on a fresh database and on
+    /// The smart-playlists rung adds its columns to a fresh database and to
     /// one written before the step existed. The ladder is forward-only and
     /// additive, so the older file has to converge by running the tail, not
     /// by being rebuilt.
@@ -966,7 +966,7 @@ mod tests {
         );
     }
 
-    /// A definition survives the trip through the column, filter and all.
+    /// A definition comes back intact through the column, filter and all.
     #[test]
     fn a_definition_round_trips_through_the_row() {
         let conn = seed();
@@ -1411,7 +1411,7 @@ mod tests {
         let pl = create(&conn, "Mix", 100).unwrap();
         add(&mut conn, pl, &[1], 100).unwrap();
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
-        // Two candidates carry the snapshot's tags and neither sits at its
+        // Two candidates have the snapshot's tags and neither is at its
         // path; picking one would be a coin flip, so neither is taken.
         store::insert_batch(
             &mut conn,

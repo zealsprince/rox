@@ -1,6 +1,6 @@
-//! Finding the tracks the library carries more than once. A duplicate here
+//! Finding the tracks the library holds more than once. A duplicate here
 //! is a tag identity, the same title and artist within a small duration
-//! tolerance, matched over the in-memory projection so a scan never walks
+//! tolerance, matched over the in-memory projection so nothing touches
 //! the disk. The match hands back bare specs: ids, not paths, and no
 //! ordering policy, because which copy to keep is the caller's call.
 
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::projection::Projection;
 
-/// How far apart two durations can sit and still read as the same
+/// How far apart two durations can be and still read as the same
 /// recording. Rips and transcodes of one track drift by padding and
 /// encoder delay, not by seconds; anything past this is a different take.
 const DUR_TOLERANCE_MS: u32 = 1500;
@@ -27,7 +27,7 @@ pub struct GroupSpec {
     pub title: String,
     pub artist: String,
     pub duration_ms: u32,
-    /// Whether every copy carries the same album tag. Copies spread over
+    /// Whether every copy has the same album tag. Copies spread over
     /// different albums are one song on several releases, which is the
     /// case a caller's auto-selection should leave alone.
     pub same_album: bool,
@@ -41,12 +41,12 @@ pub struct GroupSpec {
 pub fn match_duplicates(projection: &Projection) -> Vec<GroupSpec> {
     // Bucket by identity first; the map borrows the projection's strings,
     // nothing is owned until a bucket proves duplicated. Key on the folded
-    // artist, not the case-sensitive symbol, so "ABBA" and "Abba" land in one
+    // artist, not the case-sensitive symbol, so "ABBA" and "Abba" go in one
     // bucket like the folded title does; distinct symbols share a lower form.
     let mut by_key: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
     for i in 0..projection.db_id.len() {
         // A file whose tags failed to parse scans as its filename stem, no
-        // artist, no album, duration zero - no evidence of identity at all.
+        // artist, no album, duration zero: no evidence of identity at all.
         // Two different songs named alike would cluster, pass the duration
         // and album checks on their empty fallbacks, and auto-select could
         // mark one for the trash. Keep such rows out of the matching.
@@ -73,7 +73,7 @@ pub fn match_duplicates(projection: &Projection) -> Vec<GroupSpec> {
             continue;
         }
         // Cluster by duration inside the bucket: sorted, a row joins the
-        // open cluster while it sits within tolerance of the cluster's
+        // open cluster while it stays within tolerance of the cluster's
         // start, so drift never chains far past it.
         rows.sort_by_key(|&i| projection.duration_ms[i]);
         let mut start = 0;
@@ -123,8 +123,8 @@ mod tests {
     use crate::rusqlite::Connection;
     use crate::{store, TrackRow};
 
-    /// A track row with just the fields the clustering reads; the rest sit at
-    /// their neutral defaults.
+    /// A track row with just the fields the clustering reads; the rest stay
+    /// at their neutral defaults.
     fn track(path: &str, title: &str, artist: &str, album: &str, duration_ms: u32) -> TrackRow {
         TrackRow {
             sub: 0,
@@ -160,7 +160,7 @@ mod tests {
         Projection::load_serial(&conn, false).unwrap()
     }
 
-    /// Real duplicates - same artist and title, durations within tolerance -
+    /// Real duplicates (same artist and title, durations within tolerance)
     /// cluster into one group, so the tool can offer to trash a spare.
     #[test]
     fn real_duplicates_cluster() {
@@ -176,7 +176,7 @@ mod tests {
 
     /// The deletion-safety fix: two distinct zero-duration rows (files whose
     /// tags failed to parse, so they scan as their filename stem with duration
-    /// zero) must never cluster. They carry no evidence of identity, and a
+    /// zero) must never cluster. They hold no evidence of identity, and a
     /// false cluster could auto-mark one for the trash.
     #[test]
     fn zero_duration_rows_never_cluster() {
@@ -218,7 +218,7 @@ mod tests {
         assert!(match_duplicates(&p).is_empty());
     }
 
-    /// Case-folded identity: "ABBA" and "Abba", "Song" and "song" land in one
+    /// Case-folded identity: "ABBA" and "Abba", "Song" and "song" go in one
     /// bucket, so a casing difference in the tags doesn't hide a duplicate.
     #[test]
     fn identity_folds_case() {
@@ -232,7 +232,7 @@ mod tests {
     }
 
     /// Copies spread across different albums cluster (same song, several
-    /// releases) but carry same_album false, the flag auto-select reads to
+    /// releases) but get same_album false, the flag auto-select reads to
     /// leave them untouched so no album loses a track by default.
     #[test]
     fn cross_album_copies_flag_not_same_album() {

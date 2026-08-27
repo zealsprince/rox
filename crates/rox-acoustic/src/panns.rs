@@ -2,7 +2,7 @@
 //!
 //! CNN10 is one of the pretrained audio neural networks from Kong et al.,
 //! trained on AudioSet to answer "what is this a recording of" across 527
-//! classes. The 512 values before that final classifier are what rox keeps:
+//! classes. rox keeps the 512 values before that final classifier:
 //! a description of what a piece of audio sounds like, learned from two
 //! million clips, which is a different and much better thing than the
 //! hand-rolled sketch the built-in [`crate::MODEL`] produces.
@@ -13,7 +13,7 @@
 //! which means every operation it needs already exists in candle-nn and
 //! there's no ONNX graph to fight. It's 24 MB, which is a download people
 //! will actually accept. And the weights are CC BY 4.0 with MIT code, so
-//! nothing about offering it is legally awkward, which is not true of the
+//! nothing about offering it is legally awkward, which isn't true of the
 //! Essentia music models that would otherwise be the obvious pick.
 //!
 //! ## The architecture, from `pytorch/models.py`
@@ -36,7 +36,7 @@
 //!
 //! ## The front end
 //!
-//! The spectrogram recipe lives in [`crate::models::PANNS_MEL`],
+//! The spectrogram recipe is in [`crate::models::PANNS_MEL`],
 //! copied from the model's training config. The weights file also ships the
 //! filterbank it was trained with, so [`Cnn10::load`] uses that matrix
 //! directly and compares it against the one the config derives. A
@@ -55,7 +55,7 @@ use crate::resample;
 /// The width of the vector this produces.
 pub const DIM: usize = 512;
 
-/// How far the shipped filterbank may sit from the one the config derives
+/// How far the shipped filterbank may differ from the one the config derives
 /// before the two are calling each other liars. The two are computed in
 /// different languages at different precisions over the same formula, so
 /// they agree to about a part in ten million in practice; this leaves four
@@ -90,7 +90,7 @@ impl ConvBlock {
 
     fn forward(&self, xs: &Tensor) -> candle_core::Result<Tensor> {
         // forward_t with false is the eval path: the batch norm uses the
-        // running statistics the file carries rather than measuring this
+        // running statistics stored in the file rather than measuring this
         // batch, which is the whole point of using a pretrained model.
         let xs = self.conv1.forward(xs)?;
         let xs = self.bn1.forward_t(&xs, false)?.relu()?;
@@ -124,14 +124,14 @@ impl Cnn10 {
         Self::load_from(&path)
     }
 
-    /// Load whatever safetensors sit at `path`, with no catalog entry and no
+    /// Load whatever safetensors are at `path`, with no catalog entry and no
     /// checksum behind them. This is the user-supplied route: a bigger CNN10
     /// of their own, or a checkpoint they trained.
     ///
     /// Nothing validates the architecture up front, and nothing needs to.
     /// [`Self::build`] reads named tensors at fixed shapes, so a file that
     /// isn't this network fails there with the name of the tensor it wanted;
-    /// and the mel filterbank the file carries is checked against the one the
+    /// and the mel filterbank stored in the file is checked against the one the
     /// front end computes, which catches a CNN10 trained at other spectrogram
     /// settings even though every tensor loads.
     pub fn load_from(path: &Path) -> Result<Self, String> {
@@ -156,7 +156,7 @@ impl Cnn10 {
 
     fn build(path: &Path, device: Device) -> Result<Self, String> {
         // Unsafe because mmap can't promise the file won't be rewritten
-        // underneath us. Nothing else writes here: a re-download lands on a
+        // underneath us. Nothing else writes here: a re-download writes a
         // .part file and renames, which swaps the directory entry rather
         // than the pages this mapping holds.
         let vb = unsafe {
@@ -240,9 +240,10 @@ impl Cnn10 {
     /// end of the network means a loud passage produces larger activations
     /// than a quiet one on the same material, and averaging raw would let
     /// whichever window happened to be loudest write most of the track's
-    /// vector. What's being averaged is a direction in the model's space.
+    /// vector. Each window contributes a direction in the model's space,
+    /// not a magnitude.
     ///
-    /// The mean is not rescaled on the way out. The storage layer
+    /// The mean isn't rescaled on the way out. The storage layer
     /// standardizes every dimension against the corpus at query time
     /// (`rox_library::embeddings::Stats`), so a track-level magnitude has no
     /// vote in the ranking, and leaving it raw keeps this consistent with
@@ -345,8 +346,8 @@ impl Cnn10 {
         }
 
         // Fold the mel axis away, then reduce time two ways at once: the
-        // loudest moment and the average one. Summing them is what the
-        // original does, and it's why a clip with one distinctive event and
+        // loudest moment and the average one. The original sums them, and
+        // it's why a clip with one distinctive event and
         // a clip that sounds like that throughout land near each other.
         let xs = xs.mean(D::Minus1)?;
         let peak = xs.max(D::Minus1)?;
@@ -387,7 +388,8 @@ mod tests {
 
     /// A clip that produces too few frames is refused rather than padded,
     /// so nothing feeds the network a shape it would read as silence.
-    /// Checked through the mel front end, since that's what decides.
+    /// Checked through the mel front end, since that's where the frame
+    /// count comes from.
     #[test]
     fn a_clip_shorter_than_the_pooling_stack_makes_too_few_frames() {
         let mel = Mel::new(PANNS_MEL).unwrap();
@@ -425,7 +427,7 @@ mod tests {
     }
 
     /// The config in the catalog against the filterbank the weights were
-    /// actually trained with, which the file carries.
+    /// actually trained with, which the file ships.
     ///
     /// This is the check that the mel recipe is right rather than merely
     /// plausible. A wrong mel scale (HTK where Slaney was meant) moves
@@ -444,8 +446,8 @@ mod tests {
     }
 
     /// The whole chain against the network's own semantics: run the AudioSet
-    /// classifier the embedding sits behind and check that it recognizes
-    /// three sounds it was explicitly trained to name.
+    /// classifier that comes after the embedding and check that it
+    /// recognizes three sounds it was explicitly trained to name.
     ///
     /// This is the strongest verification available without a PyTorch to
     /// diff against. The mel recipe, the weight layout, the batch norms in
@@ -472,7 +474,7 @@ mod tests {
 
         // Where a sound ranks among the 527 classes, 0 being the model's
         // first pick. A rank rather than a probability: the absolute numbers
-        // depend on the clip, the ordering is what the model was scored on.
+        // depend on the clip, and the model was scored on the ordering.
         let rank_of = |samples: &[f32], class: usize| -> usize {
             let embedding = net
                 .embed(samples)

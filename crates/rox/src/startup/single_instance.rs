@@ -1,7 +1,7 @@
 //! One rox per data directory.
 //!
-//! Launching rox while a rox is already running - a click on the pinned
-//! launcher, a file manager's Open With, a second `rox` in a terminal - used
+//! Launching rox while a rox is already running (a click on the pinned
+//! launcher, a file manager's Open With, a second `rox` in a terminal) used
 //! to start a whole second process, with its own window, its own tray icon,
 //! and its own claim on the media keys. With quit-to-tray on that reads as
 //! the tray opening a duplicate window: the resident instance is still there
@@ -10,8 +10,8 @@
 //! So the first instance binds a Unix socket keyed to its data directory, and
 //! every later launch connects, hands over what it was asked to open, and
 //! exits. The running rox raises its window (or comes back out of the tray)
-//! and takes the files. `rox --new-instance` skips the guard when a second
-//! process is what you actually want.
+//! and takes the files. `rox --new-instance` skips the guard when you
+//! actually want a second process.
 //!
 //! Windows has no backend here yet, so a second launch there starts its own
 //! process the way it always did.
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 /// What a second launch hands over. The files are already filtered to audio
 /// rox can decode and made absolute: the running instance has its own working
 /// directory and can't resolve a relative path the way the caller meant it.
-/// The mode travels as a bool because [`LaunchMode`] isn't a serde type and
+/// The mode is sent as a bool because [`LaunchMode`] isn't a serde type and
 /// there are only the two.
 #[derive(Serialize, Deserialize)]
 struct Launch {
@@ -33,7 +33,7 @@ struct Launch {
     files: Vec<PathBuf>,
 }
 
-/// The listening end of the guard, carried from [`claim`] (before the app
+/// The listening end of the guard, passed from [`claim`] (before the app
 /// boots) to [`serve`] (once there's a `cx` to drain onto). Empty when this
 /// run has no guard: `--new-instance`, a platform without a backend, or a
 /// bind that didn't take.
@@ -48,7 +48,7 @@ pub struct Server {
 
 /// Whether this process is the rox for its data directory. `Some` means run
 /// the app and hand the server to [`serve`]; `None` means a running rox took
-/// this launch and there is nothing left for this process to do.
+/// this launch and there's nothing left for this process to do.
 #[cfg(unix)]
 pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
     use std::io::Write as _;
@@ -82,7 +82,7 @@ pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
         }
     }
     // Nobody answered. Either no rox is running or one died without taking
-    // its socket file with it - a live listener would have accepted the
+    // its socket file with it. A live listener would have accepted the
     // connect above, so what's left is safe to replace.
     //
     // Bind under our own name and rename it into place rather than unlinking
@@ -97,7 +97,7 @@ pub fn claim(mode: LaunchMode, files: &[PathBuf]) -> Option<Server> {
         return unguarded();
     };
     // The runtime dir is user-private already; the data dir standing in for
-    // it isn't guaranteed to be, and this socket carries the paths of files
+    // it isn't guaranteed to be, and this socket sends the paths of files
     // we're about to play.
     let _ = std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600));
     if std::fs::rename(&staging, &path).is_err() {
@@ -131,7 +131,7 @@ pub fn serve(server: Server, cx: &mut App) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            // A peer that connects and then says nothing can't hold the
+            // A peer that connects and then sends nothing can't hold the
             // thread; the handoff is one write and a close.
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
             let mut payload = Vec::new();
@@ -175,9 +175,9 @@ pub fn serve(server: Server, cx: &mut App) {
 #[cfg(not(unix))]
 pub fn serve(_server: Server, _cx: &mut App) {}
 
-/// A second launch, applied to this one. The window comes back first - out of
-/// the tray when residency swallowed it, raised when it's only buried - then
-/// the files ride into whatever is now front.
+/// A second launch, applied to this one. The window comes back first, out of
+/// the tray when residency swallowed it or raised when it's only buried, then
+/// the files go to whatever workspace is now front.
 #[cfg(unix)]
 fn adopt(launch: Launch, cx: &mut App) {
     let mode = if launch.enqueue {
@@ -190,7 +190,7 @@ fn adopt(launch: Launch, cx: &mut App) {
     let paths = rox_library::open_files::resolve_audio_paths(launch.files);
     match rox_panel_api::windows::front_workspace(cx) {
         // Best effort on Wayland: raising takes an activation token the
-        // compositor can refuse, and the launcher's token died with the
+        // compositor can reject, and the launcher's token died with the
         // process that handed us the files.
         Some((window, _)) => {
             window
@@ -207,9 +207,9 @@ fn adopt(launch: Launch, cx: &mut App) {
 /// Where the instance listens. Keyed to the data directory, so a `--portable`
 /// or `--fresh` run is its own instance instead of talking to the daily
 /// driver's. The hash only has to agree with itself across two runs of the
-/// same binary, which is well inside what `DefaultHasher` promises. Sockets
+/// same binary, which is well inside what `DefaultHasher` guarantees. Sockets
 /// belong in the runtime dir and the path has a length limit, so that comes
-/// first and the data dir only stands in where there is no runtime dir.
+/// first and the data dir only stands in where there's no runtime dir.
 #[cfg(unix)]
 fn socket_path() -> PathBuf {
     use std::hash::{Hash as _, Hasher as _};

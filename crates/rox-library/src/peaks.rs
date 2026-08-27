@@ -1,11 +1,11 @@
 //! The waveform peak cache: one small binary file per track under a cache
 //! directory the caller names, so a track's strip comes back instantly
 //! after its first play instead of re-decoding the whole file.
-//! Entries are keyed by file identity - the source's path, size, and mtime
+//! Entries are keyed by file identity: the source's path, size, and mtime
 //! are stored inside and a mismatch on any of them reads as a miss, so an
 //! edited or replaced file re-decodes and overwrites its entry. The
-//! identity is the one the file carried going into the decode, checked
-//! again at the write, so a track still landing on disk never keys a short
+//! identity is the one the file had going into the decode, checked again
+//! at the write, so a track still being written to disk never keys a short
 //! waveform to the file it finishes as. Anything unreadable or malformed
 //! is a miss too, never an error; the panel just decodes fresh and stores
 //! again.
@@ -26,12 +26,12 @@ use crate::hash::fnv1a;
 const MAGIC: &[u8; 8] = b"roxwave2";
 
 /// Drop every entry; strips re-decode and re-store on their next play.
-/// Blocking on the directory walk; run off the UI thread.
+/// Blocking on the directory removal; run off the UI thread.
 pub fn clear(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Where a track's entry lives: a hash of the path names the file, the
+/// Where a track's entry is stored: a hash of the path names the file, the
 /// path stored inside the entry disambiguates a collision.
 fn entry_path(dir: &Path, track: &Path) -> PathBuf {
     dir.join(format!(
@@ -113,10 +113,10 @@ pub fn load(dir: &Path, track: &Path) -> Option<Vec<Vec<(f32, f32)>>> {
     Some(lanes)
 }
 
-/// Write a track's entry against `stamped`, the identity the file carried
-/// before the decode read it. A file that moved in between - a download
-/// finishing under the decode - writes nothing, so the finished file
-/// decodes fresh instead of wearing a waveform of the half that existed.
+/// Write a track's entry against `stamped`, the identity the file had
+/// before the decode read it. A file that moved in between (a download
+/// finishing under the decode) writes nothing, so the finished file
+/// decodes fresh instead of showing a waveform of the half that existed.
 /// Failures log and move on, same stance as the settings file: a lost
 /// cache entry only costs a re-decode next time.
 pub fn store(dir: &Path, track: &Path, stamped: Option<(u64, u64)>, lanes: &[Vec<(f32, f32)>]) {
@@ -208,8 +208,8 @@ mod tests {
         assert_eq!(load(&scratch.cache(), &track), None);
     }
 
-    /// A file that grows while the decode reads it - a download landing
-    /// under the strip - writes no entry at all. Storing against the
+    /// A file that grows while the decode reads it (a download finishing
+    /// under the strip) writes no entry at all. Storing against the
     /// identity it finished with would pin a waveform of the half that
     /// existed to the whole file, and it would never read as stale.
     #[test]
@@ -267,9 +267,9 @@ mod tests {
     }
 
     /// The stored path disambiguates a hash collision: an entry written for
-    /// one track but planted where another's entry would live reads as a miss,
+    /// one track but planted where another's entry would go reads as a miss,
     /// so two files that hash alike never hand each other the wrong waveform.
-    /// The entry carries a's path bytes, which b's load compares against and
+    /// The entry holds a's path bytes, which b's load compares against and
     /// rejects.
     #[test]
     fn planted_entry_with_wrong_path_misses() {

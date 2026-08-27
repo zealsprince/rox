@@ -11,7 +11,7 @@ volume/ReplayGain, and the tap ring.
 
 Boundary: the real-time output callback is the hard line. It only reads from a
 pre-allocated ring buffer and writes to the device. No allocation, no lock, no logging,
-no database. Everything else in the engine lives on a normal decode thread behind that
+no database. Everything else in the engine runs on a normal decode thread behind that
 line.
 
 Formats: the whole Symphonia codec and container matrix, taken wholesale because every
@@ -25,23 +25,23 @@ the crossfade curve) multiplies each decoded source on its own, then the chain o
 nodes processes the mixed stream, both on the decode thread immediately before the ring.
 Crossfade is not a node, it's a second open source summed in the engine, so the ring
 keeps one producer. With the chain empty and volume at unity the device gets the
-decoder's samples unchanged, which is what makes bit-perfect a claim you can check.
+decoder's samples unchanged, which makes bit-perfect a claim you can check.
 
 Output: one backend contract, a request in and what it negotiated back (mode, rate,
-format). cpal answers it for shared mode; exclusive is per-platform, ALSA `hw` direct,
+format). cpal implements it for shared mode; exclusive is per-platform, ALSA `hw` direct,
 WASAPI exclusive, CoreAudio hog mode, and follows the source rate where the device
-allows. A claim that fails opens shared and carries the reason, never silence.
+allows. A claim that fails opens shared and reports the reason, never silence.
 
 Contract to the UI:
 - In: `play`, `pause`, `seek(pos)`, `next`, `prev`, `enqueue(track)`, `set_volume`,
   `set_loop`, `set_shuffle`, `set_output_device`, `set_crossfade`, `set_gain_rule`, and
   structural chain edits. Commands cross a channel, they don't call into the RT thread.
-  Node parameters don't: a knob is an atomic the UI still holds, so turning one is a
-  store the node picks up on its next buffer.
+  Node parameters don't: a knob is an atomic shared with the UI, so turning one is a
+  store the node reads on its next buffer.
 - Out: playback state (current track, position, playing/paused, device), emitted as the
   UI's shared entity updates so views re-render on the next frame.
-- Out: the PCM tap, a second SPSC ring the visualizer drains. Lossy by design, a slow UI
-  drops stale samples rather than back-pressuring audio.
+- Out: the PCM tap, a second SPSC ring the visualizer drains. Lossy: a slow UI drops
+  stale samples rather than back-pressuring audio.
 
 ## Library service
 
@@ -55,7 +55,7 @@ instead of forcing a migration (see
 Boundary: browsing never touches SQLite. The UI reads the shared in-memory projection
 and derives its views from it; paths stay in the store, so playing a row costs one
 id-to-path read back through the service. Consistency is by rebuild: the projection is
-never patched, it is rebuilt from SQLite and swapped whole.
+never patched, it's rebuilt from SQLite and swapped whole.
 
 Contract to the UI:
 - In: `rescan(root)`, `watch(on/off)`, and `paths_for(ids)`, the id-to-path hop that
@@ -65,7 +65,7 @@ Contract to the UI:
 
 Contract to the metadata writer: after a successful tag write, the library applies the
 committed changes to its rows and reloads the projection, so a tag edit and the browse view
-converge without a full rescan. Fields the projection carries update at once; fields it
+converge without a full rescan. Fields the projection contains update at once; fields it
 doesn't (comment, composer) reflect on the next rescan.
 
 ## Play history
@@ -73,8 +73,8 @@ doesn't (comment, composer) reflect on the next rescan.
 Responsibility: turn playback into a durable record of listens and answer the stat
 queries panels ask: play count and recency per track, rolled up by artist,
 album, and genre. Product hands down the shape ([scope](../01-product/03-scope.md)):
-events with timestamps keyed to track identity, never bare counters, because the raw
-record is what every future stat derives from.
+events with timestamps keyed to track identity, never bare counters, because every
+future stat derives from the raw record.
 
 Boundary: nothing here touches the audio path. The playback engine already emits state
 (current track, position, transitions); play history consumes that state on the control
@@ -116,19 +116,19 @@ Contract:
 
 ## Artwork service
 
-Responsibility: feed the album-art grid without stalling the scroll. Generates 256px
-thumbnails once, caches them, and hands the UI decoded textures.
+Responsibility: supply the album-art grid without stalling the scroll. Generates 256px
+thumbnails once, caches them, and returns decoded textures to the UI.
 
 Boundary: two bounded pools, not one thread per tile. A worker pool loads and resizes
-thumbnails from a dedicated SQLite thumbnail DB; a bounded LRU of decoded textures sits in
-front, sized to the viewport plus a margin, not the whole library.
+thumbnails from a dedicated SQLite thumbnail DB; a bounded LRU of decoded textures is
+checked before that pool, sized to the viewport plus a margin, not the whole library.
 
 Contract:
 - In: `thumbnail(key, size)` where key is content-addressed (path + mtime + size).
 - Out: a texture handle, or a placeholder plus a pending load. Off-screen requests cancel.
-- A catalog change marks the texture cache stale rather than clearing it. Entries keep
-  answering while they re-read behind the answer, and only a cover whose bytes actually
-  changed swaps, so a track landing in a watched folder never blanks the wall.
+- A catalog change marks the texture cache stale rather than clearing it. A stale entry
+  is still served while it re-reads in the background, and only a cover whose bytes
+  actually changed swaps, so a track added to a watched folder never blanks the wall.
 
 ## Visualizer subsystem
 
@@ -157,18 +157,18 @@ selection state stay shared without any cross-window messaging.
 Contract:
 - Layouts and themes serialize to disk as shareable artifacts. A layout is an arrangement
   of panels and their configs; a theme is a token set (colors, fonts, spacing, accent).
-  Neither carries executable behavior.
+  Neither contains executable behavior.
 - Settings split by scope: an app settings window edits the app-wide state, and a
   per-panel customize window edits that panel's config. The app-wide half is split again
   on disk by what each file is for, so preferences travel between machines while window
   geometry, playback state, and credentials stay put
-  ([ADR 20](decisions/20-adr-settings-split.md)). Per-view state lives in panel config: columns, sort, density,
+  ([ADR 20](decisions/20-adr-settings-split.md)). Per-view state is stored in panel config: columns, sort, density,
   theme overrides, and the search query, entered through one shared box component, so
-  duplicated panels diverge and a layout carries all of it.
+  duplicated panels diverge and a layout stores all of it.
 
 ## Network enrichment boundary
 
-Scrobbling, tag lookup / auto-tagging, and lyrics all reach the network to enrich a local
+Scrobbling, tag lookup / auto-tagging, and lyrics all use the network to enrich a local
 library. They share one architectural rule: rox works fully offline, and the network only
 adds. This is a distinct domain, isolated from playback and library, so a slow or dead
 network never blocks the UI, the audio path, or a browse query.
@@ -177,7 +177,7 @@ network never blocks the UI, the audio path, or a browse query.
   Playback, browse, search, and manual tagging never depend on it.
 - **Off the hot paths.** Enrichment runs on the background executor, off the UI and audio
   threads. It never touches
-  the real-time audio callback, and it reaches the library and metadata writer through their
+  the real-time audio callback, and it accesses the library and metadata writer through their
   existing contracts (the scrobbler reads the same position clock the listen rule does, an
   auto-tag result goes through the same atomic tag-write path as a manual edit).
 - **The pieces exist.** Last.fm scrobbling is a straightforward HTTP client. The rest are
@@ -188,5 +188,4 @@ network never blocks the UI, the audio path, or a browse query.
   core, so it stays a thin, well-isolated domain rather than growing into the system.
 
 These are peripheral, so this section fixes the boundary and the offline-first rule, not the
-detail. The point is that enrichment can't be allowed to leak into the domains that must stay
-fast and must work offline.
+detail.

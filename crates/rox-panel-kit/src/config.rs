@@ -1,5 +1,5 @@
-//! The serde helpers every panel config reaches for. Small enough that each
-//! panel used to carry its own copy, which is exactly why they belong in one
+//! The serde helpers every panel config uses. Small enough that each panel
+//! used to have its own copy, which is exactly why they belong in one
 //! place.
 
 /// A knob that ships on, so an older layout dump missing the field keeps the

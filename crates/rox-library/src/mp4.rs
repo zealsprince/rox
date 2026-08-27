@@ -7,13 +7,13 @@
 //! states its length in the `mehd` box's `fragment_duration`, or in a
 //! `sidx` segment index, and lofty reads neither: `properties().duration()`
 //! comes back 0ms. symphonia (through 0.6) reads the `sidx` but falls back
-//! to `mdhd` when a file carries none, which is the zero again.
+//! to `mdhd` when a file has none, which is the zero again.
 //!
 //! So both the scan and the playback open come away not knowing how long
 //! the track is, which costs the seek bar its range and prints the
 //! remaining time as -0:00. This reads the `mehd` directly: a walk of box
 //! headers off the front of the file, a handful of seeks, no decode. A
-//! fragmented file carrying neither `mehd` nor `sidx` still can't be
+//! fragmented file with neither `mehd` nor `sidx` still can't be
 //! measured short of decoding it.
 
 use std::fs::File;
@@ -167,7 +167,7 @@ mod tests {
     }
 
     /// A whole file: `ftyp`, a `moov` holding the boxes given, then a
-    /// fragment, which is where the samples of a real one live.
+    /// fragment, where the samples of a real one are stored.
     fn file(moov_children: &[Vec<u8>]) -> Vec<u8> {
         let mut moov = Vec::new();
         for child in moov_children {
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(fragment_duration_secs(&path), None);
     }
 
-    /// Fragmented, but the `mvex` carries only the `trex` defaults with no
+    /// Fragmented, but the `mvex` holds only the `trex` defaults with no
     /// `mehd` beside them. Nothing to read, and nothing to invent.
     #[test]
     fn no_mehd_reads_nothing() {

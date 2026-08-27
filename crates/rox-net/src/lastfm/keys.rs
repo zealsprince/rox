@@ -5,7 +5,7 @@
 //! repository secrets to cargo. A build without them ships no identity,
 //! and the settings page asks the user for their own pair instead; a
 //! fork wanting one-click connect registers its own account and exports
-//! the two vars. The secret riding along in the binary is the usual
+//! the two vars. The secret shipped inside the binary is the usual
 //! open-source scrobbler trade-off: it identifies the app, not any
 //! user, and accounts still authorize per session in the browser.
 

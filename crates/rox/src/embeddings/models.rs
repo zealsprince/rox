@@ -1,7 +1,7 @@
 //! The model manager as the app sees it: the catalog, the install checks,
-//! and the download all live in [`rox_acoustic::models`] and are re-exported
-//! below. What stays here is the app-global half of a running download, the
-//! same shape [`super`] keeps for the pass.
+//! and the download are all defined in [`rox_acoustic::models`] and are
+//! re-exported below. What stays here is the app-global half of a running
+//! download, the same shape [`super`] keeps for the pass.
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ struct LastFailure(Option<(String, String)>);
 
 impl Global for LastFailure {}
 
-/// The running download's progress, for a UI that wants to show it.
+/// The running download's progress, for a UI that shows it.
 pub fn progress(cx: &App) -> Option<Arc<Progress>> {
     cx.try_global::<Running>().and_then(|r| r.0.clone())
 }

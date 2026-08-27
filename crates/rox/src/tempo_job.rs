@@ -1,14 +1,14 @@
 //! The tempo measurement pass: work out what every track with no BPM runs
 //! at, and put the number on its row.
 //!
-//! The estimator lives in [`rox_acoustic::tempo`] and the work list and the
-//! write in [`rox_library::store`]; what's here is the app-global
+//! The estimator is defined in [`rox_acoustic::tempo`], the work list and
+//! the write in [`rox_library::store`]; this module holds the app-global
 //! bookkeeping around a running pass, the shape [`crate::replaygain_job`]
 //! and [`crate::embeddings`] already have. One pass at a time, owned by the
 //! app rather than a window, so closing the Library page leaves it running
 //! and reopening it picks the count back up.
 //!
-//! The database is the only place a tempo lands. Unlike the other two
+//! The database is the only place a tempo gets written. Unlike the other two
 //! passes there's no tags mode to choose: writing TBPM back into the audio
 //! files would mean rewriting them to record an estimate the file's own
 //! tagger never made, and a cue subsong shares its file with every other
@@ -30,7 +30,7 @@ use rox_services::catalog::{Library, LibraryJob};
 /// this machine's pace, the other two passes' `PACE_FLOOR`'s twin.
 const PACE_FLOOR: usize = 16;
 
-/// How many measured tempos one transaction carries. A tempo is a fraction
+/// How many measured tempos one transaction writes. A tempo is a fraction
 /// of a row and the estimate before it is a minute of decoding, so the
 /// batch is about not holding a write lock per track rather than about the
 /// writes costing anything. Small enough that a pass stopped halfway has
@@ -43,11 +43,11 @@ const BATCH: usize = 32;
 pub struct Progress {
     done: AtomicUsize,
     total: AtomicUsize,
-    /// Tracks the pass measured and got no straight answer for, so the
-    /// readout can own up to a pass that wrote less than it looked at. A
-    /// file that wouldn't decode and one whose beat the estimator refused
-    /// to call are both in here: neither has a tempo to store, and the
-    /// difference between them is in the log.
+    /// Tracks the pass measured without getting a tempo, so the readout can
+    /// own up to a pass that wrote less than it looked at. A file that
+    /// wouldn't decode and one the estimator couldn't call a beat for are
+    /// both in here: neither has a tempo to store, and the difference
+    /// between them is in the log.
     failed: AtomicUsize,
     /// Full path of a track being measured. Whichever worker wrote last, so
     /// it reads as a sample of the work rather than a queue position.
@@ -111,13 +111,13 @@ struct Running(Option<Arc<Progress>>);
 
 impl Global for Running {}
 
-/// The running pass's progress, for a UI that wants to show it. None when
+/// The running pass's progress, for any UI that shows it. None when
 /// nothing is measuring.
 pub fn progress(cx: &App) -> Option<Arc<Progress>> {
     cx.try_global::<Running>().and_then(|r| r.0.clone())
 }
 
-/// Ask the running pass to stop at the next track. What it already wrote
+/// Signal the running pass to stop at the next track. What it already wrote
 /// stays; a no-op when nothing is running.
 pub fn stop(cx: &mut App) {
     if let Some(progress) = progress(cx) {
@@ -150,7 +150,7 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     // an app-global pass on its own.
     crate::tasks_window::repaint_while_running(cx);
     // Quitting mid-pass raises the same flag the stop button does, so the
-    // workers land on a batch boundary instead of being killed mid-write.
+    // workers stop on a batch boundary instead of being killed mid-write.
     cx.on_app_quit({
         let progress = progress.clone();
         move |_| {
@@ -160,8 +160,8 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     })
     .detach();
     cx.spawn(async move |cx| {
-        // The library says where its database is, and asking here rather
-        // than up top is what keeps a caller inside its update safe. The
+        // The library holds its own database path, and reading it here
+        // rather than up top keeps a caller inside its update safe. The
         // read only fails with the app already on its way out, where the
         // flag raised above has nothing left to mislead.
         let Ok(db_path) = cx.update(|cx| library.read(cx).db_path()) else {
@@ -214,13 +214,14 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
 ///
 /// The switch is read here rather than inside [`start`], the other two
 /// follows' stance: the button has to keep working with the switch off, and
-/// this is the only caller the setting speaks for. Off by default, so
-/// turning the tempo column on doesn't also hand every watch settle a pass.
+/// this is the only caller the setting applies to. Off by default, so
+/// turning the tempo column on doesn't also start a pass on every watch
+/// settle.
 ///
-/// Only what the watcher brought in, deliberately. The backlog a library
-/// starts with is a decision made in front of an estimate, which is what
-/// the start prompt is for; every settle after that only ever sees the
-/// delta, which is the case this exists for.
+/// Only what the watcher brought in. The backlog a library starts with is a
+/// decision made in front of an estimate, which the start prompt is for;
+/// every settle after that only ever sees the delta, which is the case this
+/// exists for.
 pub fn follow(library: &Entity<Library>, cx: &mut App) {
     App::subscribe(cx, library, |library, event, cx| {
         if matches!(event, LibraryJob::WatchSettled) && Settings::load().tempo_auto {
@@ -250,15 +251,15 @@ pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
     let mut timed = 0usize;
     for index in picked {
         let track = &work[index];
-        // A track the estimator refuses still cost its decode, which is
-        // what's being timed, so it counts the same as one that answered.
+        // A track the estimator can't call still cost its decode, the thing
+        // being timed, so it counts the same as one that produced a tempo.
         rox_acoustic::tempo::estimate(Path::new(&track.path), track.duration_ms);
         timed += 1;
     }
     Ok((started.elapsed().as_secs_f64() / timed as f64) as f32)
 }
 
-/// The blocking half: walk the work list, estimate, write. Returns how many
+/// The blocking half: iterate the work list, estimate, write. Returns how many
 /// rows took a tempo.
 ///
 /// Track-parallel through a bounded pool over a shared cursor. The track is
@@ -267,9 +268,9 @@ pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
 /// worker can write whatever it has whenever it has it.
 ///
 /// The one thing workers share is the database, behind a mutex, and they
-/// only reach for it once a batch has built up. That serializes the writes,
-/// which is what SQLite wants anyway, and they're a rounding error next to
-/// the decoding either way.
+/// only lock it once a batch has built up. That serializes the writes,
+/// which suits SQLite anyway, and they're a rounding error next to the
+/// decoding either way.
 fn run(db_path: &Path, workers: usize, progress: &Progress) -> Result<usize, String> {
     let conn = store::open(db_path).map_err(|e| e.to_string())?;
     let work = store::bpm_missing(&conn).map_err(|e| e.to_string())?;
@@ -303,12 +304,12 @@ fn run(db_path: &Path, workers: usize, progress: &Progress) -> Result<usize, Str
                         break;
                     };
                     *progress.current.lock().unwrap() = track.path.clone();
-                    // The estimator reads its own two windows and answers
+                    // The estimator reads its own two windows and returns
                     // in a couple of seconds, so a cancel is honoured
                     // between tracks rather than inside one.
                     match rox_acoustic::tempo::estimate(Path::new(&track.path), track.duration_ms) {
                         Some(bpm) => batch.push((track.path.clone(), track.sub, bpm)),
-                        // Measured and refused. The row keeps its NULL,
+                        // Measured, no tempo. The row keeps its NULL,
                         // which is how a track nobody has looked at and one
                         // whose beat can't be called stay the same thing to
                         // the store and different things in the log.
@@ -327,7 +328,7 @@ fn run(db_path: &Path, workers: usize, progress: &Progress) -> Result<usize, Str
                 }
                 // Whatever the worker was still holding when it ran out of
                 // work or was stopped: a cancel shouldn't throw away
-                // minutes of decoding that already has its answer.
+                // minutes of decoding that already has its result.
                 if let Err(e) = flush(&mut batch, &conn, &written) {
                     *failure.lock().unwrap() = Some(e);
                 }

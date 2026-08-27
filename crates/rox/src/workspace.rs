@@ -2,9 +2,9 @@
 //! surfaces `set_menus` in the macOS system bar, so the bar is drawn
 //! in-window to behave the same on every platform. The dock, tabs, splits,
 //! and resize come from gpui-component per ADR 7; duplicate and pop-out
-//! live on the panels themselves. Playback UI is the transport panels in
-//! the bottom dock; the PCM tap that feeds the audio views is drained by
-//! the player's own pump task, so nothing here has to keep rendering for
+//! belong to the panels themselves. Playback UI is the transport panels in
+//! the bottom dock; the PCM tap the audio views read is drained by the
+//! player's own pump task, so nothing here has to keep rendering for
 //! playback's sake.
 
 use std::path::PathBuf;
@@ -76,6 +76,7 @@ use rox_panels::queue::QueuePanel;
 use rox_panels::search::{SearchConfig, SearchPanel};
 use rox_panels::shader::ShaderPanel;
 use rox_panels::spacer::SpacerPanel;
+use rox_panels::spectrogram::SpectrogramPanel;
 use rox_panels::spectrum::SpectrumPanel;
 use rox_panels::stats_widget::StatsWidgetPanel;
 use rox_panels::status::StatusPanel;
@@ -103,15 +104,15 @@ const MENU_BAR_H: f32 = 30.0;
 /// hold. A hold is the plain reveal; two taps pin the bar up.
 const ALT_TAP_MAX: Duration = Duration::from_millis(400);
 
-/// How far apart two Alt taps may land and still count as a double-tap.
+/// How far apart two Alt taps may be and still count as a double-tap.
 const ALT_DOUBLE_TAP: Duration = Duration::from_millis(500);
 
-// The registry of open workspace windows lives in rox-panel-api now, so
-// the app-level lookups panels reach for can answer without the Workspace
-// type. It holds the entity type-erased; the typed wrappers below downcast
-// it back. front_workspace answers with the handle and the shared state,
-// which is all its callers (the tray, the taskbar, the tasks/EQ/signals/
-// console windows, the single-instance guard) ever wanted.
+// The registry of open workspace windows is in rox-panel-api now, so the
+// app-level lookups panels make can resolve without the Workspace type. It
+// holds the entity type-erased; the typed wrappers below downcast it back.
+// front_workspace returns the handle and the shared state, which is all its
+// callers (the tray, the taskbar, the tasks/EQ/signals/console windows, the
+// single-instance guard) need.
 use rox_panel_api::windows::OpenWorkspace;
 use rox_panel_api::windows::{note_activated, WorkspaceWindows};
 
@@ -128,9 +129,9 @@ fn typed_workspace(workspace: &gpui::AnyWeakEntity) -> Option<Entity<Workspace>>
 /// the settings window's Appearance page.
 pub(crate) fn apply_decorations(cx: &mut App) {
     // Deferred out of the caller's update: the menu toggle runs inside the
-    // very window this renegotiates, and a window can't be updated while it
-    // is already on the update stack - the re-entrant update errs and the
-    // window silently keeps its old chrome until restart.
+    // very window this renegotiates, and a window can't be updated while it's
+    // already on the update stack. The re-entrant update errs and the window
+    // silently keeps its old chrome until restart.
     cx.defer(|cx| {
         let mode = settings::window_decorations();
         let open: Vec<AnyWindowHandle> = cx
@@ -156,7 +157,7 @@ pub(crate) fn apply_decorations(cx: &mut App) {
 /// Push the live resize-border flag at every workspace window, the
 /// decorations apply's twin. A no-op off Windows, where gpui leaves the
 /// call unimplemented. Deferred for the same reason: the Window menu runs
-/// inside one of the windows this walks.
+/// inside one of the windows this loops over.
 pub(crate) fn apply_resize_border(cx: &mut App) {
     cx.defer(|cx| {
         let on = settings::resize_border();
@@ -176,7 +177,7 @@ pub(crate) fn apply_resize_border(cx: &mut App) {
 
 /// What the last post shader compile said, for the Shader settings page's
 /// readout: None is a clean compile (or nothing installed). Shared across
-/// windows because they all wear the same file; the last one to compile
+/// windows because they all run the same file; the last one to compile
 /// wins, which for one file is the same message.
 static POST_SHADER_ERROR: RwLock<Option<String>> = RwLock::new(None);
 
@@ -186,15 +187,15 @@ pub(crate) fn post_shader_error() -> Option<String> {
 }
 
 /// Put a line in that readout from outside the compile path, which is how
-/// the settings page's own failures (an eject that won't write) land in
+/// the settings page's own failures (an eject that won't write) end up in
 /// the same place a broken shader's message does. The next apply clears
 /// or overwrites it the way it always did.
 pub(crate) fn note_post_shader_error(message: String) {
     *POST_SHADER_ERROR.write().unwrap() = Some(message);
 }
 
-/// The shader switch as it currently stands, mirroring the settings file.
-/// A live static like `hide_menubar`'s, because the Appearance toggle, the
+/// The shader switch as it currently stands, a live copy of the settings
+/// file's. A static like `hide_menubar`'s, because the Appearance toggle, the
 /// menu row, and the hotkey all flip it and all have to show one state.
 static POST_SHADER_ON: AtomicBool = AtomicBool::new(false);
 
@@ -204,9 +205,9 @@ pub(crate) fn post_shader_on() -> bool {
 
 /// The screen shader's config as the last apply read it off the file, with
 /// a counter that moves every time it does. The settings window's Shader
-/// page mirrors the config so it isn't reading five shards per render, and
-/// a workspace apply swaps the whole thing from outside that window - which
-/// left the picker naming the shader the old look wore. Watching the
+/// page keeps a copy of the config so it isn't reading five shards per
+/// render, and a workspace apply swaps the whole thing from outside that
+/// window, which left the picker naming the old look's shader. Watching the
 /// counter is an atomic load per render; the config only gets cloned on the
 /// frames where it actually moved.
 static POST_SHADER_GEN: AtomicU64 = AtomicU64::new(0);
@@ -216,7 +217,7 @@ pub(crate) fn post_shader_gen() -> u64 {
     POST_SHADER_GEN.load(Ordering::Relaxed)
 }
 
-/// The config behind that counter, for a mirror that has fallen behind it.
+/// The config behind that counter, for a copy that has fallen behind it.
 pub(crate) fn post_shader_applied() -> Option<PostShaderConfig> {
     POST_SHADER_APPLIED.read().unwrap().clone()
 }
@@ -235,8 +236,8 @@ pub(crate) fn set_post_shader_routes(routes: Vec<Route>) {
 }
 
 /// The hand-set slot values next to the routes above, live for the same
-/// reason: a slider drag on the Shader page must reach the next frame
-/// without buying a settings reload.
+/// reason: a slider drag on the Shader page has to show up on the next
+/// frame without buying a settings reload.
 static POST_SHADER_MANUAL: RwLock<Vec<(u8, f32)>> = RwLock::new(Vec::new());
 
 /// Point the screen shader at a new hand-set list. Same callers as the
@@ -263,7 +264,7 @@ pub(crate) fn post_shader_slot_labels() -> Vec<Option<String>> {
 /// would be a syscall per character typed anywhere in settings.
 ///
 /// Three states, because "nothing is installed" and "a scene is installed"
-/// want opposite words on screen: 0 nothing, 1 a scene, 2 an overlay.
+/// need opposite words on screen: 0 nothing, 1 a scene, 2 an overlay.
 static POST_SHADER_COVERAGE: AtomicU8 = AtomicU8::new(0);
 
 /// What the installed screen shader does to the window: None with nothing
@@ -285,8 +286,8 @@ pub(crate) fn toggle_post_shader(cx: &mut App) {
     apply_post_shader(cx);
 }
 
-/// The child windows currently wearing the shader under the all-windows
-/// option, and the program they wear: the composed source plus where its
+/// The child windows currently running the shader under the all-windows
+/// option, and the program they run: the composed source plus where its
 /// images come from, since a child registers the same program the
 /// workspace windows do. Workspace windows never appear here; they keep
 /// their own [`PostShaderDriver`]s.
@@ -312,8 +313,8 @@ pub(crate) fn note_confirm_window(handle: Option<AnyWindowHandle>, cx: &mut App)
     cx.default_global::<PostShaderConfirmWindow>().0 = handle;
 }
 
-/// What a screen shader that arrived inside a look says while it waits for
-/// an agreement. Lands in the settings page's readout beside the compile
+/// The message for a screen shader that arrived inside a look and hasn't
+/// been approved yet. Shown in the settings page's readout beside the compile
 /// errors, since from where the user sits it's the same question: why is
 /// nothing painting?
 const UNAPPROVED_POST_SHADER: &str =
@@ -324,7 +325,7 @@ const UNAPPROVED_POST_SHADER: &str =
 ///
 /// A pool name wins outright: a hit runs the pool's copy, and a miss runs
 /// nothing rather than falling through to whatever inline text happens to
-/// be sitting beside it. Then the inline source, which is how a shader
+/// be beside it. Then the inline source, which is how a shader
 /// travels inside a bundle. Then the file the config points at, the way it
 /// worked before either of the other two existed.
 ///
@@ -333,10 +334,10 @@ const UNAPPROVED_POST_SHADER: &str =
 /// read doesn't: picking a file is the agreement, and the pick already
 /// recorded it.
 ///
-/// The origin rides along because a program's images resolve from it: the
-/// pool entry's carried bytes, or files beside the source. It's decided
-/// here rather than by the drivers so there's one reading of where a
-/// shader came from instead of one per surface.
+/// The origin comes back with it because a program's images resolve from
+/// it: the pool entry's stored bytes, or files beside the source. It's
+/// decided here rather than by the drivers so there's one reading of where
+/// a shader came from instead of one per surface.
 ///
 /// `Ok(None)` is nothing to run, `Err` a line for the settings page's
 /// readout.
@@ -358,7 +359,7 @@ pub(crate) fn post_shader_program(
         };
     }
     if !config.source.trim().is_empty() {
-        // Detached: an inline source arrived inside a layout, so there is
+        // Detached: an inline source arrived inside a layout, so there's
         // nothing on this machine holding the images it might declare.
         return Ok(gated(config.source.clone())?.map(|s| (s, ProgramCtx::detached())));
     }
@@ -389,12 +390,12 @@ pub(crate) fn backdrop_shader_error() -> Option<String> {
 }
 
 /// Put a message on that readout from outside the paint, for the page's
-/// own failures: a file that won't read, an eject that can't land.
+/// own failures: a file that won't read, an eject that can't be written.
 pub(crate) fn note_backdrop_shader_error(message: String) {
     *BACKDROP_SHADER_ERROR.write().unwrap() = Some(message);
 }
 
-/// Repaint every window, for edits that land in state the backdrop layers
+/// Repaint every window, for edits that go into state the backdrop layers
 /// read at render time: the Backdrop section writes its config through
 /// here so the shader follows the knobs live, child windows included.
 pub(crate) fn refresh_backdrop(cx: &mut App) {
@@ -403,9 +404,9 @@ pub(crate) fn refresh_backdrop(cx: &mut App) {
     }
 }
 
-/// Hand the backdrop layer its shade, once at startup. The layer lives in
-/// rox-services, under the shader machinery, so it asks back up through
-/// this hook; which windows wear the shade is decided here, since the
+/// Hand the backdrop layer its shade, once at startup. The layer is in
+/// rox-services, under the shader machinery, so it calls back up through
+/// this hook; which windows get the shade is decided here, since the
 /// service can't tell a workspace from a settings window.
 pub(crate) fn install_backdrop_shade() {
     rox_services::backdrop::set_shade(|window, cx| {
@@ -415,7 +416,7 @@ pub(crate) fn install_backdrop_shade() {
         }
         backdrop_shader_layer()
     });
-    // The layer's gate rides the same install: whether a child window
+    // The layer's gate goes on in the same install: whether a child window
     // paints the cover backdrop at all is the Transparency section's All
     // Windows switch, and the workspaces always do.
     rox_services::backdrop::set_gate(|window, cx| {
@@ -423,7 +424,7 @@ pub(crate) fn install_backdrop_shade() {
     });
 }
 
-/// Whether this window is one of the open workspaces, which always wear
+/// Whether this window is one of the open workspaces, which always get
 /// the backdrop shade; everything else is a child gated on All Windows.
 fn workspace_window(window: &Window, cx: &App) -> bool {
     let id = window.window_handle().window_id();
@@ -432,7 +433,7 @@ fn workspace_window(window: &Window, cx: &App) -> bool {
 }
 
 /// The render side of the look's backdrop shader: the config off the cache,
-/// worn as a panel surface so registration, approval, routes, and frame
+/// built as a panel surface so registration, approval, routes, and frame
 /// pacing all come free. Built per render like any panel's; None is a bare
 /// backdrop, a disabled config, or a source the machine hasn't approved.
 fn backdrop_surface() -> Option<panel::shader::PanelSurface> {
@@ -457,7 +458,7 @@ fn backdrop_surface() -> Option<panel::shader::PanelSurface> {
 
 /// The element that paints it: a window-filling canvas slotted between the
 /// backdrop layer and everything else, so the screen the pass reads is the
-/// art wash alone and every panel drawn after lands over the result
+/// art wash alone and every panel drawn after it goes over the result
 /// untouched.
 fn backdrop_shader_layer() -> Option<AnyElement> {
     let surface = backdrop_surface()?;
@@ -471,7 +472,7 @@ fn backdrop_shader_layer() -> Option<AnyElement> {
                     move |bounds, _, window, cx| {
                         surface.paint(bounds, window, cx);
                         // The surface files its compile message under this
-                        // window's view; mirror it where the settings page
+                        // window's view; copy it where the settings page
                         // can read it without knowing the view.
                         *BACKDROP_SHADER_ERROR.write().unwrap() =
                             panel::shader::error(window.current_view());
@@ -484,9 +485,9 @@ fn backdrop_shader_layer() -> Option<AnyElement> {
 }
 
 /// The file behind the screen shader, which is the only source hot reload
-/// can watch. Set only when the file is what [`post_shader_source`] reads:
-/// a pool entry or an inline source changes through an apply, never behind
-/// rox's back, so there is nothing to stat for either of those.
+/// can watch. Set only when [`post_shader_source`] reads the file: a pool
+/// entry or an inline source changes through an apply, never behind rox's
+/// back, so there's nothing to stat for either of those.
 fn post_shader_watch(config: &PostShaderConfig) -> Option<PathBuf> {
     if config.name.is_some() || !config.source.trim().is_empty() {
         return None;
@@ -496,7 +497,7 @@ fn post_shader_watch(config: &PostShaderConfig) -> Option<PathBuf> {
 
 /// Reapply the configured post shader everywhere. The Shader settings page's
 /// controls, the toggle action, the confirm dialog's revert, and the hot
-/// reload all land here; each workspace window re-reads the file and
+/// reload all come through here; each workspace window re-reads the file and
 /// compiles it fresh, then the child windows follow when the all-windows
 /// option is on. Deferred like the decorations apply, so an in-window
 /// trigger can't re-enter its own update.
@@ -505,7 +506,7 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
         let config = Settings::load().post_shader;
         POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
         // Publish what the file said before any window compiles it, so a
-        // settings window open over this apply can catch up its mirrors.
+        // settings window open over this apply can catch its copies up.
         *POST_SHADER_APPLIED.write().unwrap() = Some(config.clone());
         POST_SHADER_GEN.fetch_add(1, Ordering::Relaxed);
         let open: Vec<(AnyWindowHandle, Entity<Workspace>)> = cx
@@ -523,8 +524,8 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
         }
         // The child pass: cache the program and shade every eligible window,
         // or strip the ones shaded before. Resolved through the same order
-        // the workspace windows use, so a child never wears something the
-        // workspace isn't wearing. Errors fall through as None here; the
+        // the workspace windows use, so a child never runs something the
+        // workspace isn't running. Errors fall through as None here; the
         // workspace pass above already surfaced them.
         let program = (config.enabled && config.all_windows)
             .then(|| post_shader_program(&config).ok().flatten())
@@ -544,14 +545,14 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
             }
         }
         // Repaint everything so the settings window's error readout and the
-        // shaded windows land in the same frame.
+        // shaded windows come up in the same frame.
         for window in cx.windows() {
             window.update(cx, |_, window, _| window.refresh()).ok();
         }
     });
 }
 
-/// Shade every eligible window that isn't wearing the source yet: child
+/// Shade every eligible window that isn't running the source yet: child
 /// windows opened after the apply join through the workspace's periodic
 /// sweep. Workspace windows keep their own drivers, and the confirm
 /// dialog is always skipped.
@@ -567,9 +568,9 @@ fn sweep_shaded_children(cx: &mut App) {
         .collect();
     let confirm = cx.default_global::<PostShaderConfirmWindow>().0;
     let shaded = cx.default_global::<ShadedChildren>().windows.clone();
-    // A child has no player to feed a `@cover` binding, so it borrows the
-    // primary workspace's art - the same window whose frame loop pushes the
-    // children their signals.
+    // A child has no player to fill a `@cover` binding, so it borrows the
+    // primary workspace's art, off the same window whose frame loop pushes
+    // the children their signals.
     let cover_from = panel::shader::uses_cover(&source)
         .then(|| {
             cx.default_global::<WorkspaceWindows>()
@@ -591,10 +592,10 @@ fn sweep_shaded_children(cx: &mut App) {
                         window.window_handle().window_id().as_u64(),
                     );
                 }
-                // Whole program, so a child wears the same chain and the
+                // Whole program, so a child runs the same chain and the
                 // same images the workspace windows do. A failure here is
-                // silent on purpose: the workspace pass compiled the same
-                // text and already put the message in the readout.
+                // silent: the workspace pass compiled the same text and
+                // already put the message in the readout.
                 match panel::shader::register_program(window, &source, &ctx) {
                     Ok(id) => {
                         window.set_post_shader(Some(id));
@@ -620,16 +621,16 @@ fn sweep_shaded_children(cx: &mut App) {
 /// which rebuilds every view in the child uncached, and at frame cadence
 /// across a few open windows that saturated the main thread and stalled
 /// the shader clock everywhere. Each push notifies again, so the cadence
-/// rides the workspace loop.
+/// comes from the workspace loop.
 fn push_child_signals(signals: [f32; 16], meta: [f32; 8], cx: &mut App) {
     let shaded = cx.default_global::<ShadedChildren>().windows.clone();
     for handle in shaded {
         let alive = handle
             .update(cx, |root, window, cx| {
                 // Everything in meta is the workspace's except the cursor,
-                // which is per window: the pointer sitting in a popped-out
-                // panel never moves the workspace's, so a child wearing the
-                // same shader would fade out with the hand right on it.
+                // which is per window: the pointer in a popped-out panel
+                // never moves the workspace's, so a child running the same
+                // shader would fade out with the hand right on it.
                 let mut meta = meta;
                 meta[6] = panel::shader::cursor_presence(window);
                 window.set_post_signals(signals, meta);
@@ -645,7 +646,7 @@ fn push_child_signals(signals: [f32; 16], meta: [f32; 8], cx: &mut App) {
 }
 
 /// The idle half of [`push_child_signals`]: move each shaded child's mouse
-/// and keep its frames coming without feeding signals, so a paused lamp
+/// and keep its frames coming without pushing signals, so a paused lamp
 /// tracks the cursor there too while the clocks stay parked.
 fn push_child_mouse(cx: &mut App) {
     let shaded = cx.default_global::<ShadedChildren>().windows.clone();
@@ -669,13 +670,13 @@ fn push_child_mouse(cx: &mut App) {
 ///
 /// Two ways in, and which one runs is decided by whether anything has been
 /// routed. With routes, they resolve into slots exactly like a panel's do.
-/// With none, the pool feeds the slots in its own order - the behaviour
-/// from before the routes existed, kept because a setup tuned against it
-/// would otherwise go dark on upgrade. The first route someone adds takes
-/// over the whole feed, which is the only reading that doesn't have two
-/// things writing the same slot.
+/// With none, the pool fills the slots in its own order. That's the
+/// behaviour from before the routes existed, kept because a setup tuned
+/// against it would otherwise go dark on upgrade. The first route someone
+/// adds takes over the whole feed, which is the only reading that doesn't
+/// have two things writing the same slot.
 fn post_shader_signals(hub: &SignalHub) -> [f32; panel::shader::SLOTS] {
-    // Hand-set values go down first and whatever feeds a slot writes over
+    // Hand-set values go down first and whatever fills a slot writes over
     // them, which is exactly the panel rule: a route wins while it's
     // there, the hand-set value comes back when it goes. The legacy pool
     // feed steps around hand-set slots for the same reason a route list
@@ -702,12 +703,12 @@ fn post_shader_signals(hub: &SignalHub) -> [f32; panel::shader::SLOTS] {
 }
 
 /// The per-window side of the post shader (the Shader settings page's Screen
-/// Shader section): which file this window wears and its stamp, for the
+/// Shader section): which file this window runs and its stamp, for the
 /// render loop's hot reload.
 struct PostShaderDriver {
     /// The file the shader was read from, None when it came from the pool
     /// or from a bundle's inline copy. Those have nothing to watch, but the
-    /// driver still exists for them: it's also what feeds the shader its
+    /// driver still exists for them: it's also what pushes the shader its
     /// signals and keeps the frames coming.
     path: Option<PathBuf>,
     /// The file's stamp when it was last read, [`settings::file_stamp`]'s
@@ -726,9 +727,9 @@ struct PostShaderDriver {
     /// uniforms mid-song. Starts true: the first update after an apply
     /// delivers signals and meta once even into a silent app.
     was_live: bool,
-    /// The meta floats the last push carried. A parked hub still pushes
-    /// when these move, so a theme swap or an easing art tint reaches the
-    /// pass while the music sits paused instead of waiting for it.
+    /// The meta floats the last push sent. A parked hub still pushes
+    /// when these move, so a theme swap or an easing art tint gets to the
+    /// pass while the music is paused instead of waiting for it.
     meta: [f32; 8],
     /// The config's idle switch, held here so the frame loop doesn't read
     /// the settings file per frame. Frames keep coming while the audio is
@@ -743,7 +744,7 @@ struct PostShaderDriver {
     reads_cursor: bool,
     /// The cover feed's revision the program registered with. The panel
     /// surfaces re-key per frame and follow the track by themselves; this
-    /// pass registers on apply, so a moved rev is what re-applies it.
+    /// pass registers on apply, so a moved rev re-applies it.
     cover: u64,
 }
 
@@ -783,7 +784,7 @@ pub(crate) fn close_workspace_window(
         match state {
             // Going to the tray keeps the service running where the platform
             // allows one with no window behind it, so the media keys still
-            // answer while the app is only an icon. Windows' SMTC is bound to
+            // work while the app is only an icon. Windows' SMTC is bound to
             // the window handle it registered against, so there it goes down
             // with the window and the reopen registers a fresh one.
             Some(state) => tray::hold(
@@ -801,7 +802,7 @@ pub(crate) fn close_workspace_window(
     let had_media = media.take().is_some();
     // The window that owned the media service just closed with others still
     // open; hand the service to a survivor so the media keys keep working.
-    // Each window's service speaks for its own player, so the survivor
+    // Each window's service is bound to its own player, so the survivor
     // registers anew rather than inheriting this one.
     if had_media && !last {
         if let Some((handle, ws)) = cx
@@ -830,7 +831,7 @@ pub(crate) fn close_workspace_window(
 /// workspace window with others still open. The chord is a soft close, never
 /// a quit: on the last workspace window it only acts when tray mode can catch
 /// the app, so Cmd+W sends it to the tray instead of quitting it out from
-/// under a reflex. With tray off it's a no-op there - use the menu or Cmd+Q.
+/// under a reflex. With tray off it's a no-op there: use the menu or Cmd+Q.
 fn close_active_window(cx: &mut App) {
     let Some(handle) = cx.active_window() else {
         return;
@@ -878,7 +879,7 @@ pub(crate) fn play_launch_paths(
 
 /// Filter dropped paths to decodable audio and read them as whole files.
 /// A drop off the desktop names files, never subsongs; a drag out of the
-/// library carries its own keys and never comes through here.
+/// library brings its own keys and never comes through here.
 fn loose_keys(paths: Vec<PathBuf>) -> Vec<TrackKey> {
     rox_library::open_files::resolve_audio_paths(paths)
         .into_iter()
@@ -895,7 +896,7 @@ fn loose_keys(paths: Vec<PathBuf>) -> Vec<TrackKey> {
 /// is hidden.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShaderNotice {
-    /// A confirm already read the shader out. Land it and say nothing.
+    /// A confirm already read the shader out. Apply it and say nothing.
     Told,
     /// Nothing did. Open the keep-or-revert window over the fresh look.
     Ask,
@@ -910,15 +911,16 @@ pub(crate) enum ApplyShaders {
     /// Wear what the look brought, agreeing to any of it this machine hasn't
     /// met before.
     Wear,
-    /// Land the look bare: no overlay, no panel wearing one. The shader pool
-    /// still travels, so anything the bundle named is a picker click away.
+    /// Apply the look bare: no overlay, no panel with a shader on it. The
+    /// shader pool still travels, so anything the bundle named is a picker
+    /// click away.
     Skip,
 }
 
 /// Apply a named workspace to the frontmost workspace window from app
 /// level, the same path the settings window's Apply takes. The welcome
-/// window's quick-start tiles land here: they live in their own OS window,
-/// with no workspace of their own to call into.
+/// window's quick-start tiles come through here: they're in their own OS
+/// window, with no workspace of their own to call into.
 pub(crate) fn apply_workspace_to_front(name: &str, cx: &mut App) {
     let found = cx
         .default_global::<WorkspaceWindows>()
@@ -946,7 +948,7 @@ pub(crate) fn is_workspace_window(window: &Window, cx: &mut App) -> bool {
         .any(|w| w.handle == handle)
 }
 
-/// The workspace hosting `window`, when it is a workspace window (not a
+/// The workspace hosting `window`, when it's a workspace window (not a
 /// popout, settings, or editor). The queue widget uses it to reach the
 /// workspace and open the queue modal there.
 pub(crate) fn workspace_for_window(window: &Window, cx: &App) -> Option<WeakEntity<Workspace>> {
@@ -965,13 +967,13 @@ pub(crate) fn workspace_for_window(window: &Window, cx: &App) -> Option<WeakEnti
 /// pick
 /// opens the panel as a new tab of `tab_panel`, that very group, skipping
 /// the placement rules the menubar routes follow. Built as a real submenu
-/// the way [`rox_panel_api::query::shared_query::search_flyout`] builds its Search flyout -
-/// a hand-built menu entity behind a submenu item - so it works from every
-/// host of the panel menu, the content context menus included. Leads with a
-/// divider so it reads as its own band rather than the tail of whatever
-/// content section sits above it; the separator is a no-op when Add Panel
-/// would be the menu's first item. A popped-out panel (no group) or a window
-/// with no workspace behind it gets nothing.
+/// the way [`rox_panel_api::query::shared_query::search_flyout`] builds its
+/// Search flyout (a hand-built menu entity behind a submenu item), so it
+/// works from every host of the panel menu, the content context menus
+/// included. Leads with a divider so it reads as its own band rather than
+/// the tail of whatever content section is above it; the separator is a
+/// no-op when Add Panel would be the menu's first item. A popped-out panel
+/// (no group) or a window with no workspace behind it gets nothing.
 pub(crate) fn add_panel_submenu(
     menu: PopupMenu,
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -995,7 +997,7 @@ pub(crate) fn add_panel_submenu(
     let workspace = entity.downgrade();
     let submenu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
         // The saved panels lead: a preset is a panel you already decided on,
-        // so it sits above the catalog it was built out of.
+        // so it goes above the catalog it was built out of.
         let tabs_for_preset = tabs.clone();
         menu = panel_presets::pick_submenu(
             menu,
@@ -1046,7 +1048,7 @@ pub(crate) fn add_panel_submenu(
 }
 
 /// One Add Panel row: build the def's panel against the workspace's state
-/// and land it as a tab of the clicked group.
+/// and add it as a tab of the clicked group.
 fn add_panel_item(
     menu: PopupMenu,
     def: &'static PanelDef,
@@ -1107,7 +1109,7 @@ const TRANSPORT_ROW_H: f32 = 120.0;
 /// minimum instead of taking a center panel's share.
 const SEARCH_BAR_H: f32 = 52.0;
 
-// The three playback actions panels bind against live in rox-panel-api, so
+// The three playback actions panels bind against are in rox-panel-api, so
 // a panel's transport button and this window's keymap name the same type.
 // Registration and the handlers stay here.
 use rox_panel_api::actions::{SeekBackward, SeekForward, TogglePlayback};
@@ -1128,7 +1130,7 @@ actions!(
     ]
 );
 
-/// The action handlers that live above every window; call once at
+/// The app-level action handlers, above every window; call once at
 /// startup. The chords that reach them are the keymap module's, built
 /// from the settings file rather than written out here.
 pub fn init(cx: &mut App) {
@@ -1176,7 +1178,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &DecreaseFontSize, cx| nudge_font_size(-1.0, cx));
     cx.on_action(|_: &ResetFontSize, cx| set_font_size(palette::FONT_SIZE_DEFAULT, cx));
     // The shader flip is app-wide like the zoom chords: whichever window
-    // has focus dispatches, and the apply reaches them all.
+    // has focus dispatches, and the apply covers them all.
     cx.on_action(|_: &TogglePostShader, cx| toggle_post_shader(cx));
 }
 
@@ -1188,15 +1190,15 @@ fn nudge_font_size(delta: f32, cx: &mut App) {
 /// Set the app font size and persist it. The live setter clamps to the
 /// palette's range and repaints every window; the settings write keeps the
 /// new size across launches, the same pair the settings slider drives. A
-/// user-level readability choice, so it lives on `Settings` directly and
-/// rides out workspace switches, like the theme pick.
+/// user-level readability choice, so it's stored on `Settings` directly and
+/// persists across workspace switches, like the theme pick.
 fn set_font_size(size: f32, cx: &mut App) {
     let size = size.clamp(palette::FONT_SIZE_MIN, palette::FONT_SIZE_MAX);
     palette::set_app_font_size(size, cx);
     Settings::update(move |s| s.app_font_size = size);
-    // The setter's repaint loop reaches every window but the one dispatching
+    // The setter's repaint loop gets to every window but the one dispatching
     // this action: we're mid-update inside it, so its re-entrant refresh is
-    // dropped and the resize would sit until the next input event. Defer a
+    // dropped and the resize would wait until the next input event. Defer a
     // second pass that runs once this update has finished, so the focused
     // window wakes now too.
     cx.defer(|cx| {
@@ -1217,7 +1219,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
         let config: LibraryConfig = panel::config_from_info(info);
         Box::new(cx.new(|cx| LibraryPanel::new(s.clone(), config, window, cx)))
     });
-    // A panel whose config rides the layout dump.
+    // A panel whose config is stored in the layout dump.
     macro_rules! configured {
         ($name:literal, $panel:ty) => {{
             let s = state.clone();
@@ -1238,7 +1240,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
             });
         }};
     }
-    // Filter carries a window at build so its quick-search box can spin up
+    // Filter takes a window at build so its quick-search box can spin up
     // an input state, like the library panel's search.
     let s = state.clone();
     register_panel(cx, "filter", move |_, _, info, window, cx| {
@@ -1266,7 +1268,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("eq widget", EqWidgetPanel);
     configured!("stats widget", StatsWidgetPanel);
     // The retired standalone rating and favourite panels: their names
-    // restore as track info cards carrying the one piece, so a layout
+    // restore as track info cards holding the one piece, so a layout
     // saved with them keeps its stars and heart. The chrome (caps, theme,
     // locks) reads straight across, both configs flatten the same shape;
     // the next save writes the card, and the migration is done. [compat]
@@ -1283,7 +1285,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     }
     configured_windowed!("playlists", PlaylistsPanel);
     // The composition hosts rebuild their children through this same
-    // registry, and carry the workspace handle so their slot menus can
+    // registry, and take the workspace handle so their slot menus can
     // build replacements from the catalog.
     macro_rules! composite {
         ($name:literal, $panel:ty) => {{
@@ -1316,7 +1318,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
         let config: GridConfig = panel::config_from_info(info);
         Box::new(cx.new(|cx| GridPanel::new(s.clone(), config, window, cx)))
     });
-    // The artist wall carries a search box too, so it takes the window like
+    // The artist wall has a search box too, so it takes the window like
     // the album grid.
     let s = state.clone();
     register_panel(cx, "artist grid", move |_, _, info, window, cx| {
@@ -1346,6 +1348,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("playback", TransportPanel);
     configured!("volume", VolumePanel);
     configured!("spectrum", SpectrumPanel);
+    configured!("spectrogram", SpectrogramPanel);
     configured!("oscilloscope", OscilloscopePanel);
     configured!("waveform", WaveformPanel);
     configured!("vu meter", VuPanel);
@@ -1356,7 +1359,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("drag anchor", DragAnchorPanel);
     configured!("spacer", SpacerPanel);
     configured!("theme toggle", ThemeTogglePanel);
-    // These two drive the workspace back, so their builders carry its
+    // These two drive the workspace back, so their builders take its
     // handle alongside the shared state.
     let s = state.clone();
     let ws = workspace.clone();
@@ -1392,7 +1395,7 @@ pub(crate) enum MenuAction {
     OpenConsole,
     OpenTasks,
     OpenEqualizer,
-    /// Open the shared signal pool, the window every panel's routes ride.
+    /// Open the shared signal pool, the window behind every panel's routes.
     OpenSignals,
     OpenWelcome,
     OpenAbout,
@@ -1403,8 +1406,8 @@ pub(crate) enum MenuAction {
     OpenChat,
     ToggleMenubar,
     ToggleDecorations,
-    /// Flip design mode: whether the layout can be rearranged where it
-    /// sits, or reads as finished furniture.
+    /// Flip design mode: whether the layout can be rearranged in place, or
+    /// reads as finished furniture.
     ToggleDesignMode,
     /// Flip song theming: the playing track's art tinting the palette.
     ToggleArtTheming,
@@ -1412,8 +1415,8 @@ pub(crate) enum MenuAction {
     TogglePostShader,
     /// Pick a workspace file and add it to the collection.
     ImportWorkspace,
-    /// Open a catalog panel with its default config, landing where its
-    /// placement says. One action for every panel the catalog carries.
+    /// Open a catalog panel with its default config, opening where its
+    /// placement says. One action for every panel in the catalog.
     OpenPanel(&'static PanelDef),
     ToggleQuitToTray,
     CloseWindow,
@@ -1433,14 +1436,14 @@ pub(crate) struct MenuItem {
     pub(crate) action: MenuAction,
 }
 
-/// A native-menu pick, carried as a string so one action covers the whole
+/// A native-menu pick, encoded as a string so one action covers the whole
 /// menu tree. The macOS system bar dispatches actions rather than calling
-/// our handlers, and only a registered `Action` can ride through it, so
+/// our handlers, and only a registered `Action` can pass through it, so
 /// every row that isn't already a bound action (Play, Settings, Stats,
 /// Quit) encodes itself here and [`run_menu_command`] decodes it back.
 /// See [`MenuAction::command_id`] for the encoding. `no_json` because this
 /// is only ever built in code, never named in a keymap file, which is what
-/// the JSON path is for - it also keeps schemars out of our dependencies.
+/// the JSON path is for. It also keeps schemars out of our dependencies.
 #[derive(Clone, PartialEq, Eq, gpui::Action)]
 #[action(namespace = rox, no_json)]
 pub(crate) struct MenuCommand {
@@ -1455,7 +1458,7 @@ impl MenuAction {
     #[cfg(target_os = "macos")]
     pub(crate) fn command_id(self) -> Option<String> {
         let id = match self {
-            // These ride their own actions, for the shortcut.
+            // These go through their own actions, for the shortcut.
             MenuAction::TogglePlayback
             | MenuAction::OpenSettings
             | MenuAction::OpenStats
@@ -1539,9 +1542,9 @@ fn front_workspace_entity(cx: &mut App) -> Option<(AnyWindowHandle, Entity<Works
 }
 
 /// Run `f` against the frontmost workspace inside its own window. Deferred:
-/// a menu pick can land while that window is mid-update (its own render
+/// a menu pick can arrive while that window is mid-update (its own render
 /// dispatched the action), and updating a window already on the update stack
-/// is refused - the same reason [`close_active_window`] defers.
+/// is refused, the same reason [`close_active_window`] defers.
 fn with_front_workspace(
     cx: &mut App,
     f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
@@ -1558,7 +1561,7 @@ fn with_front_workspace(
 
 /// Run a native-menu pick. The plain rows decode back to a [`MenuAction`]
 /// and go through the same [`Workspace::run`] the in-window bar uses; the
-/// workspace and layout rows carry a name, so they route to the same
+/// workspace and layout rows have a name in them, so they route to the same
 /// flyout handlers those rows call directly.
 fn run_menu_command(command: &str, cx: &mut App) {
     let Some((kind, name)) = command.split_once(':') else {
@@ -1616,7 +1619,7 @@ fn run_menu_command(command: &str, cx: &mut App) {
                 });
             }
         }
-        // "panel:<label>" and anything else that carries a colon.
+        // "panel:<label>" and anything else with a colon in it.
         _ => {
             if let Some(action) = MenuAction::from_command_id(command) {
                 with_front_workspace(cx, move |ws, window, cx| ws.run(action, window, cx));
@@ -1646,7 +1649,7 @@ pub(crate) enum LayoutTarget {
     Apply,
 }
 
-/// What picking a panel in a presets or panel flyout does: land it in this
+/// What picking a panel in a presets or panel flyout does: put it in this
 /// window's layout, or open it in a window of its own.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PanelTarget {
@@ -1830,7 +1833,7 @@ pub(crate) const MENUS: &[Menu] = &[
             }),
             // One panel in a window of its own: a saved preset arrives
             // configured, a catalog pick bare, both the shape a panel dragged
-            // out of the dock lands in.
+            // out of the dock ends up in.
             MenuEntry::PanelWindowsSubmenu {
                 label: "menu-new-window-from-panel",
                 icon: icons::EXTERNAL_LINK,
@@ -1965,13 +1968,13 @@ pub(crate) fn menu_item_display(item: MenuItem, is_playing: bool) -> (&'static s
         MenuAction::TogglePlayback if is_playing => {
             (rox_i18n::t_static("menu-pause"), icons::PAUSE)
         }
-        // `item.label` is an i18n key, not display text - see `menu_section`.
+        // `item.label` is an i18n key, not display text. See `menu_section`.
         _ => (rox_i18n::t_static(item.label), item.icon),
     }
 }
 
 /// Whether a dropdown row trails the signal glyph: a catalog row for a
-/// panel whose settings carry knobs the shared pool can drive. Read by
+/// panel whose settings have knobs the shared pool can drive. Read by
 /// every menu that renders the catalog, so the mark can't be in one list
 /// and missing from the next.
 pub(crate) fn signal_marked(action: MenuAction) -> bool {
@@ -2012,16 +2015,16 @@ enum LayoutDialog {
     /// Replacing a saved workspace of the same name with the current look.
     ConfirmOverwriteWorkspace(String),
     /// Applying a saved or shipped workspace, which replaces the whole look.
-    /// Carries the card the confirm reads out, built when the dialog opens so
+    /// Holds the card the confirm reads out, built when the dialog opens so
     /// the bundle behind it isn't reparsed every frame the dialog is up.
     ConfirmApplyWorkspace {
         card: crate::workspaces::ApplyCard,
         /// Whether the bundle just arrived from a file, which changes what
         /// the dialog says: an import has already saved it, so the offer is
-        /// to wear it now rather than to replace what's there.
+        /// to apply it now rather than to replace what's there.
         imported: bool,
     },
-    /// Taking a pinned panel out of the layout. Carries what to close so the
+    /// Taking a pinned panel out of the layout. Holds what to close so the
     /// confirm can do it without going looking again.
     ConfirmCloseLocked {
         panel: Arc<dyn PanelView>,
@@ -2060,7 +2063,7 @@ pub struct Workspace {
     menu_viewport_w: Pixels,
     /// A mouse button is held down somewhere in the window. Alt+drag is
     /// the compositor's window move/resize, so an alt-revealed menubar
-    /// stays hidden while a button is down: the overlay must not sit in
+    /// stays hidden while a button is down: the overlay must never be in
     /// front of the drag. Tracked in the capture phase so an occluding
     /// child can't hide the press.
     pointer_down: bool,
@@ -2086,8 +2089,8 @@ pub struct Workspace {
     /// closing or moving everything in one region collapses the rest up
     /// into the space.
     stack: Entity<StackPanel>,
-    /// The tab panel the layout starts with. Panels-menu panels land here
-    /// while it is still showing.
+    /// The tab panel the layout starts with. Panels-menu panels go here
+    /// while it's still showing.
     center_tabs: Entity<TabPanel>,
     /// The transport row's stack: the transport groups at start, and the
     /// row Panels-menu audio panels append to.
@@ -2105,16 +2108,16 @@ pub struct Workspace {
     /// hides unless a mini preset is set.
     primary_layout: Option<String>,
     mini_layout: Option<String>,
-    /// The named preset this window is on, mirrored to settings on every
+    /// The named preset this window is on, copied to settings on every
     /// apply. Which side of the mini toggle shows falls out of comparing it to
     /// `mini_layout`; a workspace save captures into it. None is an unnamed
     /// arrangement.
     active_layout: Option<String>,
-    /// The layout save/apply dialog while it is up; dropped on close.
+    /// The layout save/apply dialog while it's up; dropped on close.
     layout_dialog: Option<LayoutDialog>,
     /// Submits the save dialog's name field on Enter.
     _layout_input: Option<Subscription>,
-    /// The quick-play modal while it is up; dropped on dismiss.
+    /// The quick-play modal while it's up; dropped on dismiss.
     quick_play: Option<Entity<QuickPlay>>,
     /// Clears `quick_play` and hands focus back when the modal dismisses.
     _quick_play_dismissed: Option<Subscription>,
@@ -2130,12 +2133,12 @@ pub struct Workspace {
     titled_track: Option<TrackKey>,
     _layout_changed: Subscription,
     /// The player pump notifies every tick while a session runs; the
-    /// title refresh rides it and bails on the path compare.
+    /// title refresh hangs off it and bails on the path compare.
     _player_changed: Subscription,
     /// The menubar's right side shows the catalog status, so library
     /// updates must repaint the workspace.
     _library_changed: Subscription,
-    /// A landed listen bumps its track's play count in the shared
+    /// A recorded listen bumps its track's play count in the shared
     /// projection, so plays columns move without a reload.
     _history_changed: Subscription,
     /// A new bake must repaint the window that shows it.
@@ -2146,10 +2149,10 @@ pub struct Workspace {
     /// The OS media service, on the primary window only: the D-Bus name is
     /// per-process, so a second window never registers its own. `None` on
     /// every other window and when the platform backend won't come up. The
-    /// window holds it rather than owns it - a close hands it to a surviving
+    /// window holds it rather than owns it: a close hands it to a surviving
     /// window or to the tray, and it only dies when the app does.
     media: Option<Entity<MediaSession>>,
-    /// The whole-window post shader this window wears, None while the
+    /// The whole-window post shader this window runs, None while the
     /// setting is off or pathless. See [`PostShaderDriver`].
     post_shader: Option<PostShaderDriver>,
 }
@@ -2185,8 +2188,8 @@ fn split_view(item: &DockItem) -> Entity<StackPanel> {
 /// A blank starting layout: one empty tab group in the root stack, no
 /// transport row. The group renders to nothing while empty, so the window
 /// is bare until the Panels menu adds something; the detached transport
-/// stack rides along for [`Workspace::add_bottom`] to attach on first use,
-/// same as a restored layout with no row.
+/// stack comes back with it for [`Workspace::add_bottom`] to attach on
+/// first use, same as a restored layout with no row.
 fn empty_layout(
     weak_dock: &WeakEntity<DockArea>,
     window: &mut Window,
@@ -2212,8 +2215,9 @@ fn empty_layout(
 }
 
 /// Pull the workspace's add targets back out of a restored layout: the
-/// root stack, the first tab group (where add_center prefers to land), and
-/// the last horizontal split (the transport row add_bottom appends to).
+/// root stack, the first tab group (where add_center prefers to put
+/// things), and the last horizontal split (the transport row add_bottom
+/// appends to).
 /// The latter two are heuristics over a tree the user may have rearranged,
 /// so they can come up empty.
 fn layout_views(
@@ -2239,7 +2243,7 @@ fn layout_views(
 
 /// What a window opening over the tray's hold takes back from it: the live
 /// shared state, and the OS media service when it stayed up while no window
-/// was open. Only a reopen carries one; every other open starts from nothing.
+/// was open. Only a reopen has one; every other open starts from nothing.
 pub struct Adopted {
     pub state: AppState,
     pub media: Option<Entity<MediaSession>>,
@@ -2253,7 +2257,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         // A reopen from the tray adopts the state the last close handed to
-        // the hold, so the playing player, library, and art carry straight
+        // the hold, so the playing player, library, and art come straight
         // over; every other open builds its own world.
         let adopted = adopt.is_some();
         let (adopt, adopt_media) = match adopt {
@@ -2299,7 +2303,7 @@ impl Workspace {
         // resolves to nothing and the start stays cold. New Window opens
         // idle; its player is its own.
         let settings = Settings::load();
-        // The mini-player roles ride in the struct so the menubar never
+        // The mini-player roles are kept in the struct so the menubar never
         // reads the file per frame; captured before the layout field moves
         // out below.
         let primary_layout = settings.look.bundle.primary_layout.clone();
@@ -2341,7 +2345,7 @@ impl Workspace {
                         }
                         // The sub comes off the saved entry rather than the
                         // library: the id names the row, but the projection
-                        // that could answer which subsong it is may not be
+                        // that would say which subsong it is may not be
                         // loaded this early in a launch.
                         keys.push(TrackKey {
                             path,
@@ -2406,7 +2410,7 @@ impl Workspace {
             }
             WorkspaceStart::Empty => None,
         };
-        // A dump that exists but will not restore, or a preset whose name no
+        // A dump that exists but won't restore, or a preset whose name no
         // longer resolves, is a failure the window should say out loud; a
         // plain start with nothing saved is not.
         let expected = source.is_some() || matches!(start, WorkspaceStart::Preset(_));
@@ -2431,7 +2435,7 @@ impl Workspace {
         let (center, stack, center_tabs, bottom_stack) = match restored {
             Some(item) => {
                 let (stack, tabs, bottom) = layout_views(&item);
-                // The preferred add targets may not survive a rearranged
+                // The preferred add targets may be gone from a rearranged
                 // layout; fresh detached entities take their place, and the
                 // add paths attach them back into the tree on first use.
                 let tabs = tabs.unwrap_or_else(|| tabs_item(Vec::new(), &weak_dock, window, cx).1);
@@ -2440,9 +2444,9 @@ impl Workspace {
                 (item, stack, tabs, bottom)
             }
             // Everything without a restorable dump starts empty: the blank
-            // window and the first run by design, a broken dump because an
-            // empty window that says why beats a default arrangement nobody
-            // arranged.
+            // window and the first run because that's what was asked for, a
+            // broken dump because an empty window that says why beats a
+            // default arrangement nobody arranged.
             None => empty_layout(&weak_dock, window, cx),
         };
 
@@ -2470,11 +2474,11 @@ impl Workspace {
         let _player_changed = cx.observe_in(&state.player, window, |this, _, window, cx| {
             this.refresh_title(window, cx);
             this.publish_tray(cx);
-            // The shader's frame loop lives in render and sustains itself
+            // The shader's frame loop is in render and sustains itself
             // through frame requests, but only render can start it. Nothing
             // else re-renders the workspace on a resume, so a parked shader
-            // would sit frozen until a track change; while one is worn, the
-            // pump's tick is what re-arms it.
+            // would sit frozen until a track change; while one is running,
+            // the pump's tick re-arms it.
             if this.post_shader.as_ref().is_some_and(|d| d.active) {
                 cx.notify();
             }
@@ -2538,10 +2542,10 @@ impl Workspace {
 
         // The launch also binds the control socket (ADR 22), which hangs off
         // the app rather than any window: the drain holds its own state
-        // clone, so a close to the tray leaves the surface answering. A
-        // reopen adopts the same entities the running server already speaks
-        // for, so only the first ever open binds. The workspaces disk watch
-        // is app-level for the same reason and starts on the same edge.
+        // clone, so a close to the tray leaves the socket serving. A reopen
+        // adopts the same entities the running server is already bound to,
+        // so only the first ever open binds. The workspaces disk watch is
+        // app-level for the same reason and starts on the same edge.
         if is_primary && !adopted {
             crate::integrations::ipc::serve(&state, cx);
             crate::integrations::broadcast::start(&state, cx);
@@ -2550,7 +2554,7 @@ impl Workspace {
 
         // The primary window owns the OS media service: a session the tray
         // hands back when it kept one alive, a fresh registration otherwise.
-        // Everything past that point is the session's own business - it
+        // Everything past that point is the session's own business: it
         // drains the keys onto the player and publishes back out on its own
         // observer, with or without a window in front of it.
         let media = if is_primary {
@@ -2600,7 +2604,8 @@ impl Workspace {
         // window's hub and player go on the registry they look up.
         panel::shader::note_window(window, &this.state, cx);
         // The configured screen shader goes on as the window opens, so a
-        // restart wears it without a trip through the settings window.
+        // restart comes up running it without a trip through the settings
+        // window.
         this.apply_post_shader(window, cx);
         // With the all-windows option on, the per-window apply above isn't
         // enough: the app-level pass has to run once to cache the source
@@ -2614,12 +2619,12 @@ impl Workspace {
 
     /// Install or clear this window's post shader from the settings file.
     /// The resolve and compile happen here, synchronously: a failure logs,
-    /// lands its message in the shared readout, and leaves whatever compiled
+    /// puts its message in the shared readout, and leaves whatever compiled
     /// last still running, so a broken edit never blanks the effect.
     fn apply_post_shader(&mut self, window: &mut Window, cx: &App) {
         let config = Settings::load().post_shader;
         // Keep the live switch and the slot feeds in step; the startup path
-        // lands here before any app-level apply has run.
+        // comes through here before any app-level apply has run.
         POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
         set_post_shader_routes(config.routes.clone());
         set_post_shader_manual(config.manual.clone());
@@ -2628,7 +2633,7 @@ impl Workspace {
             // The switch being off doesn't unname the slots. Those names come
             // off the source the config points at rather than off anything
             // that's running, and the Shader page goes on showing the slots
-            // as hand-set knobs while the pass is parked - so without this,
+            // as hand-set knobs while the pass is parked. So without this,
             // flipping the shader off turned every row from "bend" back into
             // "slot 0". A config pointing nowhere still leaves them bare,
             // which is the [`clear_post_shader`] case above.
@@ -2657,10 +2662,10 @@ impl Workspace {
         driver.stamp = driver.path.as_deref().and_then(settings::file_stamp);
         let (source, ctx) = match post_shader_program(&config) {
             Ok(Some(program)) => program,
-            // A pool name nothing answers to, or a config pointing nowhere.
-            // Same teardown as the switch being off: there is nothing to
-            // run, and leaving the last one up would be running something
-            // this look never asked for.
+            // A pool name that matches no entry, or a config pointing
+            // nowhere. Same teardown as the switch being off: there's
+            // nothing to run, and leaving the last one up would be running
+            // something this look never asked for.
             Ok(None) => {
                 self.clear_post_shader(window);
                 return;
@@ -2694,7 +2699,7 @@ impl Workspace {
         driver.reads_cursor = panel::shader::reads_cursor(&source);
         // The whole program: the text splits into its passes here and its
         // images are read from wherever the source resolved from, so a
-        // split or an unreadable image lands in the same readout a naga
+        // split or an unreadable image ends up in the same readout a naga
         // error does.
         match panel::shader::register_program(window, &source, &ctx) {
             Ok(id) => {
@@ -2712,7 +2717,7 @@ impl Workspace {
 
     /// Take the shader off this window and clear the shared readouts: the
     /// state before anything is configured, which is also where a switched
-    /// off or unresolvable one lands.
+    /// off or unresolvable one ends up.
     fn clear_post_shader(&mut self, window: &mut Window) {
         if self.post_shader.take().is_some_and(|driver| driver.active) {
             window.set_post_shader(None);
@@ -2724,7 +2729,7 @@ impl Workspace {
 
     /// The screen shader's frame loop, run from render: re-read the file
     /// when its stamp moves (one stat a second, the pump cadence render
-    /// already rides), and while audio moves, feed the pool's signals into
+    /// already runs at), and while audio moves, push the pool's signals into
     /// the shader's slots (slot i takes pool signal i) and ask for the next
     /// frame. A silent hub stops the feed, which freezes the shader clock
     /// and parks the frame requests, the same self-parking discipline the
@@ -2733,9 +2738,9 @@ impl Workspace {
         let Some(driver) = &mut self.post_shader else {
             return;
         };
-        // The oldest open workspace speaks for the app-wide concerns: the
+        // The oldest open workspace handles the app-wide concerns: the
         // child sweeps and their signal feed run once, not per workspace.
-        // By open serial, not the list's head - the registry reorders on
+        // By open serial, not the list's head: the registry reorders on
         // activation, and the app-wide role shouldn't hop windows every
         // time focus moves.
         let primary = cx
@@ -2762,10 +2767,10 @@ impl Workspace {
                 cx.defer(sweep_shaded_children);
             }
         }
-        // A program wearing the track's art follows the track. The poll
+        // A program using the track's art follows the track. The poll
         // costs a map read and a path compare per frame until the playing
         // file turns over; then this window re-applies with the new art,
-        // and the primary re-shades the children wearing the same program.
+        // and the primary re-shades the children running the same program.
         if self
             .post_shader
             .as_ref()
@@ -2813,8 +2818,8 @@ impl Workspace {
         let live = hub.live();
         // The release tail. Live goes false the moment the audio stops, but
         // a smoothed signal is still falling for a second or two after
-        // that, and a shader riding one wants those frames: without them
-        // the last push is the one that lands and the effect freezes
+        // that, and a shader driven by one needs those frames: without them
+        // the last push is the one that sticks and the effect freezes
         // wherever it was rather than fading out.
         let settling = !live && hub.settling();
         let was_live = std::mem::replace(
@@ -2827,16 +2832,16 @@ impl Workspace {
         // pointer counts for anything, so a paused window still plays out
         // the fade rather than leaving the light stuck wherever the cursor
         // was last seen. It parks itself: presence reaches zero a couple of
-        // seconds after the hand stops, and the probe in `render` is what
-        // wakes the window when the hand comes back.
+        // seconds after the hand stops, and the probe in `render` wakes the
+        // window when the hand comes back.
         let cursor_live = self
             .post_shader
             .as_ref()
             .is_some_and(|driver| driver.reads_cursor)
             && meta[6] > 0.0;
         // Meta isn't audio. The theme can flip, the art tint can ease, the
-        // volume can move, all while the hub sits parked, and a shader
-        // tuning itself to the palette has to hear about it or it wears
+        // volume can move, all while the hub is parked, and a shader
+        // tuning itself to the palette has to hear about it or it keeps
         // the theme it was last pushed under until the music moves again.
         // So a changed meta counts as something to say, same as a live
         // hub. It settles by itself: the push stores what it sent, and the
@@ -2846,9 +2851,9 @@ impl Workspace {
             .as_ref()
             .is_some_and(|driver| driver.meta != meta);
         // A hub gone quiet still owes the shader one last word: without it
-        // the uniforms freeze mid-song, and a paused window keeps wearing
+        // the uniforms freeze mid-song, and a paused window keeps showing
         // the play state on every repaint. The push after the last live
-        // frame carries the parked signals and a meta that says stopped.
+        // frame sends the parked signals and a meta that says stopped.
         // After that the pass sleeps until the music moves again, unless
         // the idle switch keeps its frames coming: the uniforms hold
         // still, and the frames are for the state that updates per draw,
@@ -2857,7 +2862,7 @@ impl Workspace {
             if run_when_idle || cursor_live {
                 // The uniforms hold still, but the mouse is stored beside
                 // them rather than read per draw, so an idle frame has to
-                // carry it across itself or the lamp freezes mid-pause.
+                // push it across itself or the lamp freezes mid-pause.
                 window.set_post_mouse();
                 window.request_animation_frame();
                 if primary {
@@ -2901,12 +2906,12 @@ impl Workspace {
             return false;
         }
         // Fold the outgoing layout's live dock into its working copy before
-        // the swap, so switching away keeps its unsaved tweaks. Synchronous
-        // on purpose: the debounced save below would otherwise be the only
+        // the swap, so switching away keeps its unsaved tweaks. Synchronous,
+        // because the debounced save below would otherwise be the only
         // writer, and it dumps the incoming layout, not this one.
         self.stash_active_edits(window, cx);
         // The registry's builders capture one workspace's entities;
-        // re-register so the rebuild lands on this one even after
+        // re-register so the rebuild runs against this one even after
         // another window registered over it.
         register_panels(&self.state, cx.entity().downgrade(), cx);
         let weak_dock = self.dock.downgrade();
@@ -2925,7 +2930,7 @@ impl Workspace {
     /// Fall a live workspace back to the blank layout: the reset a workspace
     /// bundle with no resolvable layout applies. Same swap as
     /// [`apply_layout`], but the center is the empty start and the empty
-    /// hint says why it is empty, rather than a stand-in arrangement nobody
+    /// hint says why it's empty, rather than a stand-in arrangement nobody
     /// arranged.
     fn apply_empty_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Keep the outgoing layout's tweaks the same as any other swap.
@@ -2944,7 +2949,7 @@ impl Workspace {
         self.save_layout_soon(window, cx);
     }
 
-    /// Record the named preset the window is now on and mirror it to settings,
+    /// Record the named preset the window is now on and copy it to settings,
     /// straight away rather than through the debounced layout save, so a
     /// workspace save right after an apply captures the right layout.
     fn set_active_layout(&mut self, name: Option<String>) {
@@ -2963,8 +2968,8 @@ impl Workspace {
     /// The dock's current layout as a JSON value, denoised: the shape saved
     /// into settings and written out in an exported workspace bundle. The
     /// denoise pass matters because [`serde_json::to_value`] widens the dump's
-    /// f32 sizes and panel configs to f64, so a raw dump carries 17-digit
-    /// float tails; [`denoise_f32`] snaps them back to clean numbers.
+    /// f32 sizes and panel configs to f64, so a raw dump comes out with
+    /// 17-digit float tails; [`denoise_f32`] snaps them back to clean numbers.
     fn dock_dump(&self, cx: &App) -> serde_json::Result<serde_json::Value> {
         let mut value = serde_json::to_value(self.dock.read(cx).dump(cx))?;
         denoise_f32(&mut value);
@@ -2974,8 +2979,8 @@ impl Workspace {
     /// Fold this window's live dock into the active layout's working copy,
     /// the unsaved-tweaks store a later switch reads back. A window on an
     /// unnamed arrangement (the default build, a one-off import) has no name
-    /// to key on, so this no-ops; its live dock rides in `settings.look.layout`
-    /// for the launch restore instead.
+    /// to key on, so this no-ops; its live dock is stored in
+    /// `settings.look.layout` for the launch restore instead.
     fn stash_active_edits(&self, window: &Window, cx: &mut Context<Self>) {
         let Some(name) = self.active_layout.clone() else {
             return;
@@ -2983,9 +2988,9 @@ impl Workspace {
         let Ok(dump) = self.dock_dump(cx) else {
             return;
         };
-        // The current window size rides along, live off the window rather than
-        // the debounced `settings.windows.main`, so a resize made just before the
-        // switch comes back with the layout.
+        // The current window size goes with it, read live off the window
+        // rather than the debounced `settings.windows.main`, so a resize made
+        // just before the switch comes back with the layout.
         let size = Some(window_size(window));
         Settings::update(move |s| {
             s.look.layout_edits.insert(name, LayoutEdit { dump, size });
@@ -2993,7 +2998,7 @@ impl Workspace {
     }
 
     /// Apply a saved preset by name. Returns false when
-    /// no preset carries the name or its dump is one [`apply_layout`]
+    /// no preset has that name or its dump is one [`apply_layout`]
     /// refuses.
     pub fn apply_named_layout(
         &mut self,
@@ -3017,8 +3022,8 @@ impl Workspace {
         if let Some(edit) = &edited {
             if let Ok(dump) = serde_json::from_value::<DockAreaState>(edit.dump.clone()) {
                 applied = self.apply_layout(dump, window, cx);
-                // The working copy's own size wins when it carries one; a copy
-                // from before sizes rode along keeps the preset's.
+                // The working copy's own size wins when it has one; a copy
+                // from before sizes were stored keeps the preset's.
                 if applied && edit.size.is_some() {
                     size = edit.size;
                 }
@@ -3035,11 +3040,11 @@ impl Workspace {
         }
         self.set_active_layout(Some(name.to_string()));
         // Size the window to whichever source won above (the working copy's
-        // size, or the preset's); neither carrying one leaves the window as is.
+        // size, or the preset's); neither having one leaves the window as is.
         // Except in a macOS fullscreen Space, where AppKit owns the frame and
         // a resize is dropped or fights the Space: swap the layout, leave the
         // frame alone. The mini toggle exits fullscreen before applying, so
-        // its resize still lands. A `--window-size` launch also pins the
+        // its resize still takes. A `--window-size` launch also pins the
         // frame: preset sizes stay stored, they just don't move the window
         // that session, so every look screenshots at the flag's one size.
         if let Some(size) = size {
@@ -3050,7 +3055,7 @@ impl Workspace {
             }
         }
         // A programmatic resize only shows on the next drawn frame, and gpui
-        // stops pumping frames for a window that is idle and not focused.
+        // stops pumping frames for a window that's idle and not focused.
         // Applying from the settings window leaves this one in exactly that
         // state, so the resized dock sat stale until the compositor woke it
         // on the next focus, which is why it looked gone until you tabbed
@@ -3063,10 +3068,10 @@ impl Workspace {
     /// Apply a shipped or saved workspace to this window: the whole look
     /// through the shared path, then this window's dock swaps to the bundle's
     /// primary layout, or resets to the default arrangement when the bundle
-    /// carries no layout. The empty launcher's way to start from a vendored
+    /// has no layout. The empty launcher's way to start from a vendored
     /// look; a blank window has nothing to replace, so it acts straight off
-    /// the click with no confirm. The settings window's apply lands here
-    /// too, so both entry points share one flow.
+    /// the click with no confirm. The settings window's apply comes through
+    /// here too, so both entry points share one flow.
     pub(crate) fn apply_workspace(
         &mut self,
         name: &str,
@@ -3079,9 +3084,9 @@ impl Workspace {
             return;
         };
         // Without Shaders takes them out here, before anything reads the
-        // bundle: the overlay and every panel wearing one, the pool left
-        // alone. Everything downstream then applies a look that simply
-        // doesn't have any, so there's no second reading of the choice.
+        // bundle: the overlay and every panel with one on it, the pool left
+        // alone. Everything downstream then applies a look that doesn't
+        // have any, so there's no second reading of the choice.
         let bundle = match shaders {
             ApplyShaders::Wear => bundle,
             ApplyShaders::Skip => crate::workspaces::without_shaders(&bundle),
@@ -3101,7 +3106,7 @@ impl Workspace {
         self.state.signals.set_pool(bundle.signals.clone());
         // The shader pool goes over the live one exactly the same way, and
         // apply_look persisted it in the same write. A saved bundle arrives
-        // with its file bookmarks scrubbed, so anything still sitting in the
+        // with its file bookmarks scrubbed, so anything still in the
         // shaders folder gets linked back up first; that's what keeps hot
         // reload alive across a save and reapply, and it's the one part
         // worth a second write.
@@ -3111,24 +3116,24 @@ impl Workspace {
         } else {
             settings::note_shader_pool(pool);
         }
-        // The screen shader belongs to the look too, but it lives in the
+        // The screen shader belongs to the look too, but it's stored in the
         // machine settings rather than in the bundle apply_look wrote, so it
-        // goes in here. A bundle carrying none applies as the disabled
+        // goes in here. A bundle that brings none applies as the disabled
         // default: an apply replaces the look wholesale, and leaving the old
         // shader running over a new look isn't that.
         let incoming = bundle.post_shader.clone().unwrap_or_default();
         let persist = incoming.clone();
         Settings::update(move |s| s.post_shader = persist);
         apply_post_shader(cx);
-        // The backdrop shader travels inside the bundle apply_look already
+        // The backdrop shader is inside the bundle apply_look already
         // wrote, so only the cache needs the news.
         settings::note_backdrop_shader(bundle.backdrop_shader.clone());
         // A shader that came in with the look gets the keep-or-revert window
         // a risky apply from the settings page does, but only where nothing
         // said it was coming: the confirms name the shader and the hotkey
-        // that turns it off, and asking again the moment it lands is the
+        // that turns it off, and asking again the moment it's applied is the
         // second warning for one decision. Either way it's only a change
-        // worth proving: an apply that turns the shader off, or lands the
+        // worth proving: an apply that turns the shader off, or installs the
         // same source that was already running, prompts nothing.
         let landed = incoming
             .enabled
@@ -3183,14 +3188,14 @@ impl Workspace {
 
     /// Whether the window is on the mini preset, the side of the toggle that
     /// decides the glyph and which way the next click goes. Falls out of the
-    /// active layout rather than a separate flag, so it is always in step with
-    /// what is actually showing.
+    /// active layout rather than a separate flag, so it's always in step with
+    /// what's actually showing.
     pub(crate) fn on_mini(&self) -> bool {
         self.mini_layout.is_some() && self.active_layout == self.mini_layout
     }
 
     /// A presets-flyout pick, shared with the menu panel: build the saved
-    /// panel and either land it in this window, where its kind says panels of
+    /// panel and either put it in this window, where its kind says panels of
     /// that sort go, or open it in a window of its own. A preset deleted
     /// while the menu stood open does nothing.
     pub(crate) fn run_panel_preset(
@@ -3309,8 +3314,9 @@ impl Workspace {
             return;
         }
         // Flush the live dock first. Panel config like the library's column
-        // arrangement only reaches the settings file on the next layout dump,
-        // so without this the bundle would capture whatever's stale on disk.
+        // arrangement is only written to the settings file on the next layout
+        // dump, so without this the bundle would capture whatever's stale on
+        // disk.
         self.persist(window, cx);
         if crate::workspaces::path_for(&name).exists() {
             self.layout_dialog = Some(LayoutDialog::ConfirmOverwriteWorkspace(name));
@@ -3323,8 +3329,8 @@ impl Workspace {
     }
 
     /// Replace the pending workspace with the current look, the confirm
-    /// dialog's yes. Only user bundles reach this confirm, and one deleted
-    /// since the dialog opened just comes back: the write lands on the file
+    /// dialog's yes. Only user bundles get this confirm, and one deleted
+    /// since the dialog opened just comes back: the write goes to the file
     /// the name picks either way.
     fn overwrite_workspace_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = match &self.layout_dialog {
@@ -3334,16 +3340,16 @@ impl Workspace {
         // Flush the live dock so the overwrite captures current panel config,
         // not the stale disk copy. See commit_save_workspace.
         self.persist(window, cx);
-        // The bundle's name picks its file, so an overwrite lands back on the
-        // same one a first save wrote: both are the one write, and the card
-        // the old file carried comes along through the snapshot.
+        // The bundle's name picks its file, so an overwrite writes back over
+        // the same one a first save wrote: both are the one write, and the
+        // card the old file held comes along through the snapshot.
         crate::workspaces::store(&crate::workspaces::snapshot(&name, &Settings::load()));
         self.close_layout_dialog(window, cx);
     }
 
     /// Apply the pending workspace to this window, the confirm dialog's yes.
     /// `shaders` is the difference between the dialog's two yes buttons: the
-    /// wearing one agrees to whatever code the bundle brought, which is the
+    /// running one agrees to whatever code the bundle brought, which is the
     /// one click on this whole path that may write the approved list, and the
     /// bare one strips the shaders out of the look on the way in.
     fn apply_workspace_confirmed(
@@ -3368,11 +3374,11 @@ impl Workspace {
     /// Pick a workspace file and add it to the collection, the settings
     /// window's Import path from the menu.
     ///
-    /// A bundle carrying shaders this machine has never agreed to run opens
-    /// the apply confirm on the way in, so what arrived gets read out at the
-    /// moment it lands rather than a week later when somebody applies it.
+    /// A bundle with shaders this machine has never agreed to run opens
+    /// the apply confirm on the way in, so what arrived is read out as it
+    /// arrives rather than a week later when somebody applies it.
     /// Backing out of that dialog is exactly the old behaviour: the file is
-    /// saved, nothing is approved, and nothing is wearing it.
+    /// saved, nothing is approved, and nothing is running it.
     fn import_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -3409,8 +3415,8 @@ impl Workspace {
 
     /// Toggle the mini layout: on the mini preset the click goes back to the
     /// primary, on anything else it goes to the mini preset. The named preset
-    /// is the whole story now, so there is no stash to restore and no separate
-    /// flag to flip; whichever side we land on becomes the active layout, and
+    /// is the whole story now, so there's no stash to restore and no separate
+    /// flag to flip; whichever side we end on becomes the active layout, and
     /// the glyph follows. A missing target (no primary to return to, no mini
     /// to enter) leaves the dock where it is.
     pub(crate) fn toggle_mini(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3422,11 +3428,11 @@ impl Workspace {
         let Some(name) = target else {
             return;
         };
-        // On macOS the window may sit in its own fullscreen Space, where
+        // On macOS the window may be in its own fullscreen Space, where
         // AppKit owns the frame: the layout's resize is dropped and the mini
         // player would come up stretched over the whole screen. Leave
         // fullscreen first and apply the layout once the exit transition has
-        // landed, so the resize hits a normal window.
+        // finished, so the resize hits a normal window.
         #[cfg(target_os = "macos")]
         if window.is_fullscreen() {
             window.toggle_fullscreen();
@@ -3487,7 +3493,7 @@ impl Workspace {
     }
 
     /// Save the current arrangement under the dialog's name, a new preset or
-    /// an update to one that already carries the name. An empty name waits.
+    /// an update to one that already has that name. An empty name waits.
     fn commit_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(LayoutDialog::Save(input)) = &self.layout_dialog else {
             return;
@@ -3558,8 +3564,8 @@ impl Workspace {
     }
 
     /// Ask before taking a pinned panel out of the layout, the Close entry's
-    /// route when the panel is locked. The pin is there to survive stray
-    /// clicks, so the entry asks rather than swallowing the click - a menu
+    /// route when the panel is locked. The pin is there to shrug off stray
+    /// clicks, so the entry asks rather than swallowing the click: a menu
     /// item that does nothing reads as broken.
     pub(crate) fn confirm_close_locked(
         &mut self,
@@ -3577,7 +3583,7 @@ impl Workspace {
     }
 
     /// Close the pinned panel the confirm named. The lock stays what it is;
-    /// this one click is what gets through it.
+    /// this one click gets through it.
     fn close_locked_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(LayoutDialog::ConfirmCloseLocked { panel, tabs, .. }) = &self.layout_dialog else {
             return;
@@ -3596,14 +3602,14 @@ impl Workspace {
         self._layout_input = None;
         window.focus(&self.focus);
         cx.notify();
-        // Every save, overwrite, and apply lands here on its way out, so this
-        // is the one place that catches a workspace or layout the native
-        // menu's baked-in submenus would otherwise miss. A cancel rebuilds
+        // Every save, overwrite, and apply comes through here on its way out,
+        // so this is the one place that catches a workspace or layout the
+        // native menu's baked-in submenus would otherwise miss. A cancel rebuilds
         // an identical bar, which costs nothing worth branching for.
         native_menu::rebuild(cx);
     }
 
-    /// Open the quick-play modal, or close it when it is already up. The
+    /// Open the quick-play modal, or close it when it's already up. The
     /// modal takes the keyboard through its search input; dismissal hands
     /// focus back to the workspace so the playback keys keep working.
     fn toggle_quick_play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3628,11 +3634,11 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Open the queue modal, or close it when it is already up. The queue
+    /// Open the queue modal, or close it when it's already up. The queue
     /// widget calls this when no queue panel is docked, so a click always
-    /// lands somewhere. A fresh queue panel each open, dropped on close; its
-    /// view (columns, headings) rides settings, so it comes back the way it
-    /// was left.
+    /// does something. A fresh queue panel each open, dropped on close; its
+    /// view (columns, headings) is stored in settings, so it comes back the
+    /// way it was left.
     pub(crate) fn toggle_queue_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.queue_modal.take().is_some() {
             window.focus(&self.focus);
@@ -3647,7 +3653,7 @@ impl Workspace {
 
     /// Drop the queue modal and hand focus back to the workspace, so the
     /// playback keys keep working. The scrim's click-out and the card's
-    /// Escape both land here.
+    /// Escape both come through here.
     fn close_queue_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.queue_modal = None;
         window.focus(&self.focus);
@@ -3683,8 +3689,9 @@ impl Workspace {
     }
 
     /// Route OS-handed files into the shared player. The launch path
-    /// (`rox song.flac` and the .desktop actions) lands here after the
-    /// window's player exists; paths are already filtered to decodable audio.
+    /// (`rox song.flac` and the .desktop actions) comes through here after
+    /// the window's player exists; paths are already filtered to decodable
+    /// audio.
     /// Play replaces the restored session so double-clicking a file starts it;
     /// enqueue appends. The player is path-based, so files outside the library
     /// play fine.
@@ -3708,7 +3715,7 @@ impl Workspace {
         self.play_keys(loose_keys(paths), cx);
     }
 
-    /// The same for a drag out of the library, which already carries keys and
+    /// The same for a drag out of the library, which already has keys and
     /// so never loses a cue track's number on the way over.
     fn play_keys(&mut self, keys: Vec<TrackKey>, cx: &mut Context<Self>) {
         if keys.is_empty() {
@@ -3739,7 +3746,7 @@ impl Workspace {
     /// payload is dragged: a file from the OS (ExternalPaths) or a track from
     /// the library (PlayDrag). Other drags (panel docking, queue reorder)
     /// leave them hidden. Rendered as the top layer so the drop always lands
-    /// here - an occluded window-root target misses it because the panels
+    /// here: an occluded window-root target misses it because the panels
     /// block the hit test.
     fn drop_zones_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !cx.active_drag_is::<ExternalPaths>() && !cx.active_drag_is::<PlayDrag>() {
@@ -3877,7 +3884,7 @@ impl Workspace {
             height: frame.size.height.into(),
             maximized: matches!(bounds, WindowBounds::Maximized(_)),
         };
-        // The playing track rides along as its library id, for the launch
+        // The playing track is stored as its library id, for the launch
         // restore. Nothing playing, or a file outside the library, clears
         // it: the next launch starts cold.
         let library = self.state.library.read(cx);
@@ -3889,12 +3896,12 @@ impl Workspace {
                 position_secs: now.position_secs,
             })
         });
-        // The whole queue rides along too, as library ids so it survives path
-        // changes, keeping each entry's explicit flag and the audible cursor.
-        // A file outside the library drops from the order; the cursor tracks
-        // the last kept entry at or before it so it stays on the playing
-        // track. Everything gone (or nothing playing) clears it and the
-        // single-track fallback above carries the restore.
+        // The whole queue goes in too, as library ids so a path change
+        // doesn't break it, keeping each entry's explicit flag and the
+        // audible cursor. A file outside the library drops from the order;
+        // the cursor tracks the last kept entry at or before it so it stays
+        // on the playing track. Everything gone (or nothing playing) clears
+        // it and the single-track fallback above does the restore.
         let last_queue = self.state.player.read(cx).queue_state().and_then(
             |(entries, cursor, position_secs)| {
                 let mut tracks = Vec::with_capacity(entries.len());
@@ -3953,9 +3960,9 @@ impl Workspace {
     }
 
     /// New audio and transport panels join the transport row as their own
-    /// tab group at the end - a new group rather than a new tab, so they
-    /// sit next to the transport pieces instead of hiding one. The library
-    /// stays a center panel: it wants the tall area, and keeping additions
+    /// tab group at the end. A new group rather than a new tab, so they end
+    /// up next to the transport pieces instead of hiding one. The library
+    /// stays a center panel: it needs the tall area, and keeping additions
     /// on the center path preserves the recovery route when every center
     /// panel has been closed or popped out.
     fn add_bottom(
@@ -3967,7 +3974,7 @@ impl Workspace {
         let weak_dock = self.dock.downgrade();
         // The row removes itself from the tree when its last group closes,
         // so put it back at the bottom of the root stack first. A no-op
-        // while it is still attached: stacks skip panels they already hold.
+        // while it's still attached: stacks skip panels they already hold.
         let row: Arc<dyn PanelView> = Arc::new(self.bottom_stack.clone());
         self.stack.update(cx, |stack, cx| {
             stack.add_panel(
@@ -3986,8 +3993,8 @@ impl Workspace {
 
     /// The search bar joins the top of the root stack as its own thin tab
     /// group across the whole window, above the center panels. A search bar
-    /// wants to be a strip, not a tall tile, so it goes in sized to just its
-    /// input row rather than splitting a center panel's height.
+    /// reads as a strip rather than a tall tile, so it goes in sized to just
+    /// its input row rather than splitting a center panel's height.
     fn add_top(&mut self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut Context<Self>) {
         let weak_dock = self.dock.downgrade();
         let (_, tabs) = tabs_item(vec![panel], &weak_dock, window, cx);
@@ -4003,7 +4010,7 @@ impl Workspace {
         });
     }
 
-    /// Whether the dock shows no panels at all - every stack walked down
+    /// Whether the dock shows no panels at all: every stack walked down
     /// to tab groups and all of them empty. The face an Empty Window
     /// opens with, or closing the last panel leaves behind.
     fn dock_is_empty(&self, cx: &App) -> bool {
@@ -4025,15 +4032,15 @@ impl Workspace {
     /// The empty dock's launcher, floated mid-window: an empty tab group
     /// renders to nothing, so without this a blank window gives no way in.
     /// The rox mark heads it, then the panel catalog, one titled section
-    /// per group. The whole-look pickers live in the welcome window's
+    /// per group. The whole-look pickers are in the welcome window's
     /// quick-start tiles now; this stays the piece-by-piece way in.
     fn empty_hint(&mut self, cx: &mut Context<Self>) -> Div {
         div()
             .absolute()
             .inset_0()
             // An empty dock paints no surface of its own, so without this
-            // the launcher's copy would sit straight on the backdrop art.
-            // The same page surface the settings pages hold: opaque at
+            // the launcher's copy would be drawn straight onto the backdrop
+            // art. The same page surface the settings pages use: opaque at
             // full surface opacity, thinning with the rest.
             .bg(palette::bg_elevated())
             .flex()
@@ -4098,7 +4105,7 @@ impl Workspace {
                                             .child(rox_i18n::t!("workspace-launcher-hint")),
                                     )
                                     // The fallback notice: this window is
-                                    // empty because a layout would not
+                                    // empty because a layout wouldn't
                                     // restore, not because the user asked.
                                     // Accent rather than a status red: the
                                     // app recovered, this is emphasis.
@@ -4196,7 +4203,7 @@ impl Workspace {
     }
 
     /// The layout save/apply dialog, floated over the window on its own
-    /// occluding layer. The save card carries the `SearchInput` key context
+    /// occluding layer. The save card sets the `SearchInput` key context
     /// so space and arrows type into the name field instead of driving
     /// playback, the search boxes' trick.
     fn layout_dialog_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -4351,7 +4358,7 @@ impl Workspace {
                 let shaders = bundle_card.shader_line();
                 let screen = bundle_card.screen_shader.clone();
                 // Whether the yes splits in two. Code nobody has agreed to
-                // splits it, and so does a look that simply wears shaders,
+                // splits it, and so does a look that just runs shaders,
                 // however many times it's been applied before.
                 let split = bundle_card.splits_apply();
                 let line = |text: SharedString| {
@@ -4634,9 +4641,9 @@ pub(crate) fn flyout_side(d: Div, leftward: bool) -> Div {
 }
 
 /// A muted heading over a divider, grouping the rows below it in a dropdown.
-/// `label` is an i18n key, not display text - the table that builds these
-/// rows is `const` and can't call a translator, so the key rides through
-/// unresolved until it lands here.
+/// `label` is an i18n key, not display text. The table that builds these
+/// rows is `const` and can't call a translator, so the key travels
+/// unresolved until it gets here.
 pub(crate) fn menu_section(label: &'static str) -> Div {
     div()
         .mt(tokens::SPACE_XS)
@@ -4745,7 +4752,7 @@ fn dialog_button(
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The screen shader's hot reload and signal feed ride the render
+        // The screen shader's hot reload and signal feed run off the render
         // loop; it keeps its own frame requests going while audio moves.
         self.drive_post_shader(window, cx);
         // A hidden menubar comes back while alt is held, and stays while a
@@ -4759,7 +4766,7 @@ impl Render for Workspace {
         }
         // Alt reveals the hidden bar, but Alt+drag is the compositor's
         // window move/resize; suppress the reveal while a button is down so
-        // the overlay never sits in front of the drag. An open menu keeps
+        // the overlay is never in front of the drag. An open menu keeps
         // it up regardless (that press landed on a menu, not a drag), and so
         // does a double-tap pin, which is the way to click the bar without a
         // modifier changing what the click means.
@@ -4819,8 +4826,8 @@ impl Render for Workspace {
                 }))
                 // Escape backs out of a zoomed panel. A raw listener, not a
                 // binding: bindings win over key listeners, and the escape
-                // ladders (search boxes, quick-play) live in listeners that
-                // stop propagation - a binding here would steal their escape.
+                // ladders (search boxes, quick-play) are listeners that stop
+                // propagation, so a binding here would steal their escape.
                 // This runs last in the bubble, so it only sees what they let
                 // through.
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -4843,7 +4850,7 @@ impl Render for Workspace {
                 // Any keystroke under a held Alt makes it a chord rather than
                 // the tap that pins the bar. Captured so a panel eating the key
                 // can't hide it; bare modifiers arrive as a modifiers change,
-                // not a keystroke, so Alt itself never lands here.
+                // not a keystroke, so Alt itself never gets here.
                 .capture_key_down(cx.listener(|this, _: &KeyDownEvent, _, _| {
                     this.cancel_alt_tap();
                 }))
@@ -4918,7 +4925,7 @@ impl Render for Workspace {
                 .children(self.backdrop.layer(&self.state.now_art, window, cx))
                 // The screen shader's cursor watch. It has to be registered
                 // from a paint, and the driver above runs in render, so a
-                // probe that draws nothing carries it. Without it a pass
+                // probe that draws nothing does it. Without it a pass
                 // that faded its cursor effect out and parked its frames
                 // waits for something else to dirty the window before it
                 // notices the hand is back on the mouse.
@@ -4954,8 +4961,8 @@ impl Render for Workspace {
                 .when(menubar_hidden && menubar_revealed, |d| {
                     d.child(
                         div()
-                            // Stateful for the hover below, which is what
-                            // clears a pinned bar.
+                            // Stateful for the hover below, which clears a
+                            // pinned bar.
                             .id("menubar-reveal")
                             .absolute()
                             .top_0()
@@ -4972,11 +4979,11 @@ impl Render for Workspace {
                 })
                 // The quick-play modal floats over everything on an occluding
                 // layer, so a click outside it dismisses without also landing
-                // on whatever sits underneath. Not deferred: it is the last
+                // on whatever is underneath. Not deferred: it's the last
                 // child so it already paints on top, and the search box's
-                // suggestion popover defers itself - gpui panics on a
-                // defer_draw inside a deferred draw. `overlay_phase` is what
-                // buys the rest of that deal: painting last puts it over the
+                // suggestion popover defers itself; gpui panics on a
+                // defer_draw inside a deferred draw. `overlay_phase` buys
+                // the rest of that deal: painting last puts it over the
                 // dock's primitives, but a panel's region shader pass runs at
                 // the end of the frame and would swallow it, so it has to
                 // record in the same draw-order range menus and tooltips do.
@@ -5000,7 +5007,7 @@ impl Render for Workspace {
                 // the dock.
                 .children(self.queue_modal_overlay(cx).map(overlay_phase))
                 // The Play now / Add to queue drop zones. Last child so they
-                // sit on top of every panel, which also makes them the topmost
+                // go on top of every panel, which also makes them the topmost
                 // hitbox: an occluded workspace-root drop target would miss the
                 // drop entirely (panels block the hit test).
                 .children(self.drop_zones_overlay(cx).map(overlay_phase))
@@ -5066,10 +5073,10 @@ mod shader_feed_tests {
     use rox_viz::signal::Source;
     use rox_viz::AudioFeed;
 
-    /// A hub carrying one band signal, ticked once so the engine has a slot
+    /// A hub with one band signal, ticked once so the engine has a slot
     /// to read. Silent: what's being checked here is which path fills the
-    /// slots, and a route's Quiet end is what it reads at silence, which
-    /// makes the two paths tell themselves apart with no audio at all.
+    /// slots, and a route reads its Quiet end at silence, which makes the
+    /// two paths tell themselves apart with no audio at all.
     fn silent_hub() -> (SignalHub, u64) {
         let hub = SignalHub::new(Vec::new());
         let (id, _) = hub.add(
@@ -5083,8 +5090,8 @@ mod shader_feed_tests {
         (hub, id)
     }
 
-    /// Both paths in one test on purpose: they share a process-wide static,
-    /// and two tests setting it would race each other in the same binary.
+    /// Both paths in one test: they share a process-wide static, and two
+    /// tests setting it would race each other in the same binary.
     #[test]
     fn routes_take_over_the_feed_and_nothing_routed_keeps_pool_order() {
         let (hub, id) = silent_hub();
@@ -5109,7 +5116,7 @@ mod shader_feed_tests {
         // And slot 0 no longer takes pool signal 0 just for being first.
         assert_eq!(signals[0], 0.0);
 
-        // A route pointing at a signal the pool never carried leaves its
+        // A route pointing at a signal the pool never held leaves its
         // slot alone rather than falling back to the pool order.
         set_post_shader_routes(vec![Route {
             enabled: true,
@@ -5121,7 +5128,7 @@ mod shader_feed_tests {
         assert_eq!(post_shader_signals(&hub), [0.0; panel::shader::SLOTS]);
 
         // Hand-set values, the panel rule on the app-wide list: they stand
-        // where nothing feeds the slot, and a route wins while it's there.
+        // where nothing else fills the slot, and a route wins while it's there.
         set_post_shader_manual(vec![(5, 0.75), (3, 0.2)]);
         set_post_shader_routes(vec![Route {
             enabled: true,
@@ -5185,8 +5192,8 @@ mod post_shader_program_tests {
             Some((SOURCE.to_string(), ProgramCtx::detached()))
         );
 
-        // A name wins over the inline copy, and it's the pool entry that
-        // the images then come out of.
+        // A name wins over the inline copy, and the images then come out of
+        // the pool entry.
         settings::note_shader_pool(vec![settings::NamedShader {
             name: "Grain".to_string(),
             source: SOURCE.to_string(),
@@ -5202,7 +5209,7 @@ mod post_shader_program_tests {
             post_shader_program(&named).expect("the pool resolves"),
             Some((SOURCE.to_string(), ProgramCtx::named("Grain")))
         );
-        // And a name nothing answers to is nothing to run, images or not.
+        // And a name that matches no entry is nothing to run, images or not.
         settings::note_shader_pool(Vec::new());
         assert_eq!(
             post_shader_program(&named).expect("a miss isn't an error"),

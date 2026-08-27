@@ -1,24 +1,24 @@
 //! Renaming files from their tags: foobar2000's file operations, the
 //! guesser run backwards. A pattern like `%albumartist%/%album%/%track% -
 //! %title%` renders each selected track's tags into a path under the
-//! library root that track already lives in, keeps the file's own
+//! library root that track is already under, keeps the file's own
 //! extension, and shows every move before any of them happen. Apply moves
 //! the files and moves the rows with [`Library::rename_files`], so ids,
-//! ratings, play counts, and playlist membership all survive the move.
+//! ratings, play counts, and playlist membership all persist across the move.
 //!
 //! The values come off the catalog's projection rather than a fresh read
 //! of every file, so the preview updates as fast as you type. That leaves
-//! %comment% with nothing to render (the projection doesn't carry it) and
+//! %comment% with nothing to render (the projection doesn't include it) and
 //! it falls back like any missing field.
 //!
 //! What this refuses rather than guesses: a cue track, which is a span
 //! inside an image the whole disc shares and has no file of its own to
 //! move; a track outside every library root, which has no root to render
-//! under; a track the projection doesn't carry, which has no tag values to
-//! render from; and any move whose destination already exists or that two
-//! tracks both want. A shuffle inside the selection (track 2 taking track
-//! 1's name) reads as occupied and refuses too, rather than ordering
-//! itself into a sequence that half-lands if it fails.
+//! under; a track the projection has no row for, which has no tag values
+//! to render from; and any move whose destination already exists or that
+//! two tracks both target. A shuffle inside the selection (track 2 taking
+//! track 1's name) reads as occupied and refuses too, rather than ordering
+//! itself into a sequence that half-finishes if it fails.
 //!
 //! Thumbnails and waveform peaks are keyed by path, so a moved file loses
 //! its cached ones and regenerates them on next sight. Lyrics sidecars
@@ -64,7 +64,7 @@ actions!(rename, [Apply]);
 /// The key context the window's own bindings scope to.
 const CONTEXT: &str = "RenameFiles";
 
-/// The dialog's apply binding; call once at startup. It sits on the
+/// The dialog's apply binding; call once at startup. It's on the
 /// window root, so enter applies wherever focus is and not only in the
 /// pattern field. The input still sees the key first, since its own
 /// binding is deeper along the focus path and it propagates up to here;
@@ -117,13 +117,13 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
 }
 
 /// One selected track as the plan reads it: where its file is, which
-/// root it lives under, and the tag values the pattern renders from.
+/// root it's under, and the tag values the pattern renders from.
 struct Track {
     from: PathBuf,
     /// Which subsong of its file the row is, 0 for a plain file.
     sub: u16,
-    /// The library root the file sits under, None when it sits under
-    /// none of them.
+    /// The library root the file is under, None when it's under none of
+    /// them.
     root: Option<PathBuf>,
     /// The tag values the pattern renders from, None when the catalog has
     /// no projection row for the track. Rendering an unresolved row would
@@ -140,7 +140,7 @@ enum Blocked {
     /// pointing at the image would go stale, so a cue track never moves.
     /// The same rule the tag writer keeps in `writer::writes_to_file`.
     CueTrack,
-    /// The file sits under no library root, so there is no folder to
+    /// The file is under no library root, so there's no folder to
     /// render the pattern under.
     OutsideRoots,
     /// The catalog hasn't got a projection row for this track, which is
@@ -206,7 +206,7 @@ fn same_but_case(a: &Path, b: &Path) -> bool {
 }
 
 /// Render every track through `pattern` and sort out what can actually
-/// move. `exists` answers whether a path is taken, injected so the plan
+/// move. `exists` reports whether a path is taken, injected so the plan
 /// can be tested without a filesystem.
 fn plan(tracks: &[Track], pattern: &guess::Pattern, exists: &dyn Fn(&Path) -> bool) -> Vec<Move> {
     let mut moves: Vec<Move> = Vec::with_capacity(tracks.len());
@@ -256,7 +256,7 @@ fn plan(tracks: &[Track], pattern: &guess::Pattern, exists: &dyn Fn(&Path) -> bo
         });
     }
     // Two sources onto one destination: neither is safe, since whichever
-    // lands second overwrites the first. Both rows say so rather than one
+    // moves second overwrites the first. Both rows say so rather than one
     // silently winning.
     let mut seen: HashMap<PathBuf, usize> = HashMap::new();
     for mv in moves.iter().filter(|mv| mv.moves()) {
@@ -334,9 +334,9 @@ fn move_file(from: &Path, to: &Path, case_only: bool) -> Result<(), String> {
 }
 
 /// Move a track's lyrics sidecars along with it. The candidate lists line
-/// up position by position, so a `.lrc` beside the old name lands beside
-/// the new one in the same convention. Best effort: a sidecar that
-/// refuses to move leaves the audio file where it now is, which is the
+/// up position by position, so a `.lrc` beside the old name ends up beside
+/// the new one in the same convention. Best effort: a sidecar that fails
+/// to move leaves the audio file where it now is, which is the
 /// half that matters. Returns the pairs that moved.
 fn move_sidecars(from: &Path, to: &Path) -> Vec<(PathBuf, PathBuf)> {
     let mut moved = Vec::new();
@@ -363,9 +363,9 @@ pub struct RenameFiles {
     remembered: Vec<SharedString>,
     /// The current pattern's plan, rebuilt when the pattern changes
     /// rather than per frame: it stats the disk for every destination,
-    /// which is not something a repaint should pay for.
+    /// which isn't something a repaint should pay for.
     plan: Vec<Move>,
-    /// What is wrong with the pattern itself, when nothing parses.
+    /// What's wrong with the pattern itself, when nothing parses.
     parse_error: Option<SharedString>,
     /// A failed move, shown inline over the buttons.
     error: Option<SharedString>,
@@ -407,8 +407,8 @@ impl RenameFiles {
                     continue;
                 };
                 // The deepest root that contains the file: roots never
-                // nest, so there is at most one, and the rendered path
-                // hangs off it.
+                // nest, so there's at most one, and the rendered path
+                // is built under it.
                 let root = roots.iter().find(|r| from.starts_with(r)).cloned();
                 let resolved = projection.as_ref().and_then(|projection| {
                     let row = *row_of.get(&id)?;
@@ -420,9 +420,9 @@ impl RenameFiles {
                         (Field::Album, v.album.to_owned()),
                         (Field::Genre, v.genre.to_owned()),
                     ];
-                    // A zero is the catalog's way of saying the file
-                    // carries no number, so it renders as missing
-                    // rather than as "00" or the year 0.
+                    // A zero is the catalog's way of saying the file has
+                    // no number, so it renders as missing rather than as
+                    // "00" or the year 0.
                     for (field, number) in [
                         (Field::Year, v.year),
                         (Field::TrackNo, v.track_no),
@@ -435,7 +435,7 @@ impl RenameFiles {
                     Some((values, v.sub))
                 });
                 // An unresolved row keeps its subsong at 0: with no
-                // projection there is nothing to say it's a cue span, and
+                // projection there's nothing to say it's a cue span, and
                 // the missing values block it either way.
                 let sub = resolved.as_ref().map(|(_, sub)| *sub).unwrap_or(0);
                 tracks.push(Track {
@@ -530,7 +530,7 @@ impl RenameFiles {
 
     /// Move the files, one background hop each, then move the rows in one
     /// batch. Each file is noted as a self-rename right before it moves,
-    /// so the watcher's echo of a move rox just made lands on nothing;
+    /// so the watcher's echo of a move rox just made matches nothing;
     /// noting the whole batch up front instead would let the suppression
     /// window expire under a long run.
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -627,9 +627,9 @@ impl RenameFiles {
                         window.remove_window();
                     }
                     Some(e) => {
-                        // The tracks now sit where the landed moves put
-                        // them, so replanning is what makes a retry diff
-                        // against the current state instead of re-moving.
+                        // The tracks are now where the finished moves put
+                        // them, so replanning makes a retry diff against
+                        // the current state instead of re-moving.
                         this.applying = false;
                         this.error = Some(if failures > 1 {
                             rox_i18n::t!(
@@ -869,8 +869,8 @@ impl RenameFiles {
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),
                     ))
                     // Cancel stays live through a run: every move is its
-                    // own rename, so stopping leaves the files that landed
-                    // where they landed and the rest where they were.
+                    // own rename, so stopping leaves the files that moved
+                    // where they moved to and the rest where they were.
                     .child(small_button(
                         "Cancel",
                         icons::CLOSE,
@@ -938,8 +938,8 @@ impl Render for RenameFiles {
                     .gap(tokens::SPACE_MD)
                     .p(tokens::SPACE_MD)
                     // The body's own surface, a second elevated layer over
-                    // the window's, the same as the settings page. Two
-                    // layers is what the backdrop reads through everywhere.
+                    // the window's, the same as the settings page. The
+                    // backdrop reads through two layers everywhere.
                     .bg(palette::bg_elevated())
                     .child(section(
                         rox_i18n::t!("tags-rename-pattern-section"),
@@ -1073,8 +1073,8 @@ mod tests {
 
     #[test]
     fn a_case_only_rename_takes_the_temp_hop() {
-        // The source reads as taken, which is what a case-insensitive
-        // filesystem says about the destination of a case-only rename.
+        // The source reads as taken, the same thing a case-insensitive
+        // filesystem reports about the destination of a case-only rename.
         let got = run(
             &[album("/m/geogaddi/04 - julie.flac", "Julie", "4")],
             "%album%/%track% - %title%",
@@ -1087,7 +1087,7 @@ mod tests {
 
     #[test]
     fn a_track_the_catalog_cannot_resolve_never_moves() {
-        // Every field would fall back and the file would land as
+        // Every field would fall back and the file would end up at
         // "Unknown Artist/Unknown Album/00 - Untitled", which is worse
         // than where it started.
         let mut unknown = album("/m/a.flac", "Julie", "4");

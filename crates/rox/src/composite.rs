@@ -1,13 +1,13 @@
 //! Shared plumbing for the layout-composition panels (group, overlay,
 //! slide): panels that host other panels inside one dock slot. The dock
 //! tree only knows splits and tabs, so these hosts render their children
-//! themselves - a child is just an [`Arc<dyn PanelView>`] whose view lands
-//! in the host's own element tree. Children serialize into the host's
+//! themselves. A child is just an [`Arc<dyn PanelView>`] whose view goes
+//! into the host's own element tree. Children serialize into the host's
 //! [`PanelState::children`] and rebuild through the dock's panel registry,
 //! so nesting round-trips layout dumps like any other panel, composites
 //! inside composites included.
 //!
-//! What a hosted child gives up: the dock never sees it, so there is no
+//! What a hosted child gives up: the dock never sees it, so there's no
 //! tab-drag into or out of a slot and no per-child zoom or pop-out. Slots
 //! are filled and changed through menus built from the panel catalog
 //! instead.
@@ -40,14 +40,14 @@ pub type Slot = Option<Arc<dyn PanelView>>;
 
 /// Hand a host's tab panel down to its hosted children, once per change.
 ///
-/// `on_added_to` only ever reaches panels the dock holds directly, so a
-/// child in a composite slot never hears which tab panel it sits under,
-/// and anything it routes there (its fallback right-click menu above all)
+/// `on_added_to` is only ever called on panels the dock holds directly, so
+/// a child in a composite slot is never told which tab panel it's in, and
+/// anything it routes there (its fallback right-click menu above all)
 /// quietly goes nowhere. The host knows, so it passes the introduction
-/// along - from render, because that is the one place with a window in
-/// hand on every path a slot can change through. `introduced` is the
-/// host's own once-flag: cleared when its tab panel or a slot turns over,
-/// set here, so a settled layout pays one bool check per frame.
+/// along from render, the one place with a window in hand on every path a
+/// slot can change through. `introduced` is the host's own once-flag:
+/// cleared when its tab panel or a slot turns over, set here, so a settled
+/// layout pays one bool check per frame.
 pub fn introduce_slots<'a>(
     children: impl IntoIterator<Item = &'a Arc<dyn PanelView>>,
     tab_panel: &Option<WeakEntity<TabPanel>>,
@@ -69,8 +69,8 @@ pub fn introduce_slots<'a>(
 
 /// A hosted child's view, with its right-click routed to the hosting tab
 /// panel's fallback menu when the child doesn't serve a content menu of
-/// its own - the exact overlay a lone docked panel gets. Children that do
-/// serve one keep the click untouched.
+/// its own. That's the exact overlay a lone docked panel gets. Children
+/// that do serve one keep the click untouched.
 pub fn menu_routed_slot(
     child: &Arc<dyn PanelView>,
     tab_panel: &Option<WeakEntity<TabPanel>>,
@@ -97,8 +97,8 @@ pub fn menu_routed_slot(
     )
 }
 
-/// Which composite a hosted panel sits in. A host reports its slots as it
-/// renders, so a child's own right-click can reach the panel that holds it.
+/// Which composite a hosted panel is in. A host reports its slots as it
+/// renders, so a child's own right-click can get to the panel that holds it.
 /// The dock never sees a hosted child, so without this a host with its
 /// corner controls hidden has no route to its settings at all, and even with
 /// them showing this is the shorter one.
@@ -185,7 +185,8 @@ pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMe
 }
 
 /// Serialize a host's slots in order. An empty slot dumps as the default
-/// (empty-named) state, so slot positions survive the round-trip.
+/// (empty-named) state, so slot positions are preserved through the
+/// round-trip.
 pub fn dump_slots(slots: &[Slot], cx: &App) -> Vec<PanelState> {
     slots
         .iter()
@@ -227,7 +228,7 @@ pub fn restore_slots(
 }
 
 /// The children a composite hosts, in slot order, or None when the panel
-/// is no composite. The settings window's layout tree shows hosted
+/// isn't a composite. The settings window's layout tree shows hosted
 /// children under their host's row through this; an empty slot comes back
 /// as None so the tree can name the hole. The slide deck has no holes, so
 /// its entries are all Some.
@@ -319,8 +320,8 @@ pub fn pick_items(
 }
 
 /// One catalog pick row: build the def's panel and hand it over. A
-/// disabled row shows grayed with no click, for the panels that can't
-/// land in this slot (a composite inside a composite).
+/// disabled row shows grayed with no click, for the panels that can't go
+/// in this slot (a composite inside a composite).
 fn pick_item(
     menu: PopupMenu,
     def: &'static PanelDef,
@@ -388,7 +389,7 @@ pub fn empty_slot(
 /// children out itself, so nothing else reads a hosted panel's min and max:
 /// without this, the size settings on a child inside a group say one thing
 /// and the host draws another. These are the same numbers the dock's splits
-/// honor for a docked panel, so a panel keeps its size wherever it lands.
+/// honor for a docked panel, so a panel keeps its size wherever it ends up.
 /// An unset cap comes back as [`Pixels::MAX`] and is left off the cell
 /// rather than written out as a bound.
 pub fn clamp_to_panel(cell: Div, child: &Slot, cx: &App) -> Div {
@@ -412,7 +413,7 @@ pub fn clamp_to_panel(cell: Div, child: &Slot, cx: &App) -> Div {
         })
 }
 
-/// The wrapper a host's per-slot floating controls sit in: pinned to the
+/// The wrapper for a host's per-slot floating controls: pinned to the
 /// slot's top-right corner, faint until hovered so they never fight the
 /// child's own chrome for attention. Children's controls on the right,
 /// the parent grip on the left, so the two never collide.
@@ -428,8 +429,8 @@ pub fn corner_controls() -> Div {
         .hover(|style| style.opacity(1.))
 }
 
-/// The wrapper the composite's own grip sits in: the top-left corner,
-/// clear of the per-slot controls on the right, faint until hovered.
+/// The wrapper for the composite's own grip: the top-left corner, clear of
+/// the per-slot controls on the right, faint until hovered.
 pub fn parent_controls() -> Div {
     div()
         .absolute()
@@ -440,13 +441,13 @@ pub fn parent_controls() -> Div {
 }
 
 /// The composite's own menu button: opens the host's [`Panel::dropdown_menu`],
-/// the very menu the dock's tab chrome shows for it. The parent grip - it
-/// keeps split, swap, rename, settings, and close reachable from inside
-/// the panel, which matters when the composite is solo and the dock draws
-/// no tab bar to hang that menu off. Content panels set
+/// the very menu the dock's tab chrome shows for it. The parent grip keeps
+/// split, swap, rename, settings, and close reachable from inside the
+/// panel, which matters when the composite is solo and the dock draws no
+/// tab bar to hang that menu off. Content panels set
 /// `content_context_menu` so a right-click over a child opens the child's
 /// own menu, not the parent's; this button is how the parent stays
-/// managed once that body route is handed to the children. Sits under the
+/// managed once that body route is handed to the children. Drawn with the
 /// layout mark so the grip reads as the container, not a child.
 pub fn parent_button<P: Panel>(
     tooltip: impl Into<SharedString>,
@@ -466,13 +467,13 @@ pub fn parent_button<P: Panel>(
 
 /// A filled slot's menu button: Replace (the catalog as a flyout), the
 /// child's Panel Settings, and Remove, with `extend` prepending any
-/// host-specific rows (a slide's reorder moves). Replace and Remove land
-/// back on the host through the callbacks; the settings route goes
+/// host-specific rows (a slide's reorder moves). Replace and Remove go
+/// back to the host through the callbacks; the settings route goes
 /// through the type-erased opener, so a child type without a settings
 /// window just no-ops.
 ///
 /// A locked child keeps its settings row and loses the two that would move
-/// it: locked means pinned where it sits, and a slot is the hosted panel's
+/// it: locked means pinned in place, and a slot is the hosted panel's
 /// version of the tab a docked panel gets pinned into.
 #[allow(clippy::too_many_arguments)]
 pub fn slot_button<P: 'static>(
@@ -550,7 +551,7 @@ pub struct DividerState {
 }
 
 impl DividerState {
-    /// Remember where the slots container landed, from its prepaint.
+    /// Remember where the slots container was painted, from its prepaint.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) {
         *self.bounds.lock().unwrap() = Some(bounds);
     }
@@ -568,7 +569,7 @@ impl DividerState {
         self.dragging.load(Ordering::Relaxed)
     }
 
-    /// Where the pointer lands along the container's `axis`, 0 to 1;
+    /// Where the pointer is along the container's `axis`, 0 to 1;
     /// overshoot clamps so the drag never lets go of the divider.
     fn fraction(&self, position: Point<Pixels>, axis: Axis) -> Option<f32> {
         let bounds = (*self.bounds.lock().unwrap())?;
@@ -583,7 +584,7 @@ impl DividerState {
 
 /// Keep a live divider drag following the pointer along `axis`: apply the
 /// container fraction on every move, end the drag on release. Call from
-/// the host's paint pass - window handlers only live one frame, the
+/// the host's paint pass: window handlers only last one frame, the
 /// [`rox_panel_kit::scrub_on_paint`] idiom. Applying must notify the
 /// entity so the next frame re-arms the handlers.
 pub fn divider_on_paint(

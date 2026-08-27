@@ -1,13 +1,13 @@
-//! The output seam and the shared-mode backend that answers it. ADR 9 kept
-//! the output layer swappable and deferred the exclusive path; ADR 19 spends
-//! that option, so this file is two things now: the contract a backend
-//! answers, and cpal's answer to it.
+//! The output seam and the shared-mode backend that implements it. ADR 9
+//! kept the output layer swappable and deferred the exclusive path; ADR 19
+//! spends that option, so this file is two things now: the contract a
+//! backend implements, and cpal's implementation of it.
 //!
 //! A backend gets the shared atomics, hands back the producer end of the
 //! sample ring and the consumer end of the PCM tap, and reports what the
-//! device actually agreed to. The engine never learns which one runs.
+//! device actually accepted. The engine never learns which one runs.
 //!
-//! The hard line from the components spec lives in [`fill`], which every
+//! The hard line from the components spec is in [`fill`], which every
 //! backend calls: pop a pre-allocated ring, read atomics, write the device
 //! buffer. No allocation, no lock, no logging, no I/O.
 
@@ -26,7 +26,7 @@ mod alsa;
 #[cfg(target_os = "macos")]
 mod coreaudio;
 // Not cfg-gated like its neighbours: the FFI half is Windows-only, but the
-// format ladder and the period math above it are plain Rust and carry their
+// format ladder and the period math above it are plain Rust and have their
 // own tests, so the module compiles everywhere and those tests run in every
 // build rather than only on the one platform nobody here develops on.
 mod wasapi;
@@ -36,15 +36,15 @@ const RING_SECS: f64 = 0.5;
 /// How long a shared open keeps retrying before its error stands. Right
 /// after exclusive lets a device go, CoreAudio is still relocking the clock
 /// and refuses queries (OSStatus 56 on the default config), so the first
-/// attempt of an exclusive-to-shared switch lands inside that window and a
+/// attempt of an exclusive-to-shared switch falls inside that window and a
 /// single try would kill the session over a transient. Twenty tries of 50 ms
 /// is a second, blocking the caller like the exclusive rate settle already
 /// does; a machine with genuinely no device pays it once and then the error
 /// stands.
 const OPEN_TRIES: u32 = 20;
 const OPEN_STEP: Duration = Duration::from_millis(50);
-/// Tap capacity in samples. Small on purpose: the tap consumer may lag and
-/// lose, never backpressure.
+/// Tap capacity in samples. Kept small so the tap consumer lags and loses
+/// rather than backpressures.
 const TAP_SAMPLES: usize = 16384;
 
 /// What a platform without an exclusive backend reports. Linux, macOS, and
@@ -53,7 +53,7 @@ const TAP_SAMPLES: usize = 16384;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const NO_EXCLUSIVE: &str = "exclusive output isn't built for this platform yet";
 
-/// How the samples reach the device.
+/// How the samples get to the device.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum Mode {
     /// Through the system's mixer, cpal on every platform. Other apps keep
@@ -66,7 +66,7 @@ pub enum Mode {
     Exclusive,
 }
 
-/// A device the picker can offer. The id is what a [`Request`] carries and
+/// A device the picker can offer. The id is the one a [`Request`] names and
 /// it's backend-scoped: a cpal device name in shared mode, an ALSA `hw:`
 /// name in exclusive. They're never interchangeable, which is why the two
 /// lists are asked for separately.
@@ -94,7 +94,7 @@ pub struct Request {
     /// The sample format to ask for by its short name (`f32`, `s32`,
     /// `s16`), or None to take the widest the device offers. A name the
     /// device won't take falls to that same best-first search rather than
-    /// failing the open, and [`Negotiated::format`] reports what landed.
+    /// failing the open, and [`Negotiated::format`] reports what was used.
     /// Exclusive only: the mixer owns the format in shared mode.
     pub format: Option<String>,
     /// How much audio the device holds per period, in milliseconds, or None
@@ -104,7 +104,7 @@ pub struct Request {
     pub period_ms: Option<f64>,
 }
 
-/// What the device actually agreed to, for the UI to state instead of
+/// What the device actually accepted, for the UI to state instead of
 /// echoing the request back. ADR 19 is blunt about this: a bit-perfect
 /// claim nobody checked is decoration.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -125,7 +125,7 @@ pub struct Negotiated {
 
 /// A live output stream. Nothing to call on one: a backend hands it back so
 /// the caller can hold it, and dropping it stops audio and gives the device
-/// up. Boxed rather than an enum so a new backend lands as a file instead of
+/// up. Boxed rather than an enum so a new backend is one new file instead of
 /// another arm in every match.
 pub trait OutputStream {}
 
@@ -134,7 +134,7 @@ impl OutputStream for Stream {}
 pub struct OpenOutput {
     /// Held so the stream stays alive; dropping it stops audio.
     pub stream: Box<dyn OutputStream>,
-    /// What the device agreed to, the truth the UI shows.
+    /// What the device accepted, the truth the UI shows.
     pub negotiated: Negotiated,
     pub sample_rate: u32,
     pub ring_frames: usize,
@@ -264,10 +264,10 @@ pub fn exclusive_supported() -> bool {
 
 /// The device's name, or None where the query fails. cpal 0.18 dropped
 /// `name()` for `description()`, and its Display wraps the same query with
-/// the Err swallowed into `fmt::Error`, which `to_string` answers with a
+/// the Err swallowed into `fmt::Error`, which `to_string` turns into a
 /// panic. The query does fail in practice: on macOS a device mid-transition
-/// (hog mode just released, clock relocking) won't answer, and the exclusive
-/// toggle lands exactly there. So the name is asked through the fallible
+/// (hog mode just released, clock relocking) won't return one, and the
+/// exclusive toggle hits exactly that. So the name is asked through the fallible
 /// path everywhere, and never through Display.
 fn device_name(device: &cpal::Device) -> Option<String> {
     device
@@ -286,7 +286,7 @@ fn shared_devices() -> Vec<Device> {
     };
     let mut out = Vec::new();
     for device in devices {
-        // A device that won't say its name is one the picker can't offer
+        // A device whose name won't read is one the picker can't offer
         // anyway; skipping it beats aborting on the name read.
         let Some(name) = device_name(&device) else {
             continue;
@@ -319,7 +319,7 @@ fn open_shared(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, St
     let device = picked
         .or_else(|| host.default_output_device())
         .ok_or("no default output device")?;
-    // A default device mid-transition may not answer its name; the stream
+    // A default device mid-transition may not return its name; the stream
     // still opens, so play through it rather than failing over a label.
     let name = device_name(&device).unwrap_or_else(|| "unnamed device".into());
     let supported = device
@@ -382,7 +382,7 @@ where
         // The device dropped out or the backend faulted. The data callback
         // won't run again on this stream, so flag the loss and let the app
         // reopen; without this the ring fills, the engine parks, and the UI
-        // sits frozen on "playing". Logging is fine here, this is the backend
+        // stays frozen on "playing". Logging is fine here, this is the backend
         // error thread, not the RT data path.
         log::error!("stream error: {err}");
         err_shared.device_lost.store(true, Ordering::Release);
@@ -401,9 +401,10 @@ where
 /// Runs on the real-time thread, so it obeys ADR 2 to the letter: no
 /// allocation, no lock, no logging, no I/O.
 ///
-/// `data` is walked a device frame at a time. cpal hands whole frames, and
-/// so do the exclusive backends, but a buffer that ends mid-frame anyway
-/// leaves its stub silent rather than panicking on the RT thread.
+/// `data` is stepped through a device frame at a time. cpal hands whole
+/// frames, and so do the exclusive backends, but a buffer that ends
+/// mid-frame anyway leaves its stub silent rather than panicking on the RT
+/// thread.
 pub(crate) fn fill<T>(
     data: &mut [T],
     device_channels: usize,
@@ -416,11 +417,11 @@ pub(crate) fn fill<T>(
     // A seek or a skip is in flight: throw away whatever the decode thread
     // queued before it, play silence, and advance nothing on the clock.
     //
-    // Exactly once per epoch. The ack is this side's own bookkeeping - no
-    // one else writes it - so it doubles as the record of which epoch was
-    // handled, and no backend has to carry state across calls. What the
+    // Exactly once per epoch. The ack is this side's own bookkeeping (no
+    // one else writes it), so it doubles as the record of which epoch was
+    // handled, and no backend has to keep state across calls. What the
     // decode thread gets out of it is the end of the grace sleep: it knows
-    // the ring is clear the moment this lands, instead of waiting long
+    // the ring is clear the moment this runs, instead of waiting long
     // enough that it must have been.
     let seq = shared.flush_seq.load(Ordering::Acquire);
     if seq != shared.flush_ack.load(Ordering::Relaxed) {
@@ -440,7 +441,7 @@ pub(crate) fn fill<T>(
 
     let mut frames = data.chunks_exact_mut(device_channels);
     for frame in frames.by_ref() {
-        // The ring carries whole stereo frames; only pop when both
+        // The ring holds whole stereo frames; only pop when both
         // samples are there so interleaving can't slip. Dry ring means
         // underrun (or end of queue): emit silence, don't count it.
         if ring.slots() < 2 {
@@ -451,7 +452,7 @@ pub(crate) fn fill<T>(
 
         // Lossy PCM tap: if the visualizer side is behind, drop, never
         // wait. Push L and R together or not at all, so a single free
-        // slot can't drop R while L lands and leave the tap stream
+        // slot can't drop R while L goes in and leave the tap stream
         // frame-misaligned for good. Tapped pre-volume, so the spectrum
         // and signals read the program material, not the listening level;
         // chain DSP (EQ, ReplayGain) still shows because it runs before
@@ -560,7 +561,7 @@ mod tests {
         assert_eq!(data, [0.0, 0.0]);
         assert_eq!(ring.slots(), 0);
         assert_eq!(shared.frames_consumed.load(Ordering::Relaxed), 0);
-        // The ack is what the decode thread waits on before it resyncs.
+        // The decode thread waits on the ack before it resyncs.
         assert_eq!(shared.flush_ack.load(Ordering::Acquire), 1);
     }
 
@@ -611,7 +612,7 @@ mod tests {
             .store(0.5f32.to_bits(), Ordering::Relaxed);
         let mut data = [0.0f32; 4];
         fill(&mut data, 2, &shared, &mut ring, &mut tap_tx);
-        // The device hears half scale, the visualizers hear the program.
+        // The device gets half scale, the visualizers get the program.
         assert_eq!(data, [0.5, -0.5, 1.0, -1.0]);
         assert_eq!(drain(&mut tap), vec![1.0, -1.0, 2.0, -2.0]);
     }
@@ -620,7 +621,7 @@ mod tests {
     fn a_full_tap_drops_frames_without_slipping_interleave() {
         let (shared, mut ring, _wide, _unused) = primed(4);
         // One frame of room, four frames of audio: the tap takes the first
-        // pair whole and drops the rest rather than landing a lone L.
+        // pair whole and drops the rest rather than pushing a lone L.
         let (mut tap_tx, mut tap) = RingBuffer::<f32>::new(3);
         let mut data = [0.0f32; 8];
         fill(&mut data, 2, &shared, &mut ring, &mut tap_tx);
@@ -650,9 +651,9 @@ mod tests {
     /// Both hardware tests below claim the same first exclusive device, and
     /// the test harness runs them on parallel threads, so without this one
     /// steals the card out from under the other and whichever loses the race
-    /// reports a fallback it never asked for. Poison is ignored on purpose: a
-    /// failed assertion in one shouldn't turn the other into a second,
-    /// unrelated failure.
+    /// reports a fallback it never asked for. Poison is ignored: a failed
+    /// assertion in one shouldn't turn the other into a second, unrelated
+    /// failure.
     static HARDWARE: Mutex<()> = Mutex::new(());
 
     /// The one test that touches hardware, so it only runs when asked:
@@ -695,7 +696,7 @@ mod tests {
     }
 
     /// The other half of the hardware path, same opt-in: a device that's
-    /// already claimed has to come back as shared output carrying the
+    /// already claimed has to come back as shared output with the
     /// reason, because the alternative shape (an error, no stream) is
     /// silence with a toggle to blame for it.
     #[test]

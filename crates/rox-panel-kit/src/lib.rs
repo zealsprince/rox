@@ -1,7 +1,7 @@
 //! The widget layer the panels and the settings windows are built from:
 //! the rows, toggles, pickers, sliders, banners, and the gesture and
-//! scroll mechanics under them. Nothing here knows about the app's state,
-//! its catalog, or its windows - a builder takes what it draws and a
+//! scroll mechanics under them. Nothing here depends on the app's state,
+//! its catalog, or its windows. A builder takes what it draws and a
 //! handler to call, and the caller owns everything else.
 
 use std::sync::{Arc, Mutex};
@@ -147,12 +147,12 @@ pub fn title_text(custom: Option<&str>, default: impl Into<SharedString>) -> Sha
     }
 }
 
-/// A panel's built-in name as it should be read, not as it is stored.
+/// A panel's built-in name as it should be read, not as it's stored.
 ///
 /// `panel_name()` is a serialization identifier and stays English forever,
 /// so a tree or a tab that title-cased it read "Cover Art" in a German
-/// build. The identifier maps to a `panel-title-<kebab>` message, which is
-/// where the vanity name lives; a panel with no such message falls back to
+/// build. The identifier maps to a `panel-title-<kebab>` message, which
+/// holds the vanity name; a panel with no such message falls back to
 /// title-casing, which is what the identifier already looked like.
 pub fn display_name(name: &str) -> String {
     let key = format!("panel-title-{}", name.replace(' ', "-"));
@@ -182,20 +182,20 @@ fn title_case(name: &str) -> String {
 /// value, and the tick swaps in place.
 ///
 /// Plain `.checked(..)` rows go stale in an open flyout, our hand-built
-/// submenus never dismiss on click (they carry no link back to the root menu,
-/// so there is no reopen to rebuild them), so a static tick would sit wrong
+/// submenus never dismiss on click (they have no link back to the root menu,
+/// so there's no reopen to rebuild them), so a static tick would be wrong
 /// until the whole menu is closed and reopened.
 ///
-/// `is_on` reads the state each render, `toggle` flips it. An `icon` rides on
-/// the item rather than inside our element, so it lands in the same reserved
+/// `is_on` reads the state each render, `toggle` flips it. An `icon` goes on
+/// the item rather than inside our element, so it draws in the same reserved
 /// left slot the plain rows use and the row lines up with its neighbours;
-/// the tick then sits on the right, matching `check_side(Side::Right)`.
+/// the tick then goes on the right, matching `check_side(Side::Right)`.
 /// Without an icon the tick takes the left slot, matching the default check
 /// side, which is the shape flyouts of bare toggles use.
 ///
 /// Drawing the icon inside the element instead would double-indent the row:
-/// the menu reserves a left slot as soon as any item carries an icon, so a
-/// self-drawn icon sits one slot further in than everything around it.
+/// the menu reserves a left slot as soon as any item has an icon, so a
+/// self-drawn icon ends up one slot further in than everything around it.
 pub fn check_row<P: 'static>(
     label: impl Into<SharedString>,
     icon: Option<&'static str>,
@@ -210,7 +210,7 @@ pub fn check_row<P: 'static>(
     let item = PopupMenuItem::element(move |_, cx| {
         let on = is_on(read.read(cx));
         if has_icon {
-            // gap_3 mirrors the stock checked-item row, so the widest row
+            // gap_3 matches the stock checked-item row, so the widest row
             // still gets the same label-to-tick breathing room.
             h_flex()
                 .w_full()
@@ -250,16 +250,16 @@ pub fn check_row<P: 'static>(
 pub fn follow_panel<P: 'static>(panel: &Entity<P>, cx: &mut Context<PopupMenu>) {
     cx.observe(panel, |_, _, cx| cx.notify()).detach();
 }
-/// Wraps a window's whole body in its player's art tint, the mirror of
-/// [`Themed`] one level up: the palette accessors answer from the tint
+/// Wraps a window's whole body in its player's art tint, the counterpart
+/// of [`Themed`] one level up: the palette accessors read the tint
 /// while the tree is built and again through every paint phase, so a
 /// window's panels and canvases read its own playback's colors. Built with
 /// [`window_body`], which snapshots the tint and runs the body inside it.
 pub struct WindowTint {
     tint: palette::Tint,
     /// Whether this window always paints the cover backdrop, pushed
-    /// through the phases beside the tint so the surface accessors know
-    /// to keep their transparency. Children leave it off and follow the
+    /// through the phases beside the tint so the surface accessors keep
+    /// their transparency. Children leave it off and follow the
     /// All Windows switch.
     backdropped: bool,
     child: AnyElement,
@@ -267,7 +267,7 @@ pub struct WindowTint {
 
 /// Build a window body under its player's art tint. The body closure runs
 /// with the tint pushed so render-time color reads see it, and the tint
-/// rides along into the paint phases through the returned element.
+/// goes into the paint phases through the returned element.
 pub fn window_body(player: gpui::EntityId, body: impl FnOnce() -> AnyElement) -> WindowTint {
     tinted_body(player, false, body)
 }
@@ -357,8 +357,6 @@ impl IntoElement for WindowTint {
         self
     }
 }
-/// One labeled row of a customize window: the setting's name and its
-/// control on one line, an optional dimmed description wrapping below.
 /// What a [`banner`] is telling you, which picks its color and its face.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tone {
@@ -392,7 +390,7 @@ impl Tone {
 }
 
 /// A callout: a tinted box with a rule down its edge, a face, a headline,
-/// and however many lines of detail under it. For state a row can't carry,
+/// and however many lines of detail under it. For state a row can't show,
 /// where what happened needs more than a value and the difference between
 /// fine and not fine should be visible before anything is read.
 ///
@@ -403,7 +401,7 @@ pub fn banner(tone: Tone, headline: impl Into<SharedString>, lines: Vec<SharedSt
     banner_shaped(tone, headline, lines, false)
 }
 
-/// The same callout, flowing: the reasons ride beside the headline while
+/// The same callout, flowing: the reasons go beside the headline while
 /// there's width for them and drop under it when there isn't. For a panel
 /// that has to earn its height, where a block stacked three lines deep to
 /// say two short things wastes the strip it's parked in.
@@ -418,7 +416,7 @@ fn banner_shaped(
     flow: bool,
 ) -> Div {
     let color = tone.color();
-    // The face rides the headline's own row rather than the whole block, so
+    // The face is on the headline's own row rather than the whole block, so
     // it centers against that one line however many lines follow and however
     // far they wrap. Hanging it off the block instead left it floating high
     // the moment a reason wrapped to two lines.
@@ -427,7 +425,7 @@ fn banner_shaped(
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_SM)
-        // Only where the row it sits in has a width to shrink against. In a
+        // Only where the row it's in has a width to shrink against. In a
         // block sized by its own content, a zero minimum is read as
         // min-content and the headline comes out one glyph per line.
         .when(flow, |head| head.min_w_0())
@@ -465,7 +463,7 @@ fn banner_shaped(
         .border_color(color);
     if flow {
         // One wrapping row. Where a line breaks is decided on the items'
-        // natural widths, so the reasons ride along beside the headline
+        // natural widths, so the reasons stay beside the headline
         // until they stop fitting and take their own line; min_w_0 is only
         // for the reason too long for even that, which wraps inside itself
         // the way it does stacked.
@@ -477,7 +475,7 @@ fn banner_shaped(
             .children(lines.into_iter().map(reason));
     }
     // Detail hangs under the headline's text, clear of the face: the icon
-    // plus the gap it sits behind.
+    // plus the gap behind it.
     let body = div()
         .flex()
         .flex_col()
@@ -487,6 +485,8 @@ fn banner_shaped(
         .children(lines.into_iter().map(reason));
     shell.flex_col().child(head).child(body)
 }
+/// One labeled row of a customize window: the setting's name and its
+/// control on one line, an optional dimmed description wrapping below.
 pub fn setting_row(
     label: impl Into<SharedString>,
     description: Option<SharedString>,
@@ -496,7 +496,7 @@ pub fn setting_row(
 }
 
 /// [`setting_row`] with a built description, for the rare row whose note
-/// carries live numbers rather than fixed copy.
+/// has live numbers rather than fixed copy.
 pub fn setting_row_dyn(
     label: impl Into<SharedString>,
     description: Option<SharedString>,
@@ -528,10 +528,10 @@ pub fn setting_row_dyn(
 
 /// A labeled block of a customize window: like [`setting_row`] but the
 /// control spans the full width below the description instead of sitting
-/// inline. Wrapping controls need this - the row's control slot is
+/// inline. Wrapping controls need this: the row's control slot is
 /// content-sized, and a wrap container without a definite width collapses
-/// to one item per line. An optional trailing control rides the label
-/// row's right edge, where a section's reset button lives.
+/// to one item per line. An optional trailing control goes on the label
+/// row's right edge, the slot a section's reset button uses.
 pub fn setting_block(
     label: impl Into<SharedString>,
     description: Option<SharedString>,
@@ -583,9 +583,9 @@ pub struct ModeSpec<V> {
 /// the thing that needs saying. [`choices`] is still right for a short row of
 /// obvious alternatives; this is for the ones that need a sentence each.
 ///
-/// `available` refuses an option the way [`choices_gated`] does: it dims and
-/// takes no press, since a mode that can't do anything yet should say so from
-/// where it sits rather than vanish and leave nothing to explain.
+/// `available` blocks an option the way [`choices_gated`] does: it dims and
+/// takes no press, since a mode that can't do anything yet should say so in
+/// place rather than vanish and leave nothing to explain.
 pub fn mode_list<P: 'static, V: PartialEq + Copy + 'static>(
     options: &[ModeSpec<V>],
     current: V,
@@ -637,7 +637,7 @@ pub fn mode_list<P: 'static, V: PartialEq + Copy + 'static>(
                         cx.listener(move |this, _, _, cx| on_pick(this, value, cx)),
                     )
                 })
-                // The dot rides the label's own line rather than the whole
+                // The dot is on the label's own line rather than the whole
                 // row, so it centers on the text at any app font size instead
                 // of floating against the top of a description that wrapped.
                 // It says pick-one where a check would say on-and-off, which
@@ -755,7 +755,7 @@ fn slider_strip<P: 'static>(
 /// One in-flight readout edit across a panel's settings sliders: which
 /// strip is being typed into and the input holding the text. One per
 /// panel, behind Arcs like [`ScrubState`], so the row builders only need
-/// a read and a second click simply moves the edit.
+/// a read and a second click moves the edit.
 #[derive(Clone, Default)]
 pub struct ValueEdit {
     inner: Arc<Mutex<ValueEditInner>>,
@@ -774,7 +774,7 @@ struct ValueEditInner {
 }
 
 impl ValueEdit {
-    /// The input to render for strip `id` while it is the one being
+    /// The input to render for strip `id` while it's the one being
     /// edited.
     pub fn editing(&self, id: usize) -> Option<Entity<InputState>> {
         let inner = self.inner.lock().unwrap();
@@ -849,9 +849,9 @@ pub fn value_slider_edit<P: 'static>(
 }
 
 /// [`value_slider_edit`] with typed headroom past the strip's top: `over`
-/// is the highest fraction a typed value may reach, for knobs whose
-/// slider range is a sensible reach rather than a law. The strip still
-/// scrubs its own span and pins full while the value sits beyond it.
+/// is the highest fraction a typed value may go to, for knobs whose
+/// slider range is a guideline rather than a law. The strip still
+/// scrubs its own span and pins full while the value is beyond it.
 #[allow(clippy::too_many_arguments)]
 pub fn value_slider_edit_over<P: 'static>(
     scrub: &ScrubState,
@@ -899,7 +899,7 @@ pub fn value_slider_edit_sized<P: 'static>(
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_SM)
-        // A filling strip only fills if the row it sits in does too.
+        // A filling strip only fills if the row it's in does too.
         .map(|d| match width {
             SliderWidth::Fixed => d,
             SliderWidth::Fill => d.w_full(),
@@ -1045,7 +1045,7 @@ pub fn toggle<P: 'static>(
     )
 }
 
-/// A [`toggle`] the user cannot flip: dimmed and inert, the same shape as the
+/// A [`toggle`] the user can't flip: dimmed and inert, the same shape as the
 /// live switch. For a setting the app is holding at a value, like the watch
 /// switch a library grows too large to arm.
 pub fn toggle_locked(on: bool) -> Div {
@@ -1061,7 +1061,7 @@ pub const TYPE_AHEAD: Duration = Duration::from_millis(1000);
 /// phrase starts fresh. Stamps `at` with now and returns whether the phrase
 /// grew, which the callers use to decide the match re-tests the current row
 /// or steps past it. The prefix match and the scroll that follow stay per
-/// panel, since the list widget and what a row's text is differ.
+/// panel, since the list widget and a row's text differ from panel to panel.
 pub fn type_ahead_grow(buffer: &mut String, at: &mut Option<Instant>, text: String) -> bool {
     let now = Instant::now();
     let grown = at.is_some_and(|last| now.duration_since(last) < TYPE_AHEAD);
@@ -1077,7 +1077,7 @@ pub fn type_ahead_grow(buffer: &mut String, at: &mut Option<Instant>, text: Stri
 /// follow-playing toggle and, while it is on, the smooth-scrolling toggle,
 /// under one header so the library, the grids, and the art shelf all read
 /// the same. The wording of what it follows (a row, an album, the center)
-/// differs per panel, so both descriptions are passed in; the toggles carry
+/// differs per panel, so both descriptions are passed in; the toggles take
 /// each panel's own follow and glide handlers.
 #[allow(clippy::too_many_arguments)]
 pub fn tracking_section<P: 'static>(
@@ -1106,7 +1106,7 @@ pub fn tracking_section<P: 'static>(
             Some(resume_desc),
             toggle(resume, on_resume, cx),
         ));
-    // Both the follow and the resume ride the same glide, so the motion
+    // Both the follow and the resume use the same glide, so the motion
     // toggle earns its place the moment either is on.
     if follow || resume {
         body = body.child(setting_row(
@@ -1147,7 +1147,7 @@ where
     let current = picked.map(|(key, _)| key.clone());
     let weak = cx.entity().downgrade();
     // A list past a screenful runs off the bottom of the window and clips,
-    // with nothing to reach the rest. gpui-component only
+    // with no way to get to the rest. gpui-component only
     // turns the scrollbar on for menus built through its own `with_menu_items`,
     // which the builder below doesn't go through, so cap the height and hand it
     // a scrollbar here. Same threshold upstream uses.
@@ -1247,7 +1247,7 @@ pub fn choices<P: 'static, V: PartialEq + Copy + 'static>(
 
 /// [`choices`] with owned labels, for options translated at render time
 /// rather than written as literals. New rows whose labels go through
-/// rox-i18n land here; [`choices`] keeps the static shape until its call
+/// rox-i18n use this; [`choices`] keeps the static shape until its call
 /// sites migrate with their pages.
 pub fn choices_shared<P: 'static, V: PartialEq + Copy + 'static>(
     options: &[(SharedString, V)],
@@ -1275,12 +1275,12 @@ pub fn choices_shared<P: 'static, V: PartialEq + Copy + 'static>(
 }
 
 /// [`choices`] where some options can't be taken yet: whatever `available`
-/// refuses is dimmed and swallows no press.
+/// blocks is dimmed and swallows no press.
 ///
 /// For a choice that exists but needs something first, where dropping the
 /// option entirely would leave the row unable to say what's missing. The
-/// description beside it is what explains why; this only stops the press
-/// that would otherwise land and appear to do nothing.
+/// description beside it explains why; this only stops the press that
+/// would otherwise register and appear to do nothing.
 pub fn choices_gated<P: 'static, V: PartialEq + Copy + 'static>(
     options: &[(SharedString, V)],
     current: V,
@@ -1350,7 +1350,7 @@ fn icon_segment(icon: &'static str, picked: bool) -> AnyElement {
         })
         .into_any_element()
 }
-/// Where a panel's content sits horizontally, the cross-panel
+/// How a panel's content aligns horizontally, the cross-panel
 /// customization knob.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1370,7 +1370,7 @@ pub fn justify(d: Div, align: Align) -> Div {
     }
 }
 
-/// Apply an alignment along the cross axis, so a column's children sit
+/// Apply an alignment along the cross axis, so a column's children align
 /// left, center, or right the way `justify` places a row's.
 pub fn items(d: Div, align: Align) -> Div {
     match align {
@@ -1402,7 +1402,7 @@ pub fn align_row<P: 'static>(
     )
 }
 
-/// Where a panel's content sits vertically, the companion to [`Align`]
+/// How a panel's content aligns vertically, the companion to [`Align`]
 /// for a panel that has height to spare.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

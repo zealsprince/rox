@@ -1,8 +1,8 @@
 //! LRCLIB (lrclib.net): keyless synced and plain lyrics matched by the
 //! track's own tags. The search endpoint returns up to twenty candidates
-//! by artist and title, each carrying its own tags and both lyric forms,
+//! by artist and title, each with its own tags and both lyric forms,
 //! so the picker has a ranked list rather than one guess. Album is left
-//! off the query on purpose: it narrows the server's match, and a
+//! off the query: it narrows the server's match, and a
 //! mistagged album would drop good candidates the confidence score can
 //! sort out instead.
 
@@ -40,7 +40,7 @@ impl LyricsProvider for Lrclib {
                     .map(str::to_string)
             };
             let synced = str_field("syncedLyrics");
-            // An instrumental or a metadata-only row carries no text worth
+            // An instrumental or a metadata-only row has no text worth
             // saving; skip it rather than offer an empty sheet.
             let Some((text, is_synced)) = synced
                 .map(|s| (s, true))

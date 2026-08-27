@@ -4,11 +4,11 @@
 //! three windows show the same sixteen rows over a different config, so the
 //! difference is a borrowed slice and one write-back closure rather than a
 //! host trait. The Shader panel's Bindings page, a panel's Shader page and
-//! the app's Overlay Shader section all wear this.
+//! the app's Overlay Shader section all use this.
 //!
-//! Every slot the shader can read gets a row whether anything feeds it or
-//! not - that's what says where a value lands in the WGSL. A slot a route
-//! feeds shows the live value it's getting; one nothing feeds is a hand-set
+//! Every slot the shader can read gets a row whether anything drives it or
+//! not, since the row shows where a value ends up in the WGSL. A slot a route
+//! feeds shows the live value it's getting; one with no route is a hand-set
 //! knob, typed or dragged, which is how a shader's named parameters get
 //! exposed without a signal in sight.
 
@@ -33,13 +33,13 @@ use rox_design::{palette, tokens};
 /// The host is expected to notify.
 pub type SlotSet<P> = Arc<dyn Fn(&mut P, usize, f32, &mut Context<P>)>;
 
-/// One host's slots as they reach the shader: what feeds them and how a
-/// hand-set value lands.
+/// One host's slots as the shader sees them: what drives them and how a
+/// hand-set value is written back.
 ///
 /// `labels` is the shader's own slot names where it declares them
-/// (`// @slot 0: bass`); a host with nothing to say passes an empty slice
+/// (`// @slot 0: bass`); a host with no names passes an empty slice
 /// and the slots read by number. `scrubs` holds one drag state per slot,
-/// sized [`SLOTS`] by the host - a slot without one falls back to a
+/// sized [`SLOTS`] by the host. A slot without one falls back to a
 /// readout, so a short list costs a knob rather than a panic.
 pub struct SlotList<'a, P: 'static> {
     pub hub: &'a Arc<SignalHub>,
@@ -53,8 +53,8 @@ pub struct SlotList<'a, P: 'static> {
 
 impl<P: 'static> SlotList<'_, P> {
     /// The rows, for whatever section the host hangs them under. Values are
-    /// resolved here rather than passed in, so every surface reads what
-    /// actually reaches the shader this frame instead of what was set.
+    /// resolved here rather than passed in, so every surface reads what the
+    /// shader actually gets this frame instead of what was set.
     pub fn render(self, cx: &mut Context<P>) -> Div {
         let mut resolved = SlotTargets::default();
         seed_manual(&mut resolved, self.manual);
@@ -93,10 +93,10 @@ impl<P: 'static> SlotList<'_, P> {
     }
 }
 
-/// A routed slot's live value. While a route feeds the slot, the route is
-/// the whole value, so what belongs here is a readout rather than a
-/// control; the unrouted slots get the hand-set slider instead. The signal
-/// glyph up front is what says "connected" at a glance against the sliders
+/// A routed slot's live value. While a route drives the slot, the route is
+/// the whole value, so this is a readout rather than a control; the
+/// unrouted slots get the hand-set slider instead. The signal glyph up
+/// front marks the slot as connected at a glance against the sliders
 /// around it.
 fn readout(value: f32) -> Div {
     const BAR: f32 = 64.0;

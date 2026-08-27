@@ -1,8 +1,8 @@
 //! Which acoustic model is live. The extractors, the catalog, and the
-//! download all live in [`rox_acoustic`]; what's here is the resolution
+//! download are all in [`rox_acoustic`]; what's here is the resolution
 //! between a stored id and something that can actually run, held in a
 //! process-global so the catalog, the player's similarity draws, and the
-//! settings page all read the same answer.
+//! settings page all read the same value.
 
 use std::sync::{Arc, RwLock};
 
@@ -23,7 +23,7 @@ static ACOUSTIC_MODEL: RwLock<Option<Source>> = RwLock::new(None);
 ///
 /// A local id names the bytes it was hashed from, so the file is stamped
 /// rather than only looked for: a checkpoint retrained in place is a different
-/// vector space wearing the same path, and writing its vectors under the old
+/// vector space under the same path, and writing its vectors under the old
 /// id is the mixing that hashed naming exists to prevent. The stat keeps that
 /// off the common path, so only a file that actually changed pays a re-read.
 pub fn resolve_acoustic(id: &str) -> Option<Source> {
@@ -80,8 +80,8 @@ fn rehashes_to_its_id(local: &LocalModel, stamp: (u64, i64)) -> bool {
 /// The model the pass runs and the similarity queries read.
 ///
 /// Resolved once into the static rather than at every call site, so a name
-/// from a newer build, or one whose weights have gone missing since, lands on
-/// the built-in extractor here instead of turning into an empty ranking
+/// from a newer build, or one whose weights have gone missing since, falls
+/// back to the built-in extractor here instead of turning into an empty ranking
 /// somewhere downstream.
 pub fn acoustic_source() -> Source {
     ACOUSTIC_MODEL
@@ -97,7 +97,7 @@ pub fn acoustic_source() -> Source {
 ///
 /// Read from the file rather than the static above, because this is the pick
 /// the switch would turn on rather than the one running now, and the two are
-/// different whenever the switch is sitting on Built-in.
+/// different whenever the switch is on Built-in.
 pub fn acoustic_ml_source() -> Source {
     let id = Settings::load().acoustic_ml_model;
     resolve_acoustic(&id)

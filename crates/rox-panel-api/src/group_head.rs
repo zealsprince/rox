@@ -6,7 +6,7 @@
 //! holds (the library from its projection, the playlists tree from its
 //! member rows) and lays the content over its own row background, so the
 //! headings stay one look. The stock lines here are the classic two-line
-//! arrangement; the library's config carries its own.
+//! arrangement; the library's config stores its own.
 
 use gpui::{
     div, img, linear_color_stop, linear_gradient, prelude::*, px, rems, svg, AnyElement, Div,
@@ -34,7 +34,7 @@ pub enum Headers {
 }
 
 /// One piece of a heading line, the arrange editor's unit. A panel's
-/// config carries each line as an ordered piece list; the resolved
+/// config stores each line as an ordered piece list; the resolved
 /// [`GroupHead`] supplies the text, and a piece whose field is empty just
 /// drops out of the line.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -57,7 +57,7 @@ pub enum HeadPiece {
     /// A spacer that draws a hairline in the border color across its gap.
     Divider,
     /// An inline cover square, one line tall; the block tile's small
-    /// sibling, for layouts that want the art on a row instead.
+    /// sibling, for layouts that put the art on a row instead.
     Art,
 }
 
@@ -75,11 +75,11 @@ pub enum ArtSide {
 /// shared by the genre grid's wall and the library's genre headers.
 pub const MOSAIC: usize = 4;
 
-/// What a genre tile wears, shared by the genre grid and the library's
-/// genre-grouped headers. Tinted is the default: the covers still say
-/// "your music" while the genre's own color says which one at a glance;
-/// Mosaic is the plain covers, Gradient and Color are cards in the
-/// genre's color - a two-stop lean or a flat fill - decorated with the
+/// How a genre tile is drawn, shared by the genre grid and the library's
+/// genre-grouped headers. Tinted is the default: the covers still read as
+/// "your music" while the genre's own color marks which one at a glance.
+/// Mosaic is the plain covers; Gradient and Color are cards in the
+/// genre's color (a two-stop lean or a flat fill) decorated with the
 /// genre's own geometry.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -216,16 +216,16 @@ pub struct GroupHead {
     pub quality: SharedString,
     pub tracks: u32,
     pub total_ms: u64,
-    /// Whether the block wears the cover tile beside its lines, which then
+    /// Whether the block shows the cover tile beside its lines, which then
     /// indent past it. The caller decides what has a cover to show: albums
     /// always, the library's artist and genre groupings too, year never.
     pub tiled: bool,
-    /// The group's cover, resolved by the caller only when a line carries
+    /// The group's cover, resolved by the caller only when a line includes
     /// the inline art piece; None drops the piece from the line.
     pub thumb: Option<Thumb>,
 }
 
-/// The knobs that shape a heading's look, mirrored from the panel's config.
+/// The knobs that shape a heading's look, copied from the panel's config.
 pub struct HeadLook {
     /// The cover tile's side, two rows tall, so the content indents past it.
     pub tile_side: Pixels,
@@ -248,14 +248,14 @@ pub struct HeadLook {
 }
 
 /// A sample rate as the kHz a spec sheet writes: 44100 reads "44.1",
-/// 48000 reads "48", 22050 reads "22.05". Empty at zero, which is what an
-/// unread stream and a mixed group both carry.
+/// 48000 reads "48", 22050 reads "22.05". Empty at zero, the value both an
+/// unread stream and a mixed group have.
 pub fn khz(hz: u32) -> String {
     if hz == 0 {
         return String::new();
     }
     // Hundredths of a kHz, kept integer the whole way: 22050 through an f32
-    // divide lands at 22.04999. Two places is as far as any rate in the wild
+    // divide comes out at 22.04999. Two places is as far as any rate in the wild
     // needs, and the zeros come off after, so nothing grows a decimal it
     // didn't earn.
     let hundredths = (hz + 5) / 10;
@@ -273,7 +273,7 @@ pub fn khz(hz: u32) -> String {
 
 /// The stream's shape the way a spec sheet writes it: "16/44.1 kHz" for a
 /// lossless file, the rate alone for a lossy one (which has no depth to
-/// name once the stream is coefficients), the depth alone if that is all
+/// name once the stream is coefficients), the depth alone if that's all
 /// there is. Zero on either side means unread or mixed across the group,
 /// and drops out.
 pub fn stream_format(bit_depth: u8, sample_rate_hz: u32) -> String {
@@ -306,7 +306,7 @@ pub fn effective_head_lines(
 
 /// A group's codec, stream shape, and bitrate stat: "flac 16/44.1 kHz 1006
 /// kbps" when everything agrees, the kbps a range when tracks spread, and
-/// any part dropping out when it is mixed across the run or was never
+/// any part dropping out when it's mixed across the run or was never
 /// read. Empty when nothing agrees.
 pub fn quality(
     codec: Option<&str>,
@@ -333,13 +333,13 @@ pub fn quality(
 /// fixed-height rows with no spanning cell, so every row paints the whole
 /// block-tall square at the same spot: `lift` is how far above this row
 /// the square starts, the line index times the row height. The rows paint
-/// in order, so the last one's draw is what shows - one unclipped quad,
-/// which is the point. Clipping a slice per row instead leaves hairline
+/// in order, so the last one's draw is the one that shows, and it's a
+/// single unclipped quad. Clipping a slice per row instead leaves hairline
 /// seams at the boundaries once a font scale puts the rows on fractional
 /// pixels. The same image handle every time decodes once. Pending and
-/// missing wear the same quiet placeholder, so a landing cover fills the
-/// tile without shifting the text beside it. The knob's radius rides the
-/// cover itself, since gpui content masks stay rectangular.
+/// missing use the same quiet placeholder, so a cover that arrives later
+/// fills the tile without shifting the text beside it. The knob's radius
+/// is applied to the cover itself, since gpui content masks stay rectangular.
 pub fn tile(
     thumb: Thumb,
     side: Pixels,
@@ -357,12 +357,12 @@ pub fn tile(
     )
 }
 
-/// The genre grouping's block tile, wearing the configured [`TileFace`]
-/// the genre grid's tiles wear: the cover mosaic plain, the covers
+/// The genre grouping's block tile, drawn with the configured [`TileFace`]
+/// the genre grid's tiles use: the cover mosaic plain, the covers
 /// grayscaled under the genre's color wash, or a card in the genre's
 /// color under its geometry motif. The card leaves the name off; the
 /// header's own line sets it right beside the tile. Same frame mechanics
-/// as [`tile`]; the covers are a two-by-two mosaic once `thumbs` carries
+/// as [`tile`]; the covers are a two-by-two mosaic once `thumbs` has
 /// [`MOSAIC`] of them, the lone first cover below that.
 #[allow(clippy::too_many_arguments)]
 pub fn genre_tile(
@@ -407,8 +407,8 @@ pub fn genre_tile(
             ),
             color,
         ),
-        // The wash over the grayscaled covers is what makes the tinted
-        // face: identity in color, music underneath.
+        // The wash over the grayscaled covers makes the tinted face:
+        // identity in color, music underneath.
         (TileFace::Tinted, Some(covers)) => div()
             .size_full()
             .relative()
@@ -422,7 +422,7 @@ pub fn genre_tile(
             )
             .into_any_element(),
         // A coverless genre on the tinted face borrows the card, the
-        // grid's move, so the tile still says which genre it is.
+        // grid's move, so the tile still shows which genre it is.
         (TileFace::Tinted, None) if !name.is_empty() => card(color.into(), color),
         (_, Some(covers)) => covers,
         (_, None) => art_content(Thumb::Missing, rounding, 16., false),
@@ -432,8 +432,8 @@ pub fn genre_tile(
 
 /// Four covers as a two-by-two mosaic filling the tile square, each
 /// quadrant rounding only its outer corner per the knob. A quadrant whose
-/// cover is still loading (or gone) sits as a quiet elevated square, so
-/// landing covers fill in without a shift.
+/// cover is still loading (or gone) draws as a quiet elevated square, so
+/// covers that arrive later fill in without a shift.
 fn mosaic_content(thumbs: &[Thumb], rounding: f32, grayed: bool) -> AnyElement {
     let quarter = |thumb: &Thumb, corner: usize| -> AnyElement {
         match thumb {
@@ -507,8 +507,8 @@ fn tile_frame(
 }
 
 /// A cover's face: the image rounded per the knob, or the quiet music-note
-/// placeholder both pending and missing wear, so a landing cover fills in
-/// without a layout shift. Shared by the block tile, the inline piece, and
+/// placeholder used for both pending and missing, so a cover that arrives
+/// later fills in without a layout shift. Shared by the block tile, the inline piece, and
 /// the track info panel's art piece.
 ///
 /// `Cover` scales the art until it fills the square, which leaves the odd
@@ -611,8 +611,8 @@ pub fn line_content(
                             // Expanded, the name is the block's lead and
                             // gives way by truncating; compact keeps it
                             // whole and lets the album truncate instead.
-                            // The lead's step (text_lg's 1.125) rides the
-                            // line-height factor with the rest.
+                            // The lead's step (text_lg's 1.125) multiplies
+                            // the line-height factor with the rest.
                             .map(|d| {
                                 if expanded {
                                     d.min_w_0()

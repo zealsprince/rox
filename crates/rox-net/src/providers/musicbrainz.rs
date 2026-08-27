@@ -1,12 +1,12 @@
 //! MusicBrainz (musicbrainz.org): keyless release metadata, matched by a
 //! recording search over the track's artist and title. Each recording
-//! carries the tags a tagger fills - title, artist, and, through its best
-//! matching release, album, album artist, year, track, and disc - so the
+//! has the tags a tagger fills (title, artist, and, through its best
+//! matching release, album, album artist, year, track, and disc), so the
 //! compare has real candidates to set from.
 //!
-//! The service caps clients at one request a second and refuses anything
-//! without a contactable User-Agent (ADR 14: the shared agent carries
-//! it). The throttle lives here so callers never see it, the rate limit
+//! The service caps clients at one request a second and rejects anything
+//! without a contactable User-Agent (ADR 14: the shared agent sends
+//! it). The throttle is here so callers never see it, the rate limit
 //! held process-wide against the next request.
 
 use std::sync::Mutex;
@@ -97,7 +97,7 @@ fn candidate(
                 .unwrap_or("")
                 .to_string();
             // The disc and track come off the media block the recording
-            // sits on: the disc is the medium's position, the track its
+            // appears in: the disc is the medium's position, the track its
             // number in that medium.
             let medium = release
                 .get("media")
@@ -141,7 +141,7 @@ fn candidate(
 }
 
 /// The release whose title best matches the query album, so the candidate
-/// carries the numbers for the album the track claims. Falls back to the
+/// has the numbers for the album the track claims. Falls back to the
 /// first release when the query has no album to match on.
 fn best_release<'a>(
     query: &TrackQuery,
@@ -161,7 +161,7 @@ fn best_release<'a>(
 
 /// An artist-credit array folded to one display string, joining each name
 /// with its own join phrase ("Artist feat. Guest"), the shape a tag
-/// carries.
+/// stores.
 fn artist_credit(credit: Option<&serde_json::Value>) -> String {
     let Some(array) = credit.and_then(|v| v.as_array()) else {
         return String::new();

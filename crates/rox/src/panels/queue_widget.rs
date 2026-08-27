@@ -104,9 +104,9 @@ impl QueueWidgetPanel {
     /// there it falls back to floating the queue in a window of its own.
     ///
     /// Takes the state rather than `&self` so the click never holds the
-    /// widget's own borrow: `focus_panel_named` walks every docked panel and
-    /// reads it to match the name, this widget included, which would re-enter
-    /// its update and panic.
+    /// widget's own borrow: `focus_panel_named` iterates over every docked
+    /// panel and reads it to match the name, this widget included, which
+    /// would re-enter its update and panic.
     fn open_queue(state: &AppState, always_modal: bool, window: &mut Window, cx: &mut App) {
         // Jump to a docked queue panel first, unless the widget is set to
         // always open the modal.
@@ -157,7 +157,7 @@ impl QueueWidgetPanel {
 }
 
 /// The hover tooltip: a small "up next" list of the queued titles. Reads
-/// its fill opaque like the popup menus - it floats over panel content
+/// its fill opaque like the popup menus: it floats over panel content
 /// with no backdrop behind it, so surface opacity stays off.
 struct QueueTooltip {
     rows: Vec<(SharedString, SharedString)>,
@@ -415,8 +415,8 @@ impl Render for QueueWidgetPanel {
                                         .left(px(10.))
                                         .px(px(4.))
                                         // The parent is the 16px icon, so the
-                                        // count has to refuse that width or a
-                                        // two-digit badge wraps into a stack.
+                                        // count has to be kept on one line or
+                                        // a two-digit badge wraps into a stack.
                                         .whitespace_nowrap()
                                         .rounded_full()
                                         .bg(palette::accent())

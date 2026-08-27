@@ -1,9 +1,9 @@
 //! The app's non-color tokens per ADR 12: every size, radius, and pace
 //! the panels share, one const per decision, beside the palette so both
-//! read the same at a call site. Layout tokens are [`Pixels`] and feed
+//! read the same at a call site. Layout tokens are [`Pixels`] and go into
 //! div chains directly; paint tokens are plain `f32` because canvas
 //! closures do their math in f32 before wrapping in `px()`. A value that
-//! belongs to one control in one place stays a local const there - a
+//! belongs to one control in one place stays a local const there. A
 //! token earns its slot when two files must agree or a look-wide knob
 //! should turn in one line.
 
@@ -48,15 +48,15 @@ pub const SLIDER_MAX_W: Pixels = px(200.);
 
 // Audio controls, paint side.
 
-/// A slider's track line and the round knob riding it.
+/// A slider's track line and the round knob on it.
 pub const SLIDER_TRACK_H: f32 = 4.0;
 pub const SLIDER_KNOB: f32 = 12.0;
-/// The seek strip's track line, thicker than a slider's: it is the
+/// The seek strip's track line, thicker than a slider's: it's the
 /// whole control.
 pub const SEEK_STRIP_H: f32 = 6.0;
 /// The playhead line on the seek strip and the waveform.
 pub const PLAYHEAD_W: f32 = 2.0;
-/// The visualizer bar rhythm the waveform and spectrum agree on: bars
+/// The visualizer bar rhythm the waveform and spectrum share: bars
 /// never thinner than this, this much air between them.
 pub const BAR_W: f32 = 3.0;
 pub const BAR_GAP: f32 = 2.0;

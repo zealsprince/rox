@@ -13,12 +13,12 @@ Two switches, both off by default:
 2. **Enable MCP Server** on Settings > MCP.
 
 The proxy checks both on every tool call, so a flip applies to the next call without
-restarting rox or the client. A switched-off toggle, like a rox that isn't running,
+restarting rox or the client. A switched-off toggle, or a rox that isn't running,
 comes back as a tool error naming the reason.
 
 ## Pointing a client at it
 
-Settings > MCP holds a copy-ready snippet in the `mcpServers` shape most clients
+Settings > MCP has a copy-ready snippet in the `mcpServers` shape most clients
 read:
 
 ```json
@@ -52,14 +52,14 @@ Two flags cover the non-default socket:
 | `search_library` | `query`, optional `limit` (1..500)                            | matching tracks with tags; pins like `artist:name` narrow one field   |
 | `get_queue`      |                                                               | the play order with each entry's stable id and the one playing        |
 
-Everything a tool can do, the socket can do; the reverse doesn't hold. Queue edits,
-seeking, volume, artwork, and the debug scope stay socket-only, reachable through
-`roxctl` or any JSON-RPC client.
+The socket does everything the tools do and more. Queue edits, seeking, volume,
+artwork, and the debug scope stay socket-only, reachable through `roxctl` or any
+JSON-RPC client.
 
 ## Protocol
 
 MCP is JSON-RPC 2.0, one object per line on stdio, the same framing as the socket
 itself. The proxy answers `initialize`, `ping`, `tools/list`, and `tools/call`, and
-reads and drops notifications. It speaks the `2024-11-05`, `2025-03-26`, and
-`2025-06-18` revisions verbatim, agreeing to the client's own dialect and offering
-`2025-06-18` when asked for one it doesn't know.
+reads and drops notifications. It supports the `2024-11-05`, `2025-03-26`, and
+`2025-06-18` revisions, echoing back whichever of those the client asks for and
+offering `2025-06-18` when asked for one it doesn't know.

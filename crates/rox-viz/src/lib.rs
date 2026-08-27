@@ -3,9 +3,9 @@
 //! newest window back out, runs one FFT per frame through
 //! [`analysis::Analyzer`], and pools the magnitudes into bars. The
 //! [`signal`] module turns the same spectrum into modulation sources a
-//! panel can bind its parameters to. Rendering lives with the panels in
+//! panel can bind its parameters to. Rendering is with the panels in
 //! the app crate; this crate is the DSP, plus serde so the binding configs
-//! panels persist can live here too.
+//! panels persist can be defined here too.
 
 pub mod analysis;
 pub mod curve;

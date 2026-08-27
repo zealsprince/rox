@@ -1,4 +1,4 @@
-//! ReplayGain measurement for files that carry none (ADR 19): EBU R128
+//! ReplayGain measurement for files that have none (ADR 19): EBU R128
 //! integrated loudness and true peak, taken off the audio itself.
 //!
 //! This is the other half of [`crate::gain`]. That module reads the four
@@ -16,13 +16,13 @@
 //! ## Why this decodes for itself
 //!
 //! It doesn't go through [`crate::engine`]'s `Source` the way `decode_peaks`
-//! and friends do, and that's deliberate. `Source` resamples to the device
-//! rate and folds everything to stereo, which is right for playback and
-//! wrong for a measurement: BS.1770 weights channels by position, so a mono
-//! file duplicated into L and R measures 3 dB louder than it is, and a 5.1
-//! mix loses four channels before the meter sees it. The probe and decoder
+//! and friends do. `Source` resamples to the device rate and folds
+//! everything to stereo, which is right for playback and wrong for a
+//! measurement: BS.1770 weights channels by position, so a mono file
+//! duplicated into L and R measures 3 dB louder than it is, and a 5.1 mix
+//! loses four channels before the meter sees it. The probe and decoder
 //! setup below is the same shape as `Source::open`, just without the two
-//! conversions, and the samples reach the meter at the file's own rate in
+//! conversions, and the meter gets the samples at the file's own rate in
 //! the file's own channel count.
 //!
 //! ## Album gain
@@ -49,8 +49,8 @@ use symphonia::core::units::{Time, Timestamp};
 use crate::gain::ReplayGain;
 
 /// ReplayGain 2's reference loudness. RG1 calibrated against an 89 dB SPL
-/// pink noise reference; RG2 replaced that with a flat -18 LUFS, which is
-/// what every current tagger writes against.
+/// pink noise reference; RG2 replaced that with a flat -18 LUFS, which
+/// every current tagger writes against.
 pub const REFERENCE_LUFS: f64 = -18.0;
 
 /// How much decoded audio goes by between cancel checks and progress ticks.
@@ -60,13 +60,13 @@ pub const REFERENCE_LUFS: f64 = -18.0;
 /// once per packet.
 const TICK_SECS: f64 = 0.25;
 
-/// One file measured. Carries the meter that produced it so the same
+/// One file measured. Holds the meter that produced it so the same
 /// measurement can go into an album without a second decode.
 #[derive(Debug)]
 pub struct TrackAnalysis {
     /// Integrated loudness in LUFS, gated per BS.1770. None where the file
     /// had nothing above the absolute gate: digital silence, or a track so
-    /// quiet every block falls under -70 LUFS. ebur128 answers -inf there,
+    /// quiet every block falls under -70 LUFS. ebur128 returns -inf there,
     /// and -inf minus the reference is an infinite boost, so it reads as no
     /// measurement rather than as a number.
     pub loudness_lufs: Option<f64>,
@@ -87,7 +87,7 @@ pub struct TrackAnalysis {
 }
 
 impl TrackAnalysis {
-    /// The track's ReplayGain in dB: how far the measurement sits from the
+    /// The track's ReplayGain in dB: how far the measurement is from the
     /// reference, negative for a loud master.
     pub fn gain_db(&self) -> Option<f32> {
         self.loudness_lufs.and_then(gain_db)
@@ -118,8 +118,8 @@ impl AlbumAnalysis {
     }
 
     /// Take on one more measured track. Push order is the order
-    /// [`AlbumAnalysis::replay_gains`] answers in, so the caller keeps its
-    /// own path list beside it.
+    /// [`AlbumAnalysis::replay_gains`] returns them in, so the caller keeps
+    /// its own path list beside it.
     pub fn push(&mut self, track: TrackAnalysis) {
         self.tracks.push(track);
     }
@@ -137,8 +137,8 @@ impl AlbumAnalysis {
     }
 
     /// The gated loudness over every track's blocks at once, which is the
-    /// album as one program. Merging the histories is what makes this
-    /// different from averaging the track figures: the relative gate is
+    /// album as one program. Merging the histories makes this different
+    /// from averaging the track figures: the relative gate is
     /// computed against the record's mean, so a quiet interlude drops out
     /// of the album number the same way a quiet passage drops out of a
     /// track's.
@@ -160,8 +160,8 @@ impl AlbumAnalysis {
 
     /// The album peak: the loudest true peak any of its tracks reached.
     /// It's a max rather than a measurement of its own, since the peak
-    /// bounds a boost and the loudest moment on the record is what a boost
-    /// has to clear.
+    /// bounds a boost and a boost has to clear the loudest moment on the
+    /// record.
     pub fn peak(&self) -> Option<f32> {
         self.tracks
             .iter()
@@ -189,8 +189,8 @@ impl AlbumAnalysis {
 }
 
 /// The gain that takes a measured loudness to the reference. None for a
-/// measurement that never landed on a real number, so a silent file comes
-/// out untagged rather than carrying an absurd boost.
+/// measurement that never produced a real number, so a silent file comes
+/// out untagged rather than with an absurd boost.
 pub fn gain_db(lufs: f64) -> Option<f32> {
     lufs.is_finite().then_some((REFERENCE_LUFS - lufs) as f32)
 }
@@ -198,10 +198,10 @@ pub fn gain_db(lufs: f64) -> Option<f32> {
 /// Decode `path` end to end and measure it.
 ///
 /// Blocking: run it on a worker. `should_continue` is polled every quarter
-/// second of decoded audio and stops the pass when it answers false, which
+/// second of decoded audio and stops the pass when it returns false, which
 /// comes back as `Ok(None)` with nothing measured. `progress` is called on
 /// the same beat with (frames fed to the meter, frames the container claims
-/// the file has), the second None for a stream that never said.
+/// the file has), the second None for a stream that never reported one.
 ///
 /// `Err` is a file that could not be read at all: no container, no audio
 /// track, no decoder, or not one decodable packet in it. A file that decodes
@@ -247,7 +247,7 @@ pub fn measure(
     // denominator a progress bar needs. num_frames already has encoder
     // delay and padding out of it in symphonia 0.6, and a zero out of
     // either field means the reader doesn't know, not that the file is
-    // empty - a fragmented MP4 answers zero to both and states its length
+    // empty. A fragmented MP4 returns zero for both and states its length
     // in the movie header instead (see [`rox_library::mp4`]).
     let total_frames = track
         .num_frames
@@ -270,7 +270,7 @@ pub fn measure(
         .map_err(|e| format!("decoder: {e}"))?;
 
     let mut meter = new_meter(channels, rate)?;
-    // The peak lives out here rather than in the meter because a
+    // The peak is tracked out here rather than in the meter because a
     // reconfigure for a channel-count change clears the meter's peak
     // arrays. Folding the running max in before every change keeps the
     // loudest moment whatever the file does mid-stream.
@@ -327,7 +327,7 @@ pub fn measure(
         if (packet_rate, packet_channels) != (rate, channels) {
             // A chained stream or a container switching format mid-file.
             // Reconfigure and carry on: the history of blocks already
-            // measured survives, only the unfinished 100 ms block at the
+            // measured is kept, only the unfinished 100 ms block at the
             // seam is dropped.
             peak = peak.max(meter_peak(&meter, channels));
             meter
@@ -391,7 +391,7 @@ pub fn measure(
 /// surround channels of a 5.1 mix relative to what the model expects.
 ///
 /// `from_secs` seeks first, coarsely: an embedding is taken over seconds of
-/// audio, so landing a frame or two off is beneath the resolution of the
+/// audio, so being a frame or two off is beneath the resolution of the
 /// thing being computed, and a coarse seek is cheap on containers where an
 /// accurate one has to decode up to the point. `max_secs` caps how much
 /// comes back, so one call is bounded whatever the track length.
@@ -524,8 +524,8 @@ pub fn decode_mono(
 }
 
 /// Integrated loudness plus true peak, the two modes this needs and nothing
-/// else. TRUE_PEAK carries SAMPLE_PEAK with it, and `true_peak` answers
-/// whichever of the two is higher.
+/// else. TRUE_PEAK includes SAMPLE_PEAK, and `true_peak` returns whichever
+/// of the two is higher.
 fn new_meter(channels: u32, rate: u32) -> Result<EbuR128, String> {
     EbuR128::new(channels, rate, Mode::I | Mode::TRUE_PEAK)
         .map_err(|e| format!("meter for {channels} ch at {rate} Hz: {e}"))
@@ -550,7 +550,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Never cancel, and don't care about progress. Most tests want the
+    /// Never cancel, and don't care about progress. Most tests need the
     /// measurement, not the hooks.
     fn measured(path: &Path) -> TrackAnalysis {
         measure(path, || true, |_, _| {})
@@ -734,8 +734,8 @@ mod tests {
     #[test]
     fn a_mono_file_is_not_folded_up_into_stereo() {
         // The playback path duplicates mono into both channels, which would
-        // put this 3 dB out. Measuring at the file's own channel count is
-        // what keeps a mono track's gain honest.
+        // put this 3 dB out. Measuring at the file's own channel count keeps
+        // a mono track's gain honest.
         let fx = Fixtures::new("mono");
         let mono = fx.wav(
             "mono.wav",
@@ -776,10 +776,10 @@ mod tests {
 
     #[test]
     fn true_peak_catches_what_lands_between_two_samples() {
-        // A quarter-rate sine offset by an eighth of a cycle never lands on
-        // its own crest: every sample sits at 1/sqrt(2) of the amplitude,
+        // A quarter-rate sine offset by an eighth of a cycle never falls on
+        // its own crest: every sample is at 1/sqrt(2) of the amplitude,
         // while the waveform between them reaches all of it. Sample peak
-        // says 0.636, the real signal says 0.9.
+        // reports 0.636; the real signal reaches 0.9.
         let fx = Fixtures::new("true-peak");
         let samples = sine(48_000, 2, 1.0, 12_000.0, 0.9, PI / 4.0);
         let sample_peak = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
@@ -993,8 +993,8 @@ mod tests {
     }
 
     /// A mono excerpt comes back at the file's own rate, capped at the span
-    /// asked for, and carrying the waveform rather than something resampled
-    /// on the way out.
+    /// asked for, and with the waveform rather than something resampled on
+    /// the way out.
     #[test]
     fn a_mono_excerpt_keeps_the_files_own_rate_and_stops_at_the_cap() {
         let fx = Fixtures::new("decode-mono");
@@ -1008,7 +1008,7 @@ mod tests {
         assert_eq!(rate, 44_100, "no resampling on the way out");
         assert_eq!(samples.len(), 66_150, "1.5 s at the file's own rate");
         // The channels folded to their mean, and both held the same sine, so
-        // the amplitude survived the fold.
+        // the amplitude came through the fold unchanged.
         let peak = samples.iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!((peak - 0.5).abs() < 0.01, "peak came back {peak}");
     }

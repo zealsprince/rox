@@ -1,7 +1,7 @@
 //! The biography panel: who the current track's artist is. A wide image
 //! banner up top, then the name, the listening stats, the genre tags,
 //! the wiki text, and the similar names at the foot, over the artist
-//! fanart dimmed into the background - everything off the artist store's
+//! fanart dimmed into the background. It all comes from the artist store's
 //! cached fetches (Last.fm text and stats, deezer portrait, theaudiodb
 //! banner and fanart), so a shown artist reads offline from then on.
 //! Which track is per-view config through [`crate::source::TrackSource`],
@@ -35,8 +35,8 @@ use crate::source::{self, ResolvedTrack, TrackSource};
 
 /// The header band takes the image's own aspect ratio at full width, so a
 /// wide banner stays a strip and nothing crops sideways. This caps how
-/// tall that gets - a square portrait fallback would otherwise run as tall
-/// as the panel is wide; past the cap it crops rather than dominating.
+/// tall that gets: a square portrait fallback would otherwise run as tall
+/// as the panel is wide. Past the cap it crops rather than dominating.
 const HEADER_MAX_H: f32 = 200.;
 
 /// The biography panel's per-view config: what a saved layout restores,
@@ -58,8 +58,8 @@ pub struct BiographyConfig {
     /// a fixed band instead.
     pub header_aspect: bool,
     /// Let a tall header image span the full width, however tall that runs,
-    /// instead of sitting capped and centered. Only bites while the
-    /// proportions are kept - a cropped fill already spans the width.
+    /// instead of being capped and centered. Only applies while the
+    /// proportions are kept: a cropped fill already spans the width.
     pub header_fill: bool,
     /// The artist fanart behind the text, dimmed and fading out toward the
     /// bottom so the words keep reading.
@@ -95,8 +95,8 @@ pub struct BiographyPanel {
     /// frame and the lookup is a database read; empty inside for an
     /// untagged file. Cleared when the catalog changes.
     artist: Option<(TrackKey, String)>,
-    /// The store's answer keyed by the folded name it was asked under;
-    /// None inside is a clean miss, Last.fm knowing nothing by the name.
+    /// The store's result, keyed by the folded name it was asked under;
+    /// None inside is a clean miss, no Last.fm entry under that name.
     loaded: Option<(String, Option<Artist>)>,
     /// The folded name a fetch is running for, so a render can tell
     /// "already fetching" from "needs a fetch".
@@ -111,7 +111,7 @@ pub struct BiographyPanel {
     generation: u64,
     scroll: ScrollHandle,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
     _selection_changed: Subscription,
@@ -137,7 +137,7 @@ impl BiographyPanel {
         );
         // A rescan can rewrite tags and id -> path mappings; drop the
         // caches so the resolve and the artist tag re-read. The store's
-        // answers stay - they key on the name, not the file.
+        // cached results stay: they key on the name, not the file.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -175,7 +175,7 @@ impl BiographyPanel {
     }
 
     /// The shown path's artist tag, from the cache or one database read
-    /// on a miss. Empty for an untagged file or one the library does not
+    /// on a miss. Empty for an untagged file or one the library doesn't
     /// know.
     fn artist_for(&mut self, key: &TrackKey, cx: &App) -> String {
         if self.artist.as_ref().map(|(k, _)| k) != Some(key) {
@@ -194,9 +194,9 @@ impl BiographyPanel {
             .unwrap_or_default()
     }
 
-    /// Make sure the store's answer for `name` is held or on its way:
+    /// Make sure the store's result for `name` is loaded or on its way:
     /// run the cache-or-fetch off the UI thread and swap the result in
-    /// when it lands. `force` refetches past the store's TTL, the
+    /// when it arrives. `force` refetches past the store's TTL, the
     /// dropdown's refresh.
     fn ensure_loaded(&mut self, name: &str, force: bool, cx: &mut Context<Self>) {
         let key = providers::normalize(name);
@@ -280,7 +280,7 @@ impl BiographyPanel {
     }
 
     /// Refetch the shown artist past the store's TTL, the dropdown's
-    /// Refresh: a moved portrait or a grown wiki article lands without
+    /// Refresh: a moved portrait or a grown wiki article shows up without
     /// waiting out the month.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some((_, name)) = self.artist.clone() else {
@@ -314,9 +314,9 @@ impl BiographyPanel {
             cx,
         );
         // A checked row that flips one bool of the config, the image toggles
-        // the customize window also carries. No icon: a left-side check is
-        // what shows the state, and an icon would take that slot (the source
-        // flyout's note), so these read like the other panels' toggle rows.
+        // the customize window also has. No icon: the left-side check shows
+        // the state, and an icon would take that slot (the source flyout's
+        // note), so these read like the other panels' toggle rows.
         let entity = cx.entity();
         let toggle =
             |menu: PopupMenu, label: SharedString, checked, set: fn(&mut BiographyConfig)| {
@@ -530,7 +530,7 @@ impl Panel for BiographyPanel {
         false
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
@@ -612,7 +612,7 @@ impl Render for BiographyPanel {
 impl BiographyPanel {
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
         // The floor reads opaque so the window backdrop (the playing
-        // track's art, ADR 10) does not bleed up behind the text; the
+        // track's art, ADR 10) doesn't bleed up behind the text; the
         // panel lays its own artist background over this instead.
         let root = div().size_full().bg(palette::bg_root_opaque());
         let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {

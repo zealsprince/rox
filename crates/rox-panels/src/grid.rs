@@ -50,9 +50,9 @@ use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 
-/// The tile size knob's range: how wide a tile wants to be, in px. The
+/// The tile size knob's range: the preferred tile width, in px. The
 /// actual edge divides the panel width evenly so the grid runs edge to
-/// edge with no slack column. The strip's top sits at the stored
+/// edge with no slack column. The strip's top is the stored
 /// thumbnail's long side, so scrubbing never upscales past what the store
 /// keeps; a typed size can, and goes soft for it.
 const TILE_MIN: f32 = 96.;
@@ -104,13 +104,13 @@ pub struct GridConfig {
     #[serde(default = "default_true")]
     pub vertical: bool,
     /// The preferred tile edge in px. The strip picks inside
-    /// [`TILE_MIN`]..[`TILE_MAX`]; a typed size reaches past the top.
+    /// [`TILE_MIN`]..[`TILE_MAX`]; a typed size can go past the top.
     #[serde(default = "default_tile")]
     pub tile: f32,
     /// Scroll to the playing album when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
-    /// After the wall sits untouched for a spell, slide back to the playing
+    /// After the wall goes untouched for a spell, slide back to the playing
     /// album on its own. Off by default; a browse surface only chases the
     /// player once you ask it to.
     #[serde(default)]
@@ -152,8 +152,8 @@ pub struct GridConfig {
     pub label_align: TitleAlign,
     /// The top-left album shown when the layout was saved, so a relaunch
     /// reopens the wall where it was left. A cell index, not pixels or a
-    /// row: it survives a tile-size or width change, landing back on the
-    /// same album whatever the column count works out to.
+    /// row: it persists across a tile-size or width change, coming back to
+    /// the same album whatever the column count works out to.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub scroll: usize,
 }
@@ -192,7 +192,7 @@ struct Cell {
     art: Option<Option<PathBuf>>,
     /// The tile's current opacity under the dim mode, easing toward its
     /// target every frame. None until the tile's first paint, which
-    /// lands at the target directly: only changes fade, a tile scrolled
+    /// starts at the target directly: only changes fade, a tile scrolled
     /// into a dimmed wall arrives already dimmed.
     dim: Option<f32>,
 }
@@ -215,7 +215,7 @@ pub struct GridPanel {
     /// The albums of the current view, rebuilt on library updates and
     /// query changes.
     cells: Vec<Cell>,
-    /// The query editor, the shared search box; `config.query` mirrors
+    /// The query editor, the shared search box; `config.query` tracks
     /// its value via change events.
     search: Entity<SearchBox>,
     /// The clicked albums, the accent outlines and the published
@@ -223,7 +223,7 @@ pub struct GridPanel {
     selected: HashSet<usize>,
     /// Where a shift-extend grows from: the last plain or toggle click.
     anchor: Option<usize>,
-    /// The tile under the pointer, wearing the label overlay.
+    /// The tile under the pointer, which shows the label overlay.
     hovered: Option<usize>,
     /// The cross-axis extent the grid last laid out for: the width while it
     /// scrolls vertically, the height while it scrolls horizontally. The
@@ -272,7 +272,7 @@ pub struct GridPanel {
     dim_scrub: ScrubState,
     /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
-    /// A failed play, shown in a strip until the next one lands.
+    /// A failed play, shown in a strip until the next play succeeds.
     error: Option<SharedString>,
     /// A pending box reset from a source toggle or a shared-query change;
     /// applied on the next render, where a window exists to set the input.
@@ -286,7 +286,7 @@ pub struct GridPanel {
     type_ahead: String,
     type_ahead_at: Option<Instant>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _thumbs_changed: Subscription,
@@ -314,13 +314,13 @@ impl GridPanel {
                 this.rebuild(cx);
                 // The catalog loads after a restored track starts, so the
                 // launch's follow waits for this first rebuild; rescans
-                // re-land on the playing album the same way.
+                // re-center on the playing album the same way.
                 if this.config.follow_playing {
                     this.follow_playing(cx);
                 }
             },
         );
-        // Landing thumbnails notify the service; repaint so tiles fill in.
+        // Arriving thumbnails notify the service; repaint so tiles fill in.
         let _thumbs_changed = cx.observe(&state.thumbs, |_, _, cx| cx.notify());
         // A grid restored as global opens showing the shared query; a local
         // one shows its own.
@@ -401,8 +401,8 @@ impl GridPanel {
         this
     }
 
-    /// Follow the player: on a track change, head for the album it lives
-    /// in, and keep the dim mode's facts fresh. The compares keep the
+    /// Follow the player: on a track change, head for the album it belongs
+    /// to, and keep the dim mode's facts fresh. The compares keep the
     /// per-tick observer cheap, the player notifies every pump.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let (playing, path) = {
@@ -485,9 +485,9 @@ impl GridPanel {
         }
     }
 
-    /// The idle wake's landing: slide back to the playing album, so long as
+    /// What the idle wake does: slide back to the playing album, so long as
     /// the resume is still on. The clock only fires this once the wall has
-    /// sat untouched a full window, a gesture in between having pushed it
+    /// gone untouched a full window, a gesture in between having pushed it
     /// out, so no extra idle check is needed here.
     fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
@@ -523,7 +523,7 @@ impl GridPanel {
     /// Recompute the view and its album runs: the canonical order, cut to
     /// the query's hits when one is set. Search hits come back in
     /// projection row order, so they filter the canonical order rather
-    /// than getting walked directly - otherwise an album's scattered rows
+    /// than being iterated directly. Otherwise an album's scattered rows
     /// would split into duplicate tiles. Breaks on the album artist, not
     /// the track artist, the library's grouping rule, so a compilation
     /// stays one tile.
@@ -662,7 +662,7 @@ impl GridPanel {
                 let row = *self.view.get(cell.start)?;
                 // No album tag means this is the unknown bucket, not a real
                 // album: keep the placeholder instead of whichever loose
-                // track's art lands first.
+                // track's art comes back first.
                 if projection.resolve(row).album.is_empty() {
                     return None;
                 }
@@ -678,7 +678,7 @@ impl GridPanel {
     }
 
     /// Put a click on an album tile: plain selects just it, shift extends
-    /// from the anchor, cmd (ctrl elsewhere) toggles - the library's
+    /// from the anchor, cmd (ctrl elsewhere) toggles. The library's
     /// click rules, by tile. Publishes the selection either way.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
         if modifiers.shift {
@@ -725,7 +725,7 @@ impl GridPanel {
     /// stays its play/pause instead of starting a phrase with a blank.
     fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        // Select-all rides the platform chord, so it goes before the
+        // Select-all uses the platform chord, so it goes before the
         // modifier bail below; Escape drops the selection.
         if keystroke.modifiers.secondary() && keystroke.key.as_str() == "a" {
             self.select_all(cx);
@@ -772,7 +772,7 @@ impl GridPanel {
 
     /// Grow or restart the type-ahead phrase and jump to the album it names.
     /// A fresh phrase starts past the current selection, so the same letter
-    /// walks to the next match; a grown one re-tests the current album so
+    /// steps to the next match; a grown one re-tests the current album so
     /// refining a match stays put. Matches album names by prefix, the
     /// caption's own text.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
@@ -907,10 +907,10 @@ impl GridPanel {
 
     /// One album tile: the cover filling a square, the label overlay while
     /// hovered, the accent outline while selected. Pending and missing art
-    /// wear the same quiet placeholder, so a landing cover fills the tile
+    /// use the same quiet placeholder, so an arriving cover fills the tile
     /// without a flash.
     fn tile(&mut self, ix: usize, side: Pixels, cx: &mut Context<Self>) -> AnyElement {
-        // The first paint lands at the target directly; from then on the
+        // The first paint starts at the target directly; from then on the
         // stepping in `body` owns the value.
         let dim = match self.cells.get(ix).and_then(|cell| cell.dim) {
             Some(dim) => dim,
@@ -960,7 +960,7 @@ impl GridPanel {
         };
         let labels = self.config.labels;
         // The cover square: the art, its hover overlay while captions are
-        // off, and the selection outline. The caption, when on, sits below
+        // off, and the selection outline. The caption, when on, goes below
         // it in the tile wrapper rather than over the art.
         let cover = div()
             .w(side)
@@ -1000,8 +1000,8 @@ impl GridPanel {
                     cx.notify();
                 }
             }))
-            // Actions land on release, not press: a press might be the
-            // start of a drag-scroll, and one that traveled is not a click.
+            // Actions run on release, not press: a press might be the
+            // start of a drag-scroll, and one that traveled isn't a click.
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseUpEvent, window, cx| {
@@ -1022,8 +1022,8 @@ impl GridPanel {
     }
 
     /// A tile's album and artist strings: the first track's, with the
-    /// album artist standing in when the row carries one. Empty off the
-    /// end of the cells or before a projection lands.
+    /// album artist standing in when the row has one. Empty off the
+    /// end of the cells or before a projection loads.
     fn cell_labels(&self, ix: usize, cx: &App) -> (SharedString, SharedString) {
         let library = self.state.library.read(cx);
         match (self.cells.get(ix), library.projection()) {
@@ -1032,7 +1032,7 @@ impl GridPanel {
                 .get(cell.start)
                 .map(|&row| {
                     let v = projection.resolve(row);
-                    // Rows from before the album artist column carry an
+                    // Rows from before the album artist column have an
                     // empty one; the first track's artist stands in.
                     let artist = if v.album_artist.is_empty() {
                         v.artist
@@ -1142,7 +1142,7 @@ impl GridPanel {
     /// The visible rows of the grid, each a run of tiles. Also where the
     /// painted width reconciles: the dock hosts panels cached, so a resize
     /// repaints this closure without re-running render, and a notify here
-    /// is what recomputes the column count next frame.
+    /// recomputes the column count next frame.
     fn lines(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
         let axis = self.axis();
         let measured = self.scroll.base_handle().bounds().size.along(axis.invert());
@@ -1158,7 +1158,7 @@ impl GridPanel {
             .clone()
             .map(|line| {
                 // A line is a row of tiles filling the width while vertical,
-                // a column filling the height otherwise; the cross gap sits
+                // a column filling the height otherwise; the cross gap goes
                 // between the tiles, the scroll gap between the lines through
                 // the list's own spacing.
                 let mut lane = if vertical {
@@ -1356,7 +1356,7 @@ impl PanelSettings for GridPanel {
     }
 
     /// The grid's own appearance rows on the shared page: the tiles'
-    /// size, gap, and art rounding, look knobs that live on the config
+    /// size, gap, and art rounding, look knobs stored on the config
     /// rather than the theme because they shape the covers, not the
     /// panel frame.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1545,13 +1545,13 @@ impl Panel for GridPanel {
     }
 
     /// The wall serves tile context menus over the whole body, so the
-    /// tab panel's body right-click stays out; the panel dropdown rides
-    /// along after the play items, the library's arrangement.
+    /// tab panel's body right-click stays out; the panel dropdown is
+    /// appended after the play items, the library's arrangement.
     fn content_context_menu(&self, _cx: &App) -> bool {
         true
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
         crate::panel::chrome_min_size(
@@ -1714,7 +1714,7 @@ impl Render for GridPanel {
 impl GridPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // A pending box reset (a source toggle or a shared-query change)
-        // lands here, where a window exists to set the input's text.
+        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
@@ -1753,9 +1753,9 @@ impl GridPanel {
             }
         }
         // Restore the saved scroll once the wall has albums and a measured
-        // extent: the lane count only lands after the first paint, and the
-        // cell -> line map rides on it, so restoring any earlier would aim at
-        // the fallback grid. Skipped while a follow glide runs, which owns
+        // extent: the lane count is only known after the first paint, and the
+        // cell -> line map depends on it, so restoring any earlier would aim
+        // at the fallback grid. Skipped while a follow glide runs, which owns
         // the position.
         if let Some(cell) = self.restore {
             if self.glide_to.is_none() && !self.cells.is_empty() && self.cross > px(0.) {
@@ -1790,8 +1790,8 @@ impl GridPanel {
             }
         }
 
-        // The search lives in the tab bar via title_suffix while the panel
-        // shares a group; solo or popped out there is no header at all, so
+        // The search shows in the tab bar via title_suffix while the panel
+        // shares a group; solo or popped out there's no header at all, so
         // it renders as a toolbar in the body instead.
         let headerless = self
             .tab_panel
@@ -1905,7 +1905,7 @@ impl GridPanel {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        // Take focus so the type-to-jump keys land on the wall
+                        // Take focus so the type-to-jump keys go to the wall
                         // rather than whatever held focus before the press.
                         window.focus(&this.focus);
                         this.glide_to = None;
@@ -1922,7 +1922,7 @@ impl GridPanel {
                 .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
                     this.touch_resume(cx);
                 }))
-                // A plain wheel only carries a vertical delta, and the list
+                // A plain wheel only sends a vertical delta, and the list
                 // ignores it while it scrolls horizontally: both its overflow
                 // axes are Scroll, so gpui never cross-maps y onto x. Fill
                 // exactly that gap here; a trackpad's real x deltas stay with
@@ -1972,7 +1972,7 @@ impl GridPanel {
                 // since the builder gets no position: a click inside the
                 // selection acts on the whole set, outside it the click
                 // reselects just that tile first, so the menu always acts
-                // on what is highlighted - the library's rule. Off any
+                // on what's highlighted, the library's rule. Off any
                 // tile the panel menu stands alone.
                 .context_menu({
                     let weak = cx.entity().downgrade();

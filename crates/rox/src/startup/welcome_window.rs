@@ -29,7 +29,7 @@ struct OpenWelcome(WindowHandle<Root>);
 impl Global for OpenWelcome {}
 
 /// Open the welcome window, or bring the open one to the front. The state
-/// carries the library the add-folder button scans into and the shared
+/// holds the library the add-folder button scans into and the shared
 /// art bake for the backdrop.
 pub fn open(state: AppState, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenWelcome>() {
@@ -95,7 +95,7 @@ struct WelcomeWindow {
     /// live theme's side, so the tiles follow a flip while the window is up.
     workspaces: Vec<Tile>,
     /// The tile the pointer is over, if any: its preview shows in color
-    /// while the rest sit desaturated.
+    /// while the rest are desaturated.
     hovered_tile: Option<usize>,
     /// The tile grid's laid-out width, measured by a probe canvas each
     /// paint. The grid splits it into however many tile columns fit, and
@@ -104,15 +104,15 @@ struct WelcomeWindow {
     tiles_width: f32,
     /// Which stage of [`STAGES`] is up, the tour's whole position.
     stage: usize,
-    /// The stored language pick, mirrored from settings the way the
-    /// settings window mirrors it: the tour is often the first thing a
-    /// new install shows, so the switch sits right on it.
+    /// The stored language pick, copied from settings the way the
+    /// settings window copies it: the tour is often the first thing a
+    /// new install shows, so the switch is right on it.
     language: Option<String>,
     /// The stage body's scroll position, shared with its scrollbar. One
     /// handle for every stage, wound back to the top on each step so a long
     /// stage can't hand the next one its own offset.
     scroll: ScrollHandle,
-    /// The window root's own focus. Nothing here takes typing; it's what
+    /// The window root's own focus. Nothing here takes typing; it just
     /// puts the arrow keys on the dispatch path.
     focus: FocusHandle,
     /// This window pumps its own frames, so the backdrop needs its own
@@ -124,7 +124,7 @@ impl WelcomeWindow {
     fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         // The tour steps on the arrow keys, and nothing else in the window
-        // wants the keyboard, so the root takes focus as it opens.
+        // uses the keyboard, so the root takes focus as it opens.
         let focus = cx.focus_handle();
         window.focus(&focus);
         // A header that doesn't parse falls back to the frame's own
@@ -163,8 +163,8 @@ impl WelcomeWindow {
 
     /// The tour's own language switch, the settings row's exact pipe:
     /// the pick applies to every window live and persists. The tour's
-    /// copy follows as its strings extract; the picker itself answers in
-    /// the new language right away.
+    /// copy follows as its strings extract; the picker itself shows the
+    /// new language right away.
     fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
         set_language(language.as_deref(), cx);
         self.language = language.clone();
@@ -179,8 +179,8 @@ impl WelcomeWindow {
         self.go_to(next, cx);
     }
 
-    /// Land on a stage: the body starts at the top, and no tile is under
-    /// the pointer until the pointer says so.
+    /// Go to a stage: the body starts at the top, and no tile is hovered
+    /// until the pointer moves onto one.
     fn go_to(&mut self, stage: usize, cx: &mut Context<Self>) {
         if stage == self.stage {
             return;
@@ -197,10 +197,10 @@ fn line(text: impl Into<SharedString>) -> Div {
     div().text_color(palette::text_muted()).child(text.into())
 }
 
-/// What a card asks for before its row shares out what's left. Three of
-/// these plus their gaps is what the window opens wide enough to hold, and
-/// it's the width the card's copy is measured at, which is what keeps a
-/// card as tall as its own text.
+/// What a card asks for before its row shares out what's left. The window
+/// opens wide enough to hold three of these plus their gaps, and the card's
+/// copy is measured at this width, which keeps a card as tall as its own
+/// text.
 const CARD_BASIS: f32 = 300.0;
 
 /// The narrowest a tile column gets before the shelf drops one.
@@ -224,10 +224,10 @@ fn card(icon: &'static str, title: impl Into<SharedString>, body: impl IntoEleme
     div()
         .flex()
         .flex_col()
-        // Grow and shrink from a real basis rather than from zero. The
-        // basis is what the row wraps on and what the copy is measured at,
-        // so a card comes out as tall as its own text; the zero floor is
-        // what keeps a long line from setting the card's width instead.
+        // Grow and shrink from a real basis rather than from zero. The row
+        // wraps on the basis and the copy is measured at it, so a card
+        // comes out as tall as its own text; the zero floor keeps a long
+        // line from setting the card's width instead.
         .flex_grow()
         .flex_shrink()
         .flex_basis(px(CARD_BASIS))
@@ -269,8 +269,8 @@ fn cards(cards: impl IntoIterator<Item = Div>) -> Div {
         .children(cards)
 }
 
-/// The width the scrollbar rides in. The bar is an overlay, so a column
-/// keeps this much clear on its right or the thumb sits under the content.
+/// The width of the scrollbar's lane. The bar is an overlay, so a column
+/// keeps this much clear on its right or the thumb ends up under the content.
 const SCROLL_LANE: f32 = 16.0;
 
 /// A scrolling column paired with its scrollbar, the same overlay the about
@@ -288,7 +288,7 @@ fn scroll_lane(column: impl IntoElement, scroll: &ScrollHandle) -> Div {
 /// One quick-start tile as the window holds it: what the workspace is
 /// called, who made it when their card says, and the pictures it shows.
 struct Tile {
-    /// The bundle's own name, which is what applying it asks for.
+    /// The bundle's own name, which applying it asks for.
     name: SharedString,
     /// What the tile reads, translated for the shipped bundles that have
     /// a word rather than a proper name for a title.
@@ -345,7 +345,7 @@ fn workspace_tile(
         .bg(palette::bg_control())
         .map(|d| match preview {
             // The preview reads in color only under the pointer; the rest
-            // sit desaturated so the hovered look stands out. The picture
+            // are desaturated so the hovered look stands out. The picture
             // renders at its real scaled height with the top edge showing,
             // and hovering pans it down its full extent and back; the
             // raised-cosine easing starts and ends at that resting top, so
@@ -353,7 +353,7 @@ fn workspace_tile(
             Some((path, aspect)) if width / aspect > frame_height => {
                 let height = (width / aspect).round();
                 let pan = height - frame_height;
-                // The element carries the picture's exact aspect, so Fill
+                // The element takes the picture's exact aspect, so Fill
                 // paints it edge to edge. Cover's ratio comparison would
                 // sit on a knife edge here and flip its centering between
                 // frames, a horizontal jitter while panning; the offset
@@ -414,8 +414,8 @@ fn workspace_tile(
         .on_mouse_down(MouseButton::Left, on_click)
         .child(picture)
         .child(
-            // Somebody made this look; their name rides on the same line as
-            // the workspace's, quieter and off the baseline it sits on.
+            // Somebody made this look; their name goes on the same line as
+            // the workspace's, quieter and on the same baseline.
             div()
                 .flex()
                 .flex_row()
@@ -591,8 +591,8 @@ impl WelcomeWindow {
         // The measured width splits into however many tile columns fit at a
         // comfortable size, so a narrow window drops to one or two across
         // instead of squeezing three. Up to the column cap the tiles take
-        // the whole width between them; the tile cap only bites on a window
-        // wider than the shelf has any use for.
+        // the whole width between them; the tile cap only applies on a
+        // window wider than the shelf has any use for.
         let gap = f32::from(tokens::SPACE_SM);
         let columns = (tiles_width / MIN_TILE_W)
             .floor()
@@ -726,7 +726,7 @@ impl Render for WelcomeWindow {
                 .child(div().text_lg().child(stage.title()))
                 .child(line(stage.lead()));
 
-            // The language switch rides the first page's top right: the
+            // The language switch is in the first page's top right: the
             // tour is the first thing a fresh install shows, and nobody
             // should have to find the settings window in a language that
             // isn't theirs to leave it.
@@ -845,7 +845,7 @@ impl Render for WelcomeWindow {
                         .flex_1()
                         .min_h_0()
                         // The page's own surface over the backdrop, the same
-                        // one the settings pages sit on: opaque at full
+                        // one the settings pages use: opaque at full
                         // surface opacity, so the art only reads through as
                         // the surfaces thin, never straight under the copy.
                         .bg(palette::bg_elevated())

@@ -1,9 +1,9 @@
 //! The concrete panels the workspace hosts, each a view over the shared
 //! entities in [`rox_panel_api::panel::AppState`]. The panel framework
-//! itself, per ADR 7, lives in rox-panel-api; this crate is just the
+//! itself, per ADR 7, is defined in rox-panel-api; this crate is just the
 //! panels.
 //!
-//! Nothing in here knows the binary. Where a panel opens a window, it goes
+//! Nothing in here depends on the binary. Where a panel opens a window, it goes
 //! through the openers table in [`rox_panel_api::openers`], which the app
 //! fills in at startup.
 
@@ -30,6 +30,7 @@ pub mod queue;
 pub mod search;
 pub mod shader;
 pub mod spacer;
+pub mod spectrogram;
 pub mod spectrum;
 pub mod stats_widget;
 pub mod status;
@@ -40,7 +41,7 @@ pub mod waveform;
 
 mod settings;
 
-// The panels reach their neighbours at the same module paths they always
+// The panels refer to their neighbours at the same module paths they always
 // did, so a file that moved down here reads unchanged. Everything below is
 // a name this crate borrows from a crate under it.
 pub(crate) use rox_design as design;

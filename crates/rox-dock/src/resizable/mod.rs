@@ -47,8 +47,8 @@ pub struct ResizableState {
     /// layout through a small window and restoring it is lossless.
     weights: Vec<Option<Pixels>>,
     /// The solved display sizes for the current container: the weights scaled
-    /// to fit, with each panel's min/max honored. This is what the flex layout
-    /// renders from.
+    /// to fit, with each panel's min/max honored. The flex layout renders
+    /// from these.
     sizes: Vec<Pixels>,
     pub(crate) resizing_panel_ix: Option<usize>,
     bounds: Bounds<Pixels>,
@@ -175,10 +175,10 @@ impl ResizableState {
     ) {
         let size = bounds.size.along(self.axis);
         // A panel created without an explicit size gets its weight from its
-        // first paint: whatever the flex layout gave it is what it is owed
+        // first paint: whatever the flex layout gave it becomes its share
         // from here on. Upstream keyed this off the size still being exactly
         // PANEL_MIN_SIZE, which misfired on panels whose real share happens
-        // to equal it; the explicit `None` weight is the honest marker.
+        // to equal it; the explicit `None` weight is the reliable marker.
         if self.weights[panel_ix].is_none() {
             self.weights[panel_ix] = Some(size);
             self.sizes[panel_ix] = size;
@@ -189,7 +189,7 @@ impl ResizableState {
         cx.notify();
     }
 
-    /// Move a panel's state to another index, its size riding along, so
+    /// Move a panel's state to another index, its size moving with it, so
     /// an app-level reorder of a stack's children keeps every split width
     /// with its panel.
     pub(crate) fn move_panel(&mut self, from_ix: usize, to_ix: usize, cx: &mut Context<Self>) {
@@ -293,7 +293,7 @@ impl ResizableState {
         // The two clusters either side of the boundary, and which one grows.
         // Positive delta drags the boundary toward the end: the left cluster
         // (through `ix`) grows, the right cluster shrinks. Negative is the
-        // mirror. `grow` is ordered from the handle outward so the nearest
+        // reverse. `grow` is ordered from the handle outward so the nearest
         // panel moves first.
         let (grow, shrink, want) = if delta > px(0.) {
             let grow: Vec<usize> = (0..=ix).rev().collect();
@@ -336,7 +336,7 @@ impl ResizableState {
             self.panels[i].size = Some(*s);
         }
         // A drag re-shares the whole split at the live container: what you
-        // see when you let go is what every panel is owed from now on.
+        // see when you let go becomes every panel's share from now on.
         self.weights = new.iter().map(|s| Some(*s)).collect();
         self.sizes = new;
         cx.notify();
@@ -472,7 +472,7 @@ mod tests {
 
     // Build a state with the given per-panel sizes and ranges, at a container
     // size along the horizontal axis. Bounds and panels are set directly since
-    // the test lives inside the module.
+    // the test is inside the module.
     fn make_state(sizes: &[f32], ranges: &[Range<Pixels>], container: f32) -> ResizableState {
         let panels = sizes
             .iter()
@@ -639,7 +639,7 @@ mod tests {
             state.insert_panel(Some(px(200.)), Some(1), cx);
             assert_eq!(state.panels.len(), 3);
             assert_eq!(state.sizes.len(), 3);
-            // The inserted panel lands at its requested size, the rest shrink
+            // The inserted panel gets its requested size, the rest shrink
             // proportionally so the total still fills the container.
             assert!((state.sizes[1].as_f32() - 200.).abs() < 1.0);
             assert!((total(state) - 1000.).abs() < 1.0);
@@ -683,7 +683,7 @@ mod tests {
         let entity = cx.new(|_| make_state(&[100., 200., 300.], &[open(), open(), open()], 600.));
         entity.update(cx, |state, cx| {
             state.move_panel(0, 2, cx);
-            // The 100px panel rode to the end with its size intact.
+            // The 100px panel moved to the end with its size intact.
             assert_eq!(state.sizes[2].as_f32(), 100.);
             assert_eq!(state.sizes[0].as_f32(), 200.);
             assert_eq!(state.sizes[1].as_f32(), 300.);

@@ -3,7 +3,7 @@
 //! same [`Library`](rox_services::catalog::Library) methods, so a star or a
 //! heart set in one surface shows in the other. Each cell hides its empty
 //! affordance until the row is hovered, so a column of them stays quiet;
-//! that reveal keys off the row wearing [`ROW_GROUP`].
+//! that reveal keys off the row being tagged with [`ROW_GROUP`].
 
 use gpui::{div, prelude::*, px, svg, Div, MouseButton};
 
@@ -11,7 +11,7 @@ use crate::panel::AppState;
 use rox_design::assets::icons;
 use rox_design::palette;
 
-/// The hover group a track row wears so its rating and favourite cells can
+/// The hover group set on a track row so its rating and favourite cells can
 /// reveal on hover. Both panels tag their track rows with this.
 pub const ROW_GROUP: &str = "track-row";
 
@@ -26,7 +26,7 @@ pub fn rating(state: AppState, id: i64, value: u8) -> Div {
             .library
             .update(cx, |library, cx| library.rate(id, rating, cx));
     })
-    // Fill the cell height so the control's own items_center lands the stars
+    // Fill the cell height so the control's own items_center puts the stars
     // on the row centerline.
     .h_full()
     .when(value == 0 && !rox_core::settings::rating_dots(), |d| {

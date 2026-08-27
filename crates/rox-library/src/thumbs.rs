@@ -2,8 +2,8 @@
 //! thumbnails generated once per cover and cached in a dedicated SQLite
 //! DB. A track's row is keyed by file identity (path, mtime, size) so a
 //! changed file regenerates and an unchanged one never touches the audio
-//! file again; the JPEG bytes live in a content-addressed pool shared by
-//! every track showing the same cover, so an album's twelve tracks (or
+//! file again; the JPEG bytes are stored in a content-addressed pool shared
+//! by every track showing the same cover, so an album's twelve tracks (or
 //! the same cover copied across a discography) store one image and pay
 //! one decode, not twelve. Tracks without art cache that answer too, so
 //! an artless album costs one cover search ever, not one per launch.
@@ -96,8 +96,8 @@ fn baseline(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Step 2: the image bytes move out of the track rows into a pool keyed by
 /// content hash, so tracks sharing a cover share one row of JPEG instead of
-/// carrying a copy each. Existing thumbs are hashed and pooled in place -
-/// the encoder is deterministic, so byte-identical covers collapse - then
+/// storing a copy each. Existing thumbs are hashed and pooled in place
+/// (the encoder is deterministic, so byte-identical covers collapse), then
 /// the per-track blob column drops. (Migrated rows key on the encoded
 /// bytes, fresh ones on the source bytes; the two never need to agree, a
 /// row only has to find its own image, and a migrated row that invalidates
@@ -151,7 +151,7 @@ fn content_hash(bytes: &[u8]) -> i64 {
 /// The thumbnail for one track: JPEG bytes, or None when the track has no
 /// art anywhere (or no longer stats). A hit is one point lookup; a miss
 /// resolves the cover's bytes and checks the pool by their hash, so only
-/// the first sight of a cover pays the decode and re-encode - the rest of
+/// the first sight of a cover pays the decode and re-encode: the rest of
 /// the album, and any other copy of the image, reuse the pooled row. The
 /// no-art answer is stored too, so the next request never opens the audio
 /// file. A cover caught mid-write stores nothing at all, so the finished
@@ -204,11 +204,11 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
         art::Cover::Found { bytes, source, .. } => {
             let hash = content_hash(&bytes);
             // Bytes that stop short of their end marker are a file still
-            // landing on disk. Serve what decodes, store nothing: the
+            // being written. Serve what decodes, store nothing: the
             // finished cover deserves the row, not this.
             let whole = art::complete(&bytes);
-            // A cover seen before - the rest of this album, the same file
-            // in another folder - skips the decode and re-encode whole.
+            // A cover seen before (the rest of this album, the same file
+            // in another folder) skips the decode and re-encode whole.
             let pooled: Option<Vec<u8>> = {
                 let conn = conn.lock().unwrap();
                 let hit = conn
@@ -241,10 +241,10 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
             let (art_path, art_mtime, art_size) = source_identity(&source);
             (hash, thumb, art_path, art_mtime, art_size, whole)
         }
-        // A cover file is sitting there whose bytes aren't an image yet: a
-        // download that has created the file and not filled it. The folder's
-        // mtime moved when the file was created and won't move again when
-        // the bytes land, so a negative entry stored now would answer for
+        // A cover file exists whose bytes aren't an image yet: a download
+        // that has created the file and not filled it. The folder's mtime
+        // moved when the file was created and won't move again when the
+        // bytes arrive, so a negative entry stored now would stand for
         // this album forever. Store nothing, the same as bytes caught short
         // of their end marker.
         art::Cover::Settling => (0, Vec::new(), dir, dir_mtime, dir_size, false),
@@ -349,7 +349,7 @@ mod tests {
     /// A cache written before the art_* columns must keep working: open()
     /// adds the columns in place, so an existing thumbnail still reads back
     /// instead of every cover going blank. This is the exact shape that
-    /// regressed once - the seven-column lookup against a four-column table.
+    /// regressed once: the seven-column lookup against a four-column table.
     #[test]
     fn migrates_pre_art_columns_and_serves_existing_rows() {
         let dir = std::env::temp_dir().join("rox-thumbs-migrate");
@@ -455,8 +455,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Tracks sharing a cover - the same album, or the same image copied
-    /// into another folder - pool one image row and all serve it.
+    /// Tracks sharing a cover (the same album, or the same image copied
+    /// into another folder) pool one image row and all serve it.
     #[test]
     fn identical_covers_pool_one_image() {
         let dir = std::env::temp_dir().join("rox-thumbs-pool");
@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(count(&conn, "thumbs"), 0, "the partial cover keys nothing");
         assert_eq!(count(&conn, "images"), 0, "and pools nothing");
 
-        // The download lands: the next look reads the whole cover and this
+        // The download finishes: the next look reads the whole cover and this
         // one does cache.
         std::fs::write(dir.join("cover.jpg"), &cover).unwrap();
         let whole = thumbnail(&conn, &track).expect("a thumbnail");

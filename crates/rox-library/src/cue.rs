@@ -1,4 +1,4 @@
-//! CUE sheet support: the parser and the two types that carry a cue track
+//! CUE sheet support: the parser and the two types that describe a cue track
 //! through the rest of the app. A cue rip is one image file (a whole-disc
 //! FLAC or WAV) split into tracks by timestamps in a sidecar .cue sheet, so
 //! a track stops being a file and becomes a span inside one. Identity per
@@ -26,7 +26,7 @@ impl Span {
 }
 
 /// What a play request points at: a file, and which subsong of it. Plain
-/// files are sub 0; cue tracks carry their 1-based track number. This is
+/// files are sub 0; cue tracks use their 1-based track number. This is
 /// the currency the player and panels trade in where a bare PathBuf used
 /// to do, so two tracks of the same image stay distinct in a queue.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -79,9 +79,9 @@ impl TrackKey {
 }
 
 /// A parsed .cue sheet: the album-level tags, then the image files it splits.
-/// Most sheets carry exactly one file, but a per-track rip with a cue on top
+/// Most sheets name exactly one file, but a per-track rip with a cue on top
 /// (one FILE per song) is legal and shows up in the wild, so files is a list
-/// and track spans never reach across a file boundary.
+/// and track spans never cross a file boundary.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CueSheet {
     pub title: String,
@@ -102,7 +102,7 @@ pub struct CueFile {
 
 /// A single cue track. `number` is what the sheet said rather than the
 /// position in the list, since that number is the `sub` half of a TrackKey
-/// and has to survive data tracks being skipped out of the middle.
+/// and has to stay stable when data tracks are skipped out of the middle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CueTrack {
     pub number: u16,
@@ -145,8 +145,8 @@ fn decode(bytes: &[u8]) -> String {
 }
 
 /// Peel the leading bare word off a line, handing back the word and what
-/// follows it. Leading whitespace goes, which is what makes the indentation
-/// every cue sheet uses under TRACK a non-issue.
+/// follows it. Leading whitespace goes, which makes the indentation every
+/// cue sheet uses under TRACK a non-issue.
 fn split_token(s: &str) -> Option<(&str, &str)> {
     let s = s.trim_start();
     if s.is_empty() {
@@ -246,7 +246,7 @@ fn flush_track(state: &mut TrackState, file: &mut Option<CueFile>) {
 /// reads the same as an unparseable one to the caller. Anything it doesn't
 /// recognise (CATALOG, ISRC, FLAGS, SONGWRITER, PREGAP, plain junk) is
 /// skipped rather than treated as an error, since half the sheets in a real
-/// library carry some ripper's private line.
+/// library have some ripper's private line.
 pub fn parse(bytes: &[u8]) -> Option<CueSheet> {
     let text = decode(bytes);
     let mut sheet = CueSheet::default();

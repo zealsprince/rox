@@ -1,18 +1,18 @@
-//! The tag editor window: one OS window opened on a selection - albums
-//! picked in the grid, tracks picked in the library - rather than a panel,
-//! since editing wants room and a plain close-without-saving story. One
+//! The tag editor window: one OS window opened on a selection (albums
+//! picked in the grid, tracks picked in the library) rather than a panel,
+//! since editing needs room and a plain close-without-saving story. One
 //! shared field form covers the selection: a field every
 //! file agrees on shows its value, differing values show empty over a
 //! "multiple values" placeholder, and only the fields the user moves
 //! write anything. Table mode swaps the form for one row of cells per
 //! track, where the per-track fields a batch form has to lock stay
-//! editable and tab walks the grid. The name fields suggest the
-//! library's own values as they are typed. Baselines come off each file
+//! editable and tab steps through the grid. The name fields suggest the
+//! library's own values as they're typed. Baselines come off each file
 //! through the writer's read,
 //! the metadata panel's convention, so every save diffs per file against
-//! what that file actually carries and commits through the atomic layer.
-//! A successful save lands in the catalog in one batch, then re-reads the
-//! written files so their rows converge with what is on disk - duration and
+//! what that file actually has and commits through the atomic layer.
+//! A successful save applies to the catalog in one batch, then re-reads the
+//! written files so their rows converge with what's on disk, duration and
 //! the rest the form never named included.
 
 use std::collections::{HashMap, HashSet};
@@ -50,7 +50,7 @@ use rox_panel_kit::ui::{
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 
-/// The form's fields in sheet order: the label each row wears, and
+/// The form's fields in sheet order: the label each row shows, and
 /// whether the field is per-track by nature. Per-track fields only edit
 /// while a single track is selected; a batch would stamp one title or
 /// track number over every file.
@@ -64,18 +64,18 @@ const FIELDS: &[(Field, &str, bool)] = &[
     (Field::TrackNo, "track", true),
     (Field::DiscNo, "disc", true),
     (Field::Comment, "comment", false),
-    // Shared on purpose: rating an album's files in one stroke is the
-    // batch case the user asked for. The value speaks the writer's 0-10
-    // number, half points included.
+    // Shared, since rating an album's files in one stroke is the batch
+    // case the user asked for. The value is the writer's 0-10 number,
+    // half points included.
     (Field::Rating, "rating", false),
 ];
 
 /// How many display columns lead the table ahead of the editable
 /// [`FIELDS`] grid in the full column order. The file column is one of
-/// these: it carries no input and no field, and a save never sees it.
+/// these: it has no input and no field, and a save never sees it.
 /// The settings file's width slots are positional over this full order,
-/// hidden columns included, so a width survives its column being toggled
-/// away and back.
+/// hidden columns included, so a width is kept when its column is
+/// toggled away and back.
 const LEAD: usize = 1;
 
 /// A column heading from a field label, each word capitalized: "album
@@ -101,8 +101,8 @@ fn column_keys() -> impl Iterator<Item = &'static str> {
     std::iter::once("file").chain(FIELDS.iter().map(|(_, label, _)| *label))
 }
 
-/// A key's slot in the full column order, the position its width lives
-/// at in the settings file whether the column shows or not.
+/// A key's slot in the full column order, the position its width is
+/// stored at in the settings file whether the column shows or not.
 fn canonical_ix(key: &str) -> Option<usize> {
     column_keys().position(|k| k == key)
 }
@@ -121,14 +121,14 @@ fn default_widths() -> Vec<f32> {
 }
 
 /// A path as the row shows it: the file name alone, the whole path when
-/// there is no name to take.
+/// there's no name to take.
 fn file_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// The rating inputs' empty-state hint, the one field whose scale is not
+/// The rating inputs' empty-state hint, the one field whose scale isn't
 /// obvious from its label.
 fn field_placeholder(field: &Field) -> &'static str {
     match field {
@@ -143,8 +143,8 @@ fn field_placeholder(field: &Field) -> &'static str {
 fn rating_field(input: &Entity<InputState>, cx: &App) -> Div {
     let current = rating::parse_display(input.read(cx).value().trim()).unwrap_or(0);
     let input = input.clone();
-    // The input's entity id keys the hover preview; unlike a track id it
-    // is unique per editor row.
+    // The input's entity id keys the hover preview; unlike a track id
+    // it's unique per editor row.
     let key = input.entity_id().as_u64();
     rox_panel_api::rating_ui::control(key, current, move |value, window, cx| {
         let text = if value == 0 {
@@ -167,7 +167,7 @@ const CONTEXT: &str = "TagEditor";
 /// what tab means: take the open suggestion, then move. Bindings win
 /// over key listeners, so a listener could never have seen the key.
 ///
-/// Enter sits on the window root instead, so it saves from a field, a
+/// Enter is bound on the window root instead, so it saves from a field, a
 /// table cell, or nothing focused at all. The inputs see the key first,
 /// their own binding being deeper: a single-line input propagates it up
 /// to here, and an open suggestion menu swallows it, so enter takes the
@@ -182,9 +182,9 @@ pub fn init(cx: &mut App) {
 
 /// Take the open suggestion off `input` without firing its own enter.
 /// Routing the enter straight to the completion menu accepts a suggestion
-/// when one is up and does nothing when it is not. Dispatching the input's
+/// when one is up and does nothing when it isn't. Dispatching the input's
 /// Enter action instead would, with no menu open, emit PressEnter, which
-/// the save subscription reads as a save and closes the window - that is
+/// the save subscription reads as a save and closes the window. That's
 /// the tab-closes-the-window bug.
 fn take_suggestion(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     input.update(cx, |state, cx| {
@@ -209,8 +209,8 @@ fn accept_then_focus(
 
 /// The open editors, each keyed by the sorted ids it opened on: every
 /// selection edits in its own window, and asking for one already open
-/// focuses that window instead of stacking a twin - an edit in progress
-/// is not worth losing.
+/// focuses that window instead of stacking a twin, since an edit in
+/// progress isn't worth losing.
 #[derive(Default)]
 struct OpenTagEditors(Vec<(Vec<i64>, WindowHandle<Root>)>);
 
@@ -256,10 +256,10 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     );
 }
 
-/// One selected track, resolved at open; the path is what the baselines
-/// read and the commits write, and the sub says which row of it they
+/// One selected track, resolved at open; the baselines read the path and
+/// the commits write it, and the sub says which row of it they
 /// belong to when the file is a cue image. The title only names the
-/// track in errors - the table's file column is where the selection
+/// track in errors. The table's file column is where the selection
 /// shows itself.
 struct TrackRow {
     path: PathBuf,
@@ -284,15 +284,15 @@ struct UnknownTags {
     rows: Vec<UnknownRow>,
     /// How many files' unknown reads failed. The list is short by that
     /// many, so the section says so rather than passing for complete,
-    /// and save leaves those files' unknowns alone - there is nothing
-    /// safe to diff them against.
+    /// and save leaves those files' unknowns alone, since there's
+    /// nothing safe to diff them against.
     failed: usize,
     /// How many files the union covers, for the per-row "3 of 7".
     files: usize,
 }
 
 /// One key in that list: the exact key a save addresses it by, the input
-/// its text edits through, and how many of the selection carry it.
+/// its text edits through, and how many of the selection have it.
 struct UnknownRow {
     /// The key as the file spells it, what [`Field::Unknown`] writes by.
     key: String,
@@ -303,7 +303,7 @@ struct UnknownRow {
     initial: SharedString,
     /// The value's editor; a binary payload has none and only removes.
     input: Option<Entity<InputState>>,
-    /// A binary payload's size line, shown where the input would sit.
+    /// A binary payload's size line, shown in the input's place.
     binary: Option<SharedString>,
     files: usize,
     /// Armed to remove the key from every carrier on save.
@@ -314,11 +314,11 @@ pub struct TagEditor {
     library: Entity<Library>,
     tracks: Vec<TrackRow>,
     /// Each file's fields as the writer read them, parallel to `tracks`:
-    /// what save diffs against, per file. None until every read lands
+    /// what save diffs against, per file. None until every read comes in
     /// (or never, when a file defeats the parser), and save stays inert
     /// without it.
     baselines: Option<Vec<Vec<(Field, String)>>>,
-    /// What the form filled each input with once the baselines landed:
+    /// What the form filled each input with once the baselines arrived:
     /// the value every file shares, or empty under the mixed
     /// placeholder. A field arms by drifting from this.
     filled: Vec<SharedString>,
@@ -326,8 +326,8 @@ pub struct TagEditor {
     /// read-only per-track rows say so instead of faking one value.
     mixed: Vec<bool>,
     /// Whether the user armed a batch field to clear across every file.
-    /// A mixed field sits empty over its placeholder, so an empty input
-    /// alone can't say "wipe this tag on all of them" - this flag does,
+    /// A mixed field is empty over its placeholder, so an empty input
+    /// alone can't mean "wipe this tag on all of them". This flag does,
     /// and save writes the field empty even when nothing was typed.
     cleared: Vec<bool>,
     /// One input per entry of [`FIELDS`].
@@ -344,7 +344,7 @@ pub struct TagEditor {
     /// entities, so save reads the same inputs the table shows.
     grid: Option<Entity<TableState<CellGrid>>>,
     /// The column keys toggled off the table, remembered through the
-    /// settings file like the widths. A hidden column's cells live on,
+    /// settings file like the widths. A hidden column's cells are kept,
     /// so nothing typed there is lost to a toggle.
     hidden: HashSet<String>,
     /// What each cell last seeded from. A cell still on its seed follows
@@ -357,31 +357,31 @@ pub struct TagEditor {
     /// of the values it would pull from every track's path.
     guess: bool,
     /// The guess pattern's input, remembered across editors through the
-    /// settings file - one library tends to one naming scheme.
+    /// settings file, since one library tends to one naming scheme.
     pattern: Entity<InputState>,
     /// The tags no field addresses, editable under their own fold.
-    /// None until the reads land; a file whose unknown read failed only
-    /// costs its own rows, never the form.
+    /// None until the reads come in; a file whose unknown read failed
+    /// only costs its own rows, never the form.
     unknowns: Option<UnknownTags>,
     /// Each file's unknown tags as the writer read them, parallel to
     /// `tracks`: what an unknown edit diffs against per file. None where
     /// the read failed, and save leaves that file's unknowns alone.
     unknown_baselines: Vec<Option<Vec<(String, UnknownValue)>>>,
-    /// Whether that fold is open. Closed at open: most files carry a few
-    /// of these and some carry a screenful.
+    /// Whether that fold is open. Closed at open: most files have a few
+    /// of these and some have a screenful.
     unknowns_open: bool,
     /// How many of the selection are in a format the writer has no path
-    /// for. Those files say so plainly instead of wearing a parse error
+    /// for. Those files say so plainly instead of showing a parse error
     /// over a dead form.
     unsupported: usize,
     /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
     /// A commit is in flight; the fields lock and the buttons hold still
-    /// until it lands.
+    /// until it finishes.
     saving: bool,
     /// The save already ran and the window is on its way out. One enter
-    /// press can reach [`Self::save`] twice - the focused input's own
-    /// binding and the window root's, which the input propagates to - and
+    /// press can reach [`Self::save`] twice (the focused input's own
+    /// binding and the window root's, which the input propagates to), and
     /// a batch with nothing to write closes on the first without ever
     /// raising `saving` for the second to see.
     saved: bool,
@@ -457,8 +457,8 @@ impl TagEditor {
                     let mut input =
                         InputState::new(window, cx).placeholder(field_placeholder(field));
                     if *field == Field::Rating {
-                        // The scale is not free text; typing anything it
-                        // cannot parse never lands in the field.
+                        // The scale isn't free text; typing anything it
+                        // can't parse never reaches the field.
                         input = input.validate(|s, _| {
                             s.trim().is_empty() || rating::parse_display(s).is_some()
                         });
@@ -485,8 +485,8 @@ impl TagEditor {
             })
             .collect();
         // The guess pattern, seeded from the last editor's; enter applies
-        // the guesses rather than saving - the preview is right there and
-        // an accidental save would close the window.
+        // the guesses rather than saving, since the preview is right
+        // there and an accidental save would close the window.
         let saved_pattern = Settings::load()
             .windows
             .tag_editor
@@ -519,8 +519,8 @@ impl TagEditor {
             }
             true
         });
-        // A multi-selection opens straight into the table - per-track
-        // editing is what it is for; a single track fits the form.
+        // A multi-selection opens straight into the table, since that's
+        // the per-track view; a single track fits the form.
         let table = tracks.len() > 1;
         // The columns the last editor toggled away, pruned of anything
         // that stopped being a column since it was written.
@@ -568,11 +568,11 @@ impl TagEditor {
     }
 
     /// Read every file's fields off the UI thread and fill the form when
-    /// they all land. One unreadable file blocks the whole save: without
-    /// its baseline there is nothing safe to diff that file against. The
-    /// read-only tags ride the same hop, one file at a time, so the list
-    /// costs nothing extra in wall time and a file that defeats it costs
-    /// only its own rows.
+    /// they all come in. One unreadable file blocks the whole save:
+    /// without its baseline there's nothing safe to diff that file
+    /// against. The read-only tags are read on the same hop, one file at
+    /// a time, so the list costs nothing extra in wall time and a file
+    /// that defeats it costs only its own rows.
     fn read_baselines(&self, window: &mut Window, cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = self.tracks.iter().map(|track| track.path.clone()).collect();
         cx.spawn_in(window, async move |this, cx| {
@@ -642,7 +642,7 @@ impl TagEditor {
     }
 
     /// Arm or disarm one unknown key's removal: armed, save drops the
-    /// key from every file that carries it; disarmed, the row goes back
+    /// key from every file that has it; disarmed, the row goes back
     /// to editing. Nothing touches disk until save, like everything else
     /// here.
     fn toggle_remove_unknown(&mut self, i: usize, cx: &mut Context<Self>) {
@@ -683,7 +683,7 @@ impl TagEditor {
             };
             input.update(cx, |input, cx| {
                 if mixed {
-                    input.set_placeholder("Multiple values", window, cx);
+                    input.set_placeholder(rox_i18n::t!("tags-editor-multiple-values"), window, cx);
                 }
                 input.set_value(value.clone(), window, cx);
             });
@@ -692,7 +692,7 @@ impl TagEditor {
         }
         self.baselines = Some(baselines);
         // A table-first open can only build its cells once the baselines
-        // land, so they seed here.
+        // arrive, so they seed here.
         if self.table {
             self.seed_cells(window, cx);
             if let Some(cells) = &self.cells {
@@ -732,7 +732,7 @@ impl TagEditor {
             state.height = frame.size.height.into();
             // A form-only session has no table; keep the saved widths.
             // The shown columns write into their slots in the full order,
-            // so a hidden column's width rides along untouched.
+            // so a hidden column's width stays untouched.
             if !columns.is_empty() {
                 if state.columns.len() != LEAD + FIELDS.len() {
                     state.columns = default_widths();
@@ -749,7 +749,7 @@ impl TagEditor {
     }
 
     /// The first field the toggles leave on screen, where table focus
-    /// lands: the title unless its column is hidden.
+    /// goes: the title unless its column is hidden.
     fn first_visible_field(&self) -> usize {
         FIELDS
             .iter()
@@ -838,8 +838,8 @@ impl TagEditor {
 
     /// Enter table mode: build the cell grid on first use, then seed
     /// every untouched cell with its file's baseline under any form edit
-    /// in flight. A folded-in form edit stops counting as form drift -
-    /// the cells carry it from here - and a cell the user already moved
+    /// in flight. A folded-in form edit stops counting as form drift
+    /// (the cells hold it from here), and a cell the user already moved
     /// keeps their value.
     fn seed_cells(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(baselines) = self.baselines.clone() else {
@@ -861,7 +861,7 @@ impl TagEditor {
                             suggest::provider(self.projection.as_ref(), field);
                         input
                     });
-                    // A rating click lands in the cell's input; without
+                    // A rating click writes to the cell's input; without
                     // this repaint the control would show the old value.
                     self._input_events.push(cx.subscribe_in(
                         &input,
@@ -876,8 +876,8 @@ impl TagEditor {
                 }
                 cells.push(row);
             }
-            // The file column's names ride bare disabled inputs, the
-            // track list's trick for text that has to select and copy.
+            // The file column's names are shown in bare disabled inputs,
+            // the track list's trick for text that has to select and copy.
             // Built with the grid, so a form-only session pays nothing.
             let names: Vec<Entity<InputState>> = self
                 .tracks
@@ -900,7 +900,7 @@ impl TagEditor {
                 editor: cx.entity().downgrade(),
             };
             let grid = cx.new(|cx| TableState::new(delegate, window, cx));
-            // The component owns the live column widths; mirror a resize
+            // The component owns the live column widths; copy a resize
             // into the delegate so a re-prepare keeps it, and the close
             // path persists it.
             self._input_events.push(cx.subscribe_in(
@@ -925,10 +925,10 @@ impl TagEditor {
         for (i, (field, _, _)) in FIELDS.iter().enumerate() {
             let form_value = self.inputs[i].read(cx).value().to_string();
             let drifted = form_value != self.filled[i].as_ref();
-            // Once the grid exists the cells carry the truth: a re-entry
+            // Once the grid exists the cells hold the truth: a re-entry
             // only folds in live form drift. Re-seeding a quiet field
             // would push its cells back to the disk baseline, wiping the
-            // values an earlier fold-in carried.
+            // values an earlier fold-in brought in.
             if !created && !drifted {
                 self.cleared[i] = false;
                 continue;
@@ -958,16 +958,16 @@ impl TagEditor {
             if drifted {
                 self.filled[i] = form_value.into();
             }
-            // The cells carry the truth from here, so a pending clear-all
-            // the form carried is off - left armed, save would wipe the tag
+            // The cells hold the truth from here, so a pending clear-all
+            // from the form is off. Left armed, save would wipe the tag
             // on every file while the table showed the original values.
             self.cleared[i] = false;
         }
     }
 
-    /// Leave table mode: the form re-reads the cells - a field the rows
+    /// Leave table mode: the form re-reads the cells (a field the rows
     /// agree on shows the value, a split one goes back to empty over the
-    /// mixed placeholder - and the fill snapshot follows, so only typing
+    /// mixed placeholder), and the fill snapshot follows, so only typing
     /// from here on counts as a bulk edit.
     fn refill_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let fills: Vec<(SharedString, bool)> = {
@@ -992,10 +992,10 @@ impl TagEditor {
         };
         for (i, (value, mixed)) in fills.into_iter().enumerate() {
             self.inputs[i].update(cx, |input, cx| {
-                let placeholder = if mixed {
-                    "Multiple values"
+                let placeholder: SharedString = if mixed {
+                    rox_i18n::t!("tags-editor-multiple-values")
                 } else {
-                    field_placeholder(&FIELDS[i].0)
+                    field_placeholder(&FIELDS[i].0).into()
                 };
                 input.set_placeholder(placeholder, window, cx);
                 input.set_value(value.clone(), window, cx);
@@ -1003,7 +1003,7 @@ impl TagEditor {
             self.filled[i] = value;
             self.mixed[i] = mixed;
             // The table re-read is a fresh baseline, so any pending
-            // clear-all the form carried is off.
+            // clear-all from the form is off.
             self.cleared[i] = false;
         }
     }
@@ -1011,16 +1011,16 @@ impl TagEditor {
     /// Toggle a batch field's clear-all arm: on, the field wipes its tag
     /// across every file in the selection on save; off, it goes back to
     /// leaving the split values alone. Only the shared form's mixed fields
-    /// get this - a single track just empties its box.
+    /// get this; a single track just empties its box.
     fn toggle_clear(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         let on = !self.cleared.get(i).copied().unwrap_or(false);
         self.cleared[i] = on;
         self.inputs[i].update(cx, |input, cx| {
             if on {
                 input.set_value("", window, cx);
-                input.set_placeholder("Clear on save", window, cx);
+                input.set_placeholder(rox_i18n::t!("tags-editor-clear-on-save"), window, cx);
             } else {
-                input.set_placeholder("Multiple values", window, cx);
+                input.set_placeholder(rox_i18n::t!("tags-editor-multiple-values"), window, cx);
             }
         });
         cx.notify();
@@ -1035,8 +1035,8 @@ impl TagEditor {
         cx.notify();
     }
 
-    /// Write the pattern's matches into the editor: per-track values land
-    /// in the table's cells (switching to table mode to show them), a
+    /// Write the pattern's matches into the editor: per-track values go
+    /// into the table's cells (switching to table mode to show them), a
     /// single track still on the form fills its fields. Either way the
     /// values arm like typing and nothing touches disk until save.
     fn apply_guesses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1244,7 +1244,7 @@ impl TagEditor {
     /// searches, ranks matches, and on apply calls back into
     /// [`Self::fill_fields`] rather than writing, so this editor stays the
     /// one writer. A lookup is one track's by nature: the form's header
-    /// button carries it for a single track, the table's rows one each.
+    /// button covers a single track, the table's rows one each.
     /// The compare keys its window on the track, so a row at a time can
     /// be open without the two fills crossing.
     fn look_up(&mut self, track: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1264,11 +1264,12 @@ impl TagEditor {
 
     /// Fill from a looked-up match, one field at a time: each set input
     /// drifts from its fill and arms as a pending edit, so the normal
-    /// save writes it and nothing lands until the user saves. Fields the
-    /// match does not carry are left untouched. The compare calls this on
-    /// its own apply, on this editor's window, naming the track it ran on.
+    /// save writes it and nothing reaches disk until the user saves.
+    /// Fields the match doesn't have are left untouched. The compare
+    /// calls this on its own apply, on this editor's window, naming the
+    /// track it ran on.
     ///
-    /// Where the values land is where the user can see them: the named
+    /// The values go where the user can see them: the named
     /// track's cells once the grid is up, the shared form only in a
     /// form-only single-track session, since a batch form would stamp
     /// one track's release over every file. The seeds stay put, like the
@@ -1309,7 +1310,7 @@ impl TagEditor {
     /// writes its value to every selected file, diffed per file against
     /// that file's own baseline so unchanged fields never rewrite. The
     /// commits run through the writer's atomic layer off the UI thread;
-    /// success lands the batch in the catalog and closes the window, a
+    /// success applies the batch to the catalog and closes the window, a
     /// failure keeps the form open with the error inline, the failed
     /// files untouched.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1319,7 +1320,7 @@ impl TagEditor {
         let single = self.tracks.len() == 1;
         let mut armed: Vec<(usize, String)> = Vec::new();
         for (i, (_, _, per_track)) in FIELDS.iter().enumerate() {
-            // Per-track fields sit disabled in a batch; skipping them
+            // Per-track fields are disabled in a batch; skipping them
             // here keeps a stale fill from ever counting as an edit.
             if *per_track && !single {
                 continue;
@@ -1338,8 +1339,9 @@ impl TagEditor {
             let mut changes = Vec::new();
             for (i, (field, _, _)) in FIELDS.iter().enumerate() {
                 // A form edit is the newest typing and wins its field;
-                // otherwise the track's own cell speaks once the table
-                // exists. A field neither has touched says nothing.
+                // otherwise the track's own cell supplies the value once
+                // the table exists. A field neither has touched
+                // contributes nothing.
                 let value = match armed.iter().find(|(armed_ix, _)| *armed_ix == i) {
                     Some((_, value)) => value.clone(),
                     None => match &self.cells {
@@ -1362,8 +1364,8 @@ impl TagEditor {
             }
             // The unknown rows, diffed per file like the fields: a
             // removal or an emptied value drops the key from the files
-            // that carry it, a typed value stamps the batch, and a file
-            // whose unknown read failed stays untouched - there is
+            // that have it, a typed value stamps the batch, and a file
+            // whose unknown read failed stays untouched, since there's
             // nothing safe to diff it against.
             if let (Some(unknowns), Some(Some(rows))) =
                 (&self.unknowns, self.unknown_baselines.get(t))
@@ -1397,8 +1399,8 @@ impl TagEditor {
                 }
             }
             if !changes.is_empty() {
-                // The sub rides beside the edit: a writer::Edit names a file,
-                // and one file can be a dozen cue tracks.
+                // The sub is paired with the edit: a writer::Edit names a
+                // file, and one file can be a dozen cue tracks.
                 edits.push((
                     Edit {
                         path: track.path.clone(),
@@ -1423,15 +1425,15 @@ impl TagEditor {
         let library = self.library.clone();
         cx.spawn_in(window, async move |this, cx| {
             // One file per background hop, not the whole batch behind a
-            // single await: the count moves as each lands, a slow file is
-            // visibly the one holding things up, and a cancel that closes
+            // single await: the count moves as each finishes, a slow file
+            // is visibly the one holding things up, and a cancel that closes
             // the window ends the loop instead of grinding on unseen.
             let mut committed: Vec<Edit> = Vec::new();
             let mut committed_subs: Vec<u16> = Vec::new();
             let mut failures = 0usize;
             let mut first_error: Option<String> = None;
             for (edit, sub) in edits {
-                // Note the write before it lands so the watch batch it
+                // Note the write before it happens so the watch batch it
                 // triggers is suppressed, not reindexed. The apply_edits at
                 // the end notes too, but by then the suppression window has
                 // long passed for all but the last few files of a big batch.
@@ -1483,8 +1485,8 @@ impl TagEditor {
             }
             this.update_in(cx, move |this, window, cx| {
                 // A written file's baseline follows the write, so a retry
-                // after a partial failure diffs against what is on disk
-                // now instead of re-committing the landed files.
+                // after a partial failure diffs against what's on disk
+                // now instead of re-committing the files that succeeded.
                 for edit in &committed {
                     let Some(ix) = this.tracks.iter().position(|t| t.path == edit.path) else {
                         continue;
@@ -1531,7 +1533,7 @@ impl TagEditor {
                     Some(e) => {
                         this.saving = false;
                         this.error = Some(if failures > 1 {
-                            format!("{failures} files failed; {e}").into()
+                            rox_i18n::t!("tags-editor-save-errors", count = failures, error = e)
                         } else {
                             e.into()
                         });
@@ -1605,8 +1607,8 @@ impl TagEditor {
                                 .child(row.label.clone()),
                         )
                         .child(div().flex_1().min_w_0().child(value))
-                        // A key only some of the selection carries says so;
-                        // one they all carry needs no note.
+                        // A key only some of the selection has says so;
+                        // one they all have needs no note.
                         .when(row.files < unknowns.files, |d| {
                             d.child(
                                 div()
@@ -1621,7 +1623,7 @@ impl TagEditor {
                             )
                         })
                         // The arm toggle, the clear-all chip's language: a
-                        // click promises the removal, another takes it back.
+                        // click arms the removal, another takes it back.
                         .child(
                             div()
                                 .id(("remove-tag", i))
@@ -1705,15 +1707,15 @@ impl TagEditor {
     }
 
     /// The tags section: the shared form, or in table mode the per-track
-    /// grid. The lookup rides beside the heading's name, the mode toggle
-    /// and the guess panel its right edge, since each is about what the
-    /// section shows; save and cancel belong to the window and ride its
-    /// footer. The table's columns pick through a right click on their
-    /// headers, the library table's convention.
+    /// grid. The lookup is placed beside the heading's name, the mode
+    /// toggle and the guess panel at its right edge, since each is about
+    /// what the section shows; save and cancel belong to the window and
+    /// are in its footer. The table's columns pick through a right click
+    /// on their headers, the library table's convention.
     fn tags_section(&self, cx: &mut Context<Self>) -> Div {
         // The online lookup is the form's alone, single-track only: the
         // compare matches on one track's tags, so a batch has no one
-        // query, and in the table every row carries its own. Gated on
+        // query, and in the table every row has its own. Gated on
         // the provider toggle like the metadata panel's.
         let single = self.tracks.len() == 1;
         let look_up = (!self.table && single && providers::metadata_online()).then(|| {
@@ -1731,7 +1733,7 @@ impl TagEditor {
             .items_center()
             .gap(tokens::SPACE_SM)
             // A single file edits in the form alone, so its way into the
-            // file manager rides here instead of a table row's.
+            // file manager is here instead of on a table row.
             .when(single, |d| {
                 let path = self.tracks[0].path.clone();
                 d.child(settings_ui::small_button(
@@ -1769,7 +1771,7 @@ impl TagEditor {
         };
         // The fields and the grid lock while a commit is in flight: a
         // transparent occluder over them swallows clicks and keystrokes
-        // so nothing edits out from under the write. Cancel sits outside
+        // so nothing edits out from under the write. Cancel is outside
         // it, down in the footer.
         let content = div()
             .relative()
@@ -1796,15 +1798,15 @@ impl TagEditor {
         }
     }
 
-    /// Whether a save can run as it stands. Baselines are what a commit
-    /// diffs each file against, so there is nothing safe to write until
-    /// they land, and a commit already in flight owns the files.
+    /// Whether a save can run as it stands. A commit diffs each file
+    /// against its baseline, so there's nothing safe to write until the
+    /// baselines arrive, and a commit already in flight owns the files.
     fn savable(&self) -> bool {
         !self.saving && self.baselines.is_some()
     }
 
     /// The window's own actions: the save, the way out, and what's
-    /// holding the save back when something is. It hangs off the root
+    /// holding the save back when something is. It's on the root
     /// rather than either page, so the buttons keep their place when the
     /// form and the table swap.
     fn footer(&self, cx: &mut Context<Self>) -> Div {
@@ -1831,8 +1833,8 @@ impl TagEditor {
                 .child(label)
                 .into_any_element()
         } else {
-            // A format the writer has no path for is not a broken file,
-            // so it gets its own line rather than wearing the parse error
+            // A format the writer has no path for isn't a broken file,
+            // so it gets its own line rather than showing the parse error
             // of the read that never happened.
             let reason: Option<SharedString> = if self.unsupported > 0 {
                 Some(if self.unsupported == self.tracks.len() {
@@ -1902,7 +1904,7 @@ impl TagEditor {
             )
     }
 
-    /// The shared form: one bare field per row - no input chrome, the
+    /// The shared form: one bare field per row, no input chrome, the
     /// sheet look. Per-track fields have no single form value in a
     /// batch, so they read as plain text and the table edits them.
     fn form_body(&self, cx: &mut Context<Self>) -> Div {
@@ -1937,7 +1939,7 @@ impl TagEditor {
                     rating_field(&self.inputs[i], cx).into_any_element()
                 } else {
                     // Tab out of a field takes its open suggestion along
-                    // the way; the walk itself is the stock next stop,
+                    // the way; the move itself is the stock next stop,
                     // which already runs down the form.
                     let input = self.inputs[i].clone();
                     div()
@@ -2008,8 +2010,8 @@ impl TagEditor {
     }
 
     /// The table over the grid: resizable, sortable columns like the
-    /// library's list, every field editable per track. Tab walks each
-    /// column top to bottom.
+    /// library's list, every field editable per track. Tab moves down
+    /// each column, top to bottom.
     fn table_body(&self) -> gpui::AnyElement {
         let Some(grid) = &self.grid else {
             return div().into_any_element();
@@ -2025,8 +2027,8 @@ impl TagEditor {
 /// The grid's delegate: the cells are the editor's own inputs, shared by
 /// entity, so the table shows exactly the state save reads. `names` holds
 /// the file column's read-only inputs, parallel to `cells`, and `order` is
-/// the sort permutation from display row to track index. The editor comes
-/// along weak so a row's own lookup can reach it from the cell.
+/// the sort permutation from display row to track index. The editor is
+/// held weakly so a row's own lookup can reach it from the cell.
 struct CellGrid {
     columns: Vec<Column>,
     cells: Vec<Vec<Entity<InputState>>>,
@@ -2040,8 +2042,8 @@ struct CellGrid {
 /// overrides the defaults with the last editor's widths, one slot per
 /// column in the full order. Those widths are positional, so a set
 /// written before a column existed falls back to the defaults rather
-/// than landing on the wrong columns. `hidden` columns drop out after
-/// the widths resolve; a hidden set that would empty the table is
+/// than being applied to the wrong columns. `hidden` columns drop out
+/// after the widths resolve; a hidden set that would empty the table is
 /// ignored, since an empty table has no header to bring one back from.
 fn grid_columns(saved: &[f32], hidden: &HashSet<String>) -> Vec<Column> {
     let defaults = default_widths();
@@ -2089,8 +2091,8 @@ impl CellGrid {
     }
 
     /// Whether each [`FIELDS`] entry has a column on screen, for the tab
-    /// walk: a hidden column's cells exist and keep their edits, but
-    /// focusing one would land the cursor somewhere the table doesn't
+    /// order: a hidden column's cells exist and keep their edits, but
+    /// focusing one would put the cursor somewhere the table doesn't
     /// draw.
     fn visible_fields(&self) -> Vec<bool> {
         let mut visible = vec![false; FIELDS.len()];
@@ -2136,7 +2138,7 @@ impl CellGrid {
                 },
             ))
             // Gated on the provider toggle like the header's, which the
-            // form still carries for a single track.
+            // form still shows for a single track.
             .when(providers::metadata_online(), |d| {
                 d.child(settings_ui::icon_button(
                     icons::DOWNLOAD,
@@ -2255,15 +2257,15 @@ impl TableDelegate for CellGrid {
     ) -> impl IntoElement {
         let rows = self.order.len();
         let track = self.order[row_ix];
-        // A display column edits nothing and stays out of the tab walk.
+        // A display column edits nothing and stays out of the tab order.
         let Some(col_ix) = self.field_ix(col_ix) else {
             return self.file_cell(track).into_any_element();
         };
         let total = rows * FIELDS.len();
         let cell = self.cells[track][col_ix].clone();
         // Star-style rating cells hold no focusable input: they render
-        // the click control and sit outside the tab walk. The numeric
-        // style keeps them as plain 0-10 inputs in the walk below.
+        // the click control and stay outside the tab order. The numeric
+        // style keeps them as plain 0-10 inputs in the order built below.
         let stars = rating_style() == RatingStyle::Stars;
         if stars && FIELDS[col_ix].0 == Field::Rating {
             return div()
@@ -2294,9 +2296,10 @@ impl TableDelegate for CellGrid {
         let pos = col_ix * rows + row_ix;
         let next = at(step(pos, 1));
         let prev = at(step(pos, -1));
-        // Tab walks the column, not the row: the editor's own binding
-        // catches it here, deeper than the window root's, and moves to
-        // the neighbor we compute instead of the paint-order stop.
+        // Tab moves down the column instead of across the row: the
+        // editor's own binding catches it here, deeper than the window
+        // root's, and moves to the neighbor we compute instead of the
+        // paint-order stop.
         div()
             .key_context("TagField")
             .on_action({
@@ -2313,7 +2316,7 @@ impl TableDelegate for CellGrid {
 }
 
 /// The selection's unknown tags as one editable list: every key any file
-/// carries, ordered by how many carry it so the shared ones lead,
+/// has, ordered by how many have it so the shared ones lead,
 /// alphabetical inside a tie so the order holds still across opens. A
 /// text key every carrier agrees on fills its input with the value;
 /// disagreeing carriers leave it empty over the mixed placeholder, the
@@ -2484,9 +2487,9 @@ impl Render for TagEditor {
                         .h_full()
                         .relative()
                         // The page's own surface, a second elevated layer over
-                        // the window's, the same as the settings page. Two
-                        // layers is what the backdrop reads through, and the
-                        // footer stays outside it to sit a step darker.
+                        // the window's, the same as the settings page. The
+                        // backdrop reads through two layers, and the
+                        // footer stays outside it to render a step darker.
                         .bg(palette::bg_elevated())
                         .child(page)
                         // Fades out when idle, same as the panels.

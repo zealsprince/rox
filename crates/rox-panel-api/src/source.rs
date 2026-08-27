@@ -1,6 +1,6 @@
 //! Which track a display panel describes: the playing one, or the app-wide
 //! selection (the shared selection). Panels that show a single track (cover
-//! art today, richer track views later) carry a [`TrackSource`] in their
+//! art today, richer track views later) store a [`TrackSource`] in their
 //! per-view config and resolve it here at render time; the setting row is
 //! shared so the knob reads the same in every customize window.
 
@@ -39,7 +39,7 @@ impl TrackSource {
 
 /// A per-view cache over [`TrackSource::resolve`], for panels that render
 /// every frame while a session runs: the selection side is a database
-/// query, so it only re-runs after [`ResolvedTrack::invalidate`] - call
+/// query, so it only re-runs after [`ResolvedTrack::invalidate`]. Call
 /// that from the selection and library subscriptions. The playing side
 /// stays uncached, it reads shared atomics.
 #[derive(Default)]
@@ -78,7 +78,7 @@ pub fn source_flyout<P: 'static>(
     let panel = panel.clone();
     let submenu = PopupMenu::build(window, cx, move |submenu, _, cx| {
         // The flyout follows the panel so the picked row's tick swaps live
-        // instead of sitting stale until the menu is reopened.
+        // instead of staying stale until the menu is reopened.
         panel::follow_panel(&panel, cx);
         source_items(submenu.check_side(Side::Right), get, &panel, set)
     });
@@ -95,7 +95,7 @@ fn source_items<P: 'static>(
     panel: &Entity<P>,
     set: impl Fn(&mut P, TrackSource, &mut Context<P>) + Clone + 'static,
 ) -> PopupMenu {
-    // Each source item carries its own icon (Play, List Music), so the tick
+    // Each source item has its own icon (Play, List Music), so the tick
     // sits on the right where it stands apart from the icon.
     for (label, icon, source) in [
         (

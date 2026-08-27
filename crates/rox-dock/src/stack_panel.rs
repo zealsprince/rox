@@ -22,7 +22,7 @@ pub struct StackPanel {
     pub(crate) panels: SmallVec<[Arc<dyn PanelView>; 2]>,
     state: Entity<ResizableState>,
     /// rox addition: this split's say over its own seams, over the
-    /// app-wide flag; None follows it. Rides the layout dump, so one
+    /// app-wide flag; None follows it. Stored in the layout dump, so one
     /// area of a workspace can sit flush while the rest keeps its lines.
     seams: Option<bool>,
     _subscriptions: Vec<Subscription>,
@@ -44,7 +44,7 @@ impl Panel for StackPanel {
     }
 
     fn min_size(&self, cx: &App) -> Size<Pixels> {
-        // Children sit side by side along the stack axis, so their
+        // Children are laid out side by side along the stack axis, so their
         // minimums add; across it they share the span, so the largest
         // wins.
         let mut min: Size<Pixels> = Size::default();
@@ -157,7 +157,7 @@ impl StackPanel {
         self.panels.len()
     }
 
-    /// The stack's axis, for app-level walks over the live layout.
+    /// The stack's axis, for app-level traversal of the live layout.
     pub fn axis(&self) -> Axis {
         self.axis
     }
@@ -173,12 +173,12 @@ impl StackPanel {
         cx.notify();
     }
 
-    /// The stack this one sits in, for app-level walks; None at the root.
+    /// The stack this one is in, for app-level traversal; None at the root.
     pub fn parent(&self) -> Option<Entity<StackPanel>> {
         self.parent.as_ref().and_then(|parent| parent.upgrade())
     }
 
-    /// The children in stack order, for app-level walks over the live
+    /// The children in stack order, for app-level traversal of the live
     /// layout. The `DockItem` tree the dock was built from goes stale
     /// once tabs are dragged around; these entities are the truth, the
     /// same ones `dump` serializes.
@@ -373,7 +373,7 @@ impl StackPanel {
         cx.notify();
     }
 
-    /// Lift the child at `ix` out into the parent stack, landing right
+    /// Lift the child at `ix` out into the parent stack, inserted right
     /// after this stack, so a nested arrangement flattens one level (the
     /// settings window's layout tree route). No-op at the root and for
     /// out-of-range indices.
@@ -398,7 +398,7 @@ impl StackPanel {
         self.state
             .update(cx, |state, cx| state.remove_panel(ix, cx));
         // insert_panel's deferred hookup repoints the lifted panel's
-        // parent at the stack it lands in.
+        // parent at the stack it moves into.
         parent.update(cx, |parent, cx| {
             parent.insert_panel_after(panel, parent_ix, None, dock_area, window, cx);
         });

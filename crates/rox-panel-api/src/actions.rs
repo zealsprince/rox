@@ -1,5 +1,5 @@
 //! The actions panels dispatch and bind against. The keymap registration
-//! and every handler stay up in the app; what lives here is the types, so a
+//! and every handler stay up in the app; only the types are here, so a
 //! panel's `on_action` and the workspace's binding name the same one.
 
 use gpui::actions;

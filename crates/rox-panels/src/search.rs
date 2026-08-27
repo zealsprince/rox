@@ -1,9 +1,9 @@
 //! The search panel: a dockable box that drives the shared app-wide query
-//! ([`crate::query::shared_query`]). Its whole job is the box - typing here filters
+//! ([`crate::query::shared_query`]). Its whole job is the box: typing here filters
 //! every panel set to follow the shared query, so a library and a couple of
-//! grids can sit query-less and clean while this one controls them all. The
-//! query lives in the shared entity, not this panel's config, so two search
-//! panels and a popped-out one all edit and mirror the same value. Suggestions
+//! grids can stay query-less and clean while this one controls them all. The
+//! query is stored in the shared entity, not this panel's config, so two search
+//! panels and a popped-out one all edit and show the same value. Suggestions
 //! come from the projection's tag values, reattached on each scan the way the
 //! play launcher does.
 
@@ -23,7 +23,7 @@ use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::SharedQueryEvent;
 use rox_panel_api::suggest;
 
-/// Where the search panel shows the shared filter's chips: inline, trailing
+/// Where the search panel puts the shared filter's chips: inline, trailing
 /// the box on the same line, or on their own row below it.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -33,16 +33,16 @@ pub enum ChipsPlacement {
     Below,
 }
 
-/// The search panel's per-view config. The query is not here - it lives in
-/// the shared entity - so a saved layout only restores the rename, the
-/// panel's look, and where the filter chips sit.
+/// The search panel's per-view config. The query isn't here (it's stored in
+/// the shared entity), so a saved layout only restores the rename, the
+/// panel's look, and where the filter chips go.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SearchConfig {
     /// The rename, theme override, and placement locks shared by every
     /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    /// Where the active-filter chips sit relative to the box.
+    /// Where the active-filter chips go relative to the box.
     #[serde(default)]
     pub chips: ChipsPlacement,
 }
@@ -51,7 +51,7 @@ pub struct SearchPanel {
     state: AppState,
     config: SearchConfig,
     /// The query editor bound to the shared query: it writes on change and
-    /// mirrors the shared value in.
+    /// copies the shared value back in.
     search: Entity<SearchBox>,
     /// The panel's own focus, the escape ladder's target so a bare escape
     /// hands the playback keys back to the workspace.
@@ -59,7 +59,7 @@ pub struct SearchPanel {
     /// A pending box reset from a shared-query change; applied on the next
     /// render, where a window exists to set the input's text.
     resync_box: bool,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _search_events: Subscription,
     _query_changed: Subscription,
@@ -86,9 +86,9 @@ impl SearchPanel {
                 .icon()
         });
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
-        // Mirror the shared query in when another box changes it, so two
+        // Copy the shared query back in when another box changes it, so two
         // search panels and a popped-out one stay in sync. The reset needs a
-        // window, so it rides the resync flag.
+        // window, so it's deferred through the resync flag.
         let _query_changed = cx.subscribe(
             &state.query,
             |this: &mut Self, _, _: &SharedQueryEvent, cx| {
@@ -97,7 +97,7 @@ impl SearchPanel {
                 panel::refresh_tab_panel(&this.tab_panel, cx);
             },
         );
-        // A scan lands a new projection; point the suggestions at it.
+        // A scan produces a new projection; point the suggestions at it.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -106,8 +106,8 @@ impl SearchPanel {
                 }
             },
         );
-        // Count this panel while it lives so a jump-to from a follower knows
-        // the shared query has a box to show it, and stop counting on release.
+        // Count this panel while it exists so a jump-to from a follower can
+        // tell the shared query has a box to show it, and stop on release.
         state.query.update(cx, |q, _| q.register_box());
         let query = state.query.clone();
         let _query_boxes = cx.on_release(move |_, cx| {
@@ -130,7 +130,7 @@ impl SearchPanel {
     }
 
     /// Point the box's suggestion menu at the current projection; at open and
-    /// again whenever a scan lands a new one.
+    /// again whenever a scan produces a new one.
     fn attach_suggestions(&self, cx: &mut Context<Self>) {
         let provider = {
             let library = self.state.library.read(cx);
@@ -183,7 +183,7 @@ impl SearchPanel {
         }
     }
 
-    /// The Filter Chips submenu: where the active-filter chips sit relative
+    /// The Filter Chips submenu: where the active-filter chips go relative
     /// to the box, inline or below.
     fn chips_menu(
         &self,
@@ -284,7 +284,7 @@ impl Panel for SearchPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered in
+    /// The layout dump stores the panel's config; the builder registered in
     /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
@@ -320,7 +320,7 @@ impl Panel for SearchPanel {
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
-        // The copy carries the config; the two boxes then drive and mirror the one shared query.
+        // The copy gets the config; the two boxes then drive and show the one shared query.
         let menu = panel::duplicate_item(
             menu,
             &cx.entity(),
@@ -352,8 +352,8 @@ impl Render for SearchPanel {
 
 impl SearchPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // A pending box reset from a shared-query change lands here, where a
-        // window exists to set the input's text.
+        // A pending box reset from a shared-query change is applied here,
+        // where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_box(window, cx);

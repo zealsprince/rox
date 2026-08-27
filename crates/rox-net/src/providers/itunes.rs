@@ -21,8 +21,8 @@ impl ArtProvider for Itunes {
     }
 
     fn search(&self, query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
-        // Album search wants the album name; fall back to the title when a
-        // track carries no album, so a single still finds its cover.
+        // Album search needs the album name; fall back to the title when a
+        // track has no album, so a single still finds its cover.
         let subject = if query.album.is_empty() {
             &query.title
         } else {
@@ -65,7 +65,7 @@ impl ArtProvider for Itunes {
 }
 
 /// Rewrite the `100x100bb.jpg` tail of an artwork URL to a square of
-/// `px`. Leaves anything that does not carry that marker alone, so an
+/// `px`. Leaves anything without that marker alone, so an
 /// unexpected URL shape degrades to itself rather than a broken link.
 fn resize(url: &str, px: u32) -> String {
     url.replace("100x100bb", &format!("{px}x{px}bb"))

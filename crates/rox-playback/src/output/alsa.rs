@@ -6,7 +6,7 @@
 //! reaches the converter" can't be built on a device node that would paper
 //! over a mismatch.
 //!
-//! The shape mirrors the cpal backend deliberately. There, cpal owns a
+//! The shape matches the cpal backend. There, cpal owns a
 //! real-time thread and calls us per buffer; here we own the thread and
 //! block on `writei` per period. Both hand the same [`fill`] the same
 //! buffer, so the bypass rule holds identically in either mode, which is
@@ -45,9 +45,9 @@ const MAX_PERIOD_SECS: f64 = 0.1;
 const DEFAULT_RATE: u32 = 48000;
 
 /// Formats we'll take, best first: float straight through, then the integer
-/// widths every card has. Packed 24-bit (`S24_3LE`) is deliberately absent.
-/// rox has no three-byte sample type, and the cards that offer it offer
-/// `S32_LE` too, which carries the same 24 bits in a type Rust already has.
+/// widths every card has. Packed 24-bit (`S24_3LE`) is absent. rox has no
+/// three-byte sample type, and the cards that offer it offer `S32_LE` too,
+/// which holds the same 24 bits in a type Rust already has.
 const FORMATS: &[(Sample, Format, &str)] = &[
     (Sample::F32, Format::float(), "f32"),
     (Sample::I32, Format::s32(), "s32"),
@@ -64,8 +64,8 @@ enum Sample {
 }
 
 /// The claim on the device: the writer thread plus its stop flag. Dropping
-/// it stops audio and hands the card back, which is what makes toggling
-/// exclusive off actually release it.
+/// it stops audio and hands the card back, so toggling exclusive off
+/// actually releases it.
 struct Claim {
     stop: Arc<AtomicBool>,
     writer: Option<JoinHandle<()>>,
@@ -78,7 +78,7 @@ impl Drop for Claim {
         self.stop.store(true, Ordering::Release);
         // The thread checks the flag once per period and blocks in `writei`
         // in between, so this waits a period at worst. Joining rather than
-        // detaching matters: the PCM handle lives in the thread, and a
+        // detaching matters: the PCM handle is owned by the thread, and a
         // detached thread would still hold the card while the next session
         // tried to claim it.
         if let Some(writer) = self.writer.take() {
@@ -181,7 +181,7 @@ pub fn open(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, Strin
 }
 
 /// Settle the hardware parameters and report what the card took. The rate
-/// is asked for exactly through `set_rate_near`, which lands on the closest
+/// is asked for exactly through `set_rate_near`, which picks the closest
 /// the hardware has; whatever comes back is what gets reported, so a card
 /// that won't do 96 kHz reads as the rate it does instead of a rate rox
 /// wished for.
@@ -202,7 +202,7 @@ fn negotiate(
 
     // A named format the card takes wins; anything else, including a name
     // for a format this card doesn't have, falls to the widest it does.
-    // Reporting the result is what keeps that honest, so a pick the hardware
+    // Reporting the result keeps that honest, so a pick the hardware
     // refused reads as the format actually running.
     let (sample, format, name) = want_format
         .and_then(|want| FORMATS.iter().find(|(_, _, name)| *name == want))
@@ -322,7 +322,7 @@ fn run<T>(
                 // gets here, but dropping the rest of the period would put
                 // the position clock ahead of the card by frames `fill`
                 // already counted, so try again and only give up if the
-                // device keeps saying zero.
+                // device keeps returning zero.
                 Ok(0) => {
                     recoveries += 1;
                     if recoveries > 4 {
@@ -346,7 +346,7 @@ fn run<T>(
         }
     }
     // Falling out of here closes the PCM, which stops the stream and hands
-    // the card back. Deliberately not drained first: every path to this
+    // the card back. Not drained first: every path to this
     // point is a teardown, and the caller is blocked in join waiting for
     // it, so playing out the last 40 ms would only be a hitch in the UI.
 }

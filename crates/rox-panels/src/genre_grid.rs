@@ -1,13 +1,13 @@
 //! The genre grid panel: the catalog's genres as a wall of tiles, square,
 //! the lanes splitting the panel's cross extent evenly so the wall runs
-//! edge to edge - the artist grid's shape over the "; " genre lists. Tiles
-//! wear a mosaic of album covers from the genre, four when it has them,
+//! edge to edge, the artist grid's shape over the "; " genre lists. Tiles
+//! show a mosaic of album covers from the genre, four when it has them,
 //! the first alone when it doesn't.
 //!
 //! One tile per genre value, the lists split apart: a "Rock; Shoegaze"
-//! track sits under both tiles, which is what a genre list means. That
+//! track belongs to both tiles, which is what a genre list means. That
 //! also makes this wall the one grid whose cells are row sets rather than
-//! contiguous runs over the view - the same track appears in several.
+//! contiguous runs over the view, since the same track appears in several.
 //!
 //! Its point is picking, the artist grid's. Clicking a tile writes the
 //! genre onto the shared filter, the same field the filter panel's Genre
@@ -110,14 +110,14 @@ pub struct GenreGridConfig {
     #[serde(default = "default_tile")]
     pub tile: f32,
     /// Picking a genre writes it onto the shared filter, so every panel
-    /// following the shared query narrows to it. On by default: driving
-    /// the rest of the workspace is what this wall is for.
+    /// following the shared query narrows to it. On by default, since
+    /// driving the rest of the workspace is the wall's job.
     #[serde(default = "default_true")]
     pub pick_filters: bool,
     /// Scroll to the playing genre when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
-    /// After the wall sits untouched for a spell, slide back to the
+    /// After the wall goes untouched for a spell, slide back to the
     /// playing genre on its own.
     #[serde(default)]
     pub resume_playing: bool,
@@ -139,7 +139,7 @@ pub struct GenreGridConfig {
     /// How far the dimmed tiles fade, in percent of fully hidden.
     #[serde(default = "default_dim")]
     pub dim: f32,
-    /// What the tiles wear: covers, color-washed covers, or flat color
+    /// What the tiles show: covers, color-washed covers, or flat color
     /// cards with the name set on them.
     #[serde(default)]
     pub face: TileFace,
@@ -159,8 +159,8 @@ pub struct GenreGridConfig {
     #[serde(default = "default_true")]
     pub counts: bool,
     /// The top-left genre shown when the layout was saved, so a relaunch
-    /// reopens the wall where it was left. A cell index, so it survives a
-    /// tile-size or width change.
+    /// reopens the wall where it was left. A cell index, so it persists
+    /// across a tile-size or width change.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub scroll: usize,
 }
@@ -194,7 +194,7 @@ impl Default for GenreGridConfig {
 }
 
 /// One genre's tile in the current view. Unlike the artist grid's runs,
-/// the rows are an explicit set: a "Rock; Shoegaze" track sits in two
+/// the rows are an explicit set: a "Rock; Shoegaze" track belongs to two
 /// cells, so no contiguous slice of the view can name a cell's tracks.
 struct Cell {
     /// The genre value, the caption and the filter pick both. Empty is
@@ -211,7 +211,7 @@ struct Cell {
     /// nothing to show.
     art: Option<Vec<PathBuf>>,
     /// The tile's current opacity under the dim mode, easing toward its
-    /// target every frame. None until the tile's first paint, which lands
+    /// target every frame. None until the tile's first paint, which starts
     /// at the target directly.
     dim: Option<f32>,
 }
@@ -222,16 +222,16 @@ pub struct GenreGridPanel {
     /// The genres of the current view, rebuilt on library updates and
     /// query changes, alphabetical by folded name.
     cells: Vec<Cell>,
-    /// The query editor, the shared search box; `config.query` mirrors its
+    /// The query editor, the shared search box; `config.query` tracks its
     /// value via change events.
     search: Entity<SearchBox>,
     /// The picked genres, the accent outlines and the shared filter's
-    /// values. While `pick_filters` is on this mirrors the filter, so a
+    /// values. While `pick_filters` is on this matches the filter, so a
     /// chip cleared in the search bar lifts the outline here too.
     selected: HashSet<usize>,
     /// Where a shift-extend grows from: the last plain or toggle click.
     anchor: Option<usize>,
-    /// The tile under the pointer, wearing the name overlay.
+    /// The tile under the pointer, which shows the name overlay.
     hovered: Option<usize>,
     /// The cross extent the wall last laid out for; the list closure
     /// compares the painted extent against this and notifies on drift.
@@ -252,7 +252,7 @@ pub struct GenreGridPanel {
     /// The playing track's path, the change detector for follow-playing.
     playing_key: Option<TrackKey>,
     /// The playing track's first cell in the current view. A multi-genre
-    /// track lives in several; the first is the one the follow heads for
+    /// track belongs to several; the first is the one the follow heads for
     /// and the dim mode exempts.
     playing_ix: Option<usize>,
     /// Whether audio is moving right now; pause lifts the dim.
@@ -266,19 +266,19 @@ pub struct GenreGridPanel {
     dim_scrub: ScrubState,
     /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
-    /// A failed play, shown in a strip until the next one lands.
+    /// A failed play, shown in a strip until the next play succeeds.
     error: Option<SharedString>,
     /// A pending box reset from a source toggle or a shared-query change;
     /// applied on the next render, where a window exists to set the input.
     resync_box: bool,
     /// The tracks this panel is pinned to while following the selection.
     selection_ids: Vec<i64>,
-    /// The type-ahead phrase and when its last keystroke landed, so typing
+    /// The type-ahead phrase and when its last keystroke arrived, so typing
     /// while the wall has focus jumps to the genre by prefix.
     type_ahead: String,
     type_ahead_at: Option<Instant>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and
+    /// The tab panel this panel is currently in, for duplicate and
     /// pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
@@ -310,7 +310,7 @@ impl GenreGridPanel {
                 }
             },
         );
-        // Landing thumbnails notify the service; repaint so tiles fill in.
+        // Arriving thumbnails notify the service; repaint so tiles fill in.
         let _thumbs_changed = cx.observe(&state.thumbs, |_, _, cx| cx.notify());
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
@@ -379,7 +379,7 @@ impl GenreGridPanel {
         this
     }
 
-    /// Follow the player: on a track change, head for the genre it lives
+    /// Follow the player: on a track change, head for the genre it's filed
     /// under, and keep the dim mode's facts fresh.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let (playing, path) = {
@@ -447,7 +447,7 @@ impl GenreGridPanel {
         }
     }
 
-    /// The idle wake's landing: slide back to the playing genre.
+    /// What the idle wake does: slide back to the playing genre.
     fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
             self.follow_playing(cx);
@@ -486,8 +486,8 @@ impl GenreGridPanel {
 
     /// Recompute the view's genre cells, cut to the query's hits and the
     /// shared filter's other fields. Each genre symbol's "; " list splits
-    /// once - the symbols are a handful - and every view row then lands
-    /// in each of its values' cells, so a multi-genre track tiles under
+    /// once (the symbols are a handful), and every view row then goes
+    /// into each of its values' cells, so a multi-genre track tiles under
     /// all of them. Cells order alphabetically by folded name, the
     /// untagged bucket first as the empty string sorts itself.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
@@ -526,7 +526,7 @@ impl GenreGridPanel {
             };
             // The cells keyed by their (folded) value; each genre symbol
             // resolves to its cell list once, so the row loop only does
-            // vector pushes. Display casing waits until a row lands, so
+            // vector pushes. Display casing waits for the first row, so
             // the map can pick the first casing seen in view order.
             let mut cell_of: HashMap<String, usize> = HashMap::new();
             let mut cells: Vec<Cell> = Vec::new();
@@ -624,7 +624,7 @@ impl GenreGridPanel {
             .projection()
             .is_some_and(|p| p.fold);
         // Picks read through the alias map, so a pick made before a merge
-        // still outlines the tile it now lives under.
+        // still outlines the tile it now belongs to.
         self.selected = self
             .cells
             .iter()
@@ -724,7 +724,7 @@ impl GenreGridPanel {
     }
 
     /// Put a click on a genre tile: plain picks just it, shift extends
-    /// from the anchor, cmd (ctrl elsewhere) toggles - the library's
+    /// from the anchor, cmd (ctrl elsewhere) toggles. The library's
     /// click rules, by tile. Publishes the picks either way.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
         if modifiers.shift {
@@ -971,11 +971,11 @@ impl GenreGridPanel {
         self.wall().desaturated(ix)
     }
 
-    /// One genre tile, wearing the configured face: the cover mosaic, the
+    /// One genre tile in the configured face: the cover mosaic, the
     /// mosaic washed in the genre's own color, or a flat color card with
     /// the name set on it. Name overlay while hovered, accent outline
     /// while picked. The genre color is deterministic off the name, so
-    /// every surface that adopts it agrees with this wall.
+    /// every surface that adopts it matches this wall.
     fn tile(&mut self, ix: usize, side: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let dim = match self.cells.get(ix).and_then(|cell| cell.dim) {
             Some(dim) => dim,
@@ -1065,7 +1065,7 @@ impl GenreGridPanel {
         // The card, the two card faces' whole body and the tinted face's
         // stand-in for a genre with no covers: the genre's color (flat or
         // leaning) under its geometry motif, the name set large enough to
-        // carry the tile. `base` is the anchor stop, what the text and
+        // fill the tile. `base` is the anchor stop, what the text and
         // ink read their contrast off.
         let seed = palette::genre_seed(&name);
         let card = |background: gpui::Background, base: gpui::Rgba| {
@@ -1179,8 +1179,8 @@ impl GenreGridPanel {
         };
         let content: AnyElement = match (face, covers) {
             (TileFace::Color, _) => card(color.into(), color),
-            // The gradient leans the genre's own way - angle off the
-            // seed, second stop the genre's drift along the wheel - so
+            // The gradient leans the genre's own way (angle off the
+            // seed, second stop the genre's drift along the wheel), so
             // neighbors sharing a hue family still tilt apart.
             (TileFace::Gradient, _) => card(
                 linear_gradient(
@@ -1190,8 +1190,8 @@ impl GenreGridPanel {
                 ),
                 color,
             ),
-            // The wash over the grayscaled covers is what makes the
-            // tinted face: identity in color, music underneath.
+            // The wash over the grayscaled covers makes the tinted
+            // face: identity in color, music underneath.
             (TileFace::Tinted, Some(covers)) => div()
                 .size_full()
                 .relative()
@@ -1256,8 +1256,8 @@ impl GenreGridPanel {
                     cx.notify();
                 }
             }))
-            // Actions land on release, not press: a press might be the
-            // start of a drag-scroll, and one that traveled is not a click.
+            // Actions run on release, not press: a press might be the
+            // start of a drag-scroll, and one that traveled isn't a click.
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseUpEvent, window, cx| {
@@ -1860,7 +1860,7 @@ impl Panel for GenreGridPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
@@ -1965,7 +1965,7 @@ impl Panel for GenreGridPanel {
             rox_i18n::t!("grid-menu-scroll"),
             submenu,
         ));
-        // What the tiles wear, a checked triple so the current face reads
+        // What the tiles show, a checked triple so the current face reads
         // at a glance, the artist grid's grouping flyout shape.
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
@@ -2044,7 +2044,7 @@ impl Render for GenreGridPanel {
 impl GenreGridPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // A pending box reset (a source toggle or a shared-query change)
-        // lands here, where a window exists to set the input's text.
+        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
@@ -2219,7 +2219,7 @@ impl GenreGridPanel {
                 .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
                     this.touch_resume(cx);
                 }))
-                // A plain wheel only carries a vertical delta; map it onto
+                // A plain wheel only sends a vertical delta; map it onto
                 // the horizontal scroll, the artist grid's gap-filler.
                 .when(axis == Axis::Horizontal, |d| {
                     d.on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {

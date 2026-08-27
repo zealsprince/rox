@@ -7,13 +7,13 @@
 //! run on [`crate::tags::guess::Pattern`], so a naming scheme learned in
 //! one works in the other.
 //!
-//! Nothing here touches the library. Outputs land wherever the destination
-//! says, and if that happens to sit under a library root the watcher picks
-//! them up like any other files that appeared - there's no import step and
-//! no second copy of a row.
+//! Nothing here touches the library. Outputs are written wherever the
+//! destination points, and if that happens to be under a library root the
+//! watcher picks them up like any other files that appeared. There's no
+//! import step and no second copy of a row.
 //!
 //! The run itself belongs to [`crate::convert`], which is app-global: the
-//! dialog closes on the press and the tasks window carries the progress and
+//! dialog closes on the press and the tasks window shows the progress and
 //! the Stop, the same as starting an analysis pass.
 
 use std::collections::HashMap;
@@ -60,20 +60,20 @@ actions!(convert_dialog, [Convert]);
 /// The key context the window's own bindings scope to.
 const CONTEXT: &str = "ConvertDialog";
 
-/// The dialog's convert binding; call once at startup. It sits on the
-/// window root, so enter converts wherever focus is rather than only in the
+/// The dialog's convert binding; call once at startup. It's bound on the
+/// window root, so Enter converts wherever focus is rather than only in the
 /// pattern field. The inputs still see the key first, since their own
 /// binding is deeper along the focus path: a single-line input propagates
-/// it up to here, which is how enter in a custom field can ask ffmpeg now
-/// and convert on the press after.
+/// it up to here, which is how Enter in a custom field can run the ffmpeg
+/// check now and convert on the press after.
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("enter", Convert, Some(CONTEXT))]);
 }
 
 /// Open the convert dialog on `ids`, or bring the one already on that
 /// selection to the front. An empty selection opens nothing, and neither
-/// does a machine with no ffmpeg - every menu that gets here is gated on
-/// the same probe, so this is the backstop rather than the gate.
+/// does a machine with no ffmpeg. Every menu that gets here is gated on the
+/// same probe, so this is the backstop rather than the gate.
 pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     if ids.is_empty() || !convert::available() {
         return;
@@ -110,8 +110,8 @@ struct Track {
     name: SharedString,
 }
 
-/// How long the two custom inputs sit still before the combination goes to
-/// ffmpeg. A check is a process, so it waits out typing the way the online
+/// How long the two custom inputs stay unchanged before the combination goes
+/// to ffmpeg. A check is a process, so it waits out typing the way the online
 /// searches do.
 const CHECK_SETTLE: Duration = Duration::from_millis(600);
 
@@ -122,7 +122,7 @@ const CHECK_SETTLE: Duration = Duration::from_millis(600);
 enum Check {
     /// The pair changed and the wait hasn't run out.
     Waiting,
-    /// ffmpeg has it.
+    /// ffmpeg is running the check.
     Checking,
     Passed,
     /// Why it can't run, in whoever's words said it: the tokenizer's for
@@ -159,9 +159,9 @@ pub struct ConvertDialog {
     pattern: Entity<InputState>,
     /// The current plan, rebuilt when the pattern, the preset or the
     /// destination changes rather than per frame: it stats the disk for
-    /// every output, which is not something a repaint should pay for.
+    /// every output, which isn't something a repaint should pay for.
     plan: Vec<Entry>,
-    /// What is wrong with the pattern itself, when nothing parses.
+    /// What's wrong with the pattern itself, when nothing parses.
     parse_error: Option<SharedString>,
     scroll: ScrollHandle,
     now_art: Entity<NowPlayingArt>,
@@ -208,7 +208,7 @@ impl ConvertDialog {
                             (Field::Genre, v.genre.to_owned()),
                         ];
                         // A zero is the catalog's way of saying the file
-                        // carries no number, so it renders as missing
+                        // has no number, so it renders as missing
                         // rather than as "00" or the year 0.
                         for (field, number) in [
                             (Field::Year, v.year),
@@ -219,8 +219,8 @@ impl ConvertDialog {
                                 values.push((field, number.to_string()));
                             }
                         }
-                        // The span is what makes this a trim rather than a
-                        // whole file. A row that says it's a subsong but
+                        // The span makes this a trim rather than a whole
+                        // file. A row that says it's a subsong but
                         // has no span in the projection is a rip mid-scan,
                         // and converting the whole image under its name
                         // would be a surprise, so it renders as a plain
@@ -294,7 +294,7 @@ impl ConvertDialog {
                 |this: &mut Self, _, event: &InputEvent, _window, cx| match event {
                     // Enter is the impatient version of the settle: check
                     // now, and the root's binding converts on the press
-                    // after, once the answer is in.
+                    // after, once the result is in.
                     InputEvent::PressEnter { .. } => this.check_soon(false, cx),
                     InputEvent::Change => {
                         // The extension is half of every destination in the
@@ -337,7 +337,7 @@ impl ConvertDialog {
         if this.custom {
             // Straight to it rather than after a settle: nothing has been
             // typed, and if this pair passed earlier in the session the
-            // cache answers without a spawn.
+            // cache resolves it without a spawn.
             this.check_soon(false, cx);
         }
         this
@@ -421,8 +421,8 @@ impl ConvertDialog {
         }
     }
 
-    /// Whether the format is one this machine has agreed to. A preset is,
-    /// always; a custom is once ffmpeg has encoded something with it.
+    /// Whether the format is one this machine can encode. A preset always
+    /// is; a custom is once ffmpeg has encoded something with it.
     fn format_ready(&self) -> bool {
         !self.custom || self.check == Check::Passed
     }
@@ -432,8 +432,8 @@ impl ConvertDialog {
     /// than one per keystroke; storing the task drops whatever the last
     /// call left running.
     ///
-    /// Nothing spawns for a pair the tokenizer already refuses, or for one
-    /// this session has an answer for.
+    /// Nothing spawns for a pair the tokenizer already rejects, or for one
+    /// this session already has a result for.
     fn check_soon(&mut self, debounce: bool, cx: &mut Context<Self>) {
         let custom = match self.pair(cx) {
             Ok(custom) => custom,
@@ -474,7 +474,7 @@ impl ConvertDialog {
                 .await;
             this.update(cx, |this, cx| {
                 // A pair that changed while ffmpeg was busy has its own
-                // check running, and this answer is about the old one.
+                // check running, and this result is about the old one.
                 if this.pair(cx).as_ref() == Ok(&custom) {
                     this.check = Check::from(answer);
                     cx.notify();
@@ -498,8 +498,8 @@ impl ConvertDialog {
             .count()
     }
 
-    /// Whether the pattern in the input builds folders, which is what the
-    /// mirror toggle means. Read off the pattern rather than kept beside
+    /// Whether the pattern in the input builds folders, the state the
+    /// mirror toggle shows. Read off the pattern rather than kept beside
     /// it, so a hand-edited pattern can't leave the tick lying.
     fn mirroring(&self, cx: &App) -> bool {
         self.pattern.read(cx).value().contains('/')
@@ -523,7 +523,7 @@ impl ConvertDialog {
         self.preset = preset;
         self.custom = false;
         // Nothing to check any more, and a check still in flight would
-        // answer about a format nobody picked.
+        // report on a format nobody picked.
         self.check_task = None;
         // The extension comes off the preset, so every destination in the
         // plan just changed and with it every skip decision.
@@ -594,12 +594,12 @@ impl ConvertDialog {
         window.remove_window();
     }
 
-    /// Keep what was just run as what the next dialog opens on. A custom
-    /// rides as its key plus the two fields it reads back out of, so the
+    /// Keep what was just run as what the next dialog opens on. A custom is
+    /// stored as its key plus the two fields it reads back out of, so the
     /// next open is the same format rather than a fallback to FLAC.
     fn remember(&self, format: &Format, dest: PathBuf, cx: &App) {
         let preset = format.key().to_owned();
-        // The two custom fields ride along whichever format ran, so
+        // The two custom fields are saved whichever format ran, so
         // switching to a preset and back doesn't cost what was typed.
         let ext = self.typed_ext(cx);
         let args = self.custom_args.read(cx).value().trim().to_owned();
@@ -628,8 +628,8 @@ impl ConvertDialog {
     }
 
     /// One preview row: the track on the left, the file it produces on the
-    /// right, relative to the destination so the pattern's own shape is
-    /// what shows. A row that produces nothing says why instead.
+    /// right, relative to the destination so the pattern's own shape
+    /// shows. A row that produces nothing says why instead.
     fn preview_row(&self, entry: &Entry, track: &Track) -> Div {
         let dest = self.dest.clone().unwrap_or_default();
         let (line, color) = match &entry.skip {
@@ -877,7 +877,7 @@ impl ConvertDialog {
 
     /// Why Convert won't run yet, when it won't: the pattern that doesn't
     /// parse, the folder nobody has picked, a typed format ffmpeg hasn't
-    /// agreed to, or a plan with nothing left in it. None once the press
+    /// accepted, or a plan with nothing left in it. None once the press
     /// would do something, which is when the footer offers the shortcut
     /// instead.
     fn status(&self) -> Option<(SharedString, gpui::Rgba)> {
@@ -1045,8 +1045,8 @@ impl Render for ConvertDialog {
                     .bg(palette::bg_elevated())
                     .gap(tokens::SPACE_MD)
                     .p(tokens::SPACE_MD)
-                    .child(section("Output", None, self.controls(cx)))
-                    .child(section("Preview", Some(count), preview).flex_1().min_h_0()),
+                    .child(section(rox_i18n::t!("convert-section-output"), None, self.controls(cx)))
+                    .child(section(rox_i18n::t!("convert-section-preview"), Some(count), preview).flex_1().min_h_0()),
             )
             .child(self.footer(ready, cx))
     }

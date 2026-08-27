@@ -56,7 +56,7 @@ pub fn value_eq(a: &str, b: &str, fold: bool) -> bool {
 }
 
 /// The cue half of a track row: which sheet claimed the image, and the
-/// slice of it this track is. Only cue tracks carry one, so a library of
+/// slice of it this track is. Only cue tracks have one, so a library of
 /// plain files never allocates it and the store writes no side row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CueSlice {
@@ -74,8 +74,8 @@ pub struct TrackRow {
     /// (source, path, sub), so a whole-disc rip holds one row per track
     /// and playlists, listens, search and sort all inherit them.
     pub sub: u16,
-    /// The span and sheet, for a cue track; None for a plain file. Rides
-    /// the row so one upsert lands the track and its side row together.
+    /// The span and sheet, for a cue track; None for a plain file. Part of
+    /// the row so one upsert writes the track and its side row together.
     pub cue: Option<CueSlice>,
     pub title: String,
     pub artist: String,
@@ -85,7 +85,7 @@ pub struct TrackRow {
     pub album: String,
     pub genre: String,
     pub year: u16,
-    /// The disc this track sits on within a multi-disc set; 0 when untagged.
+    /// The disc this track belongs to in a multi-disc set; 0 when untagged.
     pub disc_no: u16,
     pub track_no: u16,
     pub duration_ms: u32,
@@ -95,21 +95,21 @@ pub struct TrackRow {
     /// The audio stream's bitrate in kbps; 0 when the parse fails.
     pub bitrate_kbps: u16,
     /// The stream's sample rate in Hz (44100, 48000); 0 when the parse
-    /// fails. Held in Hz, not kHz, so 44.1 survives the round trip.
+    /// fails. Held in Hz, not kHz, so 44.1 comes back exact.
     pub sample_rate_hz: u32,
     /// Bits per sample; 0 when the parse fails and for the lossy formats
     /// that have no fixed depth to report.
     pub bit_depth: u8,
     /// The file's rating on the app's 0-100 scale, read off its tags
-    /// (FMPS exact, POPM stars); 0 when it carries none.
+    /// (FMPS exact, POPM stars); 0 when it has none.
     pub rating: u8,
-    /// What the file's ReplayGain tags measured, all None when it carries
+    /// What the file's ReplayGain tags measured, all None when it has
     /// none. The engine levels by these at play time (ADR 19). A file with
     /// none can get them from rox's own measurement pass, which writes past
     /// the scanner straight onto the row.
     pub replay_gain: replaygain::ReplayGain,
-    /// The tempo the file's tags claim, in beats a minute; None when it
-    /// carries none rox will believe (see [`tempo::parse`]). A file with
+    /// The tempo the file's tags claim, in beats a minute; None when it has
+    /// none rox will believe (see [`tempo::parse`]). A file with
     /// none can get one from rox's own analysis pass, which writes past the
     /// scanner straight onto the row.
     pub bpm: Option<f32>,

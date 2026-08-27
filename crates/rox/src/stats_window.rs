@@ -2,8 +2,8 @@
 //! Settings, the listening record rolled up per ADR 11. A range knob
 //! (all time down to this week) scopes the page: the recency counts
 //! as cards, listens over time as bars, then the artists, albums, and
-//! genres you played most, each wearing the art its own wall wears - a
-//! face in a circle, a sleeve in a square, a genre's own color card - and
+//! genres you played most, each shown with the art its own wall uses (a
+//! face in a circle, a sleeve in a square, a genre's own color card), and
 //! the newest listens under them. Everything derives from the events
 //! table by SQL on the shared catalog's connection; nothing counts along
 //! the way.
@@ -53,8 +53,8 @@ const RECENT_ROWS: usize = 15;
 const GENRE_COLS: usize = 3;
 const GENRE_CARD_H: f32 = 76.;
 
-/// The art a rollup row wears, and the smaller square a recents row
-/// carries, in px.
+/// The art size a rollup row draws at, and the smaller square a recents
+/// row uses, in px.
 const ART: f32 = 40.;
 const ROW_ART: f32 = 28.;
 
@@ -63,11 +63,11 @@ const CHART_H: f32 = 96.;
 
 const DAY: i64 = 86400;
 
-/// The hover scope for a playable row: the play control sits invisible
+/// The hover scope for a playable row: the play control stays invisible
 /// in its slot until the row is hovered, the library's rating-cell move.
 const ROW_GROUP: &str = "stats-row";
 
-/// The same for a genre card, whose play glyph rides its corner.
+/// The same for a genre card, whose play glyph is drawn in its corner.
 const CARD_GROUP: &str = "stats-card";
 
 /// The play slot's width, [`panel::icon_control`]'s footprint, reserved
@@ -152,7 +152,7 @@ struct OpenStats(WindowHandle<Root>);
 impl Global for OpenStats {}
 
 /// Open the stats window, or bring the open one to the front. The state
-/// carries the library the rollups read through, the recorder whose
+/// holds the library the rollups read through, the recorder whose
 /// events wake the refresh, and the shared art bake for the backdrop.
 pub fn open(state: AppState, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenStats>() {
@@ -186,7 +186,7 @@ pub fn open(state: AppState, cx: &mut App) {
 /// Everything the window shows, measured whole on each refresh.
 #[derive(Default)]
 struct StatsData {
-    /// Listens landed inside each trailing window: week, month, year,
+    /// Listens recorded inside each trailing window: week, month, year,
     /// and all time. Range-independent, the page's overview.
     week: u64,
     month: u64,
@@ -219,11 +219,11 @@ struct StatsWindow {
     /// The page's scroll position, shared with the scrollbar.
     scroll: ScrollHandle,
     backdrop: WindowBackdrop,
-    /// A landed listen moves every number here.
+    /// A new listen moves every number here.
     _history_changed: Subscription,
     /// A rescan can retag tracks, which re-buckets the rollups.
     _library_changed: Subscription,
-    /// Landing covers and faces notify their services; repaint so the
+    /// Arriving covers and faces notify their services; repaint so the
     /// rows fill in.
     _thumbs_changed: Subscription,
     _portraits_changed: Subscription,
@@ -251,7 +251,7 @@ impl StatsWindow {
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         // The OS close button never runs remove_window, so the frame
         // persists through the should-close hook, the tag editor's move;
-        // the range writes as it is picked.
+        // the range writes as it's picked.
         window.on_window_should_close(cx, move |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
@@ -294,7 +294,7 @@ impl StatsWindow {
         let since = self.range.since(now);
         let library = self.state.library.read(cx);
         // The chart's span: the range's own for the bounded picks; all
-        // time runs from the first listen, bucketed to land near 48
+        // time runs from the first listen, bucketed to come out near 48
         // bars whatever the record's age.
         let (chart_since, bucket) = match self.range {
             // Six-hour buckets over a week, so the bars still read as a
@@ -332,8 +332,8 @@ impl StatsWindow {
             return;
         }
         self.range = range;
-        // The pick persists as it lands, so it survives a quit that
-        // never runs the close hook; the frame keeps writing on close.
+        // The pick is written as it's made, so it persists across a quit
+        // that never runs the close hook; the frame keeps writing on close.
         Settings::update(move |s| {
             let state = s
                 .windows
@@ -409,7 +409,7 @@ impl StatsWindow {
 
     /// An artist's face through the shared portrait service, the artist
     /// wall's own source; None while it looks up and for a name no
-    /// service knows, where the row falls back to a cover.
+    /// service has, where the row falls back to a cover.
     fn portrait(&self, name: &str, cx: &mut Context<Self>) -> Option<Arc<Image>> {
         self.state
             .portraits
@@ -417,8 +417,8 @@ impl StatsWindow {
     }
 
     /// The recency overview: one card per trailing window, whatever the
-    /// range knob says. The window the knob is on wears the accent, which
-    /// is what ties the rest of the page to a card.
+    /// range knob is set to. The window the knob is on takes the accent,
+    /// which ties the rest of the page to a card.
     fn listens_section(&self) -> Div {
         let cards = [
             (rox_i18n::t_static("stats-range-week"), self.data.week),
@@ -518,7 +518,7 @@ impl StatsWindow {
         for (i, row) in rows.iter().enumerate() {
             let name = row.name.clone();
             // The face first, a record of theirs behind it: an artist no
-            // service knows still gets a cover rather than a blank.
+            // service has still gets a cover rather than a blank.
             let art = match shape {
                 ArtShape::Circle => self
                     .portrait(&row.name, cx)
@@ -544,7 +544,7 @@ impl StatsWindow {
                             .flex()
                             .flex_col()
                             .gap(px(3.))
-                            // The column carries the clipping; a truncating
+                            // The column does the clipping; a truncating
                             // line inside it must not, since min-width 0 on
                             // the cross axis collapses the line to its
                             // ellipsis.
@@ -603,7 +603,7 @@ impl StatsWindow {
     }
 
     /// One genre card: the gradient the genre grid gives that name, its
-    /// motif under the text, the play glyph riding the corner on hover.
+    /// motif under the text, the play glyph in the corner on hover.
     fn genre_card(&self, ix: usize, row: &NamePlays, cx: &mut Context<Self>) -> AnyElement {
         let (color, partner) = palette::genre_color_pair(&row.name);
         let seed = palette::genre_seed(&row.name);
@@ -653,7 +653,7 @@ impl StatsWindow {
                     ),
             )
             // Every card is the same size, so the rank is the only thing
-            // saying which genre outran which.
+            // showing which genre outran which.
             .child(
                 div()
                     .absolute()
@@ -785,8 +785,8 @@ fn stat_card(label: &'static str, count: u64, scoped: bool) -> Div {
         )
 }
 
-/// A row's place in its rollup. The top three take the accent, which is
-/// what makes a chart read as a chart at a glance.
+/// A row's place in its rollup. The top three take the accent, which
+/// makes a chart read as a chart at a glance.
 fn rank(ix: usize) -> Div {
     div()
         .flex_none()
@@ -802,10 +802,10 @@ fn rank(ix: usize) -> Div {
 }
 
 /// A row's art: the face or sleeve when one is in hand, otherwise the
-/// quiet placeholder in the same shape, so a landing image fills without
-/// shifting the row. The rounding rides the image itself - gpui content
-/// masks stay rectangular, so a round frame under a square image would
-/// paint over its own corners.
+/// quiet placeholder in the same shape, so an arriving image fills without
+/// shifting the row. The rounding is applied to the image itself: gpui
+/// content masks stay rectangular, so a round frame under a square image
+/// would paint over its own corners.
 fn art_frame(image: Option<Arc<Image>>, shape: ArtShape, name: &str, side: gpui::Pixels) -> Div {
     let round = |element: gpui::Img| match shape {
         ArtShape::Circle => element.rounded_full(),
@@ -858,7 +858,7 @@ fn initial(name: &str) -> String {
 }
 
 /// How a row's count stands against its section's leader: a hairline
-/// under the name, which is what turns a list into a chart.
+/// under the name, which turns a list into a chart.
 fn share_bar(fraction: f32) -> Div {
     div()
         .h(px(3.))
@@ -895,7 +895,7 @@ fn plays_label(plays: u64) -> String {
 }
 
 /// A row's play control: invisible until the row is hovered, queueing
-/// on click. Every row wears the same glyph, so the tip is keyed by the
+/// on click. Every row uses the same glyph, so the tip is keyed by the
 /// row's own id: a shared one would leave the whole column hovering on
 /// one timer.
 fn play_button(
@@ -1028,7 +1028,7 @@ impl Render for StatsWindow {
                                         .p(tokens::SPACE_MD)
                                         // Room for the scrollbar's 16px lane,
                                         // so the counts and play controls
-                                        // never sit under the thumb.
+                                        // never end up under the thumb.
                                         .pr(tokens::SPACE_MD + px(16.))
                                         .child(page),
                                 )

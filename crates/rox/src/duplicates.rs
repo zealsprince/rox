@@ -1,19 +1,19 @@
-//! The duplicates window: find tracks the library carries more than once
+//! The duplicates window: find tracks the library holds more than once
 //! and move the spare copies to the OS trash. A duplicate here is a tag
 //! identity, the same title and artist within a small duration tolerance,
-//! matched over the in-memory projection, so a scan never walks the disk;
+//! matched over the in-memory projection, so a scan never goes to disk;
 //! the same album ripped twice or copied into two folders shows up whatever
 //! the files are named. Groups list every copy with its cover, codec, and
 //! bitrate so the user can see which version is which before deciding, and
 //! a filter box narrows a long result to one artist or folder.
 //!
-//! The keep policy picks each group's default keeper - best quality,
-//! oldest, or newest copy - and checks the rest. A group whose copies
+//! The keep policy picks each group's default keeper (best quality,
+//! oldest, or newest copy) and checks the rest. A group whose copies
 //! belong to different albums is never auto-checked: those are one song on
 //! several releases, and trashing a copy would leave a hole in an album,
 //! so touching them stays a hand decision. A group can never have every
-//! member checked - checking the last unchecked copy swaps the mark onto
-//! the old keeper instead - so the tool cannot take a track's last copy.
+//! member checked: checking the last unchecked copy swaps the mark onto
+//! the old keeper instead, so the tool can't take a track's last copy.
 //! Trashing goes through the `trash` crate, never a plain unlink, and the
 //! catalog rows drop through the library's prune so the panels converge
 //! without a rescan.
@@ -45,7 +45,7 @@ use rox_services::thumbs::{Thumb, Thumbs};
 /// agree; two lines and a cover fit either way.
 const ROW_H: f32 = 42.;
 
-/// A member row's cover tile, sized to sit inside the row with room to
+/// A member row's cover tile, sized to fit inside the row with room to
 /// breathe.
 const COVER: f32 = 32.;
 
@@ -76,8 +76,8 @@ impl KeepPolicy {
 struct DupMember {
     path: PathBuf,
     name: SharedString,
-    /// The full parent directory, not just its name: duplicates often sit
-    /// in folders named alike, and the path is what tells them apart.
+    /// The full parent directory, not just its name: duplicates are often
+    /// in folders named alike, and the path tells them apart.
     folder: SharedString,
     codec: SharedString,
     bitrate_kbps: u16,
@@ -92,7 +92,7 @@ struct DupGroup {
     title: SharedString,
     artist: SharedString,
     duration_ms: u32,
-    /// Whether every copy carries the same album tag. Copies spread over
+    /// Whether every copy has the same album tag. Copies spread over
     /// different albums are one song on several releases; auto-selection
     /// leaves those alone so no album loses a track by default.
     same_album: bool,
@@ -108,7 +108,7 @@ enum RowKind {
 }
 
 /// The open duplicates window, if any. One at a time for the same reason
-/// as tag repair: a scan or delete in flight is not worth losing to a
+/// as tag repair: a scan or delete in flight isn't worth losing to a
 /// second copy, so asking again brings this one forward.
 #[derive(Default)]
 struct OpenDuplicates(Option<WindowHandle<Root>>);
@@ -172,7 +172,7 @@ pub struct Duplicates {
     trashing: bool,
     trash_done: usize,
     trash_total: usize,
-    /// The last delete's summary, held over the list after it lands.
+    /// The last delete's summary, held over the list after it finishes.
     result: Option<SharedString>,
     /// A scan or delete failure, shown inline.
     error: Option<SharedString>,
@@ -248,7 +248,7 @@ impl Duplicates {
 
     /// Match the projection for duplicate identities. The grouping runs
     /// off the UI thread over the shared projection; the id-to-path
-    /// resolution lands back on it, where the library connection lives.
+    /// resolution happens back on it, where the library connection is.
     fn scan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.scanning || self.trashing {
             return;
@@ -348,7 +348,7 @@ impl Duplicates {
 
     /// Change the keep policy: reorder the groups and reset the marks to
     /// its defaults. Held while a delete runs so the commits' targets
-    /// cannot shift under them.
+    /// can't shift under them.
     fn set_policy(&mut self, policy: KeepPolicy, cx: &mut Context<Self>) {
         if self.trashing || policy == self.policy {
             return;
@@ -360,7 +360,7 @@ impl Duplicates {
     }
 
     /// Apply the keep policy's default marks: the first member (the keeper
-    /// per the active ordering) stays, the rest are checked - except in a
+    /// per the active ordering) stays, the rest are checked, except in a
     /// group whose copies span different albums, which stays untouched so
     /// no album loses a track without a hand pick.
     fn auto_select(&mut self) {
@@ -417,7 +417,7 @@ impl Duplicates {
 
     /// How many marks the trash pass would actually take: groups the
     /// filter hides are skipped, the same gate trash() applies, so the
-    /// button never promises files that stay put.
+    /// button's count never includes files that stay put.
     fn visible_checked_count(&self) -> usize {
         self.groups
             .iter()
@@ -570,9 +570,9 @@ impl Duplicates {
         .detach();
     }
 
-    /// What rides the heading's right edge: finding the duplicates, which
-    /// only ever looks at the library, so it sits with the view rather
-    /// than with the trash down in the footer.
+    /// The scan controls, at the heading's right edge: finding the
+    /// duplicates only ever reads the library, so it belongs with the view
+    /// rather than with the trash down in the footer.
     fn scan_controls(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.scanning || self.trashing;
         div()
@@ -607,7 +607,7 @@ impl Duplicates {
         let busy = self.scanning || self.trashing;
         let count = self.visible_checked_count();
         // Worst news first: a failure outlives the run that raised it, and
-        // a run in flight outranks a count that is about to change under
+        // a run in flight outranks a count that's about to change under
         // it.
         let warn: Option<SharedString> = if let Some(error) = self.error.clone() {
             Some(error)
@@ -702,7 +702,7 @@ impl Duplicates {
     /// virtualized group list.
     fn results(&self, cx: &mut Context<Self>) -> Div {
         let region = div().flex_1().min_h_0().flex().flex_col();
-        // Mid-scan the header's spinner already says what is happening;
+        // Mid-scan the header's spinner already says what's happening;
         // the hint would just contradict it.
         if self.scanning {
             return region;
@@ -809,7 +809,7 @@ impl Duplicates {
             )
     }
 
-    /// The visible slice of list rows: group headers carrying the shared
+    /// The visible slice of list rows: group headers showing the shared
     /// identity, member rows each a click target around their checkbox.
     fn list_rows(
         &self,
@@ -832,7 +832,7 @@ impl Duplicates {
 
     /// One group's header row: the title over the artist and duration, a
     /// note when the copies span albums, and the copy count trailing. All
-    /// but the first header wear a top border so groups read apart.
+    /// but the first header get a top border so groups read apart.
     fn header_row(&self, i: usize, group: &DupGroup) -> Stateful<Div> {
         let n = group.members.len();
         div()
@@ -970,7 +970,7 @@ fn group_matches(group: &DupGroup, query: &str) -> bool {
         })
 }
 
-/// A member's cover tile: the thumbnail once it is ready, a placeholder
+/// A member's cover tile: the thumbnail once it's ready, a placeholder
 /// note glyph while it loads or when the file has none. The thumbnail
 /// service's tiles are square, so covers line the rows up.
 fn cover_tile(thumb: Thumb) -> Div {

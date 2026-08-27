@@ -8,7 +8,7 @@
 //! way back however bad the shader looks. Hot reloads and the toggle hotkey
 //! never come through here: the reload is the authoring loop, and the
 //! hotkey is the escape hatch. The window registers itself with the
-//! workspace's shading machinery so it is never shaded, whatever the
+//! workspace's shading machinery so it's never shaded, whatever the
 //! all-windows option says: it has to stay readable under exactly the
 //! shader it exists to undo.
 
@@ -25,7 +25,7 @@ use rox_panel_api::panel;
 use rox_panel_kit::ui::{chord, kbd_line, small_button, Seg};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 
-/// The caller's after-revert refresh, boxed for the entity to carry.
+/// The caller's after-revert refresh, boxed for the entity to hold.
 type OnReverted = Box<dyn FnOnce(&mut App)>;
 
 /// The open confirm, if any: a second risky apply reuses it, keeping the
@@ -40,7 +40,7 @@ impl Global for OpenConfirm {}
 /// Open the confirm for a change whose pre-apply state was `prior`, or
 /// bring the open one forward. `now_art` is the shared art bake this
 /// window's backdrop paints from. `on_reverted` runs after a revert so the
-/// caller can refresh whatever mirrors the reverted fields.
+/// caller can refresh its own copies of the reverted fields.
 pub fn open(
     prior: PostShaderConfig,
     player: EntityId,
@@ -77,7 +77,7 @@ pub fn open(
     // entity below.
     crate::workspace::note_confirm_window(Some(handle.into()), cx);
     cx.default_global::<OpenConfirm>().0 = Some((handle, entity.downgrade()));
-    // Every close lands here: Keep and Revert close the window, the OS
+    // Every close ends up here: Keep and Revert close the window, the OS
     // close button too. Only Keep marks the entity, everything else is a
     // revert, so a dismissed dialog fails safe.
     cx.observe_release(&entity, |confirm, cx| {
@@ -107,14 +107,14 @@ pub fn open(
 struct ShaderConfirm {
     /// The config from before the apply, what a revert restores: the enable
     /// switch and the three ways a source gets picked (the file, the inline
-    /// copy, the pool name). The all-windows option and the routes ride
-    /// along untouched, so a route dragged while the window sits open
-    /// survives a revert.
+    /// copy, the pool name). The all-windows option and the routes are part
+    /// of the snapshot but never written back, so a route dragged while the
+    /// window is open persists across a revert.
     prior: PostShaderConfig,
     /// The front workspace's player, for the window tint.
     player: EntityId,
-    /// The shared art bake and this window's slice of the backdrop, so it
-    /// backs with the playing track's art like every other window.
+    /// The shared art bake and this window's slice of the backdrop, so it's
+    /// backed by the playing track's art like every other window.
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
     /// Set by Keep alone. The release hook reads it to tell a confirmed
@@ -177,7 +177,7 @@ impl Render for ShaderConfirm {
                     d.font_family(font)
                 })
                 // The backdrop paints first, under the copy, so a thinned
-                // surface backs with the playing track's art like every
+                // surface is backed by the playing track's art like every
                 // other window rather than sinking into black.
                 .children(self.backdrop.layer(&self.now_art, window, cx))
                 .child(

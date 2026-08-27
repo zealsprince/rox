@@ -30,9 +30,9 @@ output callback owns nothing.
 
 - **Sample ring**: rtrb SPSC, `f32` interleaved stereo at the device rate, allocated
   once at stream open. Capacity 500 ms (`device_rate` / 2 frames, so 24,000 at 48 kHz).
-  Deep enough that a 3 ms decode-thread nap or a metadata hiccup never reaches the
+  Deep enough that a 3 ms decode-thread nap or a metadata hiccup never starves the
   callback; shallow enough that it drains fast on flush. The capacity is fixed for the
-  life of the stream; how full the decode thread lets it get is not, see the fill gate
+  life of the stream. How full the decode thread lets it get isn't; see the fill gate
   under the decode loop.
 - **PCM tap**: second rtrb SPSC, 16,384 samples. The callback pushes a pre-volume copy
   of every frame it plays and ignores push failure. A slow visualizer loses samples,
@@ -56,8 +56,8 @@ The hard line from the components spec, as actual rules:
 - Flush flagged: drain and discard the whole ring, emit silence, count nothing.
 - Applies user volume (one atomic load, one multiply per sample) and converts f32 to
   the device sample format via cpal's `FromSample`. The stream is built generically
-  for f32, i16, u16, and i32 devices. At exactly 1.0 the multiply is skipped, which is
-  what lets ADR 19's bit-perfect claim be checked instead of asserted.
+  for f32, i16, u16, and i32 devices. At exactly 1.0 the multiply is skipped, which lets
+  ADR 19's bit-perfect claim be checked instead of asserted.
 - Folds stereo onto the device layout: mono devices get (L+R)/2, wider devices get L/R
   in the first two channels and silence in the rest.
 - Increments `frames_consumed` by frames actually played. That counter is the global
@@ -70,19 +70,19 @@ mean two things, and ADR 19 defines it once.
 
 ## Output backends
 
-ADR 9 kept the output layer swappable and ADR 19 spends the option, so `output.rs` is
-the seam plus cpal's answer to it. A backend takes a `Request` (mode, device id,
-rate), claims a device, and reports a `Negotiated` back: mode, device name, rate,
-channels, format, and the reason it fell back if it did. The engine never learns which
-one ran; it gets a ring to push into and a rate to resample toward.
+ADR 9 kept the output layer swappable and ADR 19 spends the option, so `output.rs` holds
+the seam plus the cpal implementation of it. A backend takes a `Request` (mode, device
+id, rate), claims a device, and reports a `Negotiated` back: mode, device name, rate,
+channels, format, and the reason it fell back if it did. The engine never sees which one
+ran; it gets a ring to push into and a rate to resample toward.
 
 - **Shared** is cpal, the default host, the picked device or the system default, and
   whatever config that device already runs at. `Request::rate` is ignored: the mixer
   owns the rate here.
 - **Exclusive** is per-platform, one file each, picked by `cfg` in `output.rs`.
   - Linux is `output/alsa.rs`, the card claimed as `hw:CARD=x,DEV=n` with
-    `set_rate_resample(false)`, which is the one ALSA name that refuses to quietly
-    resample. Formats are taken best-first from float, s32, s16; packed 24-bit is
+    `set_rate_resample(false)`, the one ALSA setting that stops it from quietly
+    resampling. Formats are taken best-first from float, s32, s16; packed 24-bit is
     skipped because rox has no three-byte sample type and the cards that offer it
     offer s32 as well. Instead of a callback, a writer thread blocks on `writei` per
     period (10 ms, four in the buffer) and calls the same `fill`.
@@ -106,13 +106,13 @@ platform contract and ships for testers, but no card has heard it here yet, so t
 Audio page badges exclusive mode experimental on Windows and offers a prefilled issue
 so a report arrives with the details a tester would forget.
 
-A claim that fails (busy, no such device) opens shared instead and carries the reason
+A claim that fails (busy, no such device) opens shared instead and records the reason
 in `Negotiated::fallback`, which the Audio page shows. Never an error, never silence.
 
-Exclusive follows the file's rate, which no one knows until the decode thread opens
-it. So a session opens at the device's rate, and the player's pump compares the
+Exclusive follows the file's rate, which isn't known until the decode thread opens the
+file. So a session opens at the device's rate, and the player's pump compares the
 playing track's rate against the running one and rebuilds when they differ, at the
-cost of the gap ADR 19 budgeted for. Rates the device turns down are remembered, so a
+cost of the gap ADR 19 budgeted for. Rates the device rejects are remembered, so a
 card that can't match doesn't get asked again every tick. Two tests under `--ignored`
 cover the hardware path, since they claim a real device: one checks the claim
 negotiates and the output clock runs, one checks a busy device falls back to shared.
@@ -129,7 +129,7 @@ Segment { at_frame: u64, track: usize, track_frame: u64 }
 ```
 
 `at_frame` is the value `frames_consumed` will have when the segment's first frame
-plays; `track_frame` is where in the track that frame sits, in device-rate frames.
+plays; `track_frame` is where in the track that frame is, in device-rate frames.
 Current position = find the last segment with `at_frame <= frames_consumed`, then
 `track_frame + (frames_consumed - at_frame)`. UI reads are two atomic loads and a
 short lock on the segment list.
@@ -142,16 +142,16 @@ flush (when the ring is empty and the two are provably equal).
 
 At end of stream the decode thread drops the finished Symphonia reader/decoder pair,
 opens the next track's, registers a segment, and keeps pushing into the same ring under
-the same live stream. No flush, no stream teardown, nothing at all happens at the
-output layer. That is the entire mechanism.
+the same live stream. No flush, no stream teardown, nothing at the output layer at all.
+That's the whole mechanism.
 
-Encoder delay and padding live under the reader in symphonia 0.6. The MP3 demuxer
+Encoder delay and padding are handled inside the reader in symphonia 0.6. The MP3 demuxer
 parses the Xing/LAME header into `Track::delay` / `Track::padding`, stamps every packet
 with `trim_start` / `trim_end` in decoded frames, and the decoder applies the trim
 before the engine sees samples. `Track::num_frames` already excludes trimmed frames.
 FLAC needs none of this.
 
-The boundary is checkable, not assumed: `--count` decodes a file through the same code
+The boundary is checkable: `--count` decodes a file through the same code
 path with no audio device and compares decoded frames against `Track::num_frames`.
 Exact equality means the trim is exact and the boundary is sample-accurate by
 construction; a LAME-encoded 3.000 s file at 44.1 kHz counts 132,300 both sides. A file
@@ -164,8 +164,8 @@ The fade is not a chain node. During a window the decode thread holds two open
 sources: the incoming one drives the loop as always, the outgoing one decodes
 alongside in `Fade` and is mixed underneath before the chain runs, so the ring keeps
 its single producer and an EQ shapes the fade like anything else. Per-frame gains come
-from `gain.rs`, the source-gain stage ADR 19 put ahead of the mix; it is also where a
-source's own constant gain applies, which is where ReplayGain sits.
+from `gain.rs`, the source-gain stage ADR 19 put ahead of the mix; it's also where a
+source's own constant gain applies, ReplayGain included.
 
 The curve is equal power, `sin`/`cos` over the window, so two unrelated tracks hold
 their level through the middle where a linear pair would sag. `Settings.crossfade_secs`
@@ -173,7 +173,7 @@ sets the length and zero disables it: no window ever opens, and every boundary i
 gapless splice above, unchanged. The engine caps a window at half the outgoing track,
 so a fade longer than the track it leaves can't start before that track got going.
 
-Which boundaries fade is the album group (ADR 17) the queue entries already carry: two
+The album group (ADR 17) already on the queue entries decides which boundaries fade: two
 tracks of the same album keep their splice, everything else fades, and repeat-one never
 overlaps a track with itself. `Settings.crossfade_albums` overrides the group rule for
 a listener who wants every boundary soft; repeat-one stays out even then.
@@ -194,12 +194,11 @@ The new track's segment registers at the fade midpoint rather than its first sam
 MPRIS all flip there, so nothing announces a track before it's audible.
 
 The window is published to the transport the same way, as the output frame it becomes
-audible at plus its length, which means the button showing it and the ear reach it
-together rather than the button running a ring ahead. The skip control that started the
-fade wears an accent sweep across it while the overlap runs, in the direction the queue
-moved; a boundary fade reads as forward. Progress is quantized to 64ths in
-`PlayerView`, so a panel on the gated observe wakes once per visible step instead of on
-every pump tick.
+audible at plus its length, so the button and the ear get there together rather than the
+button running a ring ahead. The skip control that started the fade shows an accent sweep
+across it while the overlap runs, in the direction the queue moved; a boundary fade reads
+as forward. Progress is quantized to 64ths in `PlayerView`, so a panel on the gated
+observe is notified once per visible step instead of on every pump tick.
 
 Two decoders run for the length of a window, a CPU bump bounded by the fade length.
 The engine tests cover the boundary rule, the window math, and the loop-mode targets;
@@ -208,14 +207,14 @@ the mix and the curve are tested in `gain.rs`.
 ## ReplayGain
 
 One multiply per source, applied where the fade curve is (`gain.rs`), before that
-source's samples meet any other's. That placement is what a crossfade forces: a window
-has two tracks live at once, and a single node over the mix would level both by one
-track's number.
+source's samples meet any other's. A crossfade forces that placement: a window has two
+tracks live at once, and a single node over the mix would level both by one track's
+number.
 
-The scan pulls the four standard values off whatever tag the file carries
+The scan pulls the four standard values off whatever tag the file has
 (`replaygain.rs`; lofty maps them the same across ID3v2 TXXX frames, Vorbis comments,
-and MP4 atoms), and they ride the row into SQLite as nullable columns, because 0 dB is a
-measurement and a defaulted column could not tell it from an untagged file. The player
+and MP4 atoms), and they're written into SQLite as nullable columns, because 0 dB is a
+measurement and a defaulted column couldn't tell it from an untagged file. The player
 resolves them per path in the same lookup that resolves album groups and hands them to
 the engine with the queue, so the engine still sees nothing but paths plus what the
 library says about them.
@@ -224,37 +223,37 @@ Files no tagger ever analyzed get measured here. `analysis.rs` decodes a file en
 through Symphonia and meters it per EBU R128 with `ebur128`, gated integrated loudness
 against RG2's -18 LUFS reference, plus an oversampled true peak so an intersample peak
 counts. `store::albums_missing_replaygain` hands the work back grouped by album and
-`rox/src/replaygain_job.rs` walks it one album at a time on a background worker, polled
-for cancel every quarter second of decoded audio. An album is metered as one program:
-the per-track histories merge before the gate runs, so the record's quiet interlude
-drops out of the album figure the same way a quiet passage drops out of a track's.
+`rox/src/replaygain_job.rs` steps through it one album at a time on a background worker,
+polled for cancel every quarter second of decoded audio. An album is metered as one
+program: the per-track histories merge before the gate runs, so the record's quiet
+interlude drops out of the album figure the same way a quiet passage drops out of a track's.
 Measuring only part of an album gets track values only, since a gain gated over half a
-record is a number for a record that doesn't exist, and the tracks that already carry
-tags carry their own album figures.
+record is a number for a record that doesn't exist, and the tracks that already have
+tags bring their own album figures.
 
-Where the numbers land is a setting. The default writes them to the library database
+A setting picks where the numbers go. The default writes them to the library database
 through `store::set_measured_replaygain`, marked in `rg_source` as rox's own, so nothing
 rewrites a file or bumps an mtime. The opt-in writes the four tags into the files
 themselves through `writer::commit_replay_gain`, the tag editor's atomic layer, and then
 reindexes the written paths so the row converges from disk. The precedence is one SQL
-condition in the scanner's upsert: tags win over a measurement whenever a file carries
-them, and a measurement survives a rescan that finds the file still tag-less. So a
+condition in the scanner's upsert: tags win over a measurement whenever a file has
+them, and a measurement is kept through a rescan that still finds no tags. So a
 library measured into the database stays measured, and a file someone later tags with
 foobar2000 takes the tagger's numbers on the next scan.
 
 `GainRule` turns the tags into the factor: which gain to read (off, track, album, each
-falling back to the other where a file carries only one), a preamp added to every
+falling back to the other where a file has only one), a preamp added to every
 tagged gain, and a separate number for files with no tags at all. The tagged peak
 clamps the result, so a boost never pushes a track past full scale, and a cut is left
 alone. Off returns exactly 1.0 rather than a rounded one, so `gain::apply`
 short-circuits and the samples reach the ring the bits the decoder produced.
 
-The rule rides the command channel, not an atomic: the engine reads it when a source
-opens, not per sample. A change relevels every source in hand, both sides of a fade
-included, so switching mode is heard on the track playing rather than the one after it,
-behind the same ring depth every other parameter change sits behind.
+The rule is sent over the command channel rather than shared as an atomic, so the engine
+reads it when a source opens instead of per sample. A change relevels every source in
+hand, both sides of a fade included, so switching mode is heard on the track playing
+rather than the one after it, behind the same ring depth as every other parameter change.
 
-The Audio page states what the library actually carries
+The Audio page states what the library actually has
 (`store::replaygain_breakdown`), split into tagged, measured, and missing, counted on
 library events rather than per frame. The missing count is the measurement pass's work
 list, and the button beside it starts the pass and turns into its progress.
@@ -295,16 +294,16 @@ decoding packets until one yields frames. Decoded audio is copied out interleave
 folded to stereo (mono duplicated, more-than-stereo takes the first two channels), and
 resampled to the device rate.
 
-Resampling sits behind a push-a-chunk seam on the decode thread: linear interpolation
+Resampling is behind a push-a-chunk seam on the decode thread: linear interpolation
 with one carried frame for chunk-boundary continuity, swappable for a windowed-sinc
 resampler (rubato) without anything outside the decode thread noticing. Real
 multichannel downmix slots into the same fold step.
 
 The processing chain (ADR 19) runs last, after the fold and resample and immediately
-before the push, so chain output rides through flush, seek, and the gapless boundary
+before the push, so chain output goes through flush, seek, and the gapless boundary
 like any other sample data and the PCM tap sees what the chain produced.
 `Chain::reset(rate)` fires at stream open and on a device rebuild, never at the
-gapless boundary, so filter history carries across a splice. An empty chain leaves the
+gapless boundary, so filter history persists across a splice. An empty chain leaves the
 buffer untouched: that's the bypass rule, held structurally rather than behind a flag.
 User volume stays the callback atomic, so the two never meet in the same multiply.
 
@@ -326,8 +325,8 @@ Failure shapes:
 - Seek failure (unseekable source): position unchanged, error logged, playback
   continues.
 
-`enqueue` rides the same command channel and appends to the decode thread's queue; it
-never touches the ring, so it can't disturb what's already playing.
+`enqueue` is sent over the same command channel and appends to the decode thread's
+queue; it never touches the ring, so it can't disturb what's already playing.
 
 ## Device loss and rebuild
 
@@ -341,10 +340,10 @@ The player's pump notices the flag and calls `reopen_device`, which rebuilds the
 session rather than swapping a stream: it pulls order, cursor, and position off the
 dying session the same way the close-time persist does, then starts fresh against the
 current output settings, whose default device is the reconnected or newly default one.
-The same rebuild is what an output mode or device switch runs through, so both land
-without a restart. Everything
-denominated in the old device rate goes with it, the sample ring, the resampler, the
-consumed clock, and the segment list. A disconnect mid-playback resumes; a restore-shaped
+An output mode or device switch runs through the same rebuild, so both apply without a
+restart. Everything denominated in the old device rate goes with it: the sample ring,
+the resampler, the consumed clock, and the segment list. A disconnect mid-playback
+resumes; a restore-shaped
 start would otherwise come up paused. Album groups aren't persisted with the queue
 because `start_session` re-derives them from the library on every start, restores
 included. If no queue can be resolved the session is dropped and the transport falls
@@ -352,7 +351,7 @@ back to idle with an error, never a frozen "playing".
 
 ## Reference
 
-The engine lives in `crates/rox-playback`: `output.rs` (the backend seam, the shared
+The engine is in `crates/rox-playback`: `output.rs` (the backend seam, the shared
 cpal backend, the callback) with `output/alsa.rs` (Linux exclusive),
 `output/wasapi.rs` (Windows exclusive) and `output/coreaudio.rs` (macOS hog mode) under
 it, `engine.rs` (decode thread, gapless, crossfade, seek, plus the offline decoders
@@ -361,7 +360,7 @@ it, `engine.rs` (decode thread, gapless, crossfade, seek, plus the offline decod
 `gain.rs` (the source-gain stage, the ReplayGain rule, and the fade curve),
 `latency.rs` (the refcounted hold that keeps the ring shallow while an editor is open),
 `analysis.rs` (the R128 loudness and true-peak measurement, per track and per album),
-`resample.rs`, `shared.rs` (atomics, segments). The tag side lives in
+`resample.rs`, `shared.rs` (atomics, segments). The tag side is in
 `crates/rox-library/src/replaygain.rs`, and the app drives measurement from
 `crates/rox/src/replaygain_job.rs`.
 `crates/rox-prototype-playback` was the CLI harness over it (git history, commit

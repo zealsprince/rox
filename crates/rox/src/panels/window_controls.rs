@@ -56,7 +56,7 @@ pub struct WindowControlsPanel {
     /// just hides.
     workspace: WeakEntity<Workspace>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// The mini toggle's glyph follows the workspace's state.
     _workspace_changed: Option<Subscription>,
@@ -145,7 +145,7 @@ impl WindowControlsPanel {
                         cx.listener(|this, _, window, cx| {
                             // Deferred out of this panel's update: the toggle
                             // stashes a dock dump, and dumping reads every
-                            // panel, this one included - a read inside its own
+                            // panel, this one included. A read inside its own
                             // update panics.
                             let ws = this.workspace.clone();
                             window.defer(cx, move |window, cx| {
@@ -165,7 +165,7 @@ impl WindowControlsPanel {
     }
 
     fn body(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        // Close the window this panel sits in. A workspace window runs the
+        // Close the window this panel is in. A workspace window runs the
         // same teardown the OS close button does, so shutting the last one
         // quits and takes the settings and popout windows with it; a
         // popped-out copy of this panel isn't a workspace window, so it just
@@ -174,7 +174,7 @@ impl WindowControlsPanel {
             |this: &mut Self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>| {
                 // Deferred out of this panel's update: the workspace teardown
                 // persists the layout, and dumping reads every panel, this one
-                // included - a read inside its own update panics.
+                // included. A read inside its own update panics.
                 let ws = this.workspace.clone();
                 window.defer(cx, move |window, cx| {
                     if crate::workspace::is_workspace_window(window, cx) {
@@ -377,7 +377,7 @@ impl Panel for WindowControlsPanel {
         rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);

@@ -1,9 +1,9 @@
-//! The chrome the settings windows share: the app settings window and
+//! The chrome the settings windows share. The app settings window and
 //! every panel's settings window draw their shell from one set, so a
-//! page reads the same wherever it opens - the sidebar with its nav
+//! page reads the same wherever it opens: the sidebar with its nav
 //! rows, titled sections, group headers, the small header buttons, the
 //! scalar slider, and the palette editor's role grid. Page content stays
-//! with each window; only the shell lives here.
+//! with each window; only the shell is here.
 
 use gpui::{
     div, prelude::*, px, svg, AnyElement, App, Context, Div, ElementId, Interactivity, MouseButton,
@@ -96,7 +96,7 @@ pub fn sidebar() -> Div {
 /// between whatever the sidebar pins above and below them, and a window
 /// too short for the list scrolls it instead of cutting the tail off:
 /// the sidebar is fixed to the window height, so without this the last
-/// pages are simply unreachable. Give the rows through `build`.
+/// pages are unreachable. Give the rows through `build`.
 pub fn nav_scroll(
     id: impl Into<ElementId>,
     scroll: &ScrollHandle,
@@ -116,7 +116,7 @@ pub fn nav_scroll(
                 .overflow_y_scroll()
                 .track_scroll(scroll),
         ))
-        // Same idle-fading scrollbar the pages carry, in its own bounds
+        // Same idle-fading scrollbar the pages use, in its own bounds
         // so it lays out over the rows rather than beside them.
         .child(
             div()
@@ -139,7 +139,7 @@ pub fn nav_item<P: 'static>(
 }
 
 /// The same row a shade back: for a page that isn't one of the subjects,
-/// so it reads as somewhere you go on purpose rather than the next thing
+/// so it reads as somewhere you go looking for rather than the next thing
 /// down the list.
 pub fn nav_item_quiet<P: 'static>(
     label: impl Into<SharedString>,
@@ -221,7 +221,7 @@ pub enum Seg {
     Key(SharedString),
 }
 
-/// A keycap chip, sized to ride inline with the body copy.
+/// A keycap chip, sized to fit inline with the body copy.
 pub fn kbd(label: SharedString) -> Div {
     div()
         .flex_none()
@@ -258,7 +258,7 @@ pub fn kbd_line(segs: impl IntoIterator<Item = Seg>) -> Div {
 }
 
 /// A titled section of a page: the name over a hairline, an optional
-/// control riding the header's right edge, the rows under it.
+/// control on the header's right edge, the rows under it.
 pub fn section(
     label: impl Into<SharedString>,
     trailing: Option<AnyElement>,
@@ -267,7 +267,7 @@ pub fn section(
     section_with_icon(None, label, trailing, body)
 }
 
-/// [`section`] with a control riding beside the name on the left, for a
+/// [`section`] with a control beside the name on the left, for a
 /// tool that belongs to the heading itself rather than the right edge.
 pub fn section_with_control(
     label: impl Into<SharedString>,
@@ -336,7 +336,7 @@ fn build_section(
 }
 
 /// The settings search query: the box's text lowercased and split on
-/// whitespace. A row matches when every term lands somewhere in its
+/// whitespace. A row matches when every term appears somewhere in its
 /// label, description, or keywords; the empty query matches everything,
 /// which is the closed-search path.
 pub struct Query {
@@ -370,7 +370,7 @@ impl Query {
 /// A page under search: the only shape the settings window's render
 /// takes back from a page builder, and it only takes [`Section`]s, whose
 /// rows all declare the words that find them. The chain is the point: a
-/// setting can't land on a page without stating its search terms, so
+/// setting can't go on a page without stating its search terms, so
 /// search never silently misses a new row.
 ///
 /// Search builds every page each keystroke, so page builders must stay
@@ -427,7 +427,7 @@ pub struct Section {
 
 impl Section {
     /// Build a section against the query. A query hitting the section's
-    /// own label keeps the whole section; otherwise rows survive one by
+    /// own label keeps the whole section; otherwise rows pass one by
     /// one and an emptied section drops. The icon leads the header the
     /// way the sidebar's do, and it's required here so no section on the
     /// sealed path ships bare.
@@ -487,18 +487,18 @@ impl Rows<'_> {
     }
 
     /// [`Rows::row`] built from its message key, with extra English terms
-    /// the copy doesn't carry: "gapless" on the crossfade row,
+    /// the copy doesn't include: "gapless" on the crossfade row,
     /// "normalization" on the gain mode.
     ///
-    /// Taking the key rather than the rendered text is what lets a row
-    /// carry search terms in the active language. The label is the key,
+    /// Taking the key rather than the rendered text lets a row pick up
+    /// search terms in the active language. The label is the key,
     /// the description its `.description` attribute when it has one, and
     /// its `.keywords` attribute is a whitespace-separated list of
     /// synonyms in that language.
     ///
-    /// `keywords` stays English on purpose and always matches, on top of
-    /// whatever the locale adds. Audio terms travel untranslated - plenty
-    /// of German users look for "gapless" - so dropping them would make a
+    /// `keywords` stays English and always matches, on top of whatever
+    /// the locale adds. Audio terms travel untranslated (plenty of German
+    /// users look for "gapless"), so dropping them would make a
     /// translated build harder to search than the English one.
     pub fn keyed(
         mut self,
@@ -522,7 +522,7 @@ impl Rows<'_> {
         self
     }
 
-    /// A row whose description carries live numbers: the query matches
+    /// A row whose description has live numbers: the query matches
     /// the label and keywords only, never text that moves under it.
     pub fn row_dyn(
         mut self,
@@ -541,9 +541,9 @@ impl Rows<'_> {
         self
     }
 
-    /// Anything that isn't a plain row - a table, a grid, a block with
-    /// its own chrome - declaring its terms outright. The closure only
-    /// runs when the content survives, so a heavy section costs nothing
+    /// Anything that isn't a plain row (a table, a grid, a block with
+    /// its own chrome), declaring its terms outright. The closure only
+    /// runs when the content is kept, so a heavy section costs nothing
     /// while filtered out.
     pub fn custom(mut self, keywords: &[&str], build: impl FnOnce() -> AnyElement) -> Self {
         if self.all || self.q.hits(keywords) {
@@ -586,7 +586,7 @@ impl Rows<'_> {
 }
 
 /// One block's header inside a section's list: the label with whatever
-/// acts on the whole block riding its right edge, ruled off from the rows
+/// acts on the whole block on its right edge, ruled off from the rows
 /// beneath the way [`section`] rules its own. The rule is lighter than a
 /// section's, so the two levels read apart rather than alike.
 pub fn block_header(label: impl IntoElement, trailing: impl IntoElement) -> Div {
@@ -605,8 +605,8 @@ pub fn block_header(label: impl IntoElement, trailing: impl IntoElement) -> Div 
 
 /// A block nested under the row that owns it: an accent rail down the
 /// left edge with the content inset from it, so the block reads as
-/// belonging to the row above instead of carrying on the list. What a
-/// route's editor sits in, under the knob it drives.
+/// belonging to the row above instead of continuing the list. What a
+/// route's editor goes in, under the knob it drives.
 pub fn nested(body: impl IntoElement) -> Div {
     div()
         .flex()
@@ -624,7 +624,7 @@ pub fn nested(body: impl IntoElement) -> Div {
 }
 
 /// The settings windows' text button, at the section header's scale
-/// where every one of them rides: an icon leading its label; inert ones
+/// where they all appear: an icon leading its label; inert ones
 /// dim and drop the click.
 pub fn small_button(
     label: impl Into<SharedString>,
@@ -691,7 +691,7 @@ pub fn dialog_button(
 }
 
 /// A [`dialog_button`] with a leading icon, for the secondary action that
-/// sits in a dialog's footer beside the confirm pair and has to read as
+/// goes in a dialog's footer beside the confirm pair and has to read as
 /// their equal. Inert ones dim and drop the click.
 pub fn dialog_icon_button(
     label: impl Into<SharedString>,
@@ -749,7 +749,7 @@ pub const SELECT_W: Pixels = px(190.);
 ///
 /// The list is a `PopupMenu`, so arrow keys, Enter, Escape and a scrollbar
 /// past a screenful come with it. The popup defers, so don't host one
-/// inside another deferred overlay - gpui 0.2.2 panics on nested deferred.
+/// inside another deferred overlay: gpui 0.2.2 panics on nested deferred.
 pub fn select_field(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -780,7 +780,7 @@ pub fn select_field(
     }
 }
 
-/// [`select_field`]'s element. Styles applied to it land on the field
+/// [`select_field`]'s element. Styles applied to it go to the field
 /// itself, so a caller wanting a wider one just says `.w(px(240.))`.
 #[derive(IntoElement)]
 pub struct SelectField {
@@ -883,7 +883,7 @@ pub fn icon_button(
         )
 }
 
-/// How far past a strip's top a typed value may reach, as a multiple of
+/// How far past a strip's top a typed value may go, as a multiple of
 /// the span: the strip covers the sensible everyday range, the input
 /// covers conviction.
 pub const OVER: f32 = 4.0;
@@ -891,7 +891,7 @@ pub const OVER: f32 = 4.0;
 /// A scalar knob's span and how its number reads: the range the strip
 /// scrubs across, the suffix trailing the value (its leading space
 /// included, so `" px"` stands off the number and `"%"` glues to it), the
-/// decimals the readout and the landed value keep, and how far a typed
+/// decimals the readout and the applied value keep, and how far a typed
 /// value may run past the top.
 #[derive(Clone, Copy)]
 pub struct Span {
@@ -902,7 +902,7 @@ pub struct Span {
     over: f32,
 }
 
-/// The highest a typed value may reach over a strip running `min` to
+/// The highest a typed value may go over a strip running `min` to
 /// `max`. What a saved knob has to be read back inside: folded to the
 /// strip's own top on load, every typed value would drop the moment the
 /// app restarts.
@@ -924,7 +924,7 @@ pub fn span(min: f32, max: f32, unit: &'static str) -> Span {
 }
 
 impl Span {
-    /// Keep `n` decimals, in the readout and in the value that lands.
+    /// Keep `n` decimals, in the readout and in the value that's applied.
     pub fn decimals(mut self, n: usize) -> Self {
         self.decimals = n;
         self
@@ -938,8 +938,8 @@ impl Span {
         self
     }
 
-    /// Where `value` rides the strip. Values past the top pin it full;
-    /// the readout still reads the real number.
+    /// `value` as a fraction of the strip. Values past the top pin it
+    /// full; the readout still reads the real number.
     fn fraction(&self, value: f32) -> f32 {
         self.unclamped(value).clamp(0.0, 1.0)
     }
@@ -951,7 +951,7 @@ impl Span {
     }
 
     /// The value a strip fraction stands for, rounded to the decimals the
-    /// readout shows so what lands is what reads.
+    /// readout shows, so the applied value matches the one on screen.
     fn value(&self, fraction: f32) -> f32 {
         let step = 10f32.powi(self.decimals as i32);
         ((self.min + fraction * (self.max - self.min)) * step).round() / step
@@ -999,7 +999,7 @@ pub fn scalar_sized<P: 'static>(
         span.fraction(value),
         // The readout is read, so its decimal mark follows the locale:
         // a German build shows 0,5 where an English one shows 0.5. The
-        // unit carries its own leading space where it wants one, so it
+        // unit includes its own leading space where it needs one, so it
         // concatenates rather than going through format_unit.
         format!(
             "{}{}",
@@ -1027,7 +1027,7 @@ pub struct SidesScrub {
     sides: [ScrubState; 4],
 }
 
-/// The icon each side wears in a split knob, in [`Side::ALL`] order.
+/// The icon each side uses in a split knob, in [`Side::ALL`] order.
 const SIDE_ICONS: [&str; 4] = [
     icons::PANEL_TOP,
     icons::PANEL_RIGHT,
@@ -1095,8 +1095,8 @@ pub fn sides_control<P: 'static>(
         }
         column
     } else {
-        // Linked, every side carries the same number, so the top one
-        // speaks for all four.
+        // Linked, every side holds the same number, so the top one
+        // stands for all four.
         scalar(
             &scrub.linked,
             edit,
@@ -1139,7 +1139,7 @@ pub fn slider_edit<P: 'static>(
 
 /// One cell of a color grid: the swatch control with its role label
 /// beside it. `marked` brightens the label, how the panel editor points
-/// out the roles it overrides. `trailing` rides the cell's right edge,
+/// out the roles it overrides. `trailing` goes on the cell's right edge,
 /// where the panel editor hangs a role's reset button.
 pub fn color_cell(
     control: AnyElement,
@@ -1205,7 +1205,7 @@ pub fn role_grid(columns: usize, mut cell: impl FnMut(usize) -> AnyElement) -> D
 mod tests {
     use super::{ceiling, span, Query, OVER};
 
-    /// Every term must land somewhere, any field counts, case folded.
+    /// Every term must appear somewhere, any field counts, case folded.
     #[test]
     fn a_query_needs_every_term_in_some_text() {
         let q = Query::parse("  Cross Fade ");
@@ -1226,8 +1226,8 @@ mod tests {
     }
 
     /// A number typed into a readout comes back as itself: the strip
-    /// fraction it maps to lands on the same value, inside the range and
-    /// out in the input's headroom.
+    /// fraction it maps to resolves to the same value, inside the range
+    /// and out in the input's headroom.
     #[test]
     fn typed_values_round_trip_through_the_strip() {
         let px = span(0., 24., " px");
@@ -1257,7 +1257,7 @@ mod tests {
     }
 
     /// The read-back ceiling matches the headroom the input actually
-    /// reaches, so nothing typed is folded away on the next load.
+    /// allows, so nothing typed is folded away on the next load.
     #[test]
     fn the_ceiling_is_the_input_headroom() {
         let px = span(18., 72., " px");
@@ -1278,8 +1278,8 @@ mod tests {
 mod search_tests {
     use super::Query;
 
-    /// Folding both sides is what makes a translated row findable by
-    /// someone who types without the accents, which is most people.
+    /// Folding both sides makes a translated row findable by someone
+    /// who types without the accents, which is most people.
     #[test]
     fn accents_do_not_have_to_be_typed() {
         assert!(Query::parse("prereglages").hits(&["Préréglages"]));

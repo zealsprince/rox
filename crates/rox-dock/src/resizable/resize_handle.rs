@@ -18,9 +18,9 @@ pub(crate) const HANDLE_PADDING: Pixels = px(4.);
 pub(crate) const HANDLE_SIZE: Pixels = px(1.);
 
 /// rox addition: whether the resting 1px seam between panel tiles paints.
-/// Off leaves the handles invisible but still draggable, for looks that
-/// want panels to sit flush; an active drag still shows its line. A static
-/// like the host app's own appearance flags, since the handle render has
+/// Off leaves the handles invisible but still draggable, for a look with
+/// panels flush against each other; an active drag still shows its line. A
+/// static like the host app's own appearance flags, since the handle render has
 /// no path to app settings; the host seeds it and repaints.
 static SEAMS: AtomicBool = AtomicBool::new(true);
 
@@ -235,7 +235,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         request_layout.paint(window, cx);
 
         // rox addition: a locked handle takes no part in the mouse, so a
-        // click landing where the strip would be doesn't flash the seam
+        // click where the strip would be doesn't flash the seam
         // into its drag color.
         if crate::resize_locked() {
             return;

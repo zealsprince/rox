@@ -3,9 +3,9 @@
 //! menubar hidden or the OS decorations off; the same MENUS table drives
 //! both, so the two never drift. The dropdown is hand-drawn from the app
 //! palette and tokens, the menubar's own way, so the panel and the bar
-//! read the same instead of one wearing gpui-component's PopupMenu look.
+//! read the same instead of one using gpui-component's PopupMenu look.
 //! Items run through the workspace that registered the panel, which is why
-//! the builder carries its handle.
+//! the builder holds its handle.
 
 use gpui::{
     anchored, canvas, deferred, div, prelude::*, px, svg, AnyElement, App, Bounds, Context, Div,
@@ -43,12 +43,12 @@ pub struct MenuConfig {
 
 pub struct MenuPanel {
     state: AppState,
-    /// The workspace the menu items drive; an item clicked after it is
+    /// The workspace the menu items drive; an item clicked after it's
     /// gone (a popped-out panel outliving its window) just no-ops.
     workspace: WeakEntity<Workspace>,
     config: MenuConfig,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Where the root menu is pinned, set to the button's click position;
     /// None while the menu is closed.
@@ -62,8 +62,8 @@ pub struct MenuPanel {
     /// menu's panel picker. Indexed within that flyout, cleared with the
     /// level above it.
     open_subgroup: Option<usize>,
-    /// The painted bounds of the open surfaces - the root menu, the open top
-    /// menu's flyout, and the panel picker's flyout - captured each frame
+    /// The painted bounds of the open surfaces (the root menu, the open top
+    /// menu's flyout, and the panel picker's flyout), captured each frame
     /// they draw. The next frame's flyouts read them to pick a side, the
     /// same measure-then-decide the gpui-component menus run on.
     menu_surfaces: [Option<Bounds<Pixels>>; 3],
@@ -95,8 +95,8 @@ impl MenuPanel {
     }
 
     /// A paint-time capture of a menu surface's bounds into
-    /// [`MenuPanel::menu_surfaces`], with the viewport width alongside:
-    /// what the next frame's flyout side decisions read.
+    /// [`MenuPanel::menu_surfaces`], with the viewport width alongside. The
+    /// next frame's flyout side decisions read both.
     fn menu_surface_capture(&self, level: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         canvas(
@@ -258,11 +258,11 @@ impl MenuPanel {
     }
 
     /// One action row: closes the overlay, then runs its menubar action
-    /// through the workspace. Carries its keybinding or a check the way the
+    /// through the workspace. Shows its keybinding or a check the way the
     /// menubar's rows do.
     fn action_row(&self, item: MenuItem, cx: &mut Context<Self>) -> Div {
         let action = item.action;
-        // The static menu table can't carry state, so the toggle rows read
+        // The static menu table can't hold state, so the toggle rows read
         // their check live.
         let checked = match action {
             MenuAction::ToggleMenubar => settings::hide_menubar(),
@@ -305,8 +305,8 @@ impl MenuPanel {
                         .text_color(palette::text_muted()),
                 )
             })
-            // Panels the signal pool can drive say so here, the menubar's
-            // mark in the panel that mirrors it.
+            // Panels the signal pool can drive are marked here, the menubar's
+            // mark in the panel that copies it.
             .when(signal_marked(action), |d| {
                 d.child(div().flex_1().min_w(px(24.))).child(
                     svg()
@@ -452,7 +452,7 @@ impl MenuPanel {
     }
 
     /// The panel-presets flyout row: the saved panels, read when it opens,
-    /// each doing the flyout's `target` - built into the workspace's window,
+    /// each doing the flyout's `target`: built into the workspace's window,
     /// or opened in one of its own.
     fn presets_row(
         &self,
@@ -487,8 +487,8 @@ impl MenuPanel {
             })
     }
 
-    /// The Window menu's panel picker: a flyout of groups - the saved
-    /// presets, then the catalog's own - each flying out again into its
+    /// The Window menu's panel picker: a flyout of groups (the saved
+    /// presets, then the catalog's own), each flying out again into its
     /// panels, every pick opening a window of its own. The menubar draws the
     /// same two levels.
     fn panel_windows_row(
@@ -679,7 +679,7 @@ impl MenuPanel {
                 // off the filenames, so this costs a directory read and never
                 // parses a bundle. The Save flyout can't overwrite shipped
                 // bundles, so it drops them, matching the settings window
-                // where shipped rows carry no Overwrite.
+                // where shipped rows have no Overwrite.
                 let mut entries = crate::workspaces::all();
                 if target == WorkspaceTarget::Overwrite {
                     entries.retain(|entry| !entry.builtin);
@@ -869,10 +869,10 @@ fn chevron() -> impl IntoElement {
 }
 
 /// A submenu row's leading group: its icon and label together, so the
-/// chevron can sit at the far edge with `justify_between`.
-/// A flyout row's icon and name. `label` is a message key off the `MENUS`
-/// table, not display text, so it resolves here rather than at each of the
-/// five row builders that funnel through this.
+/// chevron can go at the far edge with `justify_between`. `label` is a
+/// message key off the `MENUS` table, not display text, so it resolves
+/// here rather than at each of the five row builders that funnel through
+/// this.
 fn label_with_icon(icon_path: &'static str, label: &'static str) -> Div {
     div()
         .flex()
@@ -983,7 +983,7 @@ impl Panel for MenuPanel {
         rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);

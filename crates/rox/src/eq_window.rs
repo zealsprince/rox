@@ -5,10 +5,10 @@
 //!
 //! Global, so it takes no state of its own. The curve is one set of live
 //! atomics for the whole process (see [`rox_services::player::eq_gain`] and ADR 19),
-//! which is what lets a band move under whatever is playing without the
-//! window holding a player: every workspace builds its own world, and the EQ
-//! is meant to sit across all of them. It borrows the front workspace's art
-//! tint the way the console does.
+//! which lets a band move under whatever is playing without the window
+//! holding a player: every workspace builds its own world, and the EQ is
+//! meant to span all of them. It borrows the front workspace's art tint the
+//! way the console does.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -34,7 +34,7 @@ use rox_panel_kit::ScrubState;
 use rox_services::player;
 
 /// The plot's dB range either side of flat. Wider than a single band's
-/// ceiling on purpose: a stack of overlapping boosts sums past 12 dB, and a
+/// ceiling: a stack of overlapping boosts sums past 12 dB, and a
 /// curve that clipped at the edge would hide exactly the case worth seeing.
 const PLOT_DB: f32 = 18.0;
 
@@ -43,7 +43,7 @@ const PLOT_DB: f32 = 18.0;
 /// enough to redo every frame of a drag.
 const CURVE_POINTS: usize = 192;
 
-/// A band handle's radius, and the reach of its grab area. The grab is
+/// A band handle's radius, and how far its grab area extends. The grab is
 /// bigger than the dot because a 7px target is a fiddle on a trackpad.
 const NODE_R: f32 = 7.0;
 const NODE_GRAB: f32 = 20.0;
@@ -60,8 +60,8 @@ const SPECTRUM_BARS: usize = 96;
 /// The analysis windows the picker offers. Long windows resolve the bottom
 /// of the range, where a whole EQ band spans a few dozen Hz and a short FFT
 /// smears the lot into one bin; short windows keep up with the music. The
-/// default sits at the long end, since what's being read here is where a
-/// band sits rather than how hard a kick landed.
+/// default is at the long end, since this is read for where a band sits
+/// rather than for how hard a kick hit.
 const FFT_CHOICES: [usize; 6] = [512, 1024, 2048, 4096, 8192, 16384];
 
 /// The dB range the analyzer is drawn across. Anything under the floor is
@@ -71,17 +71,17 @@ const SPECTRUM_CEIL_DB: f32 = -6.0;
 
 /// How fast a bar falls once the music lets go of it, in fractions of full
 /// scale per second. Rising is instant: a transient should show up on the
-/// frame it arrives, and only the decay wants smoothing.
+/// frame it arrives, and only the decay needs smoothing.
 const SPECTRUM_FALL: f32 = 1.6;
 
 /// How far either side the wave averages when it smooths the bands. Enough
 /// to pull the FFT's bin-to-bin jitter out of the outline without flattening
-/// the peak that says which band to reach for.
+/// the peak that shows which band to reach for.
 const WAVE_SMOOTH: usize = 3;
 
-/// How tall the analyzer is allowed to stand, as a fraction of the plot. It
-/// sits behind the curve as context, and at full height it reads as the
-/// subject instead.
+/// How tall the analyzer is allowed to stand, as a fraction of the plot.
+/// It's drawn behind the curve as context, and at full height it reads as
+/// the subject instead.
 const SPECTRUM_HEIGHT: f32 = 0.62;
 
 /// The band levels with their neighbours folded in, for the wave outline. A
@@ -111,7 +111,7 @@ fn smoothed(bars: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// Where a frequency sits across the plot, 0 at the left edge and 1 at the
+/// Where a frequency falls across the plot, 0 at the left edge and 1 at the
 /// right. Log, because that's how the ear reads the spectrum and how every
 /// EQ has drawn it since the first one had a screen.
 fn freq_frac(hz: f32) -> f32 {
@@ -125,7 +125,7 @@ fn frac_freq(frac: f32) -> f32 {
     10f32.powf(lo + frac.clamp(0.0, 1.0) * (hi - lo))
 }
 
-/// Every gridline across the plot: its frequency, where it lands, and
+/// Every gridline across the plot: its frequency, its position, and
 /// whether it's one of the labelled ladder steps. The spectrum panel's
 /// frequency scale rules the same ladder.
 fn axis_marks() -> Vec<(f32, f32, bool)> {
@@ -148,7 +148,7 @@ fn fft_size(size: usize) -> usize {
         .clamp(analysis::MIN_FFT_SIZE, analysis::MAX_FFT_SIZE)
 }
 
-/// Where a gain sits down the plot, 0 at the top and 1 at the bottom.
+/// Where a gain falls down the plot, 0 at the top and 1 at the bottom.
 fn gain_frac(db: f32) -> f32 {
     (0.5 - db / (2.0 * PLOT_DB)).clamp(0.0, 1.0)
 }
@@ -191,7 +191,7 @@ fn open_now(cx: &mut App) {
         .filter(|s| s.width >= f32::from(min.width) && s.height >= f32::from(min.height))
         .map(|s| (s.width, s.height))
         // Sized for the plot rather than the readouts under it: a curve you
-        // drag bands around wants room, and the old height was measured back
+        // drag bands around needs room, and the old height was measured back
         // when this was ten slider rows.
         .unwrap_or((620., 660.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
@@ -216,21 +216,21 @@ struct EqWindow {
     scrubs: [ScrubState; BANDS],
     /// The one typed-readout slot, so only one band is ever being typed into.
     value_edit: panel::ValueEdit,
-    /// Where the plot landed, off its own paint. The drag maps pointer
+    /// Where the plot was painted. The drag maps pointer
     /// positions through this, so it has to come from the layout rather than
     /// from anything assumed about the window.
     plot: Arc<Mutex<Option<Bounds<Pixels>>>>,
-    /// The band a drag is carrying, None when nothing is held. A drag that
-    /// wanders off the plot keeps its grip, which is what makes pulling a
-    /// band to the ceiling feel like a fader instead of a slippery dot.
+    /// The band a drag is holding, None when nothing is held. A drag that
+    /// wanders off the plot keeps its grip, which makes pulling a band to
+    /// the ceiling feel like a fader instead of a slippery dot.
     grabbed: Option<usize>,
-    /// How far the pointer sat from the handle's center when the grab
-    /// started. The drag carries it, so grabbing a dot by its rim moves the
+    /// How far the pointer was from the handle's center when the grab
+    /// started. The drag keeps it, so grabbing a dot by its rim moves the
     /// band with the pointer instead of snapping it under one.
     grab_offset: Point<Pixels>,
     /// The band the readouts below the plot are editing. Clicking a handle
-    /// moves it; it survives the drag ending so the numbers stay put to be
-    /// typed into.
+    /// moves it; it persists past the drag ending so the numbers stay put to
+    /// be typed into.
     selected: usize,
     /// The analyzer behind the curve, and what it needs to keep going: the
     /// FFT, a mono window to fill from the feed, the folded bar levels, and
@@ -247,7 +247,7 @@ struct EqWindow {
     /// Held here rather than read back off the settings file every frame.
     fft: usize,
     /// The feed's write counter as of the last analysis, for telling new
-    /// audio from a repaint that just happens to land between pump ticks.
+    /// audio from a repaint that just happens to fall between pump ticks.
     last_written: u64,
     last_tick: Instant,
     /// How the analyzer is drawn. Held here rather than read off the
@@ -258,8 +258,8 @@ struct EqWindow {
     /// Repaints when the curve moves somewhere else, an EQ widget's toggle in
     /// a workspace window being the one that's easy to hit while this is open.
     _eq_changed: Subscription,
-    /// Keeps the sample ring shallow for as long as this window lives (ADR
-    /// 19), so a band lands about a tenth of a second behind the drag
+    /// Keeps the sample ring shallow for as long as this window is open (ADR
+    /// 19), so a band follows about a tenth of a second behind the drag
     /// instead of half a second. Dropped with the window entity, which the
     /// OS close button takes down the same as the menu item does.
     _latency: LatencyHold,
@@ -269,7 +269,7 @@ impl EqWindow {
     fn new(state: Option<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The OS close button never runs remove_window, so the frame persists
         // through the should-close hook, the stats window's move. The curve
-        // itself writes as it is dragged.
+        // itself writes as it's dragged.
         window.on_window_should_close(cx, move |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
@@ -327,8 +327,8 @@ impl EqWindow {
     }
 
     /// Pull the newest window off the feed and fold it into the bars behind
-    /// the curve. Returns whether anything is still moving, which is what
-    /// decides if the window asks for another frame.
+    /// the curve. Returns whether anything is still moving, which decides
+    /// if the window asks for another frame.
     ///
     /// Pausing mid-track holds the last frame rather than letting the bars
     /// fall away, the spectrum panel's freeze: the curve is dragged against
@@ -370,7 +370,7 @@ impl EqWindow {
             return false;
         }
         // Only analyze on new audio. Between pump ticks the last frame still
-        // stands, and the decay below is what keeps it from looking frozen.
+        // stands, and the decay below keeps it from looking frozen.
         if fresh && feed.latest_mono(&mut self.mono) == self.mono.len() {
             let mags = self.analyzer.magnitudes(&self.mono);
             for (bar, &(lo, hi)) in self.bins.iter().enumerate() {
@@ -378,7 +378,7 @@ impl EqWindow {
                 let db = 20.0 * (peak + 1e-9).log10();
                 let level = ((db - SPECTRUM_FLOOR_DB) / (SPECTRUM_CEIL_DB - SPECTRUM_FLOOR_DB))
                     .clamp(0.0, 1.0);
-                // Straight up, eased down: a hit should land on the frame it
+                // Straight up, eased down: a hit should show on the frame it
                 // happened and the tail is the only part worth smoothing.
                 self.bars[bar] = if level > self.bars[bar] {
                     level
@@ -394,7 +394,7 @@ impl EqWindow {
         self.bars.iter().any(|level| *level > 0.001)
     }
 
-    /// Where a pointer sits inside the plot, as fractions across and down.
+    /// Where a pointer is inside the plot, as fractions across and down.
     /// Outside the plot it clamps rather than returning None: a drag that
     /// leaves the box should pin to the edge, not stall.
     fn plot_frac(&self, at: Point<Pixels>) -> Option<(f32, f32)> {
@@ -509,8 +509,8 @@ impl EqWindow {
                 cx,
             ))
             // The window size only means something while something is being
-            // drawn with it, so it rides along with the style picker rather
-            // than sitting there inert with the analyzer off.
+            // drawn with it, so it shows beside the style picker only while
+            // the analyzer is on rather than sitting there inert with it off.
             .when(self.analyzer_style != AnalyzerStyle::Off, |row| {
                 row.child(panel::picker(
                     "eq-fft",
@@ -556,7 +556,7 @@ impl EqWindow {
         let plot = self.plot.clone();
         let bars = self.bars.clone();
         let analyzer = self.analyzer_style;
-        // The fill sits back further than the bars did: an outline reads
+        // The fill is set back further than the bars were: an outline reads
         // from a fainter wash than a row of solid blocks needs.
         let spectrum = palette::alpha(palette::text_muted(), 0x2a);
         let spectrum_edge = palette::alpha(palette::text_muted(), 0x66);
@@ -688,15 +688,15 @@ impl EqWindow {
             .rounded(tokens::RADIUS)
             .bg(palette::bg_root())
             .child(face);
-        // Handles ride above the canvas as real elements rather than painted
-        // dots, so each one carries its own grab and the hit test is the
+        // Handles are layered above the canvas as real elements rather than
+        // painted dots, so each one has its own grab and the hit test is the
         // layout's job instead of arithmetic.
         for band in 0..BANDS {
             face = face.child(self.handle(band));
         }
         // The press lands on the plot rather than on the dots, so NODE_GRAB's
-        // reach is what catches a band: a 14px target is a fiddle on a
-        // trackpad, and the handles themselves stay decoration.
+        // reach catches a band: a 14px target is a fiddle on a trackpad, and
+        // the handles themselves stay decoration.
         face.on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -757,7 +757,7 @@ impl EqWindow {
             let mark = div().whitespace_nowrap().child(fmt_axis_hz(hz));
             // The ends pin to their edge instead of centering: half of 20 Hz
             // would hang off the left of the plot it's labelling. The left
-            // one rides in flow rather than absolute, so the strip stands as
+            // one stays in flow rather than absolute, so the strip stands as
             // tall as its own text at whatever the app font is set to.
             strip = strip.child(if frac <= 0.005 {
                 mark
@@ -776,7 +776,7 @@ impl EqWindow {
         strip
     }
 
-    /// One band's handle on the plot: a dot at its center and gain, carrying
+    /// One band's handle on the plot: a dot at its center and gain, with
     /// its own number so a curve with ten bells can still be read. The press
     /// is the plot's job, so this is what a band looks like, nothing more.
     fn handle(&self, band: usize) -> impl IntoElement {
@@ -937,9 +937,9 @@ fn labelled(label: impl Into<SharedString>, control: Div) -> Div {
 /// Keep a live band drag following the pointer and let go when the button
 /// does. Window handlers rather than the plot div's own: a grab pulled past
 /// the edge has to keep tracking so the clamp can pin it there, and a
-/// release outside the window never reaches an element at all. They live one
-/// frame, so the plot's paint re-arms them every frame of the drag - the
-/// [`panel::scrub_on_paint`] idiom.
+/// release outside the window never reaches an element at all. They only
+/// last one frame, so the plot's paint re-arms them every frame of the drag,
+/// the [`panel::scrub_on_paint`] idiom.
 fn drag_on_paint(this: WeakEntity<EqWindow>, window: &mut Window) {
     window.on_mouse_event({
         let this = this.clone();

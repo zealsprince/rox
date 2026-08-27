@@ -2,7 +2,7 @@
 //! playback contract (commands in over a channel, state out through shared
 //! atomics). The PCM tap is drained by a headless pump task on a timer, not
 //! by any render pass, so the audio views' feed keeps flowing no matter
-//! which windows are drawing - popped-out panels, a zoomed dock, a
+//! which windows are drawing: popped-out panels, a zoomed dock, a
 //! minimized main window. The player renders nothing itself; the transport
 //! panels are the UI over this state.
 
@@ -32,8 +32,8 @@ use rox_viz::AudioFeed;
 
 use crate::catalog::Library;
 
-// The clock formatters live with the rest of the readouts in rox-core now.
-// Callers still reach them through the player, where the clock is.
+// The clock formatters are with the rest of the readouts in rox-core now.
+// Callers still get them through the player, where the clock is.
 pub use rox_core::fmt::{fmt_time, fmt_time_padded};
 
 /// Pump cadence, roughly one video frame. The tap ring holds 16,384 samples
@@ -43,8 +43,8 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(16);
 
 /// How long the similarity ordering will wait for a freshly started context
 /// to publish its queue, as a number of tries and the gap between them. The
-/// decode thread publishes first thing in `run`, so in practice this lands on
-/// the first or second look; the ceiling is only there so a session that
+/// decode thread publishes first thing in `run`, so in practice this succeeds
+/// on the first or second look; the ceiling is only there so a session that
 /// never comes up can't leave a task waiting forever.
 const QUEUE_WAIT_TRIES: usize = 40;
 const QUEUE_WAIT_STEP: Duration = Duration::from_millis(25);
@@ -57,19 +57,19 @@ const QUEUE_WAIT_STEP: Duration = Duration::from_millis(25);
 ///
 /// Settling reorders nothing by itself. The band a run widened to is already
 /// in the queue and stays there, so the narrowing only shows in what the next
-/// skip draws from; there is no pass that walks it back while you listen.
+/// skip draws from; nothing undoes it while you listen.
 const SKIP_SETTLE: Duration = Duration::from_secs(30);
 
 /// The band a skip draws the next track from, as a count of the nearest
 /// entries shuffled among themselves. One skip loosens to a handful, and each
-/// one after multiplies, so a few in a row walks out of a genre rather than
+/// one after multiplies, so a few in a row move out of a genre rather than
 /// inching down it one track at a time. No skips at all means the strict
 /// nearest.
 const SKIP_BAND_BASE: usize = 4;
 const SKIP_BAND_GROWTH: usize = 4;
 
 /// How many of the nearest tracks a similar draw picks out of. Wide enough
-/// that two presses in a row land somewhere else, narrow enough that
+/// that two presses in a row give different tracks, narrow enough that
 /// everything in the band still sounds like the seed. The same handful the
 /// skip band opens to, for the same reason.
 const SIMILAR_BAND: usize = 8;
@@ -97,17 +97,17 @@ fn random_pool<'a>(scope: &'a continuation::Scope, library: &'a [i64]) -> &'a [i
 
 /// How many tracks the player remembers across session starts, for the
 /// draws' no-repeat promise. A queue's worth: enough that pressing Play
-/// Similar over and over walks a neighbourhood instead of bouncing between
+/// Similar over and over moves through a neighbourhood instead of bouncing between
 /// two tracks, small enough that a big library never runs dry of fresh draws.
 const HEARD_CAP: usize = QUEUE_CAP;
 
 /// Fold a session pool into the heard ring, newest last, deduped so a track
 /// held again moves to the young end rather than aging out from where it
-/// first landed, capped by evicting the oldest.
+/// first entered, capped by evicting the oldest.
 ///
 /// This exists because the by-hand draws start sessions, and starting a
 /// session replaces the pool their repeat-guard reads: without a memory that
-/// survives the swap, the second press of Play Similar has already forgotten
+/// persists across the swap, the second press of Play Similar has already forgotten
 /// the track the first press left, and the two bounce between each other's
 /// bands.
 fn remember_held(heard: &mut VecDeque<i64>, pool: impl Iterator<Item = i64>) {
@@ -122,7 +122,7 @@ fn remember_held(heard: &mut VecDeque<i64>, pool: impl Iterator<Item = i64>) {
     }
 }
 
-/// Where in `pool` a random draw lands: on anything the session hasn't held,
+/// Where in `pool` a random draw falls: on anything the session hasn't held,
 /// and only anywhere at all once it has held the whole pool. The same promise
 /// every continuation provider makes (ADR 17), made here because the Random
 /// button is the same question asked by hand, and the same wrap at the end of
@@ -140,22 +140,22 @@ fn draw_at(pool: &[i64], seen: &HashSet<i64>) -> Option<usize> {
     })
 }
 
-/// One random entry of `pool` with the run it sits in, and where in that run
-/// the draw landed. The draw is where playback starts, and the entries around
-/// it are what carries it on: Next walks down the rest of the album and the
-/// list behind it, Prev walks back. A press lands somewhere and keeps playing,
-/// the same as double clicking a row.
+/// One random entry of `pool` with the run it's part of, and where in that
+/// run the draw fell. The draw is where playback starts, and the entries
+/// around it are what keep it going: Next continues down the rest of the
+/// album and the list behind it, Prev goes back. A press picks a spot and
+/// keeps playing, the same as double clicking a row.
 ///
-/// The landing spot avoids `seen` (see [`draw_at`]); the run around it
-/// doesn't, because the run is context, and an album the draw landed inside
+/// The picked spot avoids `seen` (see [`draw_at`]); the run around it
+/// doesn't, because the run is context, and an album the draw fell inside
 /// should read whole rather than with the heard tracks cut out.
 ///
 /// Bounded like a double click in a big view (`QUEUE_CAP`), with a share of
 /// the budget kept behind the draw for history. None when the pool is empty or
-/// the id it landed on has no file behind it any more.
+/// the id it picked has no file behind it any more.
 ///
-/// Keys rather than paths, so landing on a cue track draws that track's span
-/// instead of the whole image it lives in.
+/// Keys rather than paths, so a draw on a cue track takes that track's span
+/// instead of the whole image it belongs to.
 fn draw_run(
     library: &Library,
     pool: &[i64],
@@ -191,7 +191,7 @@ fn fresh_band(near: &[(i64, f32)], seen: &HashSet<i64>) -> Vec<i64> {
 
 /// The slice of a `len` entry pool a draw at `at` plays inside: at most
 /// `QUEUE_CAP` tracks, half the budget behind the draw so Prev has somewhere
-/// to walk, sliding forward against the end so the window stays full. A pool
+/// to go, sliding forward against the end so the window stays full. A pool
 /// under the cap comes back whole.
 fn run_window(at: usize, len: usize) -> (usize, usize) {
     let lo = at
@@ -201,8 +201,8 @@ fn run_window(at: usize, len: usize) -> (usize, usize) {
 }
 
 /// Whether the queue has run close enough to its end to ask for more
-/// (ADR 17): `upcoming` tracks sit ahead of the audible one, against the
-/// floor the trigger insists on keeping.
+/// (ADR 17): `upcoming` is how many tracks are ahead of the audible one,
+/// measured against the floor the trigger insists on keeping.
 ///
 /// Loop is the whole of the suppression rule, and it's here rather than at
 /// the call site because it's part of the same decision: loop is the user
@@ -212,15 +212,15 @@ fn queue_running_dry(upcoming: usize, loop_mode: LoopMode) -> bool {
     loop_mode == LoopMode::Off && upcoming <= continuation::FLOOR
 }
 
-/// Whether a session in this state is one continuation should be feeding
-/// (ADR 17). A paused queue refuses to grow, which is what keeps the launch
+/// Whether continuation should be extending a session in this state
+/// (ADR 17). A paused queue doesn't grow, which keeps the launch
 /// restore from growing a queue nobody has pressed play on yet; a queue that
 /// played through to its end still reads as playing, which is how an ended
-/// session gets woken by the batch that lands behind it.
+/// session gets woken by the batch appended behind it.
 ///
 /// An armed stop-after is the one thing that pauses on its own, and it means
 /// stop, so the queue stays as it is until the listener says otherwise. It
-/// stays armed after the stop lands, so this keeps refusing until they clear
+/// stays armed after the stop, so this keeps saying no until they clear
 /// it, which is the same stickiness the transport button has.
 fn continuation_wanted(playing: bool, stop_after: bool) -> bool {
     playing && !stop_after
@@ -272,8 +272,8 @@ impl Session {
         output: output::Request,
     ) -> Result<Session, String> {
         let shared = Arc::new(Shared::new(queue.paths.len()));
-        // Seed the session with the persisted playback state: volume lands
-        // in the shared atomics before the stream opens, the loop and
+        // Seed the session with the persisted playback state: volume is
+        // stored in the shared atomics before the stream opens, the loop and
         // shuffle modes queue on the channel so the engine picks them up
         // first thing.
         shared
@@ -290,7 +290,7 @@ impl Session {
         if let Some(on) = shuffle {
             let _ = tx.send(Cmd::SetShuffle(on));
         }
-        // An armed stop-after carries into the fresh session, so queueing a
+        // An armed stop-after is sent to the fresh session, so queueing a
         // new context does not silently disarm it.
         if stop_after {
             let _ = tx.send(Cmd::SetStopAfter(true));
@@ -303,9 +303,9 @@ impl Session {
             let _ = tx.send(Cmd::Seek(secs));
             let _ = tx.send(Cmd::TogglePause);
         }
-        // The fade settings ride ahead of the first decode too, so a
-        // session that starts on a skip already knows what to do at its
-        // first boundary.
+        // The fade settings are sent ahead of the first decode too, so a
+        // session that starts on a skip already has them at its first
+        // boundary.
         let _ = tx.send(Cmd::SetCrossfade {
             secs: crossfade.0,
             albums: crossfade.1,
@@ -317,7 +317,7 @@ impl Session {
         // The EQ joins this session's processing chain (ADR 19). Queued
         // here with the rest, so it's in place before the first buffer
         // rather than a few chunks late. It's the only thing this channel
-        // ever carries for the chain: the bands are atomics on the shared
+        // ever sends for the chain: the bands are atomics on the shared
         // handle, so every later turn of a knob is a store.
         let _ = tx.send(Cmd::ChainPush(Box::new(Eq::new(eq_params().clone()))));
         let gains = queue.gains.clone();
@@ -347,11 +347,11 @@ struct QueueMeta {
     ids: Vec<Option<i64>>,
     /// The slice of the file each key plays, None for a plain file. The
     /// engine takes these beside the paths, which is the whole of how a cue
-    /// track differs from the image it lives in once it's in the pool.
+    /// track differs from the image it's part of once it's in the pool.
     spans: Vec<Option<Span>>,
 }
 
-/// Resolve a batch of keys against the library, or answer defaults for all of
+/// Resolve a batch of keys against the library, or return defaults for all of
 /// them when there is no database to ask. Split out of the player so the
 /// lookup can be tested against a real store without a running session.
 ///
@@ -388,8 +388,8 @@ fn resolve_queue_meta(
 }
 
 /// A snapshot of the playing track for the audio views: which file and
-/// where the position clock sits. Whether audio is actually moving is what
-/// the tap says, so the views read that from the feed instead.
+/// where the position clock is. The tap says whether audio is actually
+/// moving, so the views read that from the feed instead.
 #[derive(Clone)]
 pub struct NowPlaying {
     /// Which file, and which subsong of it. Two cue tracks of one image are
@@ -401,7 +401,7 @@ pub struct NowPlaying {
     pub duration_secs: Option<f64>,
     /// Pool index of the audible track, off the position clock. The queue
     /// resolver matches entries on this rather than the path, so a file that
-    /// sits in the order more than once lands on the occurrence playing now.
+    /// appears in the order more than once resolves to the occurrence playing now.
     pub audible_idx: usize,
 }
 
@@ -450,7 +450,7 @@ impl FadeView {
 #[derive(Clone, PartialEq)]
 pub struct PlayerView {
     /// The playing track, key and all: a bare path can't tell two cue tracks
-    /// of one image apart, so a gated observer would sit out the boundary
+    /// of one image apart, so a gated observer would miss the boundary
     /// between them and every readout would keep the first one's title.
     pub track: Option<TrackKey>,
     pub duration_secs: Option<f64>,
@@ -484,18 +484,18 @@ pub struct PlayerView {
 
 /// What output actually ended up doing, for the Audio page to state instead
 /// of echoing the settings back. ADR 19's bit-perfect claim rests on three
-/// conditions, and the two this can speak to are here: which mode is
+/// conditions, and the two this can report are here: which mode is
 /// running, and whether the device rate matches the file's.
 #[derive(Clone, PartialEq)]
 pub struct OutputStatus {
     pub negotiated: Negotiated,
     /// The playing file's own rate. None before a track has opened, which
-    /// is also the only honest answer then.
+    /// is also the only accurate answer then.
     pub source_rate: Option<u32>,
     /// What ReplayGain is actually doing to the playing file, in dB. None
     /// when the samples reach the ring untouched: leveling off, or on with
-    /// nothing to apply, which is what an untagged file with no fallback
-    /// set comes to. Not a fault when it is set, but it's processing, and
+    /// nothing to apply, where an untagged file with no fallback
+    /// set ends up. Not a fault when it is set, but it's processing, and
     /// the readout would be claiming the file's own samples without saying
     /// so.
     pub leveling_db: Option<f32>,
@@ -507,8 +507,8 @@ impl OutputStatus {
     /// settings page's wording; compact folds them into one comma list, the
     /// headline's own style, so a docked panel stays two lines tall.
     /// `confirm_rate` is the all-clear toggle: whether a rate nothing is
-    /// converting still earns a mention, since a conversion speaks either
-    /// way. Nothing here is derived from the settings: the fallback line
+    /// converting still earns a mention, since a conversion is worth stating
+    /// either way. Nothing here is derived from the settings: the fallback line
     /// only appears because a backend reported one, and the rate line
     /// compares the device against the file rather than against what was
     /// asked for.
@@ -537,7 +537,7 @@ impl OutputStatus {
             lines.push(rox_i18n::t!("output-fell-back-to-shared", why = why.to_string()));
         }
         // Leveling multiplies the source on its way to the ring (ADR 19),
-        // so it rides above the rate: whatever the rates say, this is the
+        // so it outranks the rate: whatever the rates say, this is the
         // one that decides whether these are the file's own samples. Only
         // when something is actually applied, so an untagged file with the
         // fallback at zero says nothing.
@@ -609,13 +609,13 @@ pub struct Player {
     /// connections. None until then, or when the library has no database.
     meta_conn: Option<rox_library::rusqlite::Connection>,
     /// Stop at the end of the playing track, next one cued and paused.
-    /// Deliberately not persisted: an armed stop that survived a restart
+    /// Deliberately not persisted: an armed stop that persisted across a restart
     /// would read as a broken player days later.
     stop_after: bool,
     /// Skips in a row under the similarity mode, and when the last one
-    /// landed. Together they widen the band the radio draws from: skip
-    /// repeatedly and it reaches further from the seed each time, so a few
-    /// presses walk out of a genre. Listening for [`SKIP_SETTLE`] without
+    /// happened. Together they widen the band the radio draws from: skip
+    /// repeatedly and it goes further from the seed each time, so a few
+    /// presses move out of a genre. Listening for [`SKIP_SETTLE`] without
     /// skipping counts as settling and the next skip starts from narrow
     /// again. Session-local, like the stop above: yesterday's impatience
     /// should not steer today's radio.
@@ -626,9 +626,9 @@ pub struct Player {
     /// comes back up on the rate it went down on instead of dropping to the
     /// device default and following its way back; the pump moves it to the
     /// playing file's rate when the two disagree. None until a stream has
-    /// opened, which is when the device's own default answers.
+    /// opened; before that the device's own default applies.
     follow_rate: Option<u32>,
-    /// Rates the device already turned down. The follow asks once per rate
+    /// Rates the device already rejected. The follow asks once per rate
     /// and then leaves it alone, so a card that can't do 192 kHz doesn't
     /// rebuild the session on every tick of every 192 kHz track. A list
     /// rather than the last one, or a queue alternating two rates the card
@@ -656,9 +656,9 @@ pub struct Player {
     /// queue a few dozen of them.
     continuing: bool,
     /// The queue revision the last continuation fired at. The guard above
-    /// covers the query; this covers what comes after it. A batch that landed
+    /// covers the query; this covers what comes after it. A batch that arrived
     /// moves the revision, so the next tick sees a full queue and stays quiet;
-    /// an empty batch doesn't, and this is what stops the pump asking the same
+    /// an empty batch doesn't, which stops the pump asking the same
     /// exhausted provider sixty times a second.
     continued_rev: Option<u64>,
     /// The strategy the continuation toggle turns back on. Continuation is a
@@ -703,14 +703,14 @@ impl Player {
     /// group (ADR 17), the ReplayGain tags (ADR 19), and the span a cue track
     /// plays, plus the library id continuation keeps to know what the session
     /// has already held. Four parallel vecs, three of which the queue commands
-    /// carry. Unknown keys resolve to ungrouped, untagged, unsliced and
+    /// include. Unknown keys resolve to ungrouped, untagged, unsliced and
     /// unidentified; a missing database means every key does, and playback
-    /// carries on unlevelled.
+    /// continues unlevelled.
     ///
-    /// The group falls out of the album tags, so two tracks of one rip answer
-    /// the same one and the crossfade leaves their gapless splice alone
-    /// (ADR 19). Nothing here has to special-case that; the sheet's album
-    /// lands on every row the scanner writes.
+    /// The group falls out of the album tags, so two tracks of one rip resolve
+    /// to the same one and the crossfade leaves their gapless splice alone
+    /// (ADR 19). Nothing here has to special-case that; the sheet's album is
+    /// written to every row the scanner writes.
     fn queue_meta_for(&mut self, keys: &[TrackKey]) -> QueueMeta {
         if self.meta_conn.is_none() {
             let db = rox_core::settings::data_dir().join("library.db");
@@ -724,7 +724,7 @@ impl Player {
         self.feed.clone()
     }
 
-    /// Where playback currently sits, resolved off the shared position
+    /// Where playback currently is, resolved off the shared position
     /// clock. None while no session is running or before the first track
     /// opens.
     pub fn now_playing(&self) -> Option<NowPlaying> {
@@ -757,11 +757,11 @@ impl Player {
         self.start_session(queue, 0, None, Vec::new(), false, cx);
     }
 
-    /// Replace the queue and start at `start`, so the tracks before it sit
-    /// behind the cursor as history and Prev walks back into them. What a
+    /// Replace the queue and start at `start`, so the tracks before it stay
+    /// behind the cursor as history and Prev goes back into them. What a
     /// double click in a track list uses, seeding the whole list so Next and
-    /// Prev carry through the surrounding album instead of dead-ending at the
-    /// clicked track.
+    /// Prev continue through the surrounding album instead of dead-ending at
+    /// the clicked track.
     pub fn play_at(&mut self, queue: Vec<TrackKey>, start: usize, cx: &mut Context<Self>) {
         self.start_session(queue, start, None, Vec::new(), false, cx);
     }
@@ -770,7 +770,7 @@ impl Player {
     /// explicit, playing from the first. Unlike [`play`] and [`play_at`],
     /// which seed a context (an album or library run that plays on unlisted),
     /// these entries are the up-next queue, so the queue panel lists them.
-    /// Clicking an album in a browser lands here, so the album you played
+    /// Clicking an album in a browser calls this, so the album you played
     /// shows in the queue.
     pub fn play_explicit(&mut self, queue: Vec<TrackKey>, cx: &mut Context<Self>) {
         let explicit = vec![true; queue.len()];
@@ -779,7 +779,7 @@ impl Player {
 
     /// The launch restore for an old settings file that saved only a single
     /// track: load it paused at a position, ready on the seek strip but silent
-    /// until asked to play. Files written since carry the whole queue and come
+    /// until asked to play. Files written since store the whole queue and come
     /// back through [`restore_queue`] instead.
     pub fn restore(&mut self, key: TrackKey, position_secs: f64, cx: &mut Context<Self>) {
         self.start_session(
@@ -793,7 +793,7 @@ impl Player {
     }
 
     /// The launch restore: bring back the whole play order paused at the
-    /// cursor, so Prev and Next walk the saved context and the up-next queue
+    /// cursor, so Prev and Next move through the saved context and the up-next queue
     /// panel comes back with the explicit entries it held. `explicit` runs
     /// parallel to `queue`; `cursor` is the entry that was playing.
     pub fn restore_queue(
@@ -822,7 +822,7 @@ impl Player {
 
     /// The explicit up-next queue: what Play Next and Add to Queue put ahead
     /// of the playing track, apart from the context (the album or library) that
-    /// plays on around it. Empty during plain context playback, which is what
+    /// plays on around it. Empty during plain context playback, which
     /// keeps the queue widgets quiet until you actually queue something.
     pub fn queued(&self) -> Vec<QueueEntry> {
         let Some(session) = self.session.as_ref() else {
@@ -839,14 +839,14 @@ impl Player {
             .collect()
     }
 
-    /// How many tracks sit in the explicit queue, for the widget badge.
+    /// How many tracks are in the explicit queue, for the widget badge.
     pub fn queued_count(&self) -> usize {
         self.queued().len()
     }
 
     /// The key a queue entry names. The engine's pool holds bare paths, so
     /// two cue tracks of one image are indistinguishable down there; this
-    /// mirror, indexed by the entry's pool index, is what tells them apart.
+    /// mirror, indexed by the entry's pool index, tells them apart.
     /// Anything drawing a queue row's title or resolving it back to a library
     /// row has to come through here rather than read `entry.path`.
     ///
@@ -864,7 +864,7 @@ impl Player {
 
     /// The whole play order for the close-time persist: every entry's path
     /// and whether it was explicit, plus the audible cursor and where its
-    /// clock sits. The cursor rides off the position clock, not the decode
+    /// clock is. The cursor comes off the position clock, not the decode
     /// cursor, so it names the track you hear rather than the one already
     /// opened for the gapless boundary. None when no session runs.
     pub fn queue_state(&self) -> Option<QueueStatePersist> {
@@ -929,23 +929,23 @@ impl Player {
     }
 
     /// The queue entry index of the playing track, matched by pool index off
-    /// the position clock, so a Play Next lands after what you hear rather than
-    /// after a track the decoder has already opened for the gapless boundary.
-    /// Matching on the pool index rather than the path keeps a file that sits
-    /// in the order twice from resolving to the wrong occurrence, which would
-    /// otherwise leave the real playing entry inside `queued()` and refuse to
-    /// clear.
+    /// the position clock, so a Play Next goes in after what you hear rather
+    /// than after a track the decoder has already opened for the gapless
+    /// boundary. Matching on the pool index rather than the path keeps a file
+    /// that appears in the order twice from resolving to the wrong occurrence,
+    /// which would otherwise leave the real playing entry inside `queued()`
+    /// and never clear.
     fn audible_index(&self, snap: &QueueSnapshot) -> Option<usize> {
         let now = self.now_playing()?;
         snap.entries.iter().position(|e| e.idx == now.audible_idx)
     }
 
     /// The queue entry index of the newest track the engine has taken on,
-    /// which is where a skip landed even while the position clock still reads
+    /// which is where a skip went even while the position clock still reads
     /// the track it left.
     ///
     /// The newest segment is the one the engine pushed when it adopted the
-    /// track, and under a crossfade it sits half a window in the future: the
+    /// track, and under a crossfade it's half a window in the future: the
     /// clock flips at the fade's midpoint so nothing announces a track before
     /// it's audible (ADR 19). Reading the segment itself is how a caller
     /// learns where the queue went without waiting the fade out. None before
@@ -969,7 +969,7 @@ impl Player {
     }
 
     /// The entry Add to Queue appends after: the last explicit entry in the
-    /// run following the playing track, so it lands at the tail of the queue
+    /// run following the playing track, so it goes at the tail of the queue
     /// and ahead of where the context picks back up. The playing track itself
     /// when the queue is empty.
     fn enqueue_after(&self) -> Option<u64> {
@@ -1009,7 +1009,7 @@ impl Player {
         self.splice(after, keys, None, true, and_play, cx);
     }
 
-    /// The insert both the hand-queued keys and a landed continuation batch
+    /// The insert both the hand-queued keys and a delivered continuation batch
     /// go through: resolve the library metadata, mirror the pool growth, and
     /// hand the batch to the engine. `groups` overrides what the library says
     /// about album membership where a caller has an opinion; None per entry,
@@ -1017,7 +1017,7 @@ impl Player {
     ///
     /// The keys split into paths and spans right here, at the engine
     /// boundary: below this line a cue track is one more path with a slice
-    /// beside it, and nothing in the engine knows the difference.
+    /// beside it, and nothing in the engine treats it differently.
     #[allow(clippy::too_many_arguments)]
     fn splice(
         &mut self,
@@ -1088,7 +1088,7 @@ impl Player {
 
     /// Play a queued entry now without consuming the rest of the queue: the
     /// entry moves to the front of the explicit queue first, then the jump
-    /// lands on it. A bare jump would strand everything above the entry
+    /// goes to it. A bare jump would strand everything above the entry
     /// behind the cursor as history, which reads as the queue clearing.
     pub fn play_queued(&self, id: u64) {
         if let Some(after) = self.playing_entry().filter(|&playing| playing != id) {
@@ -1136,7 +1136,7 @@ impl Player {
         // visualizer tap stays empty and the spectrum has nothing to show.
         // Remember what to prime the feed with so a frozen panel gets a real
         // frame at the load position instead of blank bars. A cue track's
-        // clock runs from its own zero, so the window to decode sits that far
+        // clock runs from its own zero, so the window to decode is that far
         // into the image rather than that far into the file.
         let prime = paused_at.map(|secs| {
             let offset = spans
@@ -1153,9 +1153,9 @@ impl Player {
         // playback names the scope after this returns. A rebuild (a device
         // or rate change) puts all three back, since the music never stopped.
         // The outgoing pool joins the heard ring before the new one replaces
-        // it, which is what lets the draws remember across the swap; on a
+        // it, which lets the draws remember across the swap; on a
         // rebuild the same ids come straight back as the live pool, so the
-        // fold is idle motion rather than a wrong answer.
+        // fold is a no-op rather than a wrong answer.
         remember_held(&mut self.heard, self.pool_ids.iter().flatten().copied());
         self.pool_ids = meta.ids;
         self.scope = continuation::Scope::default();
@@ -1191,12 +1191,12 @@ impl Player {
             Ok(session) => {
                 self.feed.set_sample_rate(session.device_rate);
                 let rate = session.device_rate;
-                // Ask the next open for the rate this one landed on. A card
+                // Ask the next open for the rate this one settled on. A card
                 // that took 44.1 keeps being asked for 44.1, so a rebuild
                 // for any other reason doesn't drop to the device default
                 // and then follow its way back up with a second gap. Only
-                // exclusive gets to pick a rate at all: carrying a shared
-                // session's mixer rate forward would make the switch into
+                // exclusive gets to pick a rate at all: reusing a shared
+                // session's mixer rate would make the switch into
                 // exclusive open at the mixer rate first, then follow the
                 // file's, which is the second gap this exists to avoid.
                 self.follow_rate = (session.negotiated.mode == Mode::Exclusive)
@@ -1224,8 +1224,8 @@ impl Player {
     }
 
     /// Drop the running session entirely: playback stops, the position
-    /// clock goes away, and the views over it - the seek strip, the
-    /// waveform, the cover - fall back to idle. The transport's eject.
+    /// clock goes away, and the views over it (the seek strip, the
+    /// waveform, the cover) fall back to idle. The transport's eject.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         self.session = None;
         self.pump = None;
@@ -1242,7 +1242,7 @@ impl Player {
     /// queue edit. That last one matters while
     /// paused: queue commands are fire-and-forget to the engine thread, so
     /// the revision bumps after the notify an enqueue sends, and without a
-    /// wake here the queue views would sit one edit behind until the next
+    /// wake here the queue views would stay one edit behind until the next
     /// poke. A settled pause with a settled queue notifies nobody: the
     /// seek clock is frozen, the visualizers park themselves, and the
     /// whole UI goes quiet.
@@ -1275,10 +1275,10 @@ impl Player {
                     return false;
                 }
                 this.drain_tap();
-                // The continuation trigger rides this same clock (ADR 17).
-                // It reads the queue snapshot the check below already wants
+                // The continuation trigger runs on this same clock (ADR 17).
+                // It reads the queue snapshot the check below already needs
                 // and does nothing at all on the overwhelming majority of
-                // ticks, which is why it can live on a 60 Hz timer.
+                // ticks, which is why it can run on a 60 Hz timer.
                 this.continue_if_dry(cx);
                 let playing = this.is_playing();
                 let rev = this.queue_rev();
@@ -1309,12 +1309,12 @@ impl Player {
     /// portion, ask the active provider for a batch and append it into the
     /// running session.
     ///
-    /// Here rather than in the engine, even though the engine reaches the end
+    /// Here rather than in the engine, even though the engine gets to the end
     /// first. Its `pos` is the decode cursor and runs up to a ring ahead of
     /// the speakers, and firing there would put the audio thread inside the
     /// library stores, which inverts the one dependency this whole design
-    /// keeps clean. The engine stays a decoder walking a list and never
-    /// learns continuation exists.
+    /// keeps clean. The engine stays a decoder stepping through a list, with
+    /// no notion of continuation.
     fn continue_if_dry(&mut self, cx: &mut Context<Self>) {
         let mode = self.settings.session.continuation;
         if mode == continuation::Mode::Off || self.continuing {
@@ -1399,7 +1399,7 @@ impl Player {
         // question nobody is asking any more. A cleared revision says the
         // same thing about the session: a fresh context or a stream rebuild
         // resets it, and a batch picked for the queue that was playing then
-        // has no business landing in this one. `similar` goes the same way,
+        // has no business being appended to this one. `similar` goes the same way,
         // since a batch the radio drew is the wrong twenty tracks for a queue
         // that has since gone back to browse order.
         if mode != self.settings.session.continuation
@@ -1411,8 +1411,8 @@ impl Player {
         }
         // The query took long enough to pause in, or to queue an album in, so
         // the trigger's own conditions are asked again here rather than
-        // assumed to have held. Twenty context tracks landing behind a queue
-        // the listener just filled is the same wrong answer as one landing on
+        // assumed to have held. Twenty context tracks appended behind a queue
+        // the listener just filled is the same wrong answer as one appended to
         // a queue they just paused.
         if !continuation_wanted(self.is_playing(), self.stop_after) || !self.running_dry() {
             return;
@@ -1429,12 +1429,12 @@ impl Player {
         if resolved.is_empty() {
             return;
         }
-        // Shuffle on means shuffle everywhere, so a landed batch joins the
-        // upcoming permutation rather than sitting in provider order at the
+        // Shuffle on means shuffle everywhere, so an arriving batch joins the
+        // upcoming permutation rather than staying in provider order at the
         // tail. The two modes fold it in differently because they mean
         // different things.
         //
-        // Random shuffles the batch itself and lands it as it is. The obvious
+        // Random shuffles the batch itself and appends it as it is. The obvious
         // alternative, appending and then reshuffling the whole tail, would
         // scramble any explicit queue the listener hand-built every twenty
         // tracks, and a hand-built queue is explicit intent. It's also the
@@ -1460,7 +1460,7 @@ impl Player {
         }
     }
 
-    /// Whether the queue has run close enough to its end to want a batch
+    /// Whether the queue has run close enough to its end to need a batch
     /// (ADR 17).
     ///
     /// Counted from the audible cursor, not the decode cursor, which has run
@@ -1470,8 +1470,8 @@ impl Player {
     /// fires on its first tick, which is the point.
     ///
     /// Asked twice for every batch, once to fire the query and again when the
-    /// answer lands: a query is a hundred milliseconds, which is plenty of
-    /// room to queue an album into, and a batch that lands behind one is
+    /// answer comes back: a query is a hundred milliseconds, which is plenty
+    /// of room to queue an album into, and a batch appended behind one is
     /// twenty tracks nobody asked for.
     fn running_dry(&self) -> bool {
         let Some(session) = self.session.as_ref() else {
@@ -1486,14 +1486,14 @@ impl Player {
 
     /// Whether the queue is currently being ordered by what sounds alike:
     /// shuffle on, in the Similar mode, with a library that has the vectors
-    /// to do it. What the radio draw rides on rather than a mode of its own.
+    /// to do it. What the radio draw runs off rather than a mode of its own.
     fn similar_order(&self) -> bool {
         self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Similar
     }
 
     /// Resolve a batch to playable keys, each with the group its pick asked
     /// for. Through the player's own store connection, since path and sub
-    /// both sit on the row an id names. A pick the library can no longer
+    /// are both on the row an id names. A pick the library can no longer
     /// resolve drops out with its group beside it, so the two never slide
     /// apart.
     fn resolve_picks(&mut self, picks: &[Pick]) -> Vec<(TrackKey, Option<u64>)> {
@@ -1554,11 +1554,11 @@ impl Player {
         self.scope = scope;
     }
 
-    /// What a by-hand draw must not land on: everything the running session
+    /// What a by-hand draw must avoid: everything the running session
     /// holds plus the heard ring behind it. Both, because the draws start
     /// sessions, and either half alone forgets the wrong thing: the pool
-    /// forgets the past the moment a press replaces it, and the ring doesn't
-    /// learn the present until one does.
+    /// loses the past the moment a press replaces it, and the ring doesn't
+    /// have the present until one does.
     fn draw_seen(&self) -> HashSet<i64> {
         self.pool_ids
             .iter()
@@ -1568,18 +1568,18 @@ impl Player {
             .collect()
     }
 
-    /// Land on a track at random and play on from there, drawn from the
+    /// Pick a track at random and play on from there, drawn from the
     /// context playback is already in: the view or playlist that started the
     /// session, the library at large when nothing named one. The scope is put
     /// back after the start, so a second press stays in the same list instead
     /// of escaping to the library the way a fresh session would.
     ///
     /// The run around the draw comes with it as playing context, so the press
-    /// lands somewhere and then keeps going down that album and that list.
+    /// starts somewhere and then keeps going down that album and that list.
     /// Shuffle scatters what follows the way it does for any other start, and
     /// continuation (ADR 17) still takes over at the end of the run.
     ///
-    /// The draw lands outside what the session and the sessions before it
+    /// The draw falls outside what the session and the sessions before it
     /// have held ([`Self::draw_seen`]), so pressing it over and over keeps
     /// moving somewhere new until the pool runs out.
     pub fn play_random(&mut self, library: &Entity<Library>, cx: &mut Context<Self>) {
@@ -1608,7 +1608,7 @@ impl Player {
     /// Play a track that sounds like `seed`, drawn library-wide off the
     /// acoustic vectors, with a track running at a tempo the seed doesn't
     /// share marked down for it (see [`embeddings::ranked`]). The library's
-    /// Play Similar and the transport's similar draw both land here.
+    /// Play Similar and the transport's similar draw both call this.
     ///
     /// Scored against the corpus the store keeps standardized in memory, so
     /// the draw is a dot product per track rather than a read of every vector
@@ -1625,7 +1625,7 @@ impl Player {
     /// follows a similar track is continuation's business (ADR 17), and the
     /// tracks filed either side of this one only sound like it by accident.
     /// The scope goes with it: a draw that left the view to find this track
-    /// has no business carrying that view along.
+    /// has no business keeping that view.
     pub fn play_similar_to(
         &mut self,
         seed: i64,
@@ -1710,7 +1710,7 @@ impl Player {
         };
         let (keys, explicit): (Vec<TrackKey>, Vec<bool>) = entries.into_iter().unzip();
         // A rebuild is the same music on a different stream, so the scope
-        // carries over: the view play started in is still the view play
+        // stays: the view play started in is still the view play
         // started in. The start clears it, which is right for a fresh context
         // and wrong for this. The played set needs no such care, since the
         // whole order comes back and it's re-derived from that.
@@ -1745,11 +1745,11 @@ impl Player {
     /// track's rate isn't the rate the device is running, reopen at the
     /// file's. Costs the gap between tracks the ADR budgeted for, and it's
     /// the whole reason a fresh queue can open at the device default and
-    /// still end up bit-perfect. Nothing knows a file's rate until the
+    /// still end up bit-perfect. A file's rate isn't known until the
     /// decode thread has opened it, so the first one is followed a beat
     /// late rather than guessed at.
     ///
-    /// Only fires on a rate the device hasn't already turned down, so a card
+    /// Only fires on a rate the device hasn't already rejected, so a card
     /// that can't match doesn't rebuild the session on every tick. Returns
     /// whether it rebuilt.
     fn follow_source_rate(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1774,7 +1774,7 @@ impl Player {
         if !self.rebuild_session(cx) {
             return false;
         }
-        // The card landed somewhere else, so this rate is one it doesn't
+        // The card came back with something else, so this rate is one it doesn't
         // have. Remember that instead of asking again next tick.
         if self.negotiated().is_some_and(|n| n.sample_rate != rate) {
             self.refused_rates.push(rate);
@@ -1816,7 +1816,7 @@ impl Player {
             } else {
                 output.device.clone()
             },
-            // A pinned rate is the whole ask; the follow only speaks when
+            // A pinned rate is the whole ask; the follow only applies when
             // nothing was pinned, so the two can't fight over the stream.
             rate: output.rate.or(self.follow_rate),
             format: output.format.clone(),
@@ -1825,8 +1825,7 @@ impl Player {
     }
 
     /// What output ended up doing, for the settings page. None while no
-    /// stream is open, which is the honest answer: nothing has negotiated
-    /// with any device yet.
+    /// stream is open: nothing has negotiated with any device yet.
     pub fn output_status(&self) -> Option<OutputStatus> {
         Some(OutputStatus {
             negotiated: self.negotiated()?.clone(),
@@ -1884,13 +1883,13 @@ impl Player {
         self.settings.crossfade_secs = secs;
         // A length that isn't off is the one a toggle should come back to, so
         // remember it here rather than in the button: the Audio page's slider
-        // and the transport's menu both land in this one place, and the two
+        // and the transport's menu both go through this one place, and the two
         // would otherwise disagree about what "back on" means.
         if secs > 0.0 {
             self.settings.crossfade_restore_secs = secs;
         }
         self.send_crossfade();
-        // Dragging the slider lands here per tick, same as the volume, so
+        // Dragging the slider calls this per tick, same as the volume, so
         // the file write waits for the drag to settle.
         self.persist_playback_soon(cx);
         cx.notify();
@@ -1908,7 +1907,7 @@ impl Player {
     }
 
     /// The length a switched-off crossfade comes back at. Never zero, so the
-    /// toggle can't turn the fade "on" at no length; a settings file carrying
+    /// toggle can't turn the fade "on" at no length; a settings file with
     /// a zero here (hand-edited, or written before the field existed) reads as
     /// the stock length.
     pub fn crossfade_restore_secs(&self) -> f32 {
@@ -1939,7 +1938,7 @@ impl Player {
 
     /// Switch which gain the leveling reads, or turn it off. Live on the
     /// running session: the engine relevels every source it holds, so the
-    /// change lands on the track playing rather than the one after it.
+    /// change applies to the track playing rather than the one after it.
     pub fn set_replay_gain_mode(&mut self, mode: GainModeSetting, cx: &mut Context<Self>) {
         if self.settings.replay_gain.mode == mode {
             return;
@@ -1960,7 +1959,7 @@ impl Player {
         }
         self.settings.replay_gain.preamp_db = db;
         self.send_gain_rule();
-        // A dragged slider lands here per tick, so the file write waits for
+        // A dragged slider calls this per tick, so the file write waits for
         // the drag to settle, the same as volume and the fade length.
         self.persist_playback_soon(cx);
         cx.notify();
@@ -2049,7 +2048,7 @@ impl Player {
 
     /// Ask for exclusive output, or give the device back. The running
     /// session rebuilds against the other backend right here, so the switch
-    /// lands without a restart; with nothing playing it takes effect on the
+    /// takes hold without a restart; with nothing playing it takes effect on the
     /// next track.
     pub fn set_exclusive_output(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.settings.output.exclusive == on {
@@ -2157,7 +2156,7 @@ impl Player {
 
     /// Take whatever the tap holds, never wait for more; the samples move
     /// on to the audio views' feed. Read as chunks straight off the ring's
-    /// two slices - this runs 60 times a second for the whole session, so
+    /// two slices: this runs 60 times a second for the whole session, so
     /// no per-sample pops and no temporary buffer.
     fn drain_tap(&mut self) {
         let Some(session) = self.session.as_mut() else {
@@ -2228,7 +2227,7 @@ impl Player {
             .is_none_or(|at| now.duration_since(at) >= SKIP_SETTLE);
         self.similar_skips = if settled { 1 } else { self.similar_skips + 1 };
         self.last_skip = Some(now);
-        // Re-seeded on wherever the skip lands, not on where the mode was
+        // Re-seeded on wherever the skip goes, not on where the mode was
         // engaged: that's what turns skipping into steering rather than
         // drifting outward from a track the listener already left.
         let leaving = self.seed_entry();
@@ -2306,7 +2305,7 @@ impl Player {
         }
     }
 
-    /// Set the volume and persist it; dragging the slider lands here.
+    /// Set the volume and persist it; dragging the slider calls this.
     /// Setting a level always unmutes: reaching for the slider means
     /// wanting to hear something.
     pub fn set_volume(&mut self, volume: f32, cx: &mut Context<Self>) {
@@ -2321,8 +2320,8 @@ impl Player {
     }
 
     /// Persist the scrubbed playback values after the current drag settles.
-    /// Every slider tick and wheel notch lands in a setter, and
-    /// `Settings::update` reads, parses, and rewrites the files - too much
+    /// Every slider tick and wheel notch goes through a setter, and
+    /// `Settings::update` reads, parses, and rewrites the files, too much
     /// for a pointer-move rate. The engine and the in-memory copy already
     /// hold the value, so only the file write waits for the last tick. Same
     /// pattern as the settings window's persist_appearance_soon.
@@ -2423,7 +2422,7 @@ impl Player {
     /// mode already matches.
     ///
     /// This is the plain form, which always means the random order. The
-    /// library's "Play Shuffled" wants exactly that whatever the transport's
+    /// library's "Play Shuffled" needs exactly that whatever the transport's
     /// mode says: the user asked to shuffle a set, not to hear things that
     /// sound like each other.
     pub fn set_shuffle(&mut self, on: bool) {
@@ -2480,14 +2479,14 @@ impl Player {
     /// memory, and a few hundred on the first ask after the analysis pass
     /// writes anything, so it runs on the background executor against its own
     /// connection rather than in this update. The engine keeps playing the
-    /// whole time; the reorder lands as a queue publish whenever the answer
+    /// whole time; the reorder shows up as a queue publish whenever the answer
     /// arrives, which is the same way any other queue edit shows up.
     ///
     /// Anything the library can't score keeps its place behind what it can
     /// (see [`Cmd::OrderTail`]), so an unanalyzed library leaves the queue
     /// exactly as it was rather than scrambling it.
     ///
-    /// Nothing resets the tail to pool order first, deliberately. An earlier
+    /// Nothing resets the tail to pool order first. An earlier
     /// cut sent `SetShuffle(false)` up front to normalize it, which meant a
     /// scan that came back with nothing left the queue sorted into library
     /// order: press Next and you got track one, which looked far more broken
@@ -2585,12 +2584,12 @@ impl Player {
     /// mirror already holds the id the insert looked up, so this costs no
     /// query either. The seed stays optional so a track the library doesn't
     /// hold reads as nothing to score rather than as a queue that has yet to
-    /// publish, which is what the caller's retry is waiting on.
+    /// publish, the thing the caller's retry is waiting on.
     #[allow(clippy::type_complexity)]
     fn similarity_inputs(&self, leaving: Option<u64>) -> Option<(Option<i64>, Vec<(u64, i64)>)> {
         let session = self.session.as_ref()?;
         let snap = session.shared.queue_snapshot();
-        // A skip seeds on where it lands, so it reads the track the engine
+        // A skip seeds on where it goes, so it reads the track the engine
         // has taken on rather than the one still coming out of the speakers.
         // Under a crossfade those are different for half a window: the clock
         // flips at the midpoint (ADR 19), so on the default four seconds the
@@ -2598,7 +2597,7 @@ impl Player {
         // press, and steering that waited for the flip would give up first.
         //
         // The published cursor when nothing is audible yet, which is where a
-        // freshly started context sits: waiting for the first samples would
+        // freshly started context is: waiting for the first samples would
         // mean the ordering never ran for the case that needs it most.
         let at = leaving
             .and_then(|_| self.adopted_index(&snap))
@@ -2627,8 +2626,8 @@ impl Player {
     }
 
     /// Arm or clear stop-after-current: armed, the playing track ends the
-    /// motion - the engine plays it out, pauses, and cues the next track.
-    /// Sticky until cleared, and session-local by design.
+    /// motion: the engine plays it out, pauses, and cues the next track.
+    /// Sticky until cleared, and session-local.
     pub fn toggle_stop_after(&mut self, cx: &mut Context<Self>) {
         self.stop_after = !self.stop_after;
         self.send(Cmd::SetStopAfter(self.stop_after));
@@ -2678,7 +2677,7 @@ impl Player {
 
 /// The equalizer's live parameters (ADR 19), one set for the whole process.
 /// The curve is an app preference rather than something a session owns, so
-/// every chain that opens rides this same handle and a band moves under
+/// every chain that opens uses this same handle and a band moves under
 /// whatever is playing without anyone holding a player. Seeded off the
 /// settings file the first time something asks.
 fn eq_params() -> &'static Arc<EqParams> {
@@ -2697,8 +2696,8 @@ fn eq_params() -> &'static Arc<EqParams> {
 /// Touched by every EQ setter, so the surfaces drawing the curve wake on a
 /// move instead of watching for one. It holds nothing, because there's nothing
 /// worth holding: whoever gets woken reads the parameters back. Process-global
-/// like they are, which is what lets a band dragged in the EQ window repaint a
-/// widget sitting in some other workspace's transport row.
+/// like they are, which lets a band dragged in the EQ window repaint a
+/// widget in some other workspace's transport row.
 #[derive(Default)]
 pub struct EqChanged;
 
@@ -2729,7 +2728,7 @@ pub fn eq_gain(band: usize) -> f32 {
 
 /// Turn the equalizer on or off and persist the pick. The node stays in
 /// the chain either way and hands its buffer back untouched while it's
-/// off, so this is a store rather than a chain edit; it lands as soon as
+/// off, so this is a store rather than a chain edit; it takes effect as soon as
 /// the ring drains past it, up to half a second behind the click.
 pub fn set_eq_enabled(on: bool, cx: &mut App) {
     eq_params().set_enabled(on);
@@ -2737,8 +2736,8 @@ pub fn set_eq_enabled(on: bool, cx: &mut App) {
     eq_changed(cx);
 }
 
-/// Move one band, in dB. The store is what the decode thread reads on its
-/// next buffer; the file write waits for the drag to settle.
+/// Move one band, in dB. The decode thread reads the store on its next
+/// buffer; the file write waits for the drag to settle.
 pub fn set_eq_gain(band: usize, db: f32, cx: &mut App) {
     eq_params().set_gain(band, db);
     persist_eq_soon(cx);
@@ -2764,7 +2763,7 @@ pub fn eq_q(band: usize) -> f32 {
 }
 
 /// Move a band's center. Same store-then-settle shape the gain has: the
-/// atomic carries it to the decode thread now, the file write waits for the
+/// atomic gets it to the decode thread now, the file write waits for the
 /// drag to stop.
 pub fn set_eq_freq(band: usize, hz: f32, cx: &mut App) {
     eq_params().set_freq(band, hz);
@@ -2808,8 +2807,8 @@ pub fn reset_eq_shape(cx: &mut App) {
 }
 
 /// Persist the curve once the drag settles, the same shape
-/// [`Player::persist_volume_soon`] uses: the atomics already carry the
-/// value to the audio thread, so only the file write has to wait for the
+/// [`Player::persist_volume_soon`] uses: the atomics already have the
+/// value on the audio thread, so only the file write has to wait for the
 /// last tick of a slider burst. The generation is global because the
 /// parameters are: whoever is dragging, the write they race is the same one.
 fn persist_eq_soon(cx: &mut App) {
@@ -2835,8 +2834,8 @@ fn persist_eq_soon(cx: &mut App) {
 
 /// Observe the player, but wake the host view only when its discrete state
 /// changes, not on every pump tick. The seek strip, waveform, and spectrum
-/// want each tick (the clock, the playhead, the bars) and observe the
-/// player directly; everything else rides this so a playing session does
+/// need each tick (the clock, the playhead, the bars) and observe the
+/// player directly; everything else goes through this so a playing session does
 /// not repaint them 60 times a second for a clock they never draw.
 pub fn observe_view<V: 'static>(player: &Entity<Player>, cx: &mut Context<V>) -> Subscription {
     let mut last = player.read(cx).view();
@@ -2936,12 +2935,12 @@ mod tests {
     }
 
     /// A random press plays the run around what it drew, so the track it
-    /// landed on is always inside the window and the entries after it are
-    /// there to carry on into. The window slides rather than shrinking, so a
+    /// drew is always inside the window and the entries after it are
+    /// there to keep playing into. The window slides rather than shrinking, so a
     /// draw near either end still comes with a full budget of music.
     #[test]
     fn a_random_draw_brings_the_run_around_it() {
-        // A pool under the cap travels whole, wherever the draw landed.
+        // A pool under the cap comes back whole, wherever the draw fell.
         assert_eq!(run_window(0, 40), (0, 40));
         assert_eq!(run_window(39, 40), (0, 40));
 
@@ -2966,7 +2965,7 @@ mod tests {
         }
     }
 
-    /// The Random button lands outside what the session has already held,
+    /// The Random button draws outside what the session has already held,
     /// and only wraps back onto it once the whole pool has been heard: the
     /// providers' no-repeats promise, kept by the press that starts sessions.
     #[test]
@@ -3003,9 +3002,9 @@ mod tests {
     }
 
     /// The bounce a pool-only guard allows: press Play Similar on track A,
-    /// land on its neighbour B, press again, and A is back because the new
-    /// session's pool never heard of it. The heard ring carries A across the
-    /// swap, so the second press walks on down the neighbourhood instead.
+    /// get its neighbour B, press again, and A is back because the new
+    /// session's pool never held it. The heard ring keeps A across the
+    /// swap, so the second press moves on down the neighbourhood instead.
     #[test]
     fn the_heard_ring_stops_the_bounce_between_two_neighbours() {
         let mut heard = VecDeque::new();
@@ -3024,7 +3023,7 @@ mod tests {
     }
 
     /// The ring stays deduped and bounded: a track held again moves to the
-    /// young end rather than aging out from its first landing, and past the
+    /// young end rather than aging out from where it first entered, and past the
     /// cap the oldest fall off first.
     #[test]
     fn the_heard_ring_dedupes_and_evicts_oldest_first() {
@@ -3051,7 +3050,7 @@ mod tests {
 
     /// The continuation trigger's arithmetic: it fires within the floor of
     /// the end of the upcoming portion and stays quiet above it, whichever
-    /// end of the order the cursor sits at.
+    /// end of the order the cursor is at.
     #[test]
     fn the_trigger_fires_inside_the_floor_and_not_above_it() {
         // Nineteen still to come, nothing to do.
@@ -3061,12 +3060,12 @@ mod tests {
         assert!(queue_running_dry(2, LoopMode::Off));
         assert!(queue_running_dry(1, LoopMode::Off));
         // Standing on the last entry, which is also where a queue that
-        // played out to its end sits.
+        // played out to its end ends up.
         assert!(queue_running_dry(0, LoopMode::Off));
     }
 
-    /// The other half of the trigger's gate: a paused queue refuses to grow,
-    /// an ended one still wants a batch because it reads as playing, and an
+    /// The other half of the trigger's gate: a paused queue doesn't grow,
+    /// an ended one still takes a batch because it reads as playing, and an
     /// armed stop-after means stop however the session reads.
     #[test]
     fn a_pause_or_an_armed_stop_keeps_the_queue_from_growing() {
@@ -3090,7 +3089,7 @@ mod tests {
         }
     }
 
-    /// A band of one, which is what a settled radio uses, must not disturb
+    /// A band of one, the settled radio's band, must not disturb
     /// the ranking at all; nor may a band wider than the queue panic.
     #[test]
     fn a_band_of_one_or_wider_than_the_queue_is_safe() {
@@ -3110,7 +3109,7 @@ mod tests {
     }
 
     /// The pinned crossfade requirement (ADR 19): consecutive cue tracks of
-    /// one image have to land in the same album group, or the fade would run
+    /// one image have to end up in the same album group, or the fade would run
     /// over a splice that was gapless on the disc.
     ///
     /// It falls out of the library rather than needing a rule here: the group
@@ -3161,8 +3160,8 @@ mod tests {
             "a track off another record is not"
         );
 
-        // The spans come back beside the groups, which is what the engine
-        // needs to play a slice rather than the whole image.
+        // The spans come back beside the groups, which the engine needs to
+        // play a slice rather than the whole image.
         assert_eq!(
             meta.spans[0],
             Some(Span {

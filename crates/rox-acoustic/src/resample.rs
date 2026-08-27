@@ -8,7 +8,7 @@
 //! ratio moves very little energy around. Feeding a model is the opposite
 //! case. A 44.1 kHz file going to a model's 32 kHz has 6 kHz of content
 //! above the new Nyquist, and linear interpolation doesn't remove it, it
-//! folds it back down: 19 kHz lands at 13 kHz, sitting right in the middle
+//! folds it back down: 19 kHz lands at 13 kHz, right in the middle
 //! of the band the network is looking at, indistinguishable from music that
 //! was actually there. Cymbals and sibilance turn into midrange, and every
 //! embedding in a library is quietly wrong in a way that depends on what
@@ -57,7 +57,7 @@ fn blackman(t: f64) -> f64 {
 ///
 /// Equal rates copy through untouched rather than running a kernel whose
 /// answer would be the input plus float noise. An empty input, or either
-/// rate at zero, comes back empty: there is no signal to convert.
+/// rate at zero, comes back empty: there's no signal to convert.
 pub fn convert(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to {
         return input.to_vec();
@@ -73,13 +73,13 @@ pub fn convert(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     // kernel is a pure interpolator.
     let cutoff = 0.5 * ratio.min(1.0);
     // The kernel's support, in input samples. It widens as the cutoff drops,
-    // which is what keeps LOBES zero crossings inside it whatever the ratio.
+    // which keeps LOBES zero crossings inside it whatever the ratio.
     let half = (LOBES as f64 / (2.0 * cutoff)).ceil() as isize;
 
     let out_len = ((input.len() as f64) * ratio).floor() as usize;
     let mut out = Vec::with_capacity(out_len);
     for j in 0..out_len {
-        // Where this output sample sits in input coordinates.
+        // Where this output sample is in input coordinates.
         let center = j as f64 / ratio;
         let first = (center - half as f64).ceil() as isize;
         let last = (center + half as f64).floor() as isize;
@@ -90,8 +90,8 @@ pub fn convert(input: &[f32], from: u32, to: u32) -> Vec<f32> {
             let tap = 2.0 * cutoff * sinc(2.0 * cutoff * offset) * blackman(offset / half as f64);
             // Taps reaching past either end of the clip take no part, in
             // this sum or in the weight beside it: a clip starts and it
-            // stops. Counting them in the divisor anyway is zero padding
-            // wearing edge compensation's clothes, and it swings the first
+            // stops. Counting them in the divisor anyway isn't edge
+            // compensation, it's zero padding, and it swings the first
             // and last few output samples by up to 14%.
             if let Some(&sample) = input.get(i.max(0) as usize).filter(|_| i >= 0) {
                 sum += sample as f64 * tap;
@@ -199,8 +199,8 @@ mod tests {
         );
     }
 
-    /// The shape of the transition, which is what decides whether the
-    /// filtering is good enough for the job.
+    /// The shape of the transition, which decides whether the filtering is
+    /// good enough for the job.
     ///
     /// The passband has to be flat up to 14 kHz, because that's the top of
     /// PANNs' own mel filterbank and therefore the highest frequency the
@@ -209,8 +209,8 @@ mod tests {
     /// 19 kHz, which it is, at roughly -78 dB.
     ///
     /// The 16 to 18 kHz band in between is the transition, and it's where
-    /// the leakage lives. That's survivable here rather than merely
-    /// tolerated: content in it folds down to 14 to 16 kHz, which sits above
+    /// the leakage is. That's fine here rather than merely
+    /// tolerated: content in it folds down to 14 to 16 kHz, which is above
     /// the model's fmax and never reaches a filterbank row.
     #[test]
     fn the_passband_is_flat_where_the_model_looks_and_the_stopband_is_deep() {
@@ -223,7 +223,7 @@ mod tests {
         assert!(level(14_000.0) > 0.95, "the model's fmax must survive");
         // Deep enough by 19 kHz that nothing folding out of there is
         // measurable against 16-bit audio's own noise floor. Measured over
-        // the body of the clip: the first and last few samples carry the
+        // the body of the clip: the first and last few samples show the
         // kernel's truncation against the clip's own edges, which is a
         // boundary effect rather than something that leaked through the
         // filter.

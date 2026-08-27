@@ -11,13 +11,13 @@
 //! reads the same way, as a tool error with the reason in it.
 //!
 //! MCP is JSON-RPC 2.0, one object per line on stdio, same framing as the
-//! socket itself. The subset here is what tools need: initialize, ping,
+//! socket itself. This covers the subset tools need: initialize, ping,
 //! tools/list, and tools/call; notifications are read and dropped.
 //!
 //! `--dev` widens the surface with the ui_ drive tools, proxies of the
 //! socket's debug scope, so an agent working on rox can list windows,
 //! dispatch actions, and send synthetic input through its MCP client. The
-//! flag lives on the config line spawning this binary, which keeps a user's
+//! flag goes on the config line spawning this binary, which keeps a user's
 //! music-facing MCP config from carrying UI-driving tools by accident.
 
 use std::io::{BufRead as _, Write as _};
@@ -301,7 +301,7 @@ fn dev_tools() -> Value {
 
 /// One tool call against the running rox. Tool-level failures (no rox, the
 /// AI toggle off, a refused method) come back as isError results with the
-/// reason in the text, which is where MCP wants them; only malformed
+/// reason in the text, which is where MCP expects them; only malformed
 /// requests earn protocol errors.
 fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev: bool) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
@@ -438,7 +438,7 @@ fn proxy(
     Err("rox stopped answering; is it still running?".into())
 }
 
-/// A tool-level failure the way MCP wants it: an isError result whose text
+/// A tool-level failure the way MCP expects it: an isError result whose text
 /// says why, so the model can read the reason instead of a bare code.
 fn refusal(reason: &str) -> Value {
     json!({

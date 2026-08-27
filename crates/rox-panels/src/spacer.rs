@@ -1,7 +1,7 @@
 //! The spacer panel: nothing but the space it holds. Drop one into a row or
 //! a split to push the panels around it apart, or to leave a deliberate gap.
-//! It draws no content and takes no input, so whatever sits behind it in the
-//! window shows through. All it carries is the shared chrome, so it can be
+//! It draws no content and takes no input, so whatever is behind it in the
+//! window shows through. All it has is the shared chrome, so it can be
 //! renamed, themed, and locked like any other panel.
 
 use gpui::{
@@ -16,7 +16,7 @@ use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 
 /// The spacer panel's per-view config: what a saved layout restores. Just the
-/// shared chrome - a spacer has no knobs of its own beyond its appearance.
+/// shared chrome, since a spacer has no knobs of its own beyond appearance.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SpacerConfig {
     /// The rename, theme override, and placement locks shared by every panel.
@@ -28,7 +28,7 @@ pub struct SpacerPanel {
     state: AppState,
     config: SpacerConfig,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
 }
 
@@ -112,10 +112,10 @@ impl Panel for SpacerPanel {
         false
     }
 
-    /// The floor is zero on purpose: the spacer is nothing but the space
-    /// it holds, so a shrinking window may squeeze it away entirely
-    /// before its neighbors give anything up. The chrome's own minimums
-    /// still raise it where a layout wants a guaranteed gap.
+    /// The floor is zero: the spacer is nothing but the space it holds, so
+    /// a shrinking window may squeeze it away entirely before its neighbors
+    /// give anything up. The chrome's own minimums still raise it where a
+    /// layout needs a guaranteed gap.
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
         crate::panel::chrome_min_size(&self.config.chrome, gpui::size(gpui::px(0.), gpui::px(0.)))
     }
@@ -124,7 +124,7 @@ impl Panel for SpacerPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered in
+    /// The layout dump stores the panel's config; the builder registered in
     /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);

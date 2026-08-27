@@ -1,8 +1,8 @@
 //! The theme toggle panel: a single button that flips the app between the
 //! dark and light palettes, the settings window's theme pick as a panel of
-//! its own. The glyph shows the side a click lands on, sun while dark,
+//! its own. The glyph shows the side a click switches to, sun while dark,
 //! moon while light. Clicking always picks a concrete side, so a System
-//! pick turns into whichever side the OS was not showing; the pick
+//! pick turns into whichever side the OS wasn't showing; the pick
 //! persists to the settings file like the settings window's radio.
 
 use gpui::{
@@ -35,7 +35,7 @@ pub struct ThemeTogglePanel {
     state: AppState,
     config: ThemeToggleConfig,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
 }
 
@@ -203,7 +203,7 @@ impl Panel for ThemeTogglePanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);

@@ -3,9 +3,9 @@
 What using rox feels like, in the moments that matter.
 
 **Point it at your folders and it's fast.** You add your library directories, it scans
-and caches, and from then on you browse tens of thousands of tracks with no lag. Startup
-is quick, scrolling is quick, search is quick. On a big library, speed is a feature you
-feel constantly, and it's the first thing that kills these apps when they get it wrong.
+and caches, and from then on you browse tens of thousands of tracks with no lag. Startup,
+scrolling, and search all stay quick. On a big library speed is the first thing that
+kills these apps when they get it wrong.
 
 **You compose your window.** The UI is panels: library tree, album grid, playlist,
 now-playing art, visualizer, tag editor, track info, lyrics. You drag to reorder, split,
@@ -26,9 +26,9 @@ messy import, correct album art, all keyboard-driven and fast. This is the workf
 Tauon loses and the reason a serious library person won't switch to it. rox has to win
 here or the rest doesn't matter to this user.
 
-**It knows what you actually listen to.** Every real listen lands on disk: play counts,
-first and last played, rolled up by artist, album, and genre. A skip ten seconds in
-doesn't count; an album on repeat all week does. A history panel leans on it: most
+**It knows what you actually listen to.** Every real listen is written to disk: play
+counts, first and last played, rolled up by artist, album, and genre. A skip ten seconds
+in doesn't count; an album on repeat all week does. A history panel reads it: most
 played, never played, what you haven't touched in a year. A stats view makes the
 history something to look at, rolled up and charted over a range you pick. The record is yours and
 local: fix a genre tag and your history re-buckets with it, and scrobbling becomes a

@@ -18,11 +18,11 @@
 ///
 /// Parameters are atomics shared with the UI, owned by the node, so a knob
 /// write is a store with no command round trip; structural edits (adding,
-/// removing, reordering nodes) ride the engine's command channel.
+/// removing, reordering nodes) are sent over the engine's command channel.
 pub trait Node: Send {
     /// Called at stream open and on every discontinuity the engine already
     /// knows, the seek flush and the device rebuild, and never at the
-    /// gapless boundary, so filter history carries across a track splice.
+    /// gapless boundary, so filter history persists across a track splice.
     fn reset(&mut self, rate: u32);
     /// Process one buffer of interleaved stereo in place.
     fn process(&mut self, buf: &mut [f32]);
@@ -61,7 +61,7 @@ impl Chain {
     }
 
     /// Run the buffer through every node in order. Empty chain, untouched
-    /// buffer; that is the bypass rule, held structurally rather than by a
+    /// buffer; that's the bypass rule, held structurally rather than by a
     /// flag.
     pub fn process(&mut self, buf: &mut [f32]) {
         for node in &mut self.nodes {

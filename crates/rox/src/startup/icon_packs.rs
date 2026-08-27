@@ -1,9 +1,10 @@
 //! Icon packs: a folder of SVGs that overrides the app's built-in icons.
 //! Each pack is a subfolder under [`packs_dir`] holding flat SVG files named
-//! like the built-in icons (play.svg, heart.svg); a file present there wins
-//! over our own embedded icon and the bundled widget set, a missing one
-//! falls through. The active pack rides in [`rox_core::settings::Settings`] by
-//! name and the resolver in [`rox_design::assets`] reads its folder.
+//! like the built-in icons (play.svg, heart.svg); a file present there
+//! overrides our own embedded icon and the bundled widget set, a missing one
+//! falls through. The active pack is stored in
+//! [`rox_core::settings::Settings`] by name and the resolver in
+//! [`rox_design::assets`] reads its folder.
 //!
 //! Switching packs takes effect on the next launch: gpui's sprite atlas keys
 //! on the icon's path and only reads its bytes on a cache miss, so icons

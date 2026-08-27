@@ -1,7 +1,7 @@
 //! The shared payload for dragging tracks onto a drop target that plays them.
-//! Carries the tracks in drag order so a drop queues them straight through,
+//! Holds the tracks in drag order so a drop queues them straight through,
 //! out-of-library files included. One type so library rows, other panels, and
-//! external file drops all land through the same enqueue path.
+//! external file drops all go through the same enqueue path.
 
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use rox_library::cue::TrackKey;
 /// The value carried through a track drag. `keys` is the drag order a drop
 /// enqueues; keys rather than paths, so dragging two tracks of one cue rip
 /// queues two tracks instead of the image twice. `title` labels the floating
-/// preview. The keys ride behind an Arc so a row attaches the payload with a
+/// preview. The keys are behind an Arc so a row attaches the payload with a
 /// refcount bump: a grab inside a big multi-selection would otherwise clone
 /// the whole set into every visible selected row on every frame.
 #[derive(Clone)]

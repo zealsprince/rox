@@ -1,13 +1,6 @@
 ### Українська. Дзеркалить en-CA/rox.ftl ключ у ключ; тест на паритет
-### у rox-i18n за цим стежить.
-
-### The source locale. Every key lives here first, the other locales
-
-### mirror this file one for one, and the parity test in rox-i18n is
-
-### what holds them to it. Keys are surface-prefixed kebab-case; a
-
-### row's description rides the label's message as an attribute.
+### у rox-i18n за цим стежить. Ключі - kebab-case із префіксом поверхні;
+### опис рядка задається атрибутом повідомлення-мітки.
 
 ## Shared widgets
 tracking-title = Стеження
@@ -15,9 +8,9 @@ tracking-follow = Стежити за відтворенням
 tracking-resume = Повертатися при простої
 tracking-smooth = Плавне прокручування
 align-row = Вирівнювання
-    .description = Де стоїть вміст, коли в панелі є запас місця
+    .description = Де розміщується вміст, коли в панелі є запас місця
 valign-row = Вертикальне вирівнювання
-    .description = Де стоїть вміст, коли в панелі є запас висоти
+    .description = Де розміщується вміст, коли в панелі є запас висоти
 valign-top = Згори
 valign-middle = По центру
 valign-bottom = Знизу
@@ -40,7 +33,7 @@ query-source-selection = Вибір
 
 ## Signals and routes
 signal-source = Джерело
-    .description = За чим стежить сигнал: Смуга веде один діапазон частот, Рівень - увесь мікс, Атака пульсує на кожному ударі в діапазоні, Тригер видає імпульс, коли діапазон досягає свого порога, Сума накопичує інший сигнал із часом
+    .description = За чим стежить сигнал: Смуга - за одним діапазоном частот, Рівень - за всім міксом, Атака пульсує на кожному ударі в діапазоні, Тригер видає імпульс, коли діапазон досягає свого порога, Сума накопичує інший сигнал із часом
 signal-kind-band = Смуга
 signal-kind-level = Рівень
 signal-kind-onset = Атака
@@ -51,11 +44,11 @@ signal-response-pulse = Як довго дзвенить кожен імпуль
 signal-response-drift = 0 тримається музики впритул, 100 тягнеться за нею
 signal-threshold = Поріг
 signal-threshold-trigger = Рівень, якого має досягти діапазон, щоб видати імпульс; знову він спрацює лише після того, як рівень опуститься під позначку на індикаторі вище
-signal-threshold-gate = Нижче за це сигнал читається як ніщо, а вище вихід знову росте від нуля, тож тихі місця не рухають регулятор. Позначка на індикаторі вище показує, де стоїть поріг
+signal-threshold-gate = Нижче за це сигнал читається як нуль, а вище вихід знову росте від нуля, тож тихі місця не рухають регулятор. Позначка на індикаторі вище показує, де саме проходить поріг
 signal-low-bound = Нижня межа
 signal-high-bound = Верхня межа
 signal-adds-up = Що підсумовується
-    .description = Який сигнал тут накопичується; сума росте, поки той стоїть високо, і завмирає, поки він тихий
+    .description = Який сигнал тут накопичується; сума росте, поки той читається високо, і завмирає, поки він тихий
 signal-aggregate-nothing = Немає за чим стежити
 signal-aggregate-pick = Вибрати сигнал
 signal-aggregate-alone = У пулі немає іншого сигналу, щоб його підсумувати, тож тут нуль. Додайте сигнал, і він з'явиться в списку.
@@ -63,7 +56,7 @@ signal-aggregate-unpicked = Нічого не вибрано, тож ця сум
 signal-rate = Швидкість
     .description = Обертів на секунду при повному вході; після 1 значення скидається в 0 і росте далі, а шейдер читає це як фазу
 signal-reset-on-track = Скидати на новому треку
-    .description = Стікати до нуля, коли починається нова пісня, щоб фаза не тягла в неї суму попередньої
+    .description = Повертатися до нуля, коли починається нова пісня, щоб фаза не починалася з суми попередньої
 signal-flush = Обнулити
 signal-routes-in-panel = { $count ->
     [one] { $count } маршрут у цій панелі
@@ -80,9 +73,9 @@ route-shared-note = Спільне для кожного маршруту на �
 route-signal-gone = Сигнал цього маршруту зник; регулятор тримає значення свого повзунка, поки вище не вибрано інший.
 route-range-note = Діапазон лише для цього параметра
 route-quiet = Тиша
-    .description = Чого регулятор досягає в тиші, як частка його власного значення
+    .description = Що регулятор читає в тиші, як частка його власного налаштування
 route-loud = Гучно
-    .description = Чого він досягає при повному сигналі; 100% - це власне значення повзунка, нижче за Тишу модулює вниз
+    .description = Що він читає при повному сигналі; 100% - це власне значення повзунка, нижче за Тишу модулює вниз
 route-slot = Слот
     .description = Який із шістнадцяти сигнальних слотів шейдера заповнює цей маршрут
 route-slot-quiet-description = Що слот читає в тиші
@@ -110,7 +103,7 @@ panel-was-closed = Панель було закрито
 panel-reset = Скинути
 panel-inverse = Інверсія
 panel-apply-song-theme = Застосувати тему пісні
-panel-page-appearance = Вигляд
+panel-page-appearance = Оформлення
 panel-page-behavior = Поведінка
 panel-page-shader = Шейдер
 panel-section-placement = Розміщення
@@ -125,7 +118,7 @@ panel-section-slots = Слоти
 panel-awaiting-approval = Очікує підтвердження
 panel-size-off = Вимк.
 panel-locked = Закріплено
-    .description = Зафіксувати панель на місці; док не дасть її перетягнути чи переставити
+    .description = Зафіксувати панель на місці; у доку її не перетягнути й не переставити
 panel-drag-anchor = Якір перетягування
     .description = Перетягування будь-де по панелі рухає вікно, а звичайні кліки й далі потрапляють на її елементи; для розкладок без рамок вікна
 panel-slot-controls = Кнопки слотів
@@ -156,7 +149,7 @@ panel-font-size = Розмір шрифту
 panel-surface-shader = Шейдер поверхні
     .description = Пустити шейдер WGSL по тілу цієї панелі, під екранним шейдером застосунку
 panel-run-when-idle = Працювати в простої
-    .description = Малювати кадри й далі, поки звук мовчить. Вимкнено, шейдер зупиняється там, де стоїть, і панель нічого не коштує
+    .description = Малювати кадри й далі, поки звук мовчить. Вимкнено, шейдер завмирає на останньому кадрі, і панель нічого не коштує
 panel-shader-is-scene = Цей шейдер - сцена, тож він накриває тіло панелі, а не малює поверх нього. Він прийшов із набору або зі старішого конфігу; список вище пропонує лише шейдери, які лишають панель читабельною.
 
 ## Shader picker and saving
@@ -198,6 +191,7 @@ settings-language = Мова
 settings-language-system = (Системна мова)
 settings-language-search = Пошук мов
 picker-no-matches = Збігів немає
+settings-search-no-matches = Немає збігів для «{ $text }»
 
 ## Embed dialog
 bake-window-title = rox - Вписати збережені метадані
@@ -224,7 +218,7 @@ bake-detail-writes-skipped = { $count ->
 bake-error-read = Не вдалося прочитати медіатеку: { $error }
 bake-survey-counting = Переглядаємо медіатеку...
 bake-survey-progress = Читаємо теги, { $done } з { $total }
-bake-nothing-to-embed = Вписувати нічого: файли вже несуть усе, що тримає rox
+bake-nothing-to-embed = Вписувати нічого: у файлах уже є все, що зберіг rox
 bake-rewrites = { $count ->
     [one] Буде перезаписано { $count } файл
     [few] Буде перезаписано { $count } файли
@@ -236,6 +230,21 @@ bake-hint-key = Enter
 bake-hint-after = щоб вписати
 bake-embed = Вписати
 bake-cancel = Скасувати
+## Звіт одним рядком після вписування. Показуються всі три числа, нулі теж,
+## бо пропуски найбільше цікавлять опісля. Голова рядка збирається першою,
+## а два хвости дописуються за нею, тож кожне число сидить у власному
+## повідомленні й мова, яка навколо нього відмінюється, може вибирати
+## саме за ним, не чіпаючи інших.
+bake-summary-files = { $count ->
+    [one] { $count } файл
+    [few] { $count } файли
+    [many] { $count } файлів
+   *[other] { $count } файла
+}
+bake-summary-updated = Оновлено { $files }
+bake-summary-stopped = Спинилося, оновлено { $files }
+bake-summary-skipped = , пропущено { $count }
+bake-summary-failed = , не вдалося { $count }
 
 ## Arrange editors and header pieces
 arrange-shown = Показано
@@ -289,6 +298,8 @@ panel-reveal-in-browser = Показати у файловому менедже�
 panel-play-next = Відтворити наступним
 panel-add-to-queue = Додати в чергу
 panel-add-to-playlist = Додати до списку відтворення
+panel-favourite-add = Додати в улюблене
+panel-favourite-remove = Прибрати з улюбленого
 shader-pick-missing = { $name } (немає)
 shader-pick-custom = Власний
 
@@ -298,7 +309,7 @@ shader-blurb-trails = Розмазує свій попередній кадр, �
 shader-blurb-sheen = Віньєтка й пливучий полиск, прозора накладка для панелі, яка вже щось малює.
 shader-blurb-shadow = Тінь, яку відкидають власний текст і елементи панелі, знята з маски.
 shader-blurb-cover = Обкладинка треку, що грає, у леттербоксі поверх заливки її ж кольором.
-shader-blurb-badge = Обкладинка як маленька картка в кутку, зі слотом, щоб її поводити.
+shader-blurb-badge = Обкладинка як маленька картка, припаркована в кутку, зі слотом, щоб її пересувати.
 shader-blurb-lamp = Світло, яке йде за курсором і відгукується на кліки, прозора накладка.
 shader-blurb-cube = Каркасний куб, що перевертається в підробленому 3D, намальований доданим світлом.
 shader-blurb-bloom = Пливучі кулі, розмиті другим проходом удвічі меншого розміру, увесь ланцюг у мініатюрі.
@@ -346,7 +357,7 @@ dock-expand = Розгорнути
 shader-note-empty = Виберіть приклад для початку або вкажіть rox файл .wgsl із фрагментною стадією, що визначає fs_user(uv)
 shader-note-missing = { $name } більше немає серед шейдерів цього робочого простору, тож нічого не малюється. Виберіть тут щось інше, і ця панель дістане власне джерело.
 shader-note-shared = Спільний для всього робочого простору. Правка оновить кожну поверхню, яка його бере.
-shader-note-file = { $path }. Ваші збереження перезавантажуються, поки шейдер малює, а джерело зберігається всередині розкладок і наборів, тож воно переживе машину, на якій цього файлу ніколи не було.
+shader-note-file = { $path }. Ваші збереження перезавантажуються, поки шейдер малює, а джерело зберігається всередині розкладок і наборів, тож він працює й на машині, де цього файлу ніколи не було.
 shader-note-custom = Це джерело зберігається всередині своєї розкладки чи набору, файлу за ним немає. Редагувати як файл випише його назовні й підхопить ваші збереження.
 
 ## Panel pages and shared sides
@@ -357,6 +368,7 @@ panel-page-source = Джерело
 panel-page-bindings = Прив'язки
 panel-page-emitters = Емітери
 panel-page-forces = Сили
+panel-page-scene = Сцена
 side-left = Ліворуч
 side-right = Праворуч
 genre-face-mosaic = Мозаїка
@@ -379,11 +391,11 @@ library-disc = Диск { $number }
 library-empty-title = Відкрийте музичну теку
 library-empty-note = Вона потрапить у медіатеку при скануванні (flac, mp3, wav)
 library-headers = Заголовки
-    .description = Розриви груп над списком; сортування лишає разом ті послідовності, які й так стоять поруч, а пошук малює список рівним
+    .description = Розриви груп над списком; сортування тримає разом усі наявні послідовності, а пошук показує список рівним
 library-group-by = Групувати за
     .description = За чим ламаються заголовки; жанр і рік пересортовують список
 library-header-row = Рядок заголовка
-    .description = Що пакують однорядкові заголовки, зліва направо; проміжок або роздільник ділить боки
+    .description = Що показують однорядкові заголовки, зліва направо; проміжок або роздільник ділить боки
 library-header-lines = Рядки заголовка
     .description = Рядки блока, згори вниз; порожній рядок випадає
 library-follow-description = Прокручувати до рядка, що грає, щоразу коли змінюється трек
@@ -400,7 +412,7 @@ library-line-height = Висота рядка
 library-text-size = Розмір тексту
     .description = Текст рядків заголовка, незалежно від висоти рядка, тож обкладинка росте сама
 library-flush-background = Урівень із тлом
-    .description = Посадити заголовки на тло списку замість піднятого відтінку; тема пісні рухає їх разом
+    .description = Показувати заголовки на тлі списку замість піднятого відтінку; тема пісні змінює їх разом
 library-gap-above = Проміжок згори
     .description = Відрізаний від верху блока; крізь нього видно список, а рядки стискаються, щоб влізти
 library-gap-below = Проміжок знизу
@@ -409,7 +421,7 @@ library-section-rows = Рядки
 library-row-height = Висота рядка
     .description = Рядки треків; текст іде за ними, і обидва масштабуються зі шрифтом застосунку
 library-row-spacing = Інтервал рядків
-    .description = Додаткова висота, яку добирає кожен рядок; простір, не збільшуючи текст
+    .description = Додаткова висота, яку добирає кожен рядок; вільніше, без збільшення тексту
 library-stripes = Смуги через рядок
     .description = Тонувати кожен другий рядок треку, щоб довгий список читався
 library-row-borders = Лінії рядків
@@ -418,7 +430,7 @@ library-art-description = Плитка розгорнутих заголовкі
 library-art-rounding = Заокруглення обкладинки
     .description = Заокруглити кути обкладинки
 library-art-position = Розташування обкладинки
-    .description = З якого боку блока стоїть плитка розгорнутих заголовків
+    .description = З якого боку блока розміщується плитка розгорнутих заголовків
 library-art-margin = Відступ обкладинки
     .description = Втиснути плитку всередину блока; вона зменшується, щоб лишитися квадратом
 library-circular-portraits = Круглі портрети
@@ -460,7 +472,7 @@ grid-gap = Проміжок
 grid-art-rounding-description = Заокруглити кути кожної обкладинки; 100% - це коло
 
 ## Settings: sidebar pages
-settings-page-appearance = Вигляд
+settings-page-appearance = Оформлення
 settings-page-application = Застосунок
 settings-page-audio = Звук
 settings-page-development = Розробка
@@ -482,7 +494,7 @@ settings-appearance-backdrop-strength = Сила тла
     .description = Наскільки сильно тло з обкладинки проступає за ними
 settings-appearance-border = Рамка
     .description = Лінія по краю кожної панелі, кольором ролі Рамка; сторона на нулі не малюється
-settings-appearance-colors-locked-note = Тема пісні увімкнена, тож ці кольори веде трек, що грає, і експорт зберігає саме їх. Вимкніть її вище, щоб редагувати
+settings-appearance-colors-locked-note = Тема пісні увімкнена, тож ці кольори задає трек, що грає, і експорт зберігає саме їх. Вимкніть її вище, щоб редагувати
 settings-appearance-design-mode = Режим дизайну
     .description = Правка розкладки прямо на місці: пункти меню панелі для додавання, перейменування, дублювання, відділення й закриття, елементи, які контейнер накладає на свої слоти, і перетягування вкладок. Вимкнено ховає все це; сторінка Робочий простір усе одно править дерево
     .keywords = правка розкладка перестановка блокування
@@ -510,7 +522,7 @@ settings-appearance-padding = Внутрішній відступ
 settings-appearance-palette-export = Експорт
 settings-appearance-palette-import = Імпорт
 settings-appearance-panel-seams = Шви панелей
-    .description = Волосяна лінія між плитками панелей; вимкнено лишає захвати для зміни розміру невидимими, але їх усе одно можна тягнути
+    .description = Волосяна лінія між плитками панелей; вимкнено лишає межі для зміни розміру невидимими, але їх усе одно можна тягнути
 settings-appearance-resize-border = Рамка зміни розміру
     .description = Зміна розміру головних вікон перетягуванням за краї; діє лише з вимкненим Оформленням ОС, а якщо це вимкнути, лишаються прилипання і Win+стрілки
 settings-appearance-rounding = Заокруглення
@@ -561,7 +573,7 @@ settings-application-socket-path = Шлях до сокета
 settings-audio-broadcast-bitrate = Бітрейт
     .description = Скільки кодувальник MP3 витрачає на секунду потоку
 settings-audio-broadcast-enable = Транслювати на Icecast
-    .description = Штовхати те, що грає rox, на сервер icecast як клієнт-джерело, кодуючи в MP3. Точка монтування, слухачі й мережевий бік належать icecast; rox лише під'єднується назовні, а недоступний сервер ніколи не чіпає локальне відтворення
+    .description = Надсилати те, що грає rox, на сервер icecast як клієнт-джерело, кодуючи в MP3. Точка монтування, слухачі й мережевий бік належать icecast; rox лише під'єднується назовні, а недоступний сервер ніколи не чіпає локальне відтворення
 settings-audio-broadcast-host-placeholder = хост icecast
 settings-audio-broadcast-login = Вхід джерела
     .description = Облікові дані джерела icecast, користувач і пароль, які називає його конфіг
@@ -579,7 +591,7 @@ settings-audio-equalizer-note = Десять октавних смуг на ви
 settings-audio-exclusive-mode = Ексклюзивний режим
     .description = Забрати пристрій під сам лише rox і пустити його на власній частоті файлу там, де залізо це приймає; вимкнено ділить системний мікшер з усім іншим на робочому столі
 settings-audio-fade-inside-albums = Згасання всередині альбомів
-    .description = Накладати й треки, що належать одному запису. Вимкнено лишає власні склейки запису точно такими, як їх зведено, а саме там пауза між треками важить найбільше
+    .description = Накладати й треки, що належать одному запису. Вимкнено лишає власні склейки запису точно такими, як їх зведено, а саме там безперервність між треками важить найбільше
 settings-audio-open-equalizer = Відкрити еквалайзер
 settings-audio-output-buffer = Буфер
     .description = Скільки звуку карта тримає за раз. Коротший реагує швидше й раніше тріщить на завантаженій машині; довший безпечніший і лінивіший
@@ -592,7 +604,7 @@ settings-audio-output-device-system-default = Системний типовий
 settings-audio-output-experimental-badge = Експериментальне
 settings-audio-output-experimental-tooltip = Ексклюзивний бекенд для цієї платформи написано за задокументованим звуковим контрактом платформи, але розробники ніколи не ганяли його на справжньому залізі. Він має або забрати пристрій, або відкотитися до спільного режиму з поясненням, і ніколи не мовчати. Якщо він поводиться дивно, вимкніть його й розкажіть, що сталося, кнопкою поруч із цією позначкою.
 settings-audio-output-format = Формат
-    .description = Що rox віддає карті. Карта, яка не бере вибране, працює в найширшому форматі, який має, а статус нижче показує, у якому саме
+    .description = Що rox передає карті. Карта, яка не бере вибране, працює в найширшому форматі, який має, а статус нижче показує, у якому саме
 settings-audio-output-format-f32 = 32-бітний float
 settings-audio-output-format-s16 = 16-бітний integer
 settings-audio-output-format-s32 = 32-бітний integer
@@ -603,7 +615,7 @@ settings-audio-output-mode-shared = Спільний
 settings-audio-output-not-built = Ще не зібрано для цієї платформи
 settings-audio-output-rate-follow = Іти за файлом
 settings-audio-output-sample-rate = Частота дискретизації
-    .description = Слідування перевідкриває пристрій на власній частоті кожного файлу, що коштує паузи на межі, де частота змінюється; закріплена частота ніколи цього не платить і передискретизує все, що не збігається
+    .description = Режим Іти за файлом перевідкриває пристрій на власній частоті кожного файлу, що коштує паузи на межі, де частота змінюється; закріплена частота цього не коштує й передискретизує все, що не збігається
 settings-audio-output-status-error-hint = Виберіть інший пристрій або вимкніть ексклюзивний режим
 settings-audio-output-status-error-title = Немає виходу
 settings-audio-output-status-idle-hint = Запустіть трек, щоб побачити формат, який прийняв пристрій
@@ -620,20 +632,20 @@ settings-audio-replaygain-mode-album = Альбом
 settings-audio-replaygain-mode-off = Вимк.
 settings-audio-replaygain-mode-track = Трек
 settings-audio-replaygain-preamp = Попереднє підсилення
-    .description = Додається до кожного підсилення з тегів. Опорний рівень ReplayGain стоїть нижче за той, на якому ріжуть сучасні записи, тож вирівняна медіатека грає тихіше за ту саму медіатеку без обробки; тут це повертається. Підйом ніколи не кліпує: виміряний пік його обмежує
+    .description = Додається до кожного підсилення з тегів. Опорний рівень ReplayGain нижчий за той, на якому зводять сучасні записи, тож вирівняна медіатека грає тихіше за ту саму медіатеку без обробки; тут це повертається. Підйом ніколи не кліпує: виміряний пік його обмежує
 settings-audio-replaygain-save = Зберігати виміряні підсилення
     .description = Куди прохід вимірювання кладе свої числа. База медіатеки лишає ваші файли недоторканими; теги кладуть ті самі значення туди, звідки їх читає кожен інший програвач, ціною перезапису звукових файлів
-settings-audio-replaygain-status-measured = Усі { $total } сканованих треків мають підсилення для вирівнювання, з них { $measured } виміряв rox
-settings-audio-replaygain-status-tagged = Усі { $total } сканованих треків несуть теги ReplayGain
+settings-audio-replaygain-status-measured = Усі скановані треки ({ $total }) мають підсилення для вирівнювання, з них { $measured } виміряв rox
+settings-audio-replaygain-status-tagged = Усі скановані треки ({ $total }) мають теги ReplayGain
 settings-audio-replaygain-untagged = Файли без тегів
-    .description = З яким рівнем грає файл без тегів ReplayGain. Його ніхто не міряв, тож це здогад замість виміру - лишіть нуль, і треки без тегів гратимуть, як завжди
+    .description = З яким рівнем грає файл без тегів ReplayGain. Його ніхто не міряв, тож це здогад замість виміру. Лишіть нуль, і треки без тегів гратимуть, як завжди
 settings-audio-section-broadcast = Мовлення
 settings-audio-section-equalizer = Еквалайзер
 settings-audio-section-output = Вихід
 settings-audio-section-playback = Відтворення
 settings-audio-section-replaygain = ReplayGain
 settings-audio-transport = Керування
-    .description = Пуск і зупинка, не покидаючи цієї сторінки, бо кожне налаштування нижче судиться на слух
+    .description = Пуск і зупинка, не покидаючи цієї сторінки, бо кожне налаштування нижче оцінюють на слух
 
 ## Settings: integrations
 settings-integrations-discord-enable = Увімкнути Rich Presence
@@ -662,11 +674,11 @@ settings-integrations-lastfm-hearts = { $n ->
 }
 settings-integrations-lastfm-import-loved = Імпортувати улюблені треки
 settings-integrations-lastfm-intro-builtin = Під'єднайте свій акаунт Last.fm: авторизуйте rox у браузері, і прослухані треки підуть у скробл
-settings-integrations-lastfm-intro-custom = Ця збірка не несе жодної api-ідентичності, тож для скроблу потрібен ваш власний акаунт api (Last.fm/api/account/create); вставте його ключ і спільний секрет, а потім під'єднайтеся
+settings-integrations-lastfm-intro-custom = У цій збірці немає власної api-ідентичності, тож для скроблу потрібен ваш власний акаунт api (Last.fm/api/account/create); вставте його ключ і спільний секрет, а потім під'єднайтеся
 settings-integrations-lastfm-key-placeholder = Ключ API
 settings-integrations-lastfm-love-failed = Остання спроба не вдалася: { $error }
-settings-integrations-lastfm-love-pending = { $hearts } чекає на надсилання
-settings-integrations-lastfm-love-pending-failed = { $hearts } чекає на надсилання, остання спроба: { $error }
+settings-integrations-lastfm-love-pending = У черзі на надсилання: { $hearts }
+settings-integrations-lastfm-love-pending-failed = У черзі на надсилання: { $hearts }, остання спроба: { $error }
 settings-integrations-lastfm-reconnect = Під'єднатися знову
 settings-integrations-lastfm-secret-placeholder = Спільний секрет
 settings-integrations-lastfm-secret-row = Спільний секрет
@@ -680,7 +692,7 @@ settings-integrations-lastfm-status-requesting = Запитуємо токен..
 settings-integrations-lastfm-status-waiting = Авторизуйте rox у браузері, а потім завершіть під'єднання
 settings-integrations-lastfm-working = Працюємо...
 settings-integrations-love-favourites = Улюблені як Loved
-    .description = Дзеркалити сердечка на Last.fm як loved-треки; зняте сердечко знімає їх і там
+    .description = Дзеркалити сердечка на Last.fm як loved-треки; зняте сердечко знімає його й там
 settings-integrations-scrobble-threshold = Поріг скроблу
     .description = Скільки треку має відіграти, перш ніж він піде у скробл; смуга перемотки й хвиля можуть це позначити
 settings-integrations-scrobble-tracks = Скроблити треки
@@ -704,7 +716,7 @@ settings-keymap-undo-last = Скасувати останнє скидання
     .description = Повернути поєднання, які викинуло останнє скидання, чи то рядка, чи то всіх
 
 ## Settings: library
-settings-library-acoustic-all-described = Усі { $total } сканованих треків описано моделлю { $label }
+settings-library-acoustic-all-described = Усі скановані треки ({ $total }) описано моделлю { $label }
 settings-library-acoustic-auto = Описувати нові файли
     .description = Описувати те, що приносить спостерігач, щойно воно з'явиться і синхронізація вляжеться, щоб медіатека, яка росте, тримала свої описи без повернення сюди. Вимкнено, нові файли чекають на кнопку Проаналізувати те, чого бракує. Увімкнення спершу запропонує проаналізувати те, чого вже бракує; після цього воно бачить лише щойно додані файли
 settings-library-acoustic-enable = Описувати, як звучать треки
@@ -717,7 +729,7 @@ settings-library-acoustic-partial = { $label } описує { $done } з { $tota
 settings-library-acoustic-progress = { $running } на { $done } з { $total }
 settings-library-acoustic-progress-start = { $running }: з'ясовуємо, чого бракує...
 settings-library-acoustic-save = Зберігати описи
-    .description = Куди прохід кладе те, що з'ясував. Сама база лишає ваші файли недоторканими; теги кладуть копію ще й у кожен файл, тож описи переживуть перебудову медіатеки чи переїзд теки на іншу машину, ціною перезапису звукових файлів. Теги дістають лише MP3 і FLAC - усі інші формати лишаються з копією в базі
+    .description = Куди прохід кладе те, що з'ясував. Сама база лишає ваші файли недоторканими; теги кладуть копію ще й у кожен файл, тож описи переживуть перебудову медіатеки чи переїзд теки на іншу машину, ціною перезапису звукових файлів. Теги дістають лише MP3 і FLAC; усі інші формати лишаються з копією в базі
 settings-library-add-folder = Додати теку
 settings-library-duplicates = Дублікати...
 settings-library-embed-button = Вписати збережені метадані...
@@ -728,37 +740,37 @@ settings-library-folder-col-tracks = Треки
 settings-library-folders-intro = Теки, скановані в медіатеку; прибрана тека прибирає свої треки з каталогу, а файли лишає на місці
 settings-library-genre-separator-nudge = Роздільники змінилися: перегляд підхопить це одразу. Списки жанрів, збережені попередніми скануваннями, тримають стару форму, поки ви не натиснете Пересканувати вгорі, у заголовку Теки
 settings-library-merge-case = Зливати варіанти регістру
-    .description = Вважати значення, що різняться лише регістром, одним - Rock і rock стають тим самим жанром, виконавцем і альбомом, а показуються в тому написанні, яке несе більшість треків. Файли тримають свої теги як написано
+    .description = Вважати значення, що різняться лише регістром, одним: Rock і rock стають тим самим жанром, виконавцем і альбомом, а показуються в тому написанні, яким його пише більшість треків. Файли тримають свої теги як написано
 settings-library-no-folders = Ще немає тек
 settings-library-repair-tags = Полагодити теги...
 settings-library-section-folders = Теки
 settings-library-section-stored-metadata = Збережені метадані
 settings-library-section-tempo = Аналіз темпу
 settings-library-split-genres = Ділити жанри по комах і скісних
-    .description = «Dubstep, Trap» і «Drum & Bass / Neurofunk» дають кожному значенню бути окремим жанром; крапка з комою ділить завжди. Вимкнено лишає назви зі скісною цілими для тегів, де вони означають один жанр. Файли тримають свої теги як написано
+    .description = «Dubstep, Trap» і «Drum & Bass / Neurofunk» рахують кожне значення окремим жанром; крапка з комою ділить завжди. Вимкнено лишає назви зі скісною цілими для тегів, де вони означають один жанр. Файли тримають свої теги як написано
 settings-library-tempo-auto = Міряти час нових файлів
     .description = Рахувати біти в тому, що приносить спостерігач, щойно воно з'явиться і синхронізація вляжеться, щоб медіатека, яка росте, тримала свої темпи без повернення сюди. Вимкнено, нові файли чекають на кнопку Проаналізувати те, чого бракує. Увімкнення спершу запропонує зміряти те, чого вже бракує; після цього воно бачить лише щойно додані файли
 settings-library-tempo-enable = З'ясовувати, як швидко йдуть треки
     .description = Рахувати біти в треках, чиї теги про це мовчать, щоб медіатека могла показувати темп і сортувати за ним. Усе працює на цій машині, числа лягають у базу медіатеки, а ваші файли лишаються недоторканими
 settings-library-tempo-progress = Міряємо { $done } з { $total }
 settings-library-tempo-progress-start = З'ясовуємо, чого бракує...
-settings-library-tempo-status-measured = Усі { $total } сканованих треків мають темп, з них { $measured } з'ясував rox
-settings-library-tempo-status-tagged = Усі { $total } сканованих треків несуть тег темпу
+settings-library-tempo-status-measured = Усі скановані треки ({ $total }) мають темп, з них { $measured } з'ясував rox
+settings-library-tempo-status-tagged = Усі скановані треки ({ $total }) мають тег темпу
 settings-library-watch-folders = Стежити за теками
     .description = Вносити додані, змінені й видалені файли в медіатеку в міру того, як це стається, без ручного пересканування
 settings-library-write-stored = Записати збережене у файли
-    .description = Три налаштування збереження діють лише на наступний запис, тож усе, збережене до того, як котресь перемкнули на Теги, лишається тільки в rox. Це записує тексти пісень, підсилення й описи, які rox уже тримає, у самі файли, щоб тека, віддана іншому програвачу, несла їх із собою. Нічого не перераховується
+    .description = Три налаштування збереження діють лише на наступний запис, тож усе, збережене до того, як котресь перемкнули на Теги, лишається тільки в rox. Це записує тексти пісень, підсилення й описи, які rox уже тримає, у самі файли, щоб їх бачив інший програвач, який читає цю теку. Нічого не перераховується
 
 ## Settings: MCP
 settings-mcp-client-config = Конфіг клієнта
-    .description = Вставте в список серверів MCP-клієнта (Claude Code, Claude Desktop чи будь-якого іншого), щоб він міг питати rox про медіатеку, те, що грає, і керування відтворенням. rox має бути запущеним; інструменти йдуть його керувальним сокетом
+    .description = Вставте в список серверів MCP-клієнта (Claude Code, Claude Desktop чи будь-якого іншого), щоб він міг питати rox про медіатеку, те, що грає, і керування відтворенням. rox має бути запущеним; інструменти працюють через його керувальний сокет
 settings-mcp-enable = Увімкнути сервер MCP
     .description = Відповідати на виклики інструментів від під'єднаних MCP-клієнтів. Проксі перевіряє це на кожному виклику, тож поки вимкнено, клієнти дістають відмову з поясненням; конфіг нижче можна налаштувати в будь-якому разі
 
 ## Settings: ML models
 settings-mlmodels-checking = Перевіряємо...
 settings-mlmodels-choose-file = Вибрати файл
-settings-mlmodels-custom-description-empty = Укажіть rox власний чекпоінт PANNs CNN10 у форматі safetensors. Він читається на місці й називається за своїм хешем, тож другий чекпоінт описує медіатеку окремо, а не лягає в координати першого
+settings-mlmodels-custom-description-empty = Укажіть rox власний чекпоінт PANNs CNN10 у форматі safetensors. Він читається на місці й називається за своїм хешем, тож другий чекпоінт описує медіатеку окремо, а не перевикористовує координати першого
 settings-mlmodels-download-failed = Не вдалося завантажити { $label }: { $reason }
 settings-mlmodels-downloading = Завантажуємо { $label }: { $done } з { $total }
 settings-mlmodels-stopping = Спиняємо завантаження { $label }...
@@ -780,7 +792,7 @@ settings-playback-keep-playing = Далі грати
     .description = Що грає, коли черга скінчилася. Усе, що воно вибере, дописується в стрічку як звичайний контекст, тож його видно й можна прибрати, а не сховано десь у стані. Коли порядок вище стоїть на Схоже, воно й далі шукає треки, що звучать як той, що грає, хоч би що з цього було вибрано
     .keywords = продовження поповнення автовідтворення черга
 settings-playback-play-order = Порядок відтворення
-    .description = Як розставлені вже поставлені в чергу треки, поки ввімкнено перемішування. Кнопка перемішування в керуванні вмикає й вимикає його; це - те, що воно робить, коли ввімкнене
+    .description = Як розставлені вже поставлені в чергу треки, поки ввімкнено перемішування. Кнопка перемішування в керуванні вмикає й вимикає його; тут задається, що саме воно робить, коли ввімкнене
 settings-playback-rating-scale = Шкала оцінок
     .description = Зірки для швидких кліків, 0-10 із половинними кроками для точніших рецензій
 settings-playback-rating-scale-numeric = 0-10
@@ -812,7 +824,7 @@ settings-providers-lyrics-intro = Онлайн-пошук іде лише тод
 settings-providers-musicbrainz = MusicBrainz
     .description = Шукати теги на musicbrainz.org; пошук у панелі метаданих показує збіги, які можна підтвердити поле за полем перед записом
 settings-providers-save-lyrics = Зберігати завантажені тексти
-    .description = Куди лягає завантажений аркуш: у власну теку даних rox, лишаючи медіатеку чистою, у файл .lrc поруч із треком або у вбудований тег
+    .description = Куди зберігається завантажений аркуш: у власну теку даних rox, лишаючи медіатеку чистою, у файл .lrc поруч із треком або у вбудований тег
 settings-providers-save-lyrics-data-folder = Тека даних
 settings-providers-save-lyrics-sidecar = Файл поруч
 settings-providers-save-lyrics-tag = Тег
@@ -830,7 +842,7 @@ settings-shader-backdrop-fallback-name = Тло
 settings-shader-backdrop-run-idle = Працювати в простої
     .description = Малювати й далі, коли нічого не грає. Анімація в будь-якому разі лишається на місці
 settings-shader-compile-error-title = Цей шейдер не скомпілювався
-settings-shader-legacy-note = Коли нічого не змаршрутовано, пул годує слоти у власному порядку: перший сигнал у слот 0, другий у слот 1 і так далі. Перший доданий вами маршрут забирає всю подачу на себе.
+settings-shader-legacy-note = Коли нічого не змаршрутовано, пул заповнює слоти у власному порядку: перший сигнал у слот 0, другий у слот 1 і так далі. Перший доданий вами маршрут перебирає на себе все зіставлення.
 settings-shader-overlay-enabled = Шейдер накладки
     .description = Пустити музично-реактивний шейдер WGSL по всьому вікну. Пропонуються лише шейдери, які лишають застосунок під собою придатним до роботи
 settings-shader-scene-covers-window = Цей шейдер - сцена, тож він накриває вікно, а не малює поверх нього. Він прийшов із набору або зі старішого конфігу; список вище пропонує лише шейдери, які лишають застосунок придатним до роботи.
@@ -856,17 +868,17 @@ settings-storage-cover-thumbnails = Мініатюри обкладинок
 settings-storage-logs = Журнали
     .description = Те, що кожен запуск пише для звітів про вади (logs/rox.log), із перекиданням за розміром, тож файл ніколи не розростається
 settings-storage-looks-layouts = Вигляд і розкладки
-    .description = Вигляд, у який вбраний застосунок (workspace.json), а поруч ваші збережені робочі простори, вивантажені файли шейдерів і набори значків. Мало місця, і кожен байт цього ви налаштували самі
+    .description = Вигляд, яким зараз користується застосунок (workspace.json), а поруч ваші збережені робочі простори, вивантажені файли шейдерів і набори значків. Мало місця, і кожен байт цього ви налаштували самі
 settings-storage-lyrics = Тексти пісень
     .description = Завантажені й відредаговані аркуші, збережені у власному сховищі застосунку (lyrics/), тож теки медіатеки лишаються чистими
 settings-storage-measured-tempos = Виміряні темпи
-    .description = Темпи, які rox нарахував зі звуку, для треків, чиї теги їх не несуть; власні числа тегів не чіпаються. Очищення повертає ці треки в список кнопки Проаналізувати те, чого бракує, на сторінці Медіатека, і саме так покращений підрахунок бітів дістається чисел, які записав старіший прохід
+    .description = Темпи, які rox нарахував зі звуку, для треків, у чиїх тегах їх немає; власні числа тегів не чіпаються. Очищення повертає ці треки в список кнопки Проаналізувати те, чого бракує, на сторінці Медіатека, щоб покращений підрахунок бітів міг замінити числа, які записав старіший прохід
 settings-storage-model-fallback-this = Ця модель
 settings-storage-music-summary = { $tracks }, { $albums }, { $size }
 settings-storage-model-weights = Ваги моделей
-    .description = Моделі, завантажені для акустичного аналізу (models/). Сторінка Моделі ML - там, де їх тягнуть і видаляють, рядок на модель
+    .description = Моделі, завантажені для акустичного аналізу (models/). Тягнуть і видаляють їх на сторінці Моделі ML, рядок на модель
 settings-storage-models-empty = Моделі
-    .description = Медіатеку ще ніщо не описувало. Заповнює це вмикання акустичного аналізу на сторінці Медіатека, і кожна модель, яка відпрацювала, дістає тут свій рядок
+    .description = Медіатеку ще ніщо не описувало. Це заповниться, коли ввімкнути акустичний аналіз на сторінці Медіатека, і кожна модель, яка відпрацювала, дістане тут свій рядок
 settings-storage-music-files = Музичні файли
     .description = Те, що тримають скановані теки; файли лишаються там, де вони є
 settings-storage-none = Немає
@@ -892,7 +904,7 @@ settings-workspace-card-author-placeholder = Хто це зробив
 settings-workspace-card-created = Створено { $date }
 settings-workspace-card-created-updated = Створено { $created }, оновлено { $updated }
 settings-workspace-card-description = Опис
-settings-workspace-card-description-placeholder = До чого цей вигляд веде
+settings-workspace-card-description-placeholder = До чого прагне цей вигляд
 settings-workspace-card-empty = У цього робочого простору немає картки
 settings-workspace-card-hint = Картка зберігається у файлі, тож її побачить кожен, з ким ви поділитеся цим виглядом
 settings-workspace-card-license = Ліцензія
@@ -904,9 +916,9 @@ settings-workspace-card-version-placeholder = Ваша власна версія
 settings-workspace-card-website = Сайт
 settings-workspace-card-website-placeholder = Де це живе
 settings-workspace-composition-closed = Вікно робочого простору закрито
-settings-workspace-composition-hint = Панелі вікна такими, як вони сидять у поділах і групах вкладок; стрілки міняють порядок рядка серед сусідів, замок фіксує панель на місці, а шестірня відкриває її налаштування
+settings-workspace-composition-hint = Панелі вікна так, як вони розставлені в поділах і групах вкладок; стрілки міняють порядок рядка серед сусідів, замок фіксує панель на місці, а шестірня відкриває її налаштування
 settings-workspace-empty = Ще немає робочих просторів
-settings-workspace-hint = Робочий простір - це цілий вигляд: розкладки, палітра, оформлення; застосування замінює всі три
+settings-workspace-hint = Робочий простір - це цілий вигляд: розкладки, палітра, оформлення. Застосування замінює всі три
 settings-workspace-layout-name-placeholder = Назва розкладки
 settings-workspace-layouts-empty = Ще немає розкладок
 settings-workspace-layouts-hint = Основна й міні - це ті дві, між якими перемикає кнопка міні-програвача на смузі меню
@@ -914,7 +926,7 @@ settings-workspace-name-placeholder = Назва робочого простор
 settings-workspace-panel-preset-unknown-kind = Невідома панель
 settings-workspace-panel-presets-empty = Ще немає пресетів панелей
 settings-workspace-panel-presets-hint-after = у меню будь-якої панелі. Вони належать лише цьому робочому простору; в іншому їх не буде.
-settings-workspace-panel-presets-hint-before = По одній налаштованій панелі кожен, збережені з власного меню панелі й повертаються через
+settings-workspace-panel-presets-hint-before = По одній налаштованій панелі, збережені з меню самої панелі; повернути їх можна через
 settings-workspace-role-mini = Міні
 settings-workspace-role-primary = Основна
 settings-workspace-section-composition = Композиція
@@ -957,9 +969,9 @@ settings-common-use = Узяти
 settings-confirm-apply-body = Це замінить ваші розкладки, палітру й оформлення на ті, що в робочому просторі.
 settings-confirm-apply-imported-body = Його збережено до ваших робочих просторів. Застосування зараз замінить ваші розкладки, палітру й оформлення на ті, що в ньому.
 settings-confirm-clear = Очистити
-settings-confirm-clear-embeddings-body = Описи зникнуть, а місце повернеться. Щоб мати їх знову, аналіз має переслухати кожен трек у медіатеці заново.
+settings-confirm-clear-embeddings-body = Описи зникнуть, а місце повернеться. Щоб мати їх знову, доведеться прогнати аналіз по кожному треку в медіатеці.
 settings-confirm-clear-embeddings-title = Очистити те, що описала «{ $model }»?
-settings-confirm-clear-measured-bpm-body = Кожен темп, який з'ясував rox, стане невиміряним; числа з власних тегів ваших файлів лишаться. Щоб мати їх знову, прохід темпу має декодувати кожен із цих треків заново.
+settings-confirm-clear-measured-bpm-body = Кожен темп, який з'ясував rox, стане невиміряним; числа з власних тегів ваших файлів лишаться. Щоб мати їх знову, доведеться прогнати прохід темпу по кожному з цих треків.
 settings-confirm-clear-measured-bpm-title = Очистити виміряні темпи?
 settings-confirm-overwrite-workspace-body = Це замінить збережений робочий простір поточним станом.
 settings-confirm-overwrite-workspace-title = Перезаписати робочий простір «{ $name }»?
@@ -1061,7 +1073,7 @@ workspace-drop-play-now = Відтворити зараз
 workspace-hint-or = або
 workspace-hint-then = потім
 workspace-import = Імпорт
-workspace-launcher-hint = Додайте першу панель, щоб почати збирати; або виберіть готовий вигляд у Робочий простір > Застосувати робочий простір
+workspace-launcher-hint = Додайте першу панель, щоб почати збирати, або виберіть готовий вигляд у Робочий простір > Застосувати робочий простір
 workspace-launcher-need-help = Потрібна допомога?
 workspace-launcher-open-welcome = Відкрити вікно вітання
 workspace-launcher-title = Порожнє вікно
@@ -1078,7 +1090,7 @@ workspace-screen-shader-hint-before = Вимкнути можна будь-ко�
 workspace-workspace-restore-failed = Не вдалося відновити розкладку робочого простору, тож це вікно починає порожнім.
 
 ## Tasks window
-tasks-acoustic-all-described = Усі { $count } сканованих треків описано моделлю { $label }
+tasks-acoustic-all-described = Усі скановані треки ({ $count }) описано моделлю { $label }
 tasks-acoustic-off = Опис того, як звучать треки, вимкнено в Налаштуваннях, у розділі Медіатека
 tasks-acoustic-partial = { $label } описує { $embedded } з { $total } сканованих треків
 tasks-analyzing = Аналізуємо { $progress }
@@ -1096,7 +1108,7 @@ tasks-embedding = Вписуємо { $progress }
 tasks-estimate-at = { $estimate } при { $workers }
 tasks-import-failed = Останній імпорт не вдався: { $error }
 tasks-import-reading = Читаємо список loved...
-tasks-import-unmatched = { $count } не знайшли пари в цій медіатеці
+tasks-import-unmatched = Без пари в цій медіатеці: { $count }
 tasks-importing = Імпортуємо { $progress }
 tasks-job-acoustic = Акустичний аналіз
 tasks-job-convert = Конвертація звуку
@@ -1113,8 +1125,8 @@ tasks-measuring = Міряємо { $progress }
 tasks-model-downloading = Модель ще завантажується
 tasks-no-library-window = Жодного вікна медіатеки не відкрито, тож звідси це не запустити
 tasks-nothing-to-measure = Ще нічого не скановано для вимірювання
-tasks-rg-all-gain = Усі { $count } треків мають підсилення, з яким грати
-tasks-rg-partial = { $missing } з { $total } треків не мають підсилення
+tasks-rg-all-gain = Усі треки ({ $count }) мають підсилення, з яким грати
+tasks-rg-partial = { $missing } з { $total } треків без підсилення
 tasks-scan-folder-count = { $count ->
     [one] { $count } тека
     [few] { $count } теки
@@ -1123,15 +1135,15 @@ tasks-scan-folder-count = { $count ->
 }
 tasks-scan-last-scanned = { $folders }, скановано { $ago } тому
 tasks-scan-never-scanned = { $folders }, жодного разу не скановано
-tasks-scan-no-folders = Ще не додано жодної теки. Відкрийте її з меню Файл
+tasks-scan-no-folders = Ще не додано жодної теки. Додайте її в Налаштуваннях, у розділі Медіатека
 tasks-start-analyze-missing = Проаналізувати те, чого бракує
 tasks-start-measure-missing = Виміряти те, чого бракує
 tasks-start-rescan = Пересканувати
 tasks-stop = Спинити
 tasks-stopping = Спиняємо...
-tasks-tempo-all = Усі { $count } треків мають темп
+tasks-tempo-all = Усі треки ({ $count }) мають темп
 tasks-tempo-off = З'ясування того, як швидко йдуть треки, вимкнено в Налаштуваннях, у розділі Медіатека
-tasks-tempo-partial = { $missing } з { $total } треків не мають темпу
+tasks-tempo-partial = { $missing } з { $total } треків без темпу
 tasks-timing = Міряємо час { $progress }
 tasks-tip = Відкрити завдання медіатеки
 tasks-window-title = rox - Завдання
@@ -1151,7 +1163,7 @@ stats-chart-start-year = Рік тому
 stats-click-opens = Клік відкриває статистику
 stats-click-section = Клік
 stats-count-menu = Підрахунок
-    .description = За яким останнім проміжком число рахує прослуховування; список при наведенні завжди несе їх усі
+    .description = За яким останнім проміжком число рахує прослуховування; список при наведенні завжди показує їх усі
 stats-empty-all = Ще немає прослуховувань
 stats-empty-range = У цьому проміжку немає прослуховувань
 stats-now = Зараз
@@ -1221,7 +1233,7 @@ welcome-card-playback-title = Відтворення
 welcome-card-rearranging-title = Перестановка
 welcome-card-settings-title = Налаштування
 welcome-close = Закрити
-welcome-design-mode-note = Для перестановки потрібен Режим дизайну, типово ввімкнений угорі того меню. Вимкнений замикає розкладку, тож готове налаштування нічим не зрушиш.
+welcome-design-mode-note = Для перестановки потрібен Режим дизайну, типово ввімкнений угорі того меню. Вимкнений замикає розкладку, тож готового налаштування нічим не зрушити.
 welcome-done = Готово
 welcome-drop-note = Киньте її на край панелі, щоб поділити там, на середину, щоб стати в одну групу вкладок, або поза вікно, щоб зробити з неї власне вікно.
 welcome-key-left-click = Лівий клік
@@ -1242,14 +1254,14 @@ welcome-rearrange-after = будь-де в панелі, щоб її перес�
 welcome-rearrange-before = Перетягніть вкладку або затисніть
 welcome-settings-hint-after = відкриває налаштування: палітру, прозорість і поведінку.
 welcome-shelf-caption = Вибір одного замінює вигляд головного вікна й закриває тур. Це вікно доступне будь-коли через Застосунок > Вітання.
-welcome-stage-lead-quick-start = Виберіть робочий простір, і головне вікно його вдягне: розкладки, палітру, увесь вигляд.
+welcome-stage-lead-quick-start = Виберіть робочий простір, і головне вікно перемкнеться на нього: розкладки, палітра, увесь вигляд.
 welcome-stage-lead-welcome = Foobar, якби його зробили у 20XX.
 welcome-stage-title-quick-start = Швидкий старт
 welcome-stage-title-welcome = Вітаємо в rox
 welcome-step-hint-after = , або кнопками нижче.
 welcome-step-hint-before = Крокуйте по ньому через
 welcome-tile-by = від { $author }
-welcome-tour-intro = Короткий тур по тому, звідки береться музика і де живе вигляд. Він закінчується полицею з готовими робочими просторами, по одному кліку кожен.
+welcome-tour-intro = Короткий тур по тому, звідки береться музика і де налаштовується вигляд. Він закінчується полицею з готовими робочими просторами, по одному кліку кожен.
 welcome-window-title = rox - Вітання
 
 ## Console window
@@ -1274,8 +1286,8 @@ console-window-title = rox - Консоль
 ## Signals window
 signals-about-toggle = Про сигнали
 signals-blurb-marked = Панелі, позначені цим у меню, можуть прив'язати більшість своїх параметрів: клікніть параметр у налаштуваннях панелі правою кнопкою й виберіть сигнал або додайте його звідти.
-signals-blurb-shared = Налаштоване тут - спільне: зміна лягає на кожен параметр, змаршрутований на цей сигнал, у кожній панелі й кожному вікні.
-signals-blurb-total = Сума - це четвертий вид: вона накопичує інший сигнал із часом і перекидається на 1, тож росте, поки музика гучна, і завмирає, поки ні. Беріть її, коли шейдеру потрібна фаза, яка йде за піснею, а не за годинником.
+signals-blurb-shared = Налаштоване тут - спільне: зміна діє на кожен параметр, змаршрутований на цей сигнал, у кожній панелі й кожному вікні.
+signals-blurb-total = Сума - це четвертий вид: вона накопичує інший сигнал із часом і перекидається через 1, тож росте, поки музика гучна, і завмирає, поки ні. Беріть її, коли шейдеру потрібна фаза, яка йде за піснею, а не за годинником.
 signals-blurb-what = Сигнал перетворює те, що грає, на одне число між 0 і 1: енергію в смузі частот, рівень усього міксу або імпульс на кожному ударі всередині смуги. Відгук задає, як швидко він іде слідом, Поріг глушить його нижче за вибраний вами рівень.
 signals-no-library = Жодного вікна медіатеки не відкрито, тож тут немає звуку. Правки все одно зберігаються.
 signals-window-title = rox - Сигнали
@@ -1285,18 +1297,18 @@ eq-analyzer-bars = Смуги
 eq-analyzer-off = Без аналізатора
 eq-analyzer-wave = Хвиля
 eq-band-badge = Позначка смуг
-    .description = Рахувати смуги, зсунуті з нуля, на позначці над значком
+    .description = Показувати, скільки смуг зсунуто з нуля, на позначці над значком
 eq-band-label = Смуга { $number }
 eq-click-nothing = Нічого
 eq-click-open = Відкрити
 eq-click-section = Клік
-    .description = Що робить клік: відкриває вікно еквалайзера або вмикає й вимикає всю криву там, де вона стоїть
+    .description = Що робить клік: відкриває вікно еквалайзера або вмикає й вимикає всю криву просто на місці
 eq-click-toggle = Перемкнути
 eq-flatten = Вирівняти
 eq-freq-label = Частота
 eq-gain-label = Підсилення
 eq-heading = Еквалайзер
-eq-help-text = Тягніть смугу, щоб її пересунути, крутіть колесо над нею, щоб розширити чи звузити. Обробка стоїть попереду буфера, який годує звукову карту, тож рух доходить до колонок за пів секунди.
+eq-help-text = Тягніть смугу, щоб її пересунути, крутіть колесо над нею, щоб розширити чи звузити. Обробка працює перед буфером, який подає звук на карту, тож рухові треба до пів секунди, щоб дійти до колонок.
 eq-hint-off = Клікніть, щоб вимкнути
 eq-hint-on = Клікніть, щоб увімкнути
 eq-hint-open = Клікніть, щоб відкрити еквалайзер
@@ -1374,7 +1386,7 @@ keymap-stamp-line = Позначити рядок тексту
 keymap-toggle-playback = Відтворити / Пауза
     .description = Запустити поточний трек або спинити його там, де він є
 keymap-toggle-post-shader = Перемкнути шейдер накладки
-    .description = Вимкнути й увімкнути екранний шейдер. Прив'язано всюди навмисно: шейдер може поховати під собою кожен елемент, яким це поєднання інакше було б доступне
+    .description = Вимкнути й увімкнути екранний шейдер. Прив'язано всюди, бо шейдер може сховати під собою ті елементи, якими його інакше було б вимкнути
 keymap-toggle-zoom = Збільшити групу панелей
     .description = Заповнити док групою панелей, яку клікнули останньою, або вийти з неї
 
@@ -1407,6 +1419,7 @@ panel-catalog-queue = Черга
 panel-catalog-queue-widget = Віджет черги
 panel-catalog-seek = Перемотка
 panel-catalog-slide = Слайд
+panel-catalog-spectrogram = Спектрограма
 panel-catalog-spectrum = Спектр
 panel-catalog-stats-widget = Віджет статистики
 panel-catalog-status = Статус
@@ -1429,8 +1442,10 @@ updater-size-mismatch = сервер запропонував { $claimed } ба�
 
 ## Last.fm
 lastfm-import-matching = Звіряємо з медіатекою
-lastfm-import-read = Прочитано { $count } loved-треків
-lastfm-import-stopped = Спинилося після { $count } loved-треків
+lastfm-import-read = Прочитано loved-треків: { $count }
+lastfm-import-stopped = Спинилося, прочитано loved-треків: { $count }
+lastfm-import-matched = , зіставлено: { $count }
+lastfm-import-added = , додано в улюблене: { $count }
 
 ## Tag tools
 tags-editor-clear-all = очистити все
@@ -1440,15 +1455,17 @@ tags-editor-format-unsupported-some = Частина цих файлів у фо
 tags-editor-guess-button = Вгадати
 tags-editor-guess-folded = { $status }, ще { $count } не показано
 tags-editor-guess-help = { $placeholders }; / збігається з текою вище, %skip% відкидає
-tags-editor-guess-match-count = { $hits } з { $total } збігаються
+tags-editor-guess-match-count = Збігів: { $hits } з { $total }
 tags-editor-guess-no-match = немає збігу
 tags-editor-guess-pattern-label = шаблон
 tags-editor-loading = Читаємо теги...
 tags-editor-look-up = Знайти
 tags-editor-multiple-values = Кілька значень
+tags-editor-clear-on-save = Очиститься при збереженні
 tags-editor-other-tags = Інші теги ({ $count })
 tags-editor-remove = прибрати
 tags-editor-reveal = Показати
+tags-editor-save-errors = Файлів з помилкою: { $count }; { $error }
 tags-editor-saving-progress = Зберігаємо { $done }/{ $total }...
 tags-editor-table-view = Таблиця
 tags-editor-tags-section = Теги
@@ -1467,7 +1484,7 @@ tags-matcher-blocked-no-match = Немає збігу, який застосув
 tags-matcher-blocked-pick = Виберіть збіг
 tags-matcher-blocked-writing = Записуємо теги...
 tags-matcher-match-count = { $count ->
-    [one] 1 збіг
+    [one] { $count } збіг
     [few] { $count } збіги
     [many] { $count } збігів
    *[other] { $count } збіга
@@ -1484,7 +1501,7 @@ tags-rename-blocked-occupied = там уже є файл
 tags-rename-blocked-outside-roots = поза всіма коренями медіатеки
 tags-rename-blocked-unresolved = ще не в каталозі
 tags-rename-move-error = { $name }: { $error }
-tags-rename-move-errors = { $count } файлів не вдалося; { $error }
+tags-rename-move-errors = Файлів з помилкою: { $count }; { $error }
 tags-rename-moving = Переносимо { $done }/{ $total }...
 tags-rename-nothing-to-move = Немає чого переносити
 tags-rename-pattern-help = { $placeholders }; / робить теку, розширення йде за файлом
@@ -1494,6 +1511,7 @@ tags-rename-unchanged = без змін
 tags-rename-will-move = { $count } з { $total } буде перенесено
 tags-rename-window-title = rox - Перейменування файлів
 tags-repair-affected-files = Зачеплені файли
+tags-repair-section = Лагодження
 tags-repair-check-to-repair = Позначте файл, щоб його полагодити
 tags-repair-count = { $count ->
     [one] { $count } файл
@@ -1527,19 +1545,21 @@ tags-repair-window-title = rox - Лагодження тегів
 
 ## Convert
 convert-arg-names-file = «{ $token }» називає файл; призначення береться з теки й шаблону
+convert-section-output = Вихід
+convert-section-preview = Перегляд
 convert-arg-not-flag-or-value = «{ $token }» - це не прапорець і не значення до нього
 convert-check-wrote-nothing = ffmpeg вийшов чисто, але нічого не записав
-convert-custom-ext-empty = Контейнер вибирає саме розширення, тож воно потрібне
+convert-custom-ext-empty = Саме розширення задає контейнер, тож воно потрібне
 convert-custom-ext-invalid = «{ $ext }» - не назва контейнера; літери й цифри, без крапки
 convert-dialog-browse = Огляд...
 convert-dialog-check-passed = ffmpeg закодував із цим мить тиші, тож воно працює
 convert-dialog-check-waiting = Перевіримо через ffmpeg, щойно ви перестанете набирати
-convert-dialog-checking = Питаємо ffmpeg...
+convert-dialog-checking = Перевіряємо через ffmpeg...
 convert-dialog-choose-folder = Виберіть теку для запису
 convert-dialog-convert-button = Конвертувати
 convert-dialog-custom-label = Власний
 convert-dialog-custom-menu-item = Власний...
-convert-dialog-custom-note = Аргументи діляться по пробілах, тож без лапок; вбудовані обкладинки для власних форматів не переносяться
+convert-dialog-custom-note = Аргументи діляться по пробілах, тож без лапок; вбудовані обкладинки для власних форматів не копіюються
 convert-dialog-format-not-ready = Набраний формат ще не пройшов через ffmpeg
 convert-dialog-label-extension = розширення
 convert-dialog-label-format = формат
@@ -1554,7 +1574,7 @@ convert-dialog-will-convert = { $count } з { $total } буде сконверт
 convert-dialog-window-title = rox - Конвертація
 convert-ffmpeg-silent-failure = ffmpeg упав, не сказавши чому
 convert-flag-attach = -attach читає власний файл, а це тут не дозволено
-convert-flag-f = Контейнер вибирає розширення, тож -f виставляти не вам
+convert-flag-f = Розширення задає контейнер, тож -f виставляти не вам
 convert-flag-i = Вхід - це вибраний вами трек, тож -i виставляти не вам
 convert-flag-n = -n і так стоїть на кожному запуску
 convert-flag-y = Тут ніщо не перезаписує, тож -y недоступний; наявне призначення пропускається
@@ -1574,8 +1594,8 @@ convert-summary-files = { $count ->
 }
 convert-summary-line = { $files } у { $dest }
 convert-summary-skipped = , пропущено { $count }
-convert-summary-stopped = Спинилося після { $files } у { $dest }
-convert-version-answered = { $binary } відповів
+convert-summary-stopped = Спинилося, сконвертовано { $files } у { $dest }
+convert-version-answered = { $binary } запустився, але не повідомив версію
 
 ## Duplicates
 duplicates-auto-select = Вибрати автоматично
@@ -1633,6 +1653,8 @@ smart-playlist-matched-tracks = Треки, що збіглися
 smart-playlist-new-title = Новий розумний список
 smart-playlist-no-matches = Жоден трек не збігається
 smart-playlist-query-label = Запит
+smart-playlist-sort-default = Типовий порядок
+smart-playlist-sort-added = Додано
 smart-playlist-sort-label = Сортування
 smart-playlist-unknown-field = «{ $field }:» - це не поле, тож термін збігається як звичайний текст
 smart-playlist-window-title = rox - { $verb }
@@ -1649,9 +1671,12 @@ cover-art-back = Зворот
 cover-art-disc = Диск
 cover-art-front = Лице
 cover-artwork = Зображення
-    .description = Яку картинку показувати; слот, якого файл не несе, відкочується до лицьової обкладинки
+    .description = Яку картинку показувати; слот, якого у файлі немає, відкочується до лицьової обкладинки
 cover-disc-style = Стиль диска
-    .description = Вбрати зображення як CD або як етикетку вінілової платівки
+    .description = Оформити зображення як CD або як етикетку вінілової платівки
+cover-disc-off = Вимк.
+cover-disc-cd = CD
+cover-disc-vinyl = Вініл
 cover-editor-choose-image = Вибрати зображення
 cover-editor-multiple = Кілька
 cover-editor-none = Немає
@@ -1661,7 +1686,7 @@ cover-editor-reading = Читаємо поточну обкладинку...
 cover-editor-remove = Прибрати
 cover-editor-replace = Замінити
 cover-editor-revert = Повернути як було
-cover-editor-save-errors = { $count } файлів не вдалося; { $error }
+cover-editor-save-errors = Файлів з помилкою: { $count }; { $error }
 cover-editor-saving-progress = Зберігаємо { $done }/{ $total }...
 cover-editor-search-online = Шукати онлайн
 cover-editor-section = Обкладинка
@@ -1706,7 +1731,7 @@ lyrics-auto-search = Автопошук
     .description = Шукати онлайн для треку без слів і зберігати впевнений збіг, без вибору
 lyrics-bold = Жирний
 lyrics-build-word-by-word = Збирати слово за словом
-    .description = Відкривати слова в міру того, як їх співають, як у караоке; неспівані рядки чекають прихованими
+    .description = Відкривати слова в міру того, як їх співають, як у караоке; неспівані рядки лишаються прихованими
 lyrics-edge-bottom = Знизу
 lyrics-edge-top = Згори
 lyrics-edit-hint-after-stamp = щоб позначити
@@ -1725,12 +1750,12 @@ lyrics-falloff-edge = Бік згасання
 lyrics-find-online = Знайти текст онлайн...
 lyrics-follow-playback = Стежити за відтворенням
     .description = Плавно вести активний рядок до середини, поки грає синхронізований аркуш
-lyrics-font = Гарнітура тексту пісні; типова йде за шрифтом застосунку
+lyrics-font = Шрифт
     .description = Гарнітура тексту пісні; типова йде за шрифтом застосунку
 lyrics-gap-threshold = Поріг паузи
     .description = Скільки має тривати вступ чи пауза, перш ніж вона дістане перепочинок
 lyrics-lead-in-rest = Перепочинок на вступі
-    .description = Стояти на порожньому перепочинку перед довгим вступом, щоб перший рядок проявився, коли він настане
+    .description = Показувати порожній перепочинок перед довгим вступом, щоб перший рядок проявився, коли він настане
 lyrics-line-falloff = Згасання рядків
     .description = Наскільки кожен рядок тьмяніє з кожним кроком від активного
 lyrics-line-spacing = Інтервал рядків
@@ -1741,7 +1766,7 @@ lyrics-matcher-blocked-no-match = Немає збігу, який застосу
 lyrics-matcher-blocked-pick = Виберіть збіг, щоб застосувати
 lyrics-matcher-blocked-saving = Зберігаємо слова...
 lyrics-matcher-match-count = { $count ->
-    [one] 1 збіг
+    [one] { $count } збіг
     [few] { $count } збіги
     [many] { $count } збігів
    *[other] { $count } збіга
@@ -1758,10 +1783,10 @@ lyrics-rest-in-gaps = Перепочинок у паузах
 lyrics-rest-marker = Позначка перепочинку
     .description = Що показує безслівний рядок у синхронізованому аркуші: паузи й порожні рядки
 lyrics-search-button = Кнопка пошуку онлайн
-    .description = Показувати кнопку пошуку на порожньому обличчі; меню правої кнопки все одно знаходить текст
+    .description = Показувати кнопку пошуку на порожній панелі; меню правої кнопки все одно знаходить текст
 lyrics-search-online = Шукати онлайн
 lyrics-show-song-name = Показувати назву пісні
-    .description = Показувати назву треку на порожньому обличчі, над рядком про відсутній текст
+    .description = Показувати назву треку на порожній панелі, над рядком про відсутній текст
 lyrics-text-size = Розмір тексту
     .description = Текст пісні; висота синхронізованого рядка йде за ним
 lyrics-title = Текст пісні
@@ -1772,7 +1797,7 @@ lyrics-wipe-lyrics = Стерти текст
 ## Analysis passes
 pass-acoustic-body = { $model } з'ясовує, як звучить кожен із них, щоб медіатека могла знаходити музику, схожу на ту, що грає. Усе працює на цій машині, а вже описане пропускається. { $lands }
 pass-acoustic-lands-database = Результати лягають у базу медіатеки, а ваші файли лишаються недоторканими.
-pass-acoustic-lands-tags = Результати лягають у базу медіатеки, а для MP3 і FLAC ще й у власні теги кожного файлу, тож вони переживуть перебудову бази. Інші формати лишаються з копією в базі.
+pass-acoustic-lands-tags = Результати лягають у базу медіатеки, а для MP3 і FLAC ще й у власні теги кожного файлу, тож вони збережуться, якщо базу перебудують. Інші формати лишаються з копією в базі.
 pass-acoustic-title = { $count ->
     [one] Проаналізувати { $count } трек?
     [few] Проаналізувати { $count } треки?
@@ -1784,7 +1809,7 @@ pass-estimate-at = { $estimate } при { $workers_phrase }.
 pass-estimate-button = Оцінити
 pass-estimating = Оцінюємо...
 pass-measure = Виміряти
-pass-no-estimate = На цій машині ще нічого не працювало, тож оцінки немає. Оцінити прогонить кілька треків і порахує решту звідти.
+pass-no-estimate = На цій машині ще нічого не працювало, тож оцінки немає. Кнопка Оцінити прожене кілька треків і порахує решту звідти.
 pass-replaygain-body = Кожен файл декодується й міряється, щоб він грав із тією гучністю, під яку його зводили. Альбоми міряються цілком там, де жоден із їхніх треків не має підсилення. { $lands }
 pass-replaygain-lands-database = Числа лягають у базу медіатеки, а ваші файли лишаються недоторканими.
 pass-replaygain-lands-tags = Числа записуються назад у теги кожного файлу, звідки їх читає кожен інший програвач.
@@ -1803,7 +1828,7 @@ pass-tempo-title = { $count ->
 }
 pass-timing = Міряємо час кількох треків...
 pass-timing-failed = Не вдалося зміряти цю медіатеку: { $error }
-pass-workers = Робітники
+pass-workers = Потоки
 
 ## Quick play
 quick-play-comfortable-rows = Просторі рядки
@@ -1830,7 +1855,7 @@ drawer-edge = Край
 drawer-edge-bottom = Знизу
 drawer-edge-top = Згори
 drawer-handle = Ручка
-    .description = Показувати захват на краю панелі. Прихована, від шухляди нічого не видно до вибору, а далі захват лишається, поки тримається вибір, тож складену шухляду можна витягти назад
+    .description = Показувати ручку на краю панелі. Прихована, від шухляди нічого не видно до вибору, а далі ручка лишається, поки тримається вибір, тож складену шухляду можна витягти назад
 drawer-open-on = Відкривати за
     .description = Затримка на ручці відкриває шухляду завжди; вибір додає до цього вибір у головній панелі
 drawer-pin-open = Тримати відкритою
@@ -2016,6 +2041,40 @@ vu-style = Стиль
 vu-style-continuous = Суцільний
 vu-style-segments = Сегменти
 
+## Spectrogram panel
+spectrogram-ceiling = Стеля
+    .description = Рівень, що відповідає світлому краю кольорової карти, тож усе гучніше за нього впирається туди
+spectrogram-colormap = Кольорова карта
+    .description = Як гучність перетворюється на колір
+spectrogram-colormap-cover = Обкладинка
+spectrogram-colormap-grayscale = Відтінки сірого
+spectrogram-colormap-ice = Лід
+spectrogram-colormap-magma = Magma
+spectrogram-colormap-theme = Тема
+spectrogram-colormap-viridis = Viridis
+spectrogram-direction = Напрямок
+    .description = Край, з якого заходять нові стовпці, що також визначає, чи вісь частот іде вгору панеллю, чи впоперек неї
+spectrogram-fft-size = Розмір FFT
+    .description = Розмір вікна аналізу, компроміс між тим, наскільки швидко стовпець реагує на перехідний процес, і тим, наскільки добре він розділяє дві низькі ноти
+spectrogram-floor = Підлога
+    .description = Рівень, що відповідає темному краю кольорової карти, тож усе тихіше за нього читається як фон
+spectrogram-grid = Сітка
+    .description = Лінії частот поверх зображення
+spectrogram-high-bound = Верхня межа
+    .description = Верх осі частот, обмежений нижче частоти Найквіста, щоб відкинути майже беззвучні найвищі октави
+spectrogram-history = Історія
+    .description = Скільки стовпців панель тримає, перш ніж найстаріший піде за край
+spectrogram-hold-on-pause = Тримати на паузі
+    .description = Тримати нерухоме зображення на паузі, а не давати тиші наповзати на нього
+spectrogram-labels = Підписи
+    .description = Числа частот уздовж лінійки, там, де на панелі є для них місце
+spectrogram-log-scale = Логарифмічна шкала
+    .description = Давати кожній октаві однакове місце, музичне читання, замість рівномірного кроку в Гц, як у лабораторному приладі
+spectrogram-low-bound = Нижня межа
+    .description = Низ осі частот
+spectrogram-speed = Швидкість
+    .description = Наскільки швидко прокручується зображення, у стовпцях за секунду
+
 ## Oscilloscope panel
 oscilloscope-channels = Канали
     .description = Звести в одну криву, накласти одну на одну, або скласти в окрему рамку для кожного
@@ -2055,10 +2114,29 @@ shader-panel-note-empty-body = Виберіть приклад або вкажі
 shader-panel-note-empty-title = Шейдер не завантажено.
 shader-panel-note-missing-body = Ця панель посилається на шейдер, якого в робочому просторі немає, тож запускати нічого.
 shader-panel-note-missing-title = { $name } немає серед шейдерів цього робочого простору.
-shader-panel-note-off-body = Джерело і його прив'язки лишаються тут, на місці.
+shader-panel-note-off-body = Джерело і його прив'язки лишаються на місці, просто не працюють.
 shader-panel-note-off-title = Цей шейдер вимкнено.
-shader-panel-note-pending-body = Він прийшов із розкладкою чи робочим простором, а не з цієї машини, тож стоїть, поки ви його не перегляньте.
+shader-panel-note-pending-body = Він прийшов із розкладкою чи робочим простором, а не з цієї машини, тож лишається вимкненим, поки ви його не переглянете.
 shader-panel-note-pending-title = Цей шейдер ще не читали.
+## Картка перегляду шейдера, який чекає: звідки прийшло джерело і як
+## виглядає обрізаний хвіст лістингу, коли той не влазить у рамку.
+shader-pending-origin-file = Нібито прийшов із { $path }
+shader-pending-origin-inline = Файлу за ним немає; джерело прийшло з розкладкою
+shader-pending-more-lines = { $count ->
+    [one] ... ще { $count } рядок
+    [few] ... ще { $count } рядки
+    [many] ... ще { $count } рядків
+   *[other] ... ще { $count } рядка
+}
+## Виписування шейдера назад у файл.
+shader-eject-name-taken = { $count ->
+    [one] { $name } уже має { $count } пронумеровану копію серед шейдерів цього робочого простору
+    [few] { $name } уже має { $count } пронумеровані копії серед шейдерів цього робочого простору
+    [many] { $name } уже має { $count } пронумерованих копій серед шейдерів цього робочого простору
+   *[other] { $name } уже має { $count } пронумерованої копії серед шейдерів цього робочого простору
+}
+shader-eject-not-in-pool = { $name } немає серед шейдерів цього робочого простору
+shader-eject-failed = виписування: { $error }
 shader-panel-pick = Вибрати шейдер
 shader-panel-run-shader = Запустити шейдер
     .description = Вимкнено лишає джерело, закладку й прив'язки на місці й нічого не малює
@@ -2071,7 +2149,12 @@ genre-grid-desaturate = Знебарвлювати під час відтвор�
 genre-grid-dim-while-playing = Тьмяніти під час відтворення
     .description = Пригасити кожну плитку, крім жанру, що грає; наведення повертає плитці світло
 genre-grid-follow-description = Прокручувати до жанру, що грає, щоразу коли змінюється трек
-genre-grid-merge-many = Злити { $count } жанрів у «{ $target }»
+genre-grid-merge-many = { $count ->
+    [one] Злити { $count } жанр у «{ $target }»
+    [few] Злити { $count } жанри у «{ $target }»
+    [many] Злити { $count } жанрів у «{ $target }»
+   *[other] Злити { $count } жанру у «{ $target }»
+}
 genre-grid-merge-one = Злити «{ $source }» у «{ $target }»
 genre-grid-pick-filters = Вибір фільтрує медіатеку
     .description = Клік по жанру звужує до нього кожну панель, що йде за спільним пошуком; вимкнено лишає клік звичайним вибором
@@ -2143,7 +2226,7 @@ wall-tile-size = Розмір плитки
 metadata-cover-background = Обкладинка на тлі
     .description = Обкладинка треку за полями
 metadata-display = Показ
-    .description = Аркуш із назвою на чолі або рівна таблиця з підписів і значень від самого верху
+    .description = Аркуш, який починається з назви, або рівна таблиця підписів і значень від самого верху
 metadata-display-sheet = Аркуш
 metadata-display-table = Таблиця
 metadata-edit-save = Зберегти
@@ -2156,7 +2239,7 @@ metadata-field-file = Файл
 metadata-field-sample-rate = Частота дискретизації
 metadata-field-track = Трек
 metadata-fields = Поля
-    .description = Які поля перелічує аркуш; поле, якого трек не несе, лишається прихованим
+    .description = Які поля перелічує аркуш; поле, якого в треку немає, лишається прихованим
 metadata-find-online = Знайти метадані онлайн...
 metadata-no-library = Немає медіатеки
 metadata-row-borders-description = Волосяна лінія під кожним рядком таблиці
@@ -2212,10 +2295,11 @@ folder-tree-title = Дерево
 art-always = Тримати обкладинки притлумленими, навіть коли нічого не грає; на повну показується лише обкладинка під курсором
 art-convert = Конвертувати...
 art-covers-section = Обкладинки
+matcher-section-matches = Збіги
 art-desaturate = Злити колір з кожної обкладинки, крім альбому, що грає; наведення повертає обкладинці колір
 art-dim-while-playing = Пригасити кожну обкладинку, крім альбому, що грає; наведення повертає обкладинці світло
 art-disc-style = Стиль диска
-    .description = Вбрати кожну обкладинку як CD або як етикетку вінілової платівки
+    .description = Оформити кожну обкладинку як CD або як етикетку вінілової платівки
 art-edit-tags = Редагувати теги...
 art-fill-panel = Заповнити панель
     .description = Рахувати розмір центральної обкладинки лише з висоти панелі (з ширини, коли вона вертикальна); бічні обкладинки тоді йдуть за край, а не стискають її
@@ -2307,7 +2391,7 @@ biography-plays-count = { $count ->
 }
 biography-refresh = Оновити
 biography-similar-artists = Схожі виконавці
-    .description = Імена, до яких хилиться суміжне прослуховування, унизу
+    .description = Споріднені виконавці за даними прослуховувань, унизу
 biography-similar-heading = Схожі виконавці
 biography-stats = Статистика
     .description = Слухачі й прослуховування на Last.fm, під іменем
@@ -2447,7 +2531,7 @@ playback-volume-tip-unmuted = Вимкнути звук, { $percent }%. Прав
 track-info-color-output-chip = Кольорова позначка виходу
     .description = Дати позначці набирати попереджувальних кольорів, коли вихід відкочується чи передискретизує. Вимкнено лишає її в тому самому приглушеному тоні завжди, а підказка при наведенні все одно пояснює стан
 track-info-cycle-every = Міняти кожні
-    .description = Скільки стоїть кожен рядок перед згасанням
+    .description = Скільки часу тримається кожен рядок перед згасанням
 track-info-cycle-rows = Міняти рядки
     .description = Показувати рядки розстановки по одному в одному рядку, згасаючи між ними; один рядок сам по собі читається як він є
 track-info-delay = Затримка
@@ -2492,7 +2576,7 @@ seek-thickness = Товщина
 
 ## Volume panel
 volume-pieces = Частини
-    .description = Тягніть уздовж смуги, щоб змінити порядок; тягніть між рядками або беріть x і плюс на позначці, щоб ховати й показувати. Коли відсоток приховано, його несе підказка динаміка
+    .description = Тягніть уздовж смуги, щоб змінити порядок; тягніть між рядками або беріть x і плюс на позначці, щоб ховати й показувати. Коли відсоток приховано, його показує підказка динаміка
 volume-readout = Показник
     .description = Показувати рівень як відсоток або як підсилення в децибелах, яке він дає
 volume-readout-decibels = Децибели
@@ -2522,6 +2606,7 @@ panel-title-particles = Частинки
 panel-title-playback = Відтворення
 panel-title-seek = Перемотка
 panel-title-shader = Шейдер
+panel-title-spectrogram = Спектрограма
 panel-title-spectrum = Спектр
 panel-title-theme-toggle = Перемикач теми
 panel-title-track-info = Про трек
@@ -2531,6 +2616,8 @@ panel-title-waveform = Форма хвилі
 
 ## Everything else
 choice-both = Обидва
+choice-dim = Притлумити
+choice-hide = Приховати
 composite-add-panel = Додати панель
 composite-host-settings = Налаштування { $host }
 composite-move-left = Пересунути ліворуч
@@ -2609,16 +2696,16 @@ pace-days = { $count ->
    *[other] близько { $count } дня
 }
 pace-workers = { $count ->
-    [one] { $count } робітник
-    [few] { $count } робітники
-    [many] { $count } робітників
-   *[other] { $count } робітника
+    [one] { $count } потоці
+    [few] { $count } потоках
+    [many] { $count } потоках
+   *[other] { $count } потоках
 }
 tasks-rest-takes = , решта займе { $estimate }
 tasks-measuring-takes = , зміряти їх займе { $estimate }
 tasks-working-out-takes = , з'ясувати їх займе { $estimate }
 tasks-time-left = , лишилось { $left }
-tasks-skipped-suffix = (пропущено { $count })
+tasks-failed-suffix = (не вдалося { $count })
 tasks-file-suffix = - { $file }
 tasks-no-beat-suffix = ({ $count } без чіткого біту)
 tasks-estimate-at-workers = ({ tasks-estimate-at })
@@ -2713,15 +2800,15 @@ settings-audio-output-experimental =  (експериментальний)
 settings-mlmodels-description = { $summary }. { $dim } значень на трек. { $licence }
 settings-mlmodels-on-disk = , { $size } на диску
 settings-mlmodels-to-download = , { $size } до завантаження
-model-summary-dsp-timbre-1 = Вбудована, без завантаження. Зведення енергії по логарифмічних смугах, спектральної форми й частоти атак кожного треку. Грубо проти навченої мережі, але їй нічого не треба і вона працює всюди
+model-summary-dsp-timbre-1 = Вбудована, без завантаження. Зведення енергії по логарифмічних смугах, спектральної форми й частоти атак кожного треку. Грубо порівняно з навченою мережею, але їй нічого не треба і вона працює всюди
 model-summary-panns-cnn10 = Згорткова мережа, навчена на AudioSet розпізнавати, що це за звук. Її опис треку з 512 значень набагато багатший за вбудований ескіз, ціною завантаження на 24 МБ і повільнішого проходу аналізу
 
 ## Shipped workspaces
 workspace-shipped-default = (Типовий)
-workspace-shipped-default-blurb = Який rox має вигляд із коробки: напівпрозорі поверхні над робочим столом, без рамок вікна, тонування обкладинкою вимкнено. Відправна точка, від якої відходить кожен інший вигляд тут.
-workspace-shipped-catrox-blurb = Той самий скін для foobar2000, з якої все почалося, зібрана наново: круглий рендер обкладинки як CD, поля метаданих ліворуч і треки, згруповані за альбомами, з крапками оцінок.
+workspace-shipped-default-blurb = Який вигляд має rox із коробки: напівпрозорі поверхні над робочим столом, без рамок вікна, тонування обкладинкою вимкнено. Відправна точка, від якої відходить кожен інший вигляд тут.
+workspace-shipped-catrox-blurb = Той самий скін для foobar2000, з якого все почалося, зібраний наново: круглий рендер обкладинки як CD, поля метаданих ліворуч і треки, згруповані за альбомами, з крапками оцінок.
 workspace-shipped-critters-blurb = Увесь застосунок як 1-бітний друк: упорядкований дизеринг по кожній поверхні, тони, що стискаються з саббасом, і стіна шуму, яка звивається під пісню. За мотивами Critters for Sale.
-workspace-shipped-diffuse-blurb = Лише альбом, що грає: обкладинка й картка відтворення однією групою на все вікно, прозорі поверхні над тлом, без швів. Медіатека, черга й текст пісні чекають у шухляді біля правого краю й висуваються над музикою, коли навести на ручку. Монохром навмисно: колір несуть обкладинки.
+workspace-shipped-diffuse-blurb = Лише альбом, що грає: обкладинка й картка відтворення однією групою на все вікно, прозорі поверхні над тлом, без швів. Медіатека, черга й текст пісні чекають у шухляді біля правого краю й висуваються над музикою, коли навести на ручку. Монохром, тож колір дають обкладинки.
 workspace-shipped-foobar-blurb = Та розкладка, з якою сперечається весь цей проєкт. Непрозорі панелі, стовпці фільтрів за виконавцем і альбомом, щільна таблиця треків і смуга меню рівно там, де вона завжди була.
 workspace-shipped-llama-winamp-blurb = Winamp таким, яким ви його пам'ятаєте, а не таким, яким він був. Tahoma, темно, без рамок, крапковий спектр угорі й режим згортання на міні-розкладці.
 workspace-shipped-metro-blurb = Плоскі панелі й просторі рядки в Segoe UI, з увімкненим тонуванням обкладинкою, тож уся палітра йде за тим, яка обкладинка грає.

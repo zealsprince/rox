@@ -8,9 +8,9 @@
 //! [`apply_routes`] resolves the routes into whatever [`RouteTargets`] the
 //! host exposes each frame. The pool itself is app-wide in [`SignalHub`];
 //! edits write through to settings, so a relaunch finds what every open
-//! panel was riding.
+//! panel was bound to.
 //!
-//! Shader slots don't route through [`bindable_row`] - a slot has no knob
+//! Shader slots don't route through [`bindable_row`]: a slot has no knob
 //! of its own to hang a route under, and three different windows edit the
 //! same list. That editor is [`routes`], with [`slots`] under it for the
 //! live readout and the hand-set knobs, both built over a borrowed slice
@@ -49,12 +49,12 @@ const SLIDER_MAX_HZ: f32 = 20_000.0;
 const MIN_RATIO: f32 = 1.2;
 
 /// How far past its own setting a route may push a knob: the span reads
-/// as a share of what the slider says, and a route is allowed to overshoot
-/// it before the knob's own range clamps the result.
+/// as a share of the slider's own setting, and a route is allowed to
+/// overshoot it before the knob's own range clamps the result.
 const SPAN_OVER: f32 = 4.0;
 
-/// The knobs a host lays open to routes: what is bindable and how a
-/// resolved factor lands. What a target id means stays with the host, so
+/// The knobs a host exposes to routes: what's bindable and where a
+/// resolved factor is written. What a target id means stays with the host, so
 /// a static table and a list read off a live config implement it the
 /// same way.
 pub trait RouteTargets {
@@ -64,8 +64,8 @@ pub trait RouteTargets {
     /// the code.
     fn targets(&self) -> Vec<(String, String)>;
 
-    /// Land one resolved factor on the target `id` names. Unknown ids do
-    /// nothing, so a config carrying one goes quiet rather than
+    /// Apply one resolved factor to the target `id` names. Unknown ids do
+    /// nothing, so a config holding one goes quiet rather than
     /// misfiring.
     fn apply(&mut self, id: &str, value: f32);
 }
@@ -84,7 +84,7 @@ pub fn apply_routes(routes: &[Route], hub: &SignalHub, targets: &mut impl RouteT
             continue;
         };
         // The span is a share of the knob's own setting: at full signal a
-        // route reaches `to` of what the slider says, at silence `from`.
+        // route reaches `to` of the slider's setting, at silence `from`.
         // Overshoot past 100% is allowed and the knob's own accessor clamps
         // it to the range the host will take.
         let factor = (route.from + (route.to - route.from) * signal).max(0.0);
@@ -102,8 +102,8 @@ pub trait SignalHost: 'static + Sized {
     fn signal_ui_mut(&mut self) -> &mut SignalUi;
     fn value_edit(&self) -> &ValueEdit;
     /// The routes this host owns, for the surfaces that report on them.
-    /// Defaults to none, which is what the signals window is: it tends
-    /// the pool every panel's routes ride and owns no route itself.
+    /// Defaults to none, the signals window's case: it tends the pool
+    /// every panel's routes draw on and owns no route itself.
     fn routes(&self) -> &[Route] {
         &[]
     }
@@ -149,9 +149,9 @@ pub struct SignalUi {
     /// The target whose route is expanded inline under its settings row.
     open_bind: Option<String>,
     /// The signal blocks showing their tuning. A pool of any size is a long
-    /// page of sliders otherwise, and the name with its meter is what
-    /// reading the list is for; the tuning is what editing one is for. A
-    /// freshly added signal opens, since adding one is asking to tune it.
+    /// page of sliders otherwise. Reading the list is about the name and
+    /// its meter; editing one is about the tuning. A freshly added signal
+    /// opens, since adding one is asking to tune it.
     open: HashSet<u64>,
 }
 
@@ -234,8 +234,8 @@ fn fmt_hz(hz: f32) -> String {
     }
 }
 
-/// The source picker's face for [`Source`], which carries band bounds the
-/// segmented control can't.
+/// The source picker's face for [`Source`], which has band bounds the
+/// segmented control can't express.
 #[derive(Clone, Copy, PartialEq)]
 enum SourceKind {
     Band,
@@ -258,19 +258,19 @@ fn source_choices() -> Vec<(SharedString, SourceKind)> {
     ]
 }
 
-/// Where a trigger's fire line lands for a signal that had no threshold
+/// Where a trigger's fire line starts for a signal that had no threshold
 /// when it switched kinds. A trigger with no line never fires, so the
 /// switch seeds one mid-meter for the user to drag into place.
 const TRIGGER_SEED: f32 = 0.5;
 
-/// What a fresh aggregate rides and how fast, for a signal switched to
+/// What a fresh aggregate follows and how fast, for a signal switched to
 /// Total with nothing picked yet: the first other signal in the pool at a
 /// wrap per second, so the row does something the moment it appears.
 const AGGREGATE_RATE: f32 = 1.0;
 
 /// Write the shared pool through to settings once the edit burst settles,
 /// the hub's one persistence path, so a relaunch finds what every open
-/// panel was riding. The hub already carries every edit live (routes and
+/// panel was bound to. The hub already takes every edit live (routes and
 /// meters follow the drag instantly), so only the file write waits, the
 /// same store-then-settle shape the EQ's curve uses: a settings write
 /// reloads and reserializes every shard, and doing that on each tick of a
@@ -294,7 +294,7 @@ pub fn persist_pool_soon(hub: &Arc<SignalHub>, cx: &mut gpui::App) {
 }
 
 /// Apply one edit to a pool signal through the hub and persist the result.
-/// Editing tunes the signal for every route riding it, which is the point
+/// Editing tunes the signal for every route bound to it, which is the point
 /// of sharing.
 fn edit_signal(hub: &Arc<SignalHub>, id: u64, edit: impl FnOnce(&mut Signal), cx: &mut gpui::App) {
     hub.edit(|pool| {
@@ -310,7 +310,7 @@ fn edit_signal(hub: &Arc<SignalHub>, id: u64, edit: impl FnOnce(&mut Signal), cx
 /// actually sending. The host owns the frame cadence: every meter host
 /// re-renders on the pump's notify while audio moves (the signals window
 /// observes the player, a panel's settings window observes the panel) and
-/// runs its own decay tail, so the meter never asks for frames itself. A
+/// runs its own decay tail, so the meter never requests frames itself. A
 /// self-request here spun every hosting window at monitor refresh for
 /// values that only change at the pump's clock.
 ///
@@ -327,7 +327,7 @@ pub fn meter(hub: Arc<SignalHub>, id: u64, fill: Rgba, marker: Option<f32>) -> D
             move |bounds, _, window, _| {
                 let value = hub.raw_value(id).unwrap_or(0.0).clamp(0.0, 1.0);
                 // How far the gate is open, read back off the two values
-                // rather than asked for: what leaves over what the engine
+                // rather than queried: what leaves over what the engine
                 // holds is exactly the gate. The bar fades with it, so the
                 // ramp shows as the bar dimming rather than a switch.
                 let open = if value > 1e-4 {
@@ -381,7 +381,7 @@ pub fn meter(hub: Arc<SignalHub>, id: u64, fill: Rgba, marker: Option<f32>) -> D
 
 /// One chip of a binding's scope row: the segmented control's look, built
 /// by hand because the scope list follows the live pool, which the static
-/// segmented options can't carry. Open to any view, not just a
+/// segmented options can't express. Open to any view, not just a
 /// [`SignalHost`]: the panel settings window's Shader page picks slots and
 /// signals with the same chips while holding its panel weakly.
 pub fn scope_chip<P: 'static>(
@@ -413,8 +413,8 @@ pub fn scope_chip<P: 'static>(
         .child(label)
 }
 
-/// Attach the row's route to ride `signal`, repointing an existing
-/// route rather than stacking a second, and open its editor.
+/// Point the row's route at `signal`, repointing an existing route
+/// rather than stacking a second, and open its editor.
 fn attach_signal<P: RouteHost>(host: &mut P, target: String, signal: u64, cx: &mut Context<P>) {
     if let Some(route) = host
         .routes_mut()
@@ -434,7 +434,7 @@ fn attach_signal<P: RouteHost>(host: &mut P, target: String, signal: u64, cx: &m
     cx.notify();
 }
 
-/// The context menu's deliberate "Add Signal": a fresh pool signal,
+/// The context menu's explicit "Add Signal": a fresh pool signal,
 /// routed to the row on the spot.
 fn attach_new_signal<P: RouteHost>(host: &mut P, target: String, cx: &mut Context<P>) {
     let (id, _) = host.hub().add(
@@ -502,7 +502,7 @@ fn remove_route<P: RouteHost>(host: &mut P, index: usize, cx: &mut Context<P>) {
     }
 }
 
-/// Drop a signal from the shared pool. Routes riding it stay where
+/// Drop a signal from the shared pool. Routes bound to it stay where
 /// they are and go quiet, so re-adding or repointing restores them.
 fn remove_signal<P: SignalHost>(host: &mut P, id: u64, cx: &mut Context<P>) {
     host.hub().edit(|pool| pool.retain(|s| s.id != id));
@@ -511,10 +511,10 @@ fn remove_signal<P: SignalHost>(host: &mut P, id: u64, cx: &mut Context<P>) {
 }
 
 /// The Signals page: the app's shared pool, which is why it hangs off a
-/// window of its own rather than one panel's settings. Routes live inline
-/// under the knobs they drive; this page is where the signals themselves
-/// are tuned, and an edit lands on every route riding the signal, in
-/// every panel.
+/// window of its own rather than one panel's settings. Routes are edited
+/// inline under the knobs they drive; this page is where the signals
+/// themselves are tuned, and an edit reaches every route bound to the
+/// signal, in every panel.
 pub fn signals_page<P: SignalHost>(host: &P, cx: &mut Context<P>) -> Div {
     let pool = host.hub().pool();
     let add = settings_ui::small_button(
@@ -556,7 +556,7 @@ pub fn signals_page<P: SignalHost>(host: &P, cx: &mut Context<P>) -> Div {
 }
 
 /// One pool signal's block on the Signals page: its derived name, the
-/// live meter, its tuning, how many of this panel's routes ride it,
+/// live meter, its tuning, how many of this panel's routes use it,
 /// and the delete that lets those routes go quiet.
 ///
 /// The name and the meter always show and the tuning folds under them. A
@@ -687,7 +687,7 @@ fn signal_block<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(header)
-        // The gate rides the meter as a mark, so it gets placed against
+        // The gate draws on the meter as a mark, so it gets placed against
         // the level it's judging rather than by the percentage alone.
         .child(meter(
             host.hub().clone(),
@@ -699,7 +699,7 @@ fn signal_block<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
 }
 
 /// One shared signal's tuning rows: what it listens to and how it
-/// responds. Edits go through the hub, so every route riding it, in
+/// responds. Edits go through the hub, so every route bound to it, in
 /// every panel, follows.
 fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
     let pool = host.hub().pool();
@@ -733,11 +733,11 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                 &source_choices(),
                 kind,
                 move |this: &mut P, kind, cx| {
-                    // Switching kinds carries the band along, so Band
-                    // to Onset keeps the range the ear already picked. A
-                    // fresh Total rides whatever else is in the pool,
-                    // since one following nothing would sit at zero with
-                    // no hint why.
+                    // Switching kinds keeps the band, so Band to Onset
+                    // keeps the range the ear already picked. A fresh
+                    // Total follows whatever else is in the pool, since
+                    // one following nothing would sit at zero with no
+                    // hint why.
                     let first_other = this
                         .hub()
                         .pool()
@@ -767,7 +767,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                                 SourceKind::Aggregate => Source::Aggregate { of, rate },
                             };
                             // A trigger with no line never fires; seed one
-                            // for the switch to land doing something.
+                            // so the switch does something.
                             if kind == SourceKind::Trigger && signal.threshold <= 0.0 {
                                 signal.threshold = TRIGGER_SEED;
                             }
@@ -904,8 +904,8 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
 
 /// A total's own rows: which signal it adds up, how fast it climbs, and
 /// whether a new song sends it back to zero. The gate and the response
-/// stay off the list on purpose, since both belong to the signal it
-/// follows and setting them twice would be two answers to one question.
+/// stay off the list, since both belong to the signal it follows and
+/// setting them twice would be two answers to one question.
 fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P>) -> Div {
     let pool = host.hub().pool();
     let Some(signal) = pool.iter().find(|s| s.id == id) else {
@@ -921,7 +921,7 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
 
     // A dropdown rather than the route editor's chips: the pool grows
     // without limit and a wrapping row of every other signal takes over the
-    // block it sits in. Aggregates are offered too - one total over another
+    // block it's in. Aggregates are offered too: one total over another
     // is a second integral, which is strange but not wrong, and it reads
     // last frame's value so a ring just sits still.
     let others: Vec<(u64, String)> = pool
@@ -947,8 +947,8 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
         .small()
         .outline()
         .dropdown_caret(true);
-    // Nothing to pick, so the button says so and takes no press rather
-    // than opening an empty menu.
+    // Nothing to pick, so the button is disabled and labelled to match
+    // rather than opening an empty menu.
     let picker = if alone {
         button.disabled(true).into_any_element()
     } else {
@@ -1069,9 +1069,9 @@ fn gate_mark(signal: &Signal) -> Option<f32> {
 }
 
 /// One route's tuning rows for the inline editor: which shared signal
-/// it rides (with the pool as a picker), that signal's tuning in
-/// place, and the span it sweeps. A route whose signal is gone says so
-/// and waits for a repoint instead of pretending.
+/// it's bound to (with the pool as a picker), that signal's tuning in
+/// place, and the span it sweeps. A route whose signal is gone reports
+/// that and waits for a repoint instead of pretending.
 fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Div {
     let route = &host.routes()[index];
     let scrubs = &host.signal_ui().route_scrubs[index];
@@ -1206,11 +1206,11 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
 /// bind toggle at its edge, and the route's tuning expanded beneath
 /// while open. The slider keeps working while bound, since the route's
 /// span is a share of it: the slider sets what full signal reaches and
-/// the span decides how far the music pulls it back. Clicking the
+/// the span sets how far the music pulls it back. Clicking the
 /// toggle on an unbound row creates the route on the spot, and a
 /// right-click anywhere on the row's control does the same, so binding
-/// never needs the little icon found first. Removing the route lives
-/// on the trash inside the expanded editor.
+/// never needs the little icon found first. Removing the route is on
+/// the trash inside the expanded editor.
 pub fn bindable_row<P: RouteHost>(
     host: &P,
     label: impl Into<SharedString>,
@@ -1228,9 +1228,9 @@ pub fn bindable_row<P: RouteHost>(
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_XS)
-        // Right-click routes: pick a pool signal to ride, or add one
-        // deliberately. The menu shows even over an empty pool, so the
-        // way in is never invisible.
+        // Right-click routes: pick a pool signal to bind to, or add a new
+        // one. The menu shows even over an empty pool, so the way in is
+        // never invisible.
         .context_menu(move |mut menu, _, cx| {
             let Some(this) = weak.upgrade() else {
                 return menu;
@@ -1263,8 +1263,8 @@ pub fn bindable_row<P: RouteHost>(
                     }),
             )
         })
-        // The slider keeps its full weight while bound: it is what the
-        // route's span is a share of, so it still sets the ceiling.
+        // The slider keeps its full weight while bound: the route's span
+        // is a share of it, so it still sets the ceiling.
         .child(control)
         // The bind mark only exists once a route does; an unbound row
         // keeps an empty slot the same size so the sliders stay in
@@ -1296,9 +1296,9 @@ pub fn bindable_row<P: RouteHost>(
         });
     // The context menu keys its open state on the element id path, and
     // `context_menu` names every one of them the same thing. Several
-    // bindable rows on a page would land on one shared state, rendering
-    // one menu entity in several places and swallowing its clicks, so
-    // each row's control sits under an id of its own.
+    // bindable rows on a page would share one state, rendering one menu
+    // entity in several places and swallowing its clicks, so each row's
+    // control gets an id of its own.
     let control = div()
         .id(SharedString::from(format!("bind-row-{target}")))
         .child(control);

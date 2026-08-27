@@ -1,9 +1,9 @@
 //! Named single panels the user saved into the live look. Each is one panel's
-//! dump under a name, the leaf a layout carries per panel: adding one back
+//! dump under a name, the leaf a layout stores per panel: adding one back
 //! builds the panel already configured. Presets belong to the workspace they
-//! were saved in, so they ride `workspace.json` with the rest of the look and
-//! travel inside a shared bundle, next to the shader pool a saved panel can
-//! name.
+//! were saved in, so they're stored in `workspace.json` with the rest of the
+//! look and travel inside a shared bundle, next to the shader pool a saved
+//! panel can name.
 
 use serde_json::Value;
 
@@ -14,7 +14,7 @@ pub fn all(settings: &Settings) -> Vec<PanelPreset> {
     settings.look.bundle.panel_presets.clone()
 }
 
-/// Resolve a preset name to its panel dump. None when nothing carries that
+/// Resolve a preset name to its panel dump. None when no preset has that
 /// name.
 pub fn resolve(settings: &Settings, name: &str) -> Option<PanelPreset> {
     settings
@@ -27,8 +27,8 @@ pub fn resolve(settings: &Settings, name: &str) -> Option<PanelPreset> {
 }
 
 /// Save `panel` under `name`, replacing the preset already using that name.
-/// Saving over a preset is how you update one: the dialog says so, and there
-/// is nothing else a second save of the same name could mean.
+/// Saving over a preset is how you update one: the dialog says so, and
+/// there's nothing else a second save of the same name could mean.
 pub fn save(name: String, panel: Value) {
     Settings::update(move |s| put(&mut s.look.bundle.panel_presets, name, panel));
 }
@@ -43,7 +43,7 @@ fn put(presets: &mut Vec<PanelPreset>, name: String, panel: Value) {
     }
 }
 
-/// Drop the preset named `name`. A name nothing carries is a no-op.
+/// Drop the preset named `name`. A name no preset has is a no-op.
 pub fn remove(name: &str) {
     let name = name.to_string();
     Settings::update(move |s| {
@@ -72,7 +72,7 @@ mod tests {
         s
     }
 
-    /// `all` lists every saved preset in save order, dumps carried through
+    /// `all` lists every saved preset in save order, dumps passed through
     /// untouched.
     #[test]
     fn all_lists_presets_in_order() {
@@ -95,7 +95,7 @@ mod tests {
 
     /// Saving under a name already in the list replaces that preset in place
     /// rather than growing a second entry with the same name; a fresh name
-    /// lands at the end.
+    /// is appended at the end.
     #[test]
     fn put_replaces_by_name() {
         let mut presets = settings_with_presets().look.bundle.panel_presets;

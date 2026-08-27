@@ -1,18 +1,18 @@
 //! Filename pattern guessing: tag values pulled out of a path by a
 //! format string, foobar2000's masstagger idea. A pattern mixes literal
-//! text with %field% placeholders - "%artist% - %title%" - and matches
-//! against the file stem; a "/" in the pattern walks up the path, so
+//! text with %field% placeholders ("%artist% - %title%") and matches
+//! against the file stem; a "/" in the pattern steps up the path, so
 //! "%artist% - %album%/%track%. %title%" reads the folder name too.
 //! %skip% swallows a segment without keeping it. Matching is non-greedy:
 //! a capture takes the shortest text that lets the rest of the pattern
-//! land, so the first " - " splits artist from title even when the title
-//! carries one. Captures trim their edges and must be non-empty. The
+//! match, so the first " - " splits artist from title even when the title
+//! contains one. Captures trim their edges and must be non-empty. The
 //! editor previews every track through [`Pattern::apply`] before
 //! anything is written, so a bad pattern costs nothing.
 //!
 //! The same pattern runs the other way through [`Pattern::render`]: tag
-//! values in, a relative path out, which is what file renaming and
-//! conversion output naming are built on. Rendering is stricter than
+//! values in, a relative path out, which file renaming and conversion
+//! output naming are both built on. Rendering is stricter than
 //! matching because it produces names rather than reads them, so %skip%
 //! is an error and every capture is sanitized into something a
 //! filesystem will actually take.
@@ -113,7 +113,7 @@ pub fn parse(pattern: &str) -> Result<Pattern, String> {
 /// segment can never be empty, otherwise a missing album would collapse
 /// a folder level and drop the file somewhere it doesn't belong. These
 /// double as [`safe_file_stem`]'s fallback, so a value of pure
-/// punctuation lands here too.
+/// punctuation ends up here too.
 fn fallback_for(field: &Field) -> &'static str {
     match field {
         Field::Artist | Field::AlbumArtist => "Unknown Artist",
@@ -129,7 +129,7 @@ fn fallback_for(field: &Field) -> &'static str {
 }
 
 /// A track or disc number as two digits, so 3 sorts before 12 in every
-/// file browser there is. ID3's "3/12" total form keeps only the number.
+/// file browser. ID3's "3/12" total form keeps only the number.
 /// Anything that isn't a plain number (a "A1" vinyl side) is left alone.
 fn padded(value: &str) -> String {
     let head = value.split('/').next().unwrap_or(value).trim();
@@ -190,7 +190,7 @@ fn match_tokens(tokens: &[Token], text: &str, out: &mut Vec<(Field, String)>) ->
 impl Pattern {
     /// Run the pattern over `path`: the last component against the file
     /// stem, earlier ones against the folders above it. A field captured
-    /// twice keeps the deepest hit - the filename outranks the folder
+    /// twice keeps the deepest hit, so the filename outranks the folder
     /// when both name the artist. None when any component fails to
     /// match, including a pattern deeper than the path itself.
     pub fn apply(&self, path: &Path) -> Option<Vec<(Field, String)>> {
@@ -230,7 +230,7 @@ impl Pattern {
     /// [`safe_file_stem`] so a slash in an artist name can't open a
     /// folder, and a missing or empty value emits the field's fallback
     /// instead of nothing. %skip% is an error here: it exists to swallow
-    /// text while matching, and there is nothing to swallow while
+    /// text while matching, and there's nothing to swallow while
     /// emitting. The extension belongs to the source file, so the caller
     /// appends it; the path that comes back has none.
     pub fn render(&self, values: &[(Field, String)]) -> Result<PathBuf, String> {

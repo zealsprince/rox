@@ -1,23 +1,23 @@
 //! The source-gain stage (ADR 19): gain applied to each decoded source on
 //! its own, after the fold and resample and before the sources sum. It has
-//! to sit here rather than in the chain because a crossfade window has two
+//! to run here rather than in the chain because a crossfade window has two
 //! tracks live at once, and one node multiplying the mix would apply one
 //! track's factor to both.
 //!
-//! Two things ride this stage. ReplayGain turns a track's tagged loudness
+//! Two things use this stage. ReplayGain turns a track's tagged loudness
 //! into one constant factor, and crossfade turns the window into a
-//! per-frame pair; a source in a fade carries both, folded into one
-//! multiply before the sum.
+//! per-frame pair; a source in a fade has both, folded into one multiply
+//! before the sum.
 //!
-//! Unity short-circuits, so a source with nothing to apply reaches the mix
-//! bit-identical. That is the bypass rule the chain holds, kept here too.
+//! Unity short-circuits, so a source with nothing to apply arrives at the
+//! mix bit-identical. That's the bypass rule the chain holds, kept here too.
 
 use std::f32::consts::FRAC_PI_2;
 
 /// What a file's ReplayGain tags say: how far off the reference loudness
 /// the track and its album measured, in dB, each beside the peak sample
-/// the same pass found. None per field, since a file carries any mix of
-/// the four, and plenty carry none.
+/// the same pass found. None per field, since a file can have any mix of
+/// the four, and plenty have none.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReplayGain {
     pub track_db: Option<f32>,
@@ -37,7 +37,7 @@ impl ReplayGain {
         self.album_db.map(|db| (db, self.album_peak))
     }
 
-    /// Whether the file carries anything to level by.
+    /// Whether the file has anything to level by.
     pub fn any(self) -> bool {
         self.track_db.is_some() || self.album_db.is_some()
     }
@@ -64,7 +64,7 @@ pub enum GainMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GainRule {
     pub mode: GainMode,
-    /// Added to every tagged gain. ReplayGain's reference sits well below
+    /// Added to every tagged gain. ReplayGain's reference is well below
     /// the level modern masters are cut at, so a whole library levelled to
     /// it plays quieter than the same library raw; this is where that gets
     /// taken back.
@@ -75,19 +75,19 @@ pub struct GainRule {
     pub fallback_db: f32,
 }
 
-/// The dB either knob is allowed to reach. Wide enough for any real tag
+/// The dB limit for either knob. Wide enough for any real tag
 /// plus a preamp, narrow enough that a garbage value in a file can't turn
 /// into a factor of a thousand.
 const DB_LIMIT: f32 = 40.0;
 
 impl GainRule {
-    /// The linear factor for a source carrying `rg`. Exactly 1.0 whenever
-    /// nothing asks otherwise, so [`apply`] short-circuits and the samples
+    /// The linear factor for a source with `rg`. Exactly 1.0 whenever
+    /// there's nothing to apply, so [`apply`] short-circuits and the samples
     /// stay the decoder's.
     pub fn factor(&self, rg: ReplayGain) -> f32 {
         let (db, peak) = match self.mode {
             GainMode::Off => return 1.0,
-            // Either mode falls back to the gain the file does carry: a
+            // Either mode falls back to the gain the file does have: a
             // track tagged one way and played the other is better levelled
             // by the wrong pass than not at all, and the peak that comes
             // with it is the one measured alongside.
@@ -112,7 +112,7 @@ impl GainRule {
     }
 }
 
-/// dB to a linear multiplier, over the range a gain knob may ask for.
+/// dB to a linear multiplier, over the range a gain knob allows.
 fn db_to_linear(db: f32) -> f32 {
     if db == 0.0 {
         // Exactly unity, so the bypass rule holds without leaning on
@@ -142,16 +142,16 @@ pub fn apply(buf: &mut [f32], gain: f32) {
 /// where amplitudes wouldn't, and a linear pair (both at 0.5 halfway)
 /// audibly dips in the middle. At 0.707 each the perceived level holds
 /// across the window. ADR 19 left the curve to the implementation; this is
-/// the pick, and the album-contiguous boundary never reaches it.
+/// the pick, and the album-contiguous boundary never uses it.
 pub fn crossfade(t: f32) -> (f32, f32) {
     let (sin, cos) = (t.clamp(0.0, 1.0) * FRAC_PI_2).sin_cos();
     (sin, cos)
 }
 
-/// Mix `outgoing` under `incoming` in place, walking the fade curve from
-/// frame `done` of a `len`-frame window. Both buffers are interleaved
-/// stereo at the same rate; `outgoing` running short is silence, which is
-/// what a track that ended before its fade window closed leaves behind.
+/// Mix `outgoing` under `incoming` in place, stepping through the fade
+/// curve from frame `done` of a `len`-frame window. Both buffers are
+/// interleaved stereo at the same rate; `outgoing` running short is
+/// silence, the case for a track that ended before its fade window closed.
 pub fn crossfade_mix(incoming: &mut [f32], outgoing: &[f32], done: u64, len: u64) {
     let len = len.max(1) as f32;
     for (i, frame) in incoming.as_chunks_mut::<2>().0.iter_mut().enumerate() {
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn off_is_exactly_unity() {
-        // The bypass rule reaches back this far: leveling off has to leave
+        // The bypass rule applies this far back: leveling off has to leave
         // the samples the decoder's, not multiply them by a rounded 1.0.
         let rule = GainRule {
             mode: GainMode::Off,
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn the_peak_clamps_a_boost_but_never_makes_one() {
-        // +6 dB asked for, but the loudest sample sits at 0.8: the boost
+        // +6 dB asked for, but the loudest sample is at 0.8: the boost
         // stops at 1/0.8 so the track can't clip.
         let rule = GainRule {
             mode: GainMode::Track,
@@ -316,8 +316,8 @@ mod tests {
 
     #[test]
     fn fade_clamps_past_the_window() {
-        // Past the end the incoming plays alone, which is what lets a chunk
-        // straddle the close of the window without special-casing it.
+        // Past the end the incoming plays alone, which lets a chunk straddle
+        // the close of the window without special-casing it.
         assert_eq!(crossfade(2.0), crossfade(1.0));
     }
 

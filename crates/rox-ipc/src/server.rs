@@ -1,8 +1,8 @@
 //! The listening side: one accept thread, and per connection a reader
-//! thread that owns the frame discipline - parse, handshake, dispatch - and
+//! thread that owns the frame discipline (parse, handshake, dispatch) and
 //! a writer thread draining one bounded outbound channel. Responses and
-//! pushed events both leave through that channel, which is what lets an
-//! event land between two responses without interleaving bytes mid-frame.
+//! pushed events both leave through that channel, which lets an event land
+//! between two responses without interleaving bytes mid-frame.
 //! The only things that ever leave a connection are a [`Request`] on the
 //! app's channel, answered through its responder, and a registration with
 //! the [`Events`] registry when the client subscribes. A malformed frame
@@ -13,7 +13,7 @@
 //! with the single-instance guard's staging-and-rename discipline. Windows
 //! speaks named pipes through interprocess, which needs none of that: a
 //! pipe isn't a filesystem object, can't go stale, and dies with the
-//! process. Windows pipes ride the default DACL, which scopes to the
+//! process. Windows pipes use the default DACL, which scopes to the
 //! session rather than strictly to the user; tightening that to an explicit
 //! per-user descriptor is open follow-up work.
 
@@ -34,14 +34,14 @@ use crate::protocol::{RequestFrame, ResponseFrame, RpcError, PROTOCOL_VERSION};
 const MAX_FRAME_BYTES: u64 = 1024 * 1024;
 
 /// How long a connection waits for the app to answer one request before
-/// telling its caller to retry. Generous because the answer rides the UI
+/// telling its caller to retry. Generous because the answer comes off the UI
 /// thread, which a heavy frame can hold up; a wedged app surfaces as this
 /// error rather than a silent hang.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How many outbound frames may queue for one connection before a
 /// subscriber that stopped reading is cut off. A healthy consumer drains as
-/// events arrive and never sits more than a few deep; this deep means the
+/// events arrive and never grows more than a few deep; this deep means the
 /// peer is gone or wedged, and the emit side never waits to find out which.
 const OUTBOUND_BUFFER: usize = 128;
 
@@ -92,7 +92,7 @@ pub struct Server {
 }
 
 /// What quit needs to clear the socket file: the path, and the inode that
-/// proves it's still ours. Clone because gpui's quit hook wants to be
+/// proves it's still ours. Clone because gpui's quit hook needs to be
 /// callable more than once.
 #[derive(Clone)]
 pub struct Cleanup {
@@ -285,7 +285,7 @@ fn connection<R: std::io::Read, W: std::io::Write + Send + 'static>(
     // Everything outbound crosses this bounded channel to one writer
     // thread, so responses and events interleave as whole frames. When the
     // peer stops reading, the writer blocks, the channel fills, and the
-    // registry's try_send is what notices - never the app.
+    // registry's try_send notices, never the app.
     let (out_tx, out_rx) = std::sync::mpsc::sync_channel::<Arc<[u8]>>(OUTBOUND_BUFFER);
     std::thread::spawn(move || {
         let mut writer = std::io::BufWriter::new(write_half);
@@ -540,7 +540,7 @@ mod tests {
         let frame: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(frame["method"], "event.test");
         assert_eq!(frame["params"]["n"], 1);
-        // No id is what marks it a push and not a response.
+        // A missing id marks it a push, not a response.
         assert!(frame.get("id").is_none());
 
         // The bystander got nothing pushed: the very next frame on its

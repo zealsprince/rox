@@ -1,7 +1,7 @@
 //! The history panel: the listen record as a track list, per ADR 11 and
-//! the scope's history surface. Three views over the same events - the
+//! the scope's history surface. Three views over the same events (the
 //! newest listens first, tracks by play count, and the library tracks no
-//! event has ever named - picked per panel, so a duplicate can watch
+//! event has ever named), picked per panel, so a duplicate can watch
 //! each. Rows read at panel-open and listen-append cadence off the
 //! library's events table, never per frame; clicks select and double
 //! clicks queue from the row, the library panel's moves. Its own panel,
@@ -38,7 +38,7 @@ use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
 use rox_services::history::HistoryEvent;
 
-/// One row's height; the list is a uniform_list, so every row agrees.
+/// One row's height; the list is a uniform_list, so every row is the same.
 const ROW_H: f32 = 30.;
 
 /// How many rows a view reads. The panel is a window into the record,
@@ -65,13 +65,13 @@ impl HistoryView {
     }
 }
 
-/// How the Never Played view orders its tracks. Recent and Most carry
-/// their own order out of the events table - newest first and by count -
-/// so this is the one view with nothing to sort it but the tags.
+/// How the Never Played view orders its tracks. Recent and Most get their
+/// own order out of the events table (newest first and by count), so this
+/// is the one view with nothing to sort it but the tags.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NeverSort {
-    /// The canonical album artist, album, disc, track walk.
+    /// The canonical album artist, album, disc, track order.
     #[default]
     Browse,
     Title,
@@ -223,8 +223,8 @@ pub struct HistoryConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub view: HistoryView,
-    /// The album heading mode, honoured on the Recent view only - the Most
-    /// and Never orders never keep an album's tracks together.
+    /// The album heading mode, honoured on the Recent view only, since the
+    /// Most and Never orders never keep an album's tracks together.
     pub headers: Headers,
     /// The Never view's order, and whether it runs backwards. Recent and
     /// Most come out of the events table already ordered, so neither reads
@@ -267,8 +267,8 @@ impl Default for HistoryConfig {
 pub struct HistoryPanel {
     state: AppState,
     config: HistoryConfig,
-    /// The current view's tracks in query order, re-read when a listen lands
-    /// or the catalog changes, cached between.
+    /// The current view's tracks in query order, re-read when a listen is
+    /// recorded or the catalog changes, cached between.
     tracks: Vec<TrackPlays>,
     /// The search box, shared by every searching view; shown per config.
     search: Entity<SearchBox>,
@@ -307,7 +307,7 @@ pub struct HistoryPanel {
     menu_row: Option<usize>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _history_changed: Subscription,
     _library_changed: Subscription,
@@ -416,7 +416,7 @@ impl HistoryPanel {
     /// Follow the player: on a track change, resolve the playing path to
     /// its id (one store lookup), the library panel's move. The highlight
     /// matches rows by that id, so in the recent view every listen of the
-    /// playing track carries it.
+    /// playing track gets it.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let path = self.state.player.read(cx).now_playing().map(|now| now.key);
         if path == self.playing_key {
@@ -456,7 +456,7 @@ impl HistoryPanel {
     /// instead of re-running the listens query. The rating moved through the
     /// shared projection already, the view (recent, most, never) is keyed on
     /// play counts a rating never touches, and the display rows index into
-    /// `tracks` by position - so the changed cell just repaints.
+    /// `tracks` by position, so the changed cell just repaints.
     fn patch_ratings(&mut self, cx: &mut Context<Self>) {
         let ids: Vec<i64> = self.tracks.iter().map(|t| t.track_id).collect();
         let ratings = self.state.library.read(cx).ratings_for(&ids);
@@ -553,7 +553,7 @@ impl HistoryPanel {
         self.refresh(cx);
     }
 
-    /// The Never view's order. The sort lives in the query, so a change
+    /// The Never view's order. The sort is part of the query, so a change
     /// re-reads rather than shuffling the rows in hand.
     fn set_never_sort(&mut self, sort: NeverSort, cx: &mut Context<Self>) {
         if self.config.never_sort == sort {
@@ -571,8 +571,8 @@ impl HistoryPanel {
         self.refresh(cx);
     }
 
-    /// Where the playing track sits, as a display row and its index into
-    /// `tracks`. Often nowhere: a listen only lands once the play passes
+    /// Where the playing track is, as a display row and its index into
+    /// `tracks`. Often nowhere: a listen is only recorded once the play passes
     /// the scrobble threshold, so a track partway through its first play
     /// is in the Never list until it has ever scrobbled and on the Recent
     /// page only if an older play of it is still inside [`ROWS_CAP`]. A
@@ -592,7 +592,7 @@ impl HistoryPanel {
     }
 
     /// Scroll the playing track into view and select it, the move every
-    /// other track surface's menu carries.
+    /// other track surface's menu has.
     fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
         let Some((ix, ti)) = self.playing_row() else {
             return;
@@ -603,7 +603,7 @@ impl HistoryPanel {
     }
 
     /// Map the shared box's events onto the panel: a changed query re-filters,
-    /// and a focus or dismiss repaints the tab title row where the box lives.
+    /// and a focus or dismiss repaints the tab title row that holds the box.
     fn on_search_event(
         &mut self,
         _search: &Entity<SearchBox>,
@@ -626,8 +626,8 @@ impl HistoryPanel {
         }
     }
 
-    /// Show or hide the panel's own search box, re-filtering. The config rides
-    /// the layout dump, so the tab-panel repaint is what carries it to disk.
+    /// Show or hide the panel's own search box, re-filtering. The config is
+    /// part of the layout dump, so the tab-panel repaint writes it to disk.
     fn set_search(&mut self, on: bool, cx: &mut Context<Self>) {
         self.config.search = on;
         self.rebuild_query_view(cx);
@@ -636,7 +636,7 @@ impl HistoryPanel {
 
     /// Put a click on a track row: plain selects just it, shift extends from
     /// the anchor over the visible tracks between, cmd (ctrl elsewhere)
-    /// toggles - the library's rules. `ti` indexes `tracks`, not the display
+    /// toggles, the library's rules. `ti` indexes `tracks`, not the display
     /// rows; the shift range runs over the display order, so it crosses
     /// album headings the way the eye does.
     fn select(&mut self, ti: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
@@ -684,7 +684,7 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// Ctrl+A: take every visible track - the filter's rows, so the selection
+    /// Ctrl+A: take every visible track, the filter's rows, so the selection
     /// matches what shows. Anchors at the first so a follow-up shift-click
     /// narrows from the top.
     fn select_all(&mut self, cx: &mut Context<Self>) {
@@ -767,13 +767,13 @@ impl HistoryPanel {
 
     /// A double click queues the track with the surrounding view as its
     /// timeline: earlier tracks seed behind the cursor for Prev, later ones
-    /// carry Next, the clicked track plays. Bounded to a window around the
+    /// fill Next, the clicked track plays. Bounded to a window around the
     /// click with a share kept for history. A track deleted since its event
     /// resolves to no path and drops out of the queue quietly.
     fn play_from(&mut self, ti: usize, cx: &mut Context<Self>) {
         // Window over the visible tracks in query order, the rows on screen, not
         // the raw list. Windowing over `self.tracks` would pull query-hidden
-        // tracks into the queue. `ti` indexes `self.tracks`; find where it sits
+        // tracks into the queue. `ti` indexes `self.tracks`; find where it is
         // among the visible rows first.
         let visible: Vec<usize> = self
             .rows
@@ -799,7 +799,7 @@ impl HistoryPanel {
         // the window and the raw click offset no longer lines up. The start is
         // how many ids ahead of the click actually resolved. If the clicked
         // track is itself one of the deleted ones, bail rather than play its
-        // neighbour, which is what would land at that index.
+        // neighbour, which is what would end up at that index.
         let resolved = {
             let library = self.state.library.read(cx);
             let (Ok(keys), Ok(before), Ok(clicked)) = (
@@ -864,7 +864,7 @@ impl HistoryPanel {
     }
 
     /// One track row: its interactions keyed on the track index, its cells
-    /// the shown columns - the shared ones plus the record's own Plays and
+    /// the shown columns: the shared ones plus the record's own Plays and
     /// Last Played.
     fn track_row(&self, ix: usize, ti: usize, now: i64, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = &self.tracks[ti];
@@ -884,7 +884,7 @@ impl HistoryPanel {
             .gap(tokens::SPACE_SM)
             .cursor_pointer()
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
-            // The playing track wears the highlight role, a faint cut apart
+            // The playing track uses the highlight role, a faint cut apart
             // from the accent-washed selection, the library's look.
             .when(playing && !selected, |d| {
                 d.bg(palette::alpha(palette::highlight(), 0x12))
@@ -957,9 +957,9 @@ impl HistoryPanel {
         row
     }
 
-    /// The Display section: the view pick, the columns, and - on the Recent
-    /// view only, where the order keeps albums together - the headings, the
-    /// same knobs the settings window edits.
+    /// The Display section: the view pick, the columns, and the headings on
+    /// the Recent view only, where the order keeps albums together. The same
+    /// knobs the settings window edits.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -982,7 +982,7 @@ impl HistoryPanel {
         });
         let menu = menu
             .label(rox_i18n::t!("panel-menu-display"))
-            .item(PopupMenuItem::submenu("View", view))
+            .item(PopupMenuItem::submenu(rox_i18n::t!("panel-page-view"), view))
             .item(PopupMenuItem::submenu(
                 rox_i18n::t!("library-columns"),
                 track_columns::columns_submenu(columns(), window, cx),
@@ -1254,7 +1254,7 @@ impl Panel for HistoryPanel {
         self.config.chrome.title.clone().map(SharedString::from)
     }
 
-    /// The search box shares the title bar row while the panel sits in a
+    /// The search box shares the title bar row while the panel is in a
     /// group; solo or popped out the body hosts it instead.
     fn title_suffix(
         &mut self,
@@ -1280,13 +1280,13 @@ impl Panel for HistoryPanel {
     }
 
     /// The body serves its own row context menus, so the tab panel's body
-    /// right-click stays out; the panel dropdown lives on the tab and
-    /// rides along after the track actions.
+    /// right-click stays out; the panel dropdown is on the tab and comes
+    /// after the track actions.
     fn content_context_menu(&self, _cx: &App) -> bool {
         true
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
@@ -1332,10 +1332,10 @@ impl Panel for HistoryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // Jump rides at the top, the move every other track surface's menu
-        // opens with - but only while the playing track is on the list.
+        // Jump goes at the top, the move every other track surface's menu
+        // opens with, but only while the playing track is on the list.
         // The views here are cuts of the record rather than the library,
-        // so most of the time it is not, and an entry that jumps nowhere
+        // so most of the time it isn't, and an entry that jumps nowhere
         // is worse than no entry.
         let weak = cx.entity().downgrade();
         let menu = match self.playing_row() {
@@ -1399,7 +1399,7 @@ impl Render for HistoryPanel {
 impl HistoryPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // A pending box reset (a source toggle or a shared-query change)
-        // lands here, where a window exists to set the input's text.
+        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
@@ -1459,7 +1459,7 @@ impl HistoryPanel {
                     .w_full(),
                 )
         };
-        // A right press lands here in the capture phase, before any row's
+        // A right press arrives here in the capture phase, before any row's
         // bubble handler records itself, so a press off the rows leaves
         // no target and the menu below falls back to the panel's own.
         let content =
@@ -1469,16 +1469,16 @@ impl HistoryPanel {
                 }
             }));
         // The row context menu: the track actions every song surface
-        // shares, then the panel menu riding along after, so a click
-        // over the list never dead-ends at Play.
+        // shares, then the panel menu after them, so a click over the
+        // list never dead-ends at Play.
         let weak = cx.entity().downgrade();
         root.child(content.context_menu(move |menu, window, cx| {
             let Some(this) = weak.upgrade() else {
                 return menu;
             };
             // The clicked track plus the selection it acts on. The right
-            // press already pulled the track into the set, so this is what
-            // is lit.
+            // press already pulled the track into the set, so this is the
+            // lit set.
             let target = {
                 let panel = this.read(cx);
                 panel

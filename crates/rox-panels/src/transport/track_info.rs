@@ -4,7 +4,7 @@
 //! trailing edge; the arrange editor prunes, reorders, and breaks the list
 //! into further rows, each with its own text size, so the same panel spans
 //! a transport strip to a now-playing card. The marquee crawl and the
-//! row cycle ride the rows for tight panels: the cycle shows the
+//! row cycle handle tight panels: the cycle shows the
 //! arrangement's rows one at a time in a single line, trading on a timer.
 
 use std::time::Instant;
@@ -35,7 +35,7 @@ use crate::settings::ui as settings_ui;
 use super::transport_panel;
 
 /// One piece of the track line, the arrange editor's unit. The config's
-/// list carries the shown ones in display order. The text pieces compose
+/// list holds the shown ones in display order. The text pieces compose
 /// into crawlable runs; the chip, art, spacer, and divider hold their own
 /// shape between them.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -60,10 +60,10 @@ pub enum InfoPiece {
     /// How deep the explicit queue stands, as "N queued".
     Queued,
     /// The negotiated-output chip, the retired toggle as a piece: it
-    /// claims its width first and never rides a crawl.
+    /// claims its width first and never crawls.
     Output,
     /// The heart over the playing track, the favourite panel's toggle as
-    /// a piece, for the card that wants it riding a corner.
+    /// a piece, for the card that puts it in a corner.
     Favourite,
     /// The stars over the playing track, the same write the rating panel
     /// and the library's rating column make.
@@ -72,7 +72,7 @@ pub enum InfoPiece {
     /// sibling.
     Art,
     /// A flexible gap that pushes the pieces around it apart; a row holds
-    /// as many as the layout wants.
+    /// as many as the layout needs.
     Spacer,
     /// A spacer that draws a hairline in the border color across its gap.
     Divider,
@@ -183,7 +183,7 @@ const ITEMS: &[panel::ArrangeSpec<InfoPiece>] = &[
 
 /// The classic line, spelled from the retired fixed shape: the numbered
 /// title and duration, the byline behind it, and the chip at the trailing
-/// edge. The spacers land where the retired align knob put the text, so a
+/// edge. The spacers go where the retired align knob put the text, so a
 /// layout saved before the pieces became a list keeps its look; `chip`
 /// off leaves the text alone, the retired toggle's read.
 fn stock_items(align: Align, chip: bool) -> Vec<InfoPiece> {
@@ -230,18 +230,18 @@ pub struct TrackInfoConfig {
     #[serde(default = "default_marquee_delay")]
     pub marquee_delay: f32,
     /// Cycle the arrangement's rows through a single line, one at a time
-    /// with a fade between turns, so a tight strip carries a whole card's
+    /// with a fade between turns, so a tight strip shows a whole card's
     /// worth of rows. A single-row arrangement has nothing to trade and
     /// reads as itself. Independent of the marquee: the shown row still
     /// crawls if it overflows.
     #[serde(default)]
     pub swap: bool,
-    /// How long each row sits fully shown before the fade, seconds.
+    /// How long each row stays fully shown before the fade, seconds.
     #[serde(default = "default_swap_secs")]
     pub swap_secs: f32,
     /// Let the chip take the banner's tone colors when the output isn't
     /// clean, or hold the muted text color whatever the state. Off suits a
-    /// transport line that wants one flat tone; the hover note still says
+    /// transport line that needs one flat tone; the hover note still says
     /// what's going on.
     #[serde(default = "default_output_tint")]
     pub output_tint: bool,
@@ -304,7 +304,7 @@ impl From<TrackInfoConfigDump> for TrackInfoConfig {
     fn from(dump: TrackInfoConfigDump) -> Self {
         let items = match dump.items {
             // Deduped row by row, the breaks put back after: the catalog
-            // doesn't carry the break (it draws as the editor's row
+            // doesn't include the break (it draws as the editor's row
             // boundary, not a chip), and each row may hold its own copy
             // of a piece.
             Some(items) => items
@@ -314,7 +314,7 @@ impl From<TrackInfoConfigDump> for TrackInfoConfig {
                 .join(&InfoPiece::Break),
             // The retired fixed panel swapped its heading against its
             // byline; the cycle trades rows, so the fold splits the
-            // classic line into those two rows, the chip riding both so
+            // classic line into those two rows, the chip on both so
             // it never blinks out with a side.
             None if dump.swap => {
                 let mut rows = vec![
@@ -403,7 +403,7 @@ const MARQUEE_DELAY_MIN: f32 = 0.0;
 const MARQUEE_DELAY_MAX: f32 = 10.0;
 
 /// The chip is on unless a layout turns it off. Legacy-only; new layouts
-/// carry the chip as a piece.
+/// list the chip as a piece.
 fn default_show_output() -> bool {
     true
 }
@@ -434,7 +434,7 @@ const ROW_SCALE_MAX: f32 = 3.0;
 /// one leg at a time.
 struct MarqueeScroll {
     handle: ScrollHandle,
-    /// How far the line sits left of home, in pixels.
+    /// How far the line is left of home, in pixels.
     offset: f32,
     /// The scroll crawl's direction: 1 heading out, -1 heading home.
     dir: f32,
@@ -448,7 +448,7 @@ struct MarqueeScroll {
     /// Loop mode's verdict off the last layout: whether one copy alone
     /// overflows, so the line renders doubled and wraps.
     looping: bool,
-    /// Whether the row cycle rides this run's crawl this frame. The body
+    /// Whether the row cycle is driving this run's crawl this frame. The body
     /// sets it; the crawl reads it to decide between bouncing back and
     /// parking at the end.
     cycling: bool,
@@ -485,7 +485,7 @@ impl MarqueeScroll {
 
     /// One frame of the scroll crawl: run the rest down, then step along
     /// the current leg. Without `park` it turns around with a fresh rest
-    /// at each end; with it (the row cycle rides the crawl) it stays put
+    /// at each end; with it (the row cycle driving the crawl) it stays put
     /// once it has crawled out and rested, raising `crawl_done` for the
     /// cycle to fade the row away. The step clamps so a stalled frame
     /// never teleports the line.
@@ -570,7 +570,7 @@ struct PieceTexts {
 /// pieces, in piece order.
 enum RowBit {
     /// A contiguous stretch of text pieces composed into colored
-    /// segments: the text and whether it sits muted.
+    /// segments: the text and whether it's muted.
     Run(Vec<(String, bool)>),
     /// A piece that holds its own shape outside the crawl.
     Fixed(InfoPiece),
@@ -607,7 +607,7 @@ fn row_bits(pieces: &[InfoPiece], texts: &PieceTexts) -> Vec<RowBit> {
                 bits.push(RowBit::Fixed(*piece));
                 continue;
             }
-            // Rows come pre-split; a break never reaches here.
+            // Rows come pre-split; a break never gets here.
             InfoPiece::Break => continue,
         };
         let Some((text, muted)) = text else { continue };
@@ -647,7 +647,7 @@ pub struct TrackInfoPanel {
     /// a database query; cleared when the track or the catalog changes.
     meta: Option<(TrackKey, Option<rox_library::store::TrackMeta>)>,
     /// The explicit queue's readouts keyed on its revision: the depth and
-    /// what plays next. The snapshot walk and the library lookup only
+    /// what plays next. The snapshot pass and the library lookup only
     /// rerun when the queue actually moves.
     queue_info: Option<(u64, usize, Option<String>)>,
     /// The playing track's id and favourite state for the heart piece,
@@ -674,7 +674,7 @@ pub struct TrackInfoPanel {
     /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
     _library_changed: Subscription,
@@ -695,7 +695,7 @@ impl TrackInfoPanel {
                     cx.notify();
                     return;
                 }
-                // A landed star moves the rating, which rides the tags
+                // A star click moves the rating, which is held in the tags
                 // cache; re-resolve it, nothing else changed.
                 if matches!(event, LibraryEvent::Rated) {
                     this.meta = None;
@@ -735,9 +735,9 @@ impl TrackInfoPanel {
     /// What the line does when it doesn't fit, the one knob worth
     /// flipping without opening settings. Everything else stays on the
     /// settings page: the pieces are the arrange editor's, and a context
-    /// menu that carries every knob is just a worse settings page.
+    /// menu with every knob in it is just a worse settings page.
     ///
-    /// Flat checked items rather than a submenu on purpose: a plain
+    /// Flat checked items rather than a submenu: a plain
     /// `.checked()` only refreshes at the top level, and a nested flyout
     /// would show a stale tick until it was reopened.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
@@ -871,7 +871,7 @@ impl TrackInfoPanel {
     }
 
     /// The explicit queue's depth and next line, from the cache or one
-    /// snapshot walk when the revision moved.
+    /// snapshot pass when the revision moved.
     fn queue_info(&mut self, cx: &App) -> (usize, Option<String>) {
         let player = self.state.player.read(cx);
         let rev = player.queue_rev().unwrap_or(0);
@@ -913,7 +913,7 @@ impl TrackInfoPanel {
             .map_or((None, false), |(_, id, on)| (*id, *on))
     }
 
-    /// One heart piece: filled and accented while the playing track sits
+    /// One heart piece: filled and accented while the playing track is
     /// in the favourites, dimmed while nothing resolves, a click running
     /// the same toggle the favourite panel and the library's heart column
     /// run. Scaled with its row, so a title-row heart holds the line.
@@ -1219,9 +1219,9 @@ impl Render for TrackInfoPanel {
 }
 
 impl TrackInfoPanel {
-    /// The output chip: what the device settled on, short enough to live at
+    /// The output chip: what the device settled on, short enough to fit at
     /// the end of a transport line. Muted while nothing is being converted,
-    /// carrying the banner's tone colors when something is, or a muted alert
+    /// taking the banner's tone colors when something is, or a muted alert
     /// face in their place when the tint is off, so a glance says whether
     /// what's playing is what the file holds. None when no stream has
     /// negotiated yet. `ix` keeps two chips across rows apart for gpui.
@@ -1280,7 +1280,7 @@ impl TrackInfoPanel {
         } else {
             palette::text_muted()
         };
-        // "Shared" is every desktop's default and carries no information;
+        // "Shared" is every desktop's default and says nothing new;
         // "Exclusive" is worth the two words because it's the state someone
         // went looking for.
         // The rate goes through the same speller the library column and the
@@ -1296,7 +1296,7 @@ impl TrackInfoPanel {
                 .id(("output-chip", ix))
                 // flex_none is the whole point: the chip claims its width
                 // first and the line crawls in whatever is left, so it never
-                // rides along with the marquee.
+                // moves with the marquee.
                 .flex_none()
                 .flex()
                 .flex_row()
@@ -1356,7 +1356,7 @@ impl TrackInfoPanel {
         let Some(now) = now else {
             // Nothing to describe: a session still opening, or the reason
             // one failed to start. Plain idle stays blank, the chip still
-            // reporting if the arrangement carries one.
+            // reporting if the arrangement has one.
             let line: Option<SharedString> = if active {
                 Some(rox_i18n::t!("track-info-opening"))
             } else {
@@ -1451,7 +1451,7 @@ impl TrackInfoPanel {
             texts.queued = (count > 0)
                 .then(|| rox_i18n::t!("track-info-queued-count", count = count as u64).to_string());
         }
-        // The inline art resolves only when a row carries the piece, the
+        // The inline art resolves only when a row includes the piece, the
         // header lines' rule; the thumb cache does the caching.
         let thumb: Option<Thumb> = items.contains(&InfoPiece::Art).then(|| {
             let path = now.path().to_path_buf();
@@ -1502,7 +1502,7 @@ impl TrackInfoPanel {
         }
 
         // The row cycle: the arrangement's rows take turns in a single
-        // line, so a tight strip carries a whole card's worth. Live only
+        // line, so a tight strip shows a whole card's worth. Live only
         // with something to trade; a lone row reads as itself.
         let cycling = swap && plans.len() > 1;
         let (active, cycle_fade) = if cycling {
@@ -1596,7 +1596,7 @@ impl TrackInfoPanel {
             if (scale - 1.0).abs() > 0.001 {
                 row = row.text_size(rems(scale));
             }
-            // The shown row wears the cycle's fade whole, pieces and all,
+            // The shown row takes the cycle's fade whole, pieces and all,
             // so a chip or a heart trades with its row instead of sitting
             // over the crossfade.
             if cycle_fade < 1.0 {
@@ -1726,7 +1726,7 @@ fn marquee_line(
     window: &mut Window,
 ) -> Stateful<Div> {
     // Both come off the last layout and start at zero, so a fresh panel
-    // sits still until it knows better.
+    // stays still until the first layout gives it real numbers.
     let container = f32::from(marquee.handle.bounds().size.width);
     let overflow = f32::from(marquee.handle.max_offset().width);
     let moving = if mode == MarqueeMode::Loop {
@@ -1785,7 +1785,7 @@ fn marquee_line(
     .absolute()
     .inset_0();
 
-    // Loop mode shows the line twice, a gap apart, so the wrap lands on
+    // Loop mode shows the line twice, a gap apart, so the wrap happens on
     // an identical picture.
     let content = if marquee.looping {
         div()
@@ -1871,7 +1871,7 @@ mod tests {
 
     /// The retired swap traded a heading against a byline; the cycle
     /// trades rows, so a layout saved with it folds into those two rows.
-    /// The chip rides both, since a row cycling away would take it along.
+    /// The chip goes on both, since a row cycling away would take it along.
     #[test]
     fn legacy_swap_folds_into_two_rows() {
         let config: TrackInfoConfig =
@@ -1901,7 +1901,7 @@ mod tests {
         }));
     }
 
-    /// A layout that carries the list uses it as-is, same-row duplicates
+    /// A layout with the list uses it as-is, same-row duplicates
     /// dropped, and round-trips through a save.
     #[test]
     fn item_lists_read_ordered_and_deduped() {

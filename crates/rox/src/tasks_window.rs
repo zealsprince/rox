@@ -1,13 +1,13 @@
 //! The tasks window: one OS window listing the long library jobs, running
 //! or not, so the settings window doesn't have to stay open to watch one.
 //!
-//! Four jobs live here. The library scan belongs to a workspace's catalog;
-//! the acoustic pass ([`crate::embeddings`]), the ReplayGain measurement
+//! Four jobs are listed here. The library scan belongs to a workspace's
+//! catalog; the acoustic pass ([`crate::embeddings`]), the ReplayGain measurement
 //! ([`crate::replaygain_job`]) and the tempo pass ([`crate::tempo_job`]) are
-//! app-global by design, outliving the window that started them. What they
-//! had in common was being unwatchable once their page was closed: no count,
-//! no estimate, and no way to stop short of reopening whatever started them.
-//! This is that missing half.
+//! app-global, outliving the window that started them. All three were
+//! unwatchable once their page was closed: no count, no estimate, and no
+//! way to stop short of reopening whatever started them. This is that
+//! missing half.
 //!
 //! Those four rows are always there, idle or not. A list that only exists
 //! while something is running is a progress bar with extra steps; this one
@@ -47,7 +47,7 @@ use rox_panel_kit::ui as settings_ui;
 use rox_services::catalog::{Library, LibraryEvent, ScanStatus};
 
 /// How often a running pass repaints the surfaces watching it. Slower than
-/// the settings page's own poll on purpose: this one redraws every window,
+/// the settings page's own poll: this one redraws every window,
 /// and a pass is measured in hours, so twice a second is plenty to read a
 /// count by and cheap next to what the pass itself is doing.
 const TICK: Duration = Duration::from_millis(500);
@@ -55,11 +55,11 @@ const TICK: Duration = Duration::from_millis(500);
 /// Repaint every window while a pass runs, and once more when it stops.
 ///
 /// Called by both passes when they start. Without it the menubar chip would
-/// be drawn once and then sit at whatever count it happened to catch: the
+/// be drawn once and then stay at whatever count it happened to catch: the
 /// passes are app-global with no entity to observe, so nothing tells a
 /// workspace that the number moved. One ticker for every surface rather
-/// than a timer per surface, which is also what lets the tasks window get
-/// away with no poll of its own.
+/// than a timer per surface, which also lets the tasks window get away with
+/// no poll of its own.
 ///
 /// The scan needs none of this: it belongs to a catalog entity that notifies
 /// as it counts, and the tasks window observes that directly.
@@ -103,16 +103,16 @@ struct Ticking(bool);
 
 impl Global for Ticking {}
 
-/// The menubar's tasks control: always a way into the window, wearing what's
+/// The menubar's tasks control: always a way into the window, showing what's
 /// running while anything is.
 ///
 /// Always drawn, because the window it opens is now worth opening with
-/// nothing running - it's where the passes are started from. Idle it's a
+/// nothing running: it's where the passes are started from. Idle it's a
 /// plain icon, the same weight as the rescan button beside it; running it
 /// grows into a chip with the count, which is the one thing worth reading
 /// from the bar itself.
 ///
-/// The library scan is deliberately not in here: it has the badge and the
+/// The library scan isn't in here: it has the badge and the
 /// status line to its left, and saying it twice in one bar would be noise.
 pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
     // More than one at a time is a count rather than a chip each: the bar is
@@ -206,9 +206,9 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
 }
 
 /// What the rest of a pass costs at the worker count it would run with, off
-/// the pace the last one measured here. The worker count rides along because
-/// the estimate means nothing without it: the same library is four hours or
-/// one depending on what it's allowed to use.
+/// the pace the last one measured here. The worker count comes with it
+/// because the estimate means nothing without it: the same library is four
+/// hours or one depending on what it's allowed to use.
 fn priced(pace: f32, missing: u64, workers: usize) -> Option<String> {
     let estimate = rox_core::pace::estimate(pace, missing, workers)?;
     Some(
@@ -336,7 +336,7 @@ impl Job {
             Job::ReplayGain => icons::GAUGE,
             // Beats a minute is a rate over time, and the clock is the one
             // glyph in the set that says so without borrowing the gauge the
-            // measurement pass wears.
+            // measurement pass uses.
             Job::Tempo => icons::CLOCK,
             Job::LovedImport => icons::HEART,
             Job::Convert => icons::AUDIO_LINES,
@@ -344,7 +344,7 @@ impl Job {
         }
     }
 
-    /// What the start button says and wears, or None for a job this window
+    /// What the start button says and shows, or None for a job this window
     /// only watches. The wording matches the settings page's buttons, since
     /// they start the same work.
     fn start_label(self) -> Option<(SharedString, &'static str)> {
@@ -387,7 +387,7 @@ impl Job {
 }
 
 /// One running job, flattened out of whichever of the three it came from.
-/// The three progress types are unrelated and answer the same questions, so
+/// The three progress types are unrelated and cover the same questions, so
 /// the row below is written once against this rather than three times.
 struct Snapshot {
     done: usize,
@@ -395,8 +395,8 @@ struct Snapshot {
     failed: usize,
     current: String,
     /// Whether `current` is a file path, so the readout shows its name
-    /// rather than the whole line. The passes walk files; the import walks
-    /// track names, which are already what to show.
+    /// rather than the whole line. The passes step through files; the import
+    /// steps through track names, which are already what to show.
     current_is_path: bool,
     eta: Option<f64>,
     stopping: bool,
@@ -416,8 +416,8 @@ impl Snapshot {
     }
 
     /// The import counts loved tracks read, and the ones it couldn't place
-    /// are what the failed count means for it: nothing went wrong with
-    /// them, this library just has no home for them.
+    /// are its failed count: nothing went wrong with them, this library
+    /// just has no home for them.
     fn import(job: &import::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
@@ -488,9 +488,9 @@ impl Snapshot {
         }
     }
 
-    /// A scan counts files it walked past, not files it gave up on: an
+    /// A scan counts files it went through, not files it gave up on: an
     /// unreadable one stays in the library rather than being skipped, so
-    /// there's no failed count to carry.
+    /// there's no failed count to report.
     fn scan(scan: ScanStatus) -> Snapshot {
         Snapshot {
             done: scan.done,
@@ -510,10 +510,10 @@ impl Snapshot {
 /// One number for the batch is all a taskbar button can draw, and summing
 /// beats averaging: every job here counts files, so two half-done passes
 /// read as half done rather than as a fraction of a fraction. A job still
-/// working out its list adds nothing to either side, which is honest: it
-/// hasn't got a total yet.
+/// working out its list adds nothing to either side: it hasn't got a total
+/// yet.
 ///
-/// Read live off the same four sources the rows use, so this answers with
+/// Read live off the same four sources the rows use, so this works with
 /// no window open.
 pub(crate) fn aggregate(cx: &mut App) -> Option<(usize, usize)> {
     // The scan belongs to a catalog rather than the app, so it comes off
@@ -563,19 +563,19 @@ impl Finished {
         if self.failed > 0 {
             line.push_str(&format!(
                 " {}",
-                rox_i18n::t!("tasks-skipped-suffix", count = self.failed as u64)
+                rox_i18n::t!("tasks-failed-suffix", count = self.failed as u64)
             ));
         }
         line
     }
 }
 
-/// Why a row can't start, carrying what the row should say about it, or
+/// Why a row can't start, with what the row should say about it, or
 /// None where the idle line above already covers it.
 struct Blocked(Option<SharedString>);
 
-/// The three app-global passes as of the last poll. The scan is not in here:
-/// it lives in the catalog, which is asked for it when a row is drawn.
+/// The three app-global passes as of the last poll. The scan isn't in here:
+/// it's in the catalog, which is asked for it when a row is drawn.
 #[derive(Default)]
 struct Live {
     acoustic: Option<Arc<rox_acoustic::Progress>>,
@@ -584,7 +584,7 @@ struct Live {
 }
 
 /// What the idle rows state about the library, and what it costs to find
-/// out: every field here is a walk of the tracks table or a read of the
+/// out: every field here is a pass over the tracks table or a read of the
 /// settings file. Re-read when the library says something changed and when a
 /// pass ends, never per frame.
 #[derive(Default)]
@@ -594,8 +594,8 @@ struct Facts {
     /// When the last full scan finished, in unix seconds; 0 for never.
     last_scan: i64,
     /// The acoustic model's name and how much of the library it describes.
-    /// Per model, deliberately: every model describes the library
-    /// separately, and a bare count would read as the library's own.
+    /// Per model: every model describes the library separately, and a bare
+    /// count would read as the library's own.
     acoustic_label: String,
     acoustic: rox_library::embeddings::Coverage,
     /// Whether describing tracks is switched on at all. The pass no-ops
@@ -824,7 +824,7 @@ impl TasksWindow {
         }
     }
 
-    /// The running job behind a row, if it is running.
+    /// The running job behind a row, if it's running.
     fn running(&self, job: Job, cx: &App) -> Option<Snapshot> {
         match job {
             Job::Scan => self
@@ -1013,7 +1013,7 @@ impl TasksWindow {
                 Some(Err(e)) => lines
                     .push(rox_i18n::t!("tasks-import-failed", error = e.to_string()).to_string()),
                 // Only reachable for a frame, between the row appearing and
-                // the first progress landing.
+                // the first progress arriving.
                 None => lines.push(rox_i18n::t!("tasks-import-reading").to_string()),
             },
             Job::Convert => {
@@ -1023,8 +1023,8 @@ impl TasksWindow {
                     // and the first file finishing.
                     None => lines.push(rox_i18n::t!("tasks-convert-starting").to_string()),
                 }
-                // ffmpeg's own last words about the first file it refused.
-                // A count with no reason is what sends someone to the log.
+                // ffmpeg's own error for the first file it refused. A count
+                // with no reason sends someone to the log.
                 if let Some(reason) = convert::last_failure(cx) {
                     lines.push(reason);
                 }
@@ -1036,8 +1036,8 @@ impl TasksWindow {
                     // and the first file being written.
                     None => lines.push(rox_i18n::t!("tasks-bake-writing").to_string()),
                 }
-                // What the writer said about the first file it refused. A
-                // count with no reason is what sends someone to the log.
+                // The writer's error for the first file it refused. A count
+                // with no reason sends someone to the log.
                 if let Some(reason) = bake::last_failure(cx) {
                     lines.push(reason);
                 }
@@ -1063,8 +1063,8 @@ impl TasksWindow {
     /// Why a row's start button is inert, if it is, and whether that's worth
     /// saying out loud. Nothing to start is usually the line above already:
     /// "nothing left to analyze" under "all 12,000 tracks are described" is
-    /// the row saying the same thing twice. What earns a line is the reason
-    /// that will pass, since that one is worth waiting out.
+    /// the row saying the same thing twice. The reason that will pass earns
+    /// a line, since that one is worth waiting out.
     fn blocked(&self, job: Job, cx: &App) -> Option<Blocked> {
         // A watched job has no start button to explain the state of, and the
         // import doesn't touch the rows a scan rewrites anyway.
@@ -1087,7 +1087,7 @@ impl TasksWindow {
                     Some(Blocked(None))
                 } else {
                     // The pass would load a half-written model file, and the
-                    // download is what has to finish first anyway.
+                    // download has to finish first anyway.
                     embeddings::models::progress(cx)
                         .map(|_| Blocked(Some(rox_i18n::t!("tasks-model-downloading"))))
                 }
@@ -1134,7 +1134,7 @@ impl TasksWindow {
     /// the file it's on.
     fn running_lines(&self, snapshot: &Snapshot) -> Vec<Div> {
         // Zero total means the work list is still being built, which is a
-        // real state a big library sits in for a second or two.
+        // real state a big library stays in for a second or two.
         let counted = snapshot.done.min(snapshot.total);
         let fraction = if snapshot.total == 0 {
             0.0
@@ -1160,7 +1160,7 @@ impl TasksWindow {
         if snapshot.failed > 0 {
             line.push_str(&format!(
                 " {}",
-                rox_i18n::t!("tasks-skipped-suffix", count = snapshot.failed as u64)
+                rox_i18n::t!("tasks-failed-suffix", count = snapshot.failed as u64)
             ));
         }
         let mut lines = vec![bar(fraction), muted(line)];
@@ -1212,7 +1212,7 @@ impl TasksWindow {
 
     /// The X that clears a finished dynamic row. Only there once the job
     /// has stopped: a running one has a Stop beside it, and the two are
-    /// different enough that they shouldn't sit together. Standing rows
+    /// different enough that they shouldn't both be there. Standing rows
     /// never have one, since there's nothing to clear them to.
     fn dismiss(&self, job: Job, running: bool, cx: &mut Context<Self>) -> Option<Div> {
         if running || job.start_label().is_some() {
@@ -1237,7 +1237,7 @@ impl TasksWindow {
     /// menubar's rescan button: it's minutes, it takes no settings, and
     /// nothing it does is hard to undo. The two passes go through the shared
     /// prompt instead, which is where their worker count and their estimate
-    /// live, so starting one from here is the same decision it is from the
+    /// are set, so starting one from here is the same decision it is from the
     /// settings page rather than a shortcut around it.
     fn start(&mut self, job: Job, cx: &mut Context<Self>) {
         let Some(library) = self.library() else {
@@ -1321,7 +1321,7 @@ impl Render for TasksWindow {
     }
 }
 
-/// The panel one job sits in.
+/// The panel one job is drawn in.
 fn card() -> Div {
     div()
         .flex()
@@ -1336,7 +1336,7 @@ fn card() -> Div {
 }
 
 /// How far along, as a filled strip. The matching window's confidence bar at
-/// the height a progress readout wants.
+/// the height a progress readout needs.
 fn bar(fraction: f32) -> Div {
     div()
         .h(px(4.))

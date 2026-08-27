@@ -1,7 +1,7 @@
 //! The multi-genre convention, in one place. A track's genre column is a
 //! single display string, but the string is a list: values joined with
 //! "; ", the separator foobar2000 and Picard taught everyone's files.
-//! Formats that carry real multiples (repeated GENRE comments on Vorbis,
+//! Formats that store real multiples (repeated GENRE comments on Vorbis,
 //! null-separated TCON on ID3v2.4) fold into this form at scan and read,
 //! and unfold from it at write. Matching splits; display and grouping
 //! keep the joined string whole.
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 /// Whether `,` and `/` split genre lists alongside the `;` that always
-/// does - real libraries carry "Dubstep, Trap, Grime" and "Drum & Bass /
+/// does. Real libraries have "Dubstep, Trap, Grime" and "Drum & Bass /
 /// Neurofunk" as often as the semicolon form. Module state like the
 /// alias map, seeded from the library setting at launch and flipped by
 /// its toggle; on by default because the compound tags are the common
@@ -25,8 +25,8 @@ pub fn set_split_compounds(on: bool) {
 
 /// The live alias map off the library's genre_meta table, folded name ->
 /// canonical display. Module state rather than a parameter because every
-/// consumer of genre values already routes through this module - the
-/// projection's matching, the listens rollups, the panels - and each
+/// consumer of genre values already routes through this module (the
+/// projection's matching, the listens rollups, the panels) and each
 /// would otherwise thread the map through call chains that never look
 /// inside it. The app seeds it after opening the library and after every
 /// alias edit, then reloads the projection, the case-fold toggle's move.
@@ -87,7 +87,7 @@ pub fn canonical(s: &str) -> String {
     join(std::iter::once(s))
 }
 
-/// Whether the genre string carries `value` as one of its values, exact
+/// Whether the genre string includes `value` as one of its values, exact
 /// or case-folded per the library's `fold` rule, both sides read through
 /// the alias map so a pick on the merged name takes the folded-away tags
 /// too. An empty `value` is the untagged pick and matches only a string
@@ -140,7 +140,7 @@ mod tests {
     fn join_canonicalizes_each_value() {
         assert_eq!(join(["Rock", "Shoegaze"].into_iter()), "Rock; Shoegaze");
         // A value that is itself a list folds flat, so joining tag items
-        // that already carry the separator cannot nest.
+        // that already have the separator cannot nest.
         assert_eq!(join(["Rock;Pop", " Jazz "].into_iter()), "Rock; Pop; Jazz");
         assert_eq!(join(std::iter::empty()), "");
     }

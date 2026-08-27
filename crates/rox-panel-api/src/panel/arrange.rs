@@ -3,7 +3,7 @@
 //! well reorders, drag between the wells and the tray shows and hides, and
 //! the chips' plus and x do the same by click. The config behind it is one
 //! ordered list per panel; an item off the list is hidden. Most items show
-//! at most once per row, so each line can carry its own copy; one the
+//! at most once per row, so each line can have its own copy; one the
 //! catalog marks repeatable keeps its tray chip while shown, so a well
 //! can hold several. A panel whose layout stacks rows edits them through
 //! [`arrange_rows_editor`]: one well per row, a button below adding the
@@ -29,7 +29,7 @@ pub struct ArrangeSpec<V: 'static> {
     /// Whether one row may hold more than one of this item. A repeatable
     /// item keeps its tray chip while shown, so another copy is always
     /// one plus away; the spacers and dividers, mostly. A non-repeatable
-    /// item is unique per row, not per editor: each row can carry its own.
+    /// item is unique per row, not per editor: each row can have its own.
     pub repeats: bool,
 }
 
@@ -135,7 +135,7 @@ fn caption(text: gpui::SharedString) -> Div {
         .child(text)
 }
 
-/// Whether the catalog lets `value` sit twice on one row.
+/// Whether the catalog allows `value` twice on one row.
 fn can_repeat<V: PartialEq + Copy>(registry: &[ArrangeSpec<V>], value: V) -> bool {
     registry
         .iter()
@@ -145,7 +145,7 @@ fn can_repeat<V: PartialEq + Copy>(registry: &[ArrangeSpec<V>], value: V) -> boo
 
 /// Insert `value` into `row` at `at`. Uniqueness is per row: a
 /// non-repeatable value already on the row leaves first, pulling the
-/// drop point along when it sat before it, so a drop replaces the row's
+/// drop point along when it was before it, so a drop replaces the row's
 /// copy instead of doubling it while other rows keep theirs.
 fn insert_row_unique<V: PartialEq + Copy>(row: &mut Vec<V>, value: V, at: usize, unique: bool) {
     let mut at = at.min(row.len());
@@ -163,7 +163,7 @@ fn insert_row_unique<V: PartialEq + Copy>(row: &mut Vec<V>, value: V, at: usize,
     row.insert(at.min(row.len()), value);
 }
 
-/// `rows` with the chip at `from` moved to sit at `to`, both (row, index)
+/// `rows` with the chip at `from` moved to `to`, both (row, index)
 /// places into the rows as they stand before the move.
 fn moved_at<V: PartialEq + Copy>(
     registry: &[ArrangeSpec<V>],
@@ -231,7 +231,7 @@ fn without<V: PartialEq + Copy>(items: &[V], value: V) -> Vec<V> {
 
 /// `items` with `value` slotted at its stock position: after every shown
 /// item that precedes it in the catalog. On a list still in catalog
-/// order that restores exactly where the item used to sit; on a
+/// order that restores exactly where the item used to be; on a
 /// rearranged list it stays deterministic.
 fn insert_stock<V: PartialEq + Copy>(
     registry: &'static [ArrangeSpec<V>],
@@ -251,9 +251,9 @@ fn insert_stock<V: PartialEq + Copy>(
     items
 }
 
-/// Show or hide `value` on the list: the panels' quick menu toggles ride
-/// this, hiding a shown item and slotting a hidden one back at its stock
-/// position.
+/// Show or hide `value` on the list: the panels' quick menu toggles go
+/// through this, hiding a shown item and slotting a hidden one back at its
+/// stock position.
 pub fn toggled<V: PartialEq + Copy>(
     registry: &'static [ArrangeSpec<V>],
     items: &[V],
@@ -280,8 +280,8 @@ fn restored<V: PartialEq + Copy>(stash: &[V], items: &[V], hidden: &[V]) -> Opti
     (kept == items).then(|| stash.to_vec())
 }
 
-/// [`toggled`] with the arrangement kept, and what the panels' quick menus
-/// ride. `values` moves as one group: shown if any of them is on the row.
+/// [`toggled`] with the arrangement kept, the one the panels' quick menus
+/// call. `values` moves as one group: shown if any of them is on the row.
 /// Hiding stashes the row first, so showing can put it back whole instead
 /// of slotting each value at its catalog rank, which on a hand-arranged
 /// row is the wrong place and is the whole reason this exists.
@@ -691,7 +691,7 @@ mod tests {
     }
 
     /// Uniqueness is per row: a non-repeatable value landing on a row
-    /// that already holds it replaces that row's copy, wherever it sat,
+    /// that already holds it replaces that row's copy, wherever it was,
     /// while another row's copy stays; a repeatable value stacks.
     #[test]
     fn row_landings_keep_a_row_unique() {

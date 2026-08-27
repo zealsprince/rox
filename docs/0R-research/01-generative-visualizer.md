@@ -5,7 +5,7 @@ left open: does a curl-noise flow field driven by spectrum bands hold a frame bu
 with CPU-side rendering, and does it draw better as gpui polylines or as a per-frame
 image blit?
 
-The prototype lived in `crates/rox-prototype-viz` (git history, commit bd22dc1). It ran the sim on a worker thread the
+The prototype was in `crates/rox-prototype-viz` (git history, commit bd22dc1). It ran the sim on a worker thread the
 way the real visualizer will: particles advected by the curl of 3D Perlin noise,
 driven by a synthetic 16-band spectrum (a kick on the lows, shimmer on the highs)
 standing in for the FFT of the PCM tap. Frames reach the UI through a latest-wins
@@ -40,12 +40,12 @@ UI-thread cost inside the canvas paint callback.
 ## Reading
 
 Both modes hold a 60fps budget at 12,000 particles, so the CPU-side approach ADR 8
-was forced into works. The difference is where the cost sits.
+was forced into works. The difference is where the cost falls.
 
 Polylines tessellate on the UI thread. Every paint rebuilds stroke paths through
 lyon, and the cost scales with particle count; at 12,000 particles it's 4ms of every
 UI frame, budget the rest of the app (a scrolling library view, a spectrum panel)
-will want. Batching trails into one path per brightness bucket is what keeps it even
+will need. Batching trails into one path per brightness bucket keeps it even
 this low.
 
 The blit keeps the UI thread flat at 0.1ms regardless of count. The worker
@@ -64,7 +64,7 @@ analyzer and waveform, where the geometry is a handful of shapes.
   density, and band response need tuning against real music, which waits on the
   playback engine's PCM tap.
 - The blit buffer is fixed at 960x540 and GPU-scaled to the panel. At large panel
-  sizes on a hidpi monitor that may read soft; the buffer wants to track the panel's
+  sizes on a hidpi monitor that may read soft; the buffer should track the panel's
   device pixels up to a cap.
 - Memory held steady over short runs with `drop_image` evicting the previous frame's
   atlas entry. Nobody has watched a multi-hour session.

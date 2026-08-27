@@ -8,24 +8,25 @@
 //! neural model: log-band energy statistics, spectral centre of mass,
 //! rolloff, flux, and an onset rate, all off DSP already in the tree
 //! ([`rox_viz::analysis`] does the transform,
-//! [`rox_playback::engine::decode_window`] the decoding). It's deliberately
-//! modest, and it earns its place by needing no download, no native
-//! dependency, and no network.
+//! [`rox_playback::engine::decode_window`] the decoding). It's modest,
+//! and it earns its place by needing no download, no native dependency,
+//! and no network.
 //!
 //! [`panns`] is the model-based one that header used to promise. It runs
 //! PANNs CNN10 through candle over weights the user downloads
-//! ([`models`]), and it stores its 512 values under its own name, so both
-//! models' vectors sit in the library at once and switching between them
-//! costs nothing already analyzed. Which one the pass runs, and which one
-//! the similarity queries read, is the app's `settings::acoustic_model`.
+//! ([`models`]), and it stores its 512 values under its own name, so the
+//! library can hold both models' vectors at once and switching between
+//! them costs nothing already analyzed. Which one the pass runs, and which
+//! one the similarity queries read, is the app's `settings::acoustic_model`.
 //!
 //! Adding a third means a [`models::CATALOG`] entry and an [`Extractor`]
 //! arm. Nothing about the storage underneath ([`rox_library::embeddings`])
 //! changes at all.
 //!
 //! A weights file the user points rox at is the same thing without a catalog
-//! entry: [`Source`] carries either, and a local file takes its name from its
-//! own hash so its vectors sit beside the catalog's rather than in them.
+//! entry: [`Source`] holds either, and a local file takes its name from its
+//! own hash so its vectors are stored beside the catalog's rather than in
+//! them.
 //!
 //! ## What this crate is and isn't
 //!
@@ -41,8 +42,8 @@
 //! time, because every track here is independent and there are thirty
 //! seconds of decoding in each.
 
-// The mel module's config vocabulary is deliberately complete rather than
-// trimmed to what today's one model asks for: the enums are how the module
+// The mel module's config vocabulary is complete rather than trimmed to
+// what today's one model needs: the enums are how the module
 // states which conventions exist and which this recipe picked, and the
 // filterbank and the log branch on them. Trimming to the used arms would
 // turn "Slaney rather than HTK" from a decision the code makes into a
@@ -66,9 +67,9 @@ use rox_viz::analysis::{self, Analyzer};
 
 use crate::models::Model;
 
-/// The built-in extractor's name. It sits in rox-core, which the settings
-/// file's default model pick is written in terms of, and comes back out here
-/// where the extractor that answers to it lives.
+/// The built-in extractor's name. It's defined in rox-core, which the
+/// settings file's default model pick is written in terms of, and comes back
+/// out here beside the extractor it names.
 pub use rox_core::acoustic::MODEL;
 
 /// Log-spaced bands the spectrum is reduced to. Each contributes a mean and
@@ -84,7 +85,8 @@ pub const DIM: usize = BANDS * 2 + 8;
 const RATE: u32 = 44_100;
 /// How much audio each probe reads.
 const WINDOW_SECS: f64 = 10.0;
-/// Where the probes sit across the part of the track a window can start in.
+/// Where the probes are taken across the part of the track a window can
+/// start in.
 /// Three of them, because one window of a quiet intro describes the intro.
 const PROBES: [f64; 3] = [0.25, 0.5, 0.75];
 
@@ -93,8 +95,8 @@ const FFT: usize = 2048;
 const HOP: usize = FFT / 2;
 const LO_HZ: f32 = 40.0;
 const HI_HZ: f32 = 16_000.0;
-/// Where the rolloff sits: the frequency under which this share of the
-/// frame's energy falls.
+/// Where the rolloff is measured: the frequency under which this share of
+/// the frame's energy falls.
 const ROLLOFF: f32 = 0.85;
 
 // The onset trigger, the shape rox-viz's onset signal uses: a reference that
@@ -119,9 +121,9 @@ pub const PACE_FLOOR: usize = 16;
 /// pointed rox at.
 ///
 /// The two are one type rather than two code paths because everything
-/// downstream only wants two things from a model, a name to store vectors
-/// under and something to load, and a local file answers both. What it
-/// doesn't have is a checksum in the catalog, which is why its name is
+/// downstream needs only two things from a model, a name to store vectors
+/// under and something to load, and a local file provides both. It has no
+/// checksum in the catalog, which is why its name is
 /// derived from the file's own hash: a different checkpoint produces vectors
 /// in a different space, and letting one borrow another's name would mix two
 /// sets of coordinates in one table and quietly wrong every similarity
@@ -185,8 +187,8 @@ impl Source {
 
     /// Whether the weights are there to load. Cheap enough for a settings
     /// render: a length check on the catalog side, an existence check on the
-    /// local one. Whether the file is the right file is [`Extractor::load`]'s
-    /// answer, not this one's.
+    /// local one. Whether the file is the right file is checked in
+    /// [`Extractor::load`], not here.
     pub fn installed(&self) -> bool {
         match self {
             Source::Catalog(model) => model.installed(),
@@ -197,14 +199,14 @@ impl Source {
 
 /// Whichever extractor a pass is running.
 ///
-/// The built-in arm carries nothing, because [`extract`] is a free function
-/// with no state to hold; the model arm carries the loaded network, which is
+/// The built-in arm holds nothing, because [`extract`] is a free function
+/// with no state to hold; the model arm holds the loaded network, which is
 /// 24 MB of weights and gets built once per pass rather than once per track.
 pub enum Extractor {
     Dsp,
     // Boxed because the loaded network is a few hundred bytes of tensor
     // handles against the DSP arm's nothing, and every `Extractor` moved
-    // around would otherwise carry the larger footprint.
+    // around would otherwise have the larger footprint.
     Panns(Box<panns::Cnn10>),
 }
 
@@ -222,8 +224,8 @@ impl Extractor {
             },
             // No checksum to check it against, so the load itself is the
             // validation: `build` reads named tensors at fixed shapes, and
-            // the mel filterbank the file carries is compared against the one
-            // the front end computes.
+            // the mel filterbank stored in the file is compared against the
+            // one the front end computes.
             Source::Local(local) => panns::Cnn10::load_from(&local.path)?,
         };
         log::info!(
@@ -267,7 +269,7 @@ pub struct Progress {
     model: Mutex<String>,
     done: AtomicUsize,
     total: AtomicUsize,
-    /// Files that would not decode into a vector, so the readout can own up
+    /// Files that wouldn't decode into a vector, so the readout can own up
     /// to a pass that skipped some.
     failed: AtomicUsize,
     /// Full path of a file being analyzed. Whichever worker wrote last, so
@@ -278,7 +280,7 @@ pub struct Progress {
     cancel: AtomicBool,
     /// The pass's clock, for the "about 2 hours left" half of the readout.
     /// Started once the work list is built, so the model load and the
-    /// database walk don't bill the first track.
+    /// database scan don't bill the first track.
     pace: Pace,
 }
 
@@ -311,7 +313,7 @@ impl Progress {
         self.total.load(Ordering::Relaxed)
     }
 
-    /// Files that would not decode.
+    /// Files that wouldn't decode.
     pub fn failed(&self) -> usize {
         self.failed.load(Ordering::Relaxed)
     }
@@ -347,7 +349,7 @@ impl Progress {
 /// pass can be priced before anyone commits an afternoon to it. Returns
 /// worker-seconds per track, the unit [`rox_core::pace::estimate`] divides.
 ///
-/// Sequential on one thread on purpose: one track at a time is exactly one
+/// Sequential on one thread: one track at a time is exactly one
 /// worker-second per second, so the number needs no correcting for the pool
 /// it was measured under.
 ///
@@ -357,7 +359,7 @@ impl Progress {
 /// No tag is written even with the setting on, for the reason the ReplayGain
 /// probe writes nothing at all: rewriting three of someone's audio files is
 /// not what a button called Estimate should do. The cost is that those few
-/// tracks carry no tag until something clears their rows.
+/// tracks have no tag until something clears their rows.
 ///
 /// Blocking, and slow enough to want a background thread: it decodes and
 /// describes real files, which is the whole point.
@@ -404,18 +406,18 @@ pub fn measure_pace(source: &Source, db_path: &Path) -> Result<f32, String> {
 /// The paths matter to the caller for one reason: rox watches its own library
 /// folders, and a tag write it doesn't know about comes back through the
 /// watcher as a change to reindex. The app notes them as its own before the
-/// watch batch lands. Empty in database mode, which rewrites nothing.
+/// watch batch arrives. Empty in database mode, which rewrites nothing.
 #[derive(Debug, Default)]
 pub struct Analyzed {
     pub described: usize,
     pub tagged: Vec<PathBuf>,
 }
 
-/// The blocking half: walk what's missing, analyze in batches, write each
-/// batch in one transaction. Resumes by construction, since the work list is
-/// whatever has no vector yet.
+/// The blocking half: step through what's missing, analyze in batches, write
+/// each batch in one transaction. Resumes by construction, since the work
+/// list is whatever has no vector yet.
 ///
-/// Every track's vector goes into the database. `save` only decides whether
+/// Every track's vector goes into the database. `save` only controls whether
 /// a second copy goes into the file's own tags on the way past; see
 /// [`AcousticSave`] for what that buys and what it costs.
 ///
@@ -472,10 +474,11 @@ fn tags_this_track(save: AcousticSave, item: &Pending) -> bool {
 /// Tried before every decode, whatever `save` says, because a tag rox wrote
 /// last month is worth reading whether or not this pass would write one: a
 /// wiped database, a folder copied off another machine, and a library
-/// rebuilt from scratch all land here, and the alternative is thirty seconds
-/// of decoding per track to recompute something the file is holding. The
-/// value carries the model and the width and is refused unless both match,
-/// so a hit is the same vector the extractor would have produced, to f16.
+/// rebuilt from scratch all end up here, and the alternative is thirty
+/// seconds of decoding per track to recompute something the file is holding.
+/// The value includes the model and the width and is rejected unless both
+/// match, so a hit is the same vector the extractor would have produced, to
+/// f16.
 fn recover(extractor: &Extractor, model: &str, item: &Pending) -> Option<Vec<f32>> {
     if !writer::writes_to_file(item.sub) || !embed_tag::writable(Path::new(&item.path)) {
         return None;
@@ -559,9 +562,9 @@ fn analyze_batch(
 
 /// One track's vector: three windows decoded, described, and averaged.
 ///
-/// Averaging rather than concatenating is on purpose. A vector per window
-/// would make the same song at two tempos look like two songs depending on
-/// where the probes landed; the mean of three describes the track.
+/// Averaging rather than concatenating: a vector per window would make the
+/// same song at two tempos look like two songs depending on where the probes
+/// fell; the mean of three describes the track.
 pub fn extract(path: &Path, duration_ms: u32) -> Result<Vec<f32>, String> {
     let duration = duration_ms as f64 / 1000.0;
     let frames = (WINDOW_SECS * RATE as f64) as usize;
@@ -614,7 +617,7 @@ pub fn extract(path: &Path, duration_ms: u32) -> Result<Vec<f32>, String> {
 
 /// Describe one mono window: what it sounds like as [`DIM`] numbers.
 ///
-/// Everything here is a raw statistic, on whatever scale it naturally lands.
+/// Everything here is a raw statistic, on whatever scale it naturally has.
 /// Putting the dimensions on equal footing is the query's job, and doing it
 /// there rather than here means the weighting can be retuned without
 /// re-analyzing a library (see [`rox_library::embeddings::nearest`]).
@@ -689,7 +692,7 @@ fn features(mono: &[f32]) -> Option<Vec<f32>> {
     }
     out.push(onset_rate(&flux, secs));
     // How much the level moves across the window, the one dynamics number:
-    // a compressed master sits still, a live take doesn't.
+    // a compressed master stays still, a live take doesn't.
     out.push(mean_std(&energy).1);
     debug_assert_eq!(out.len(), DIM);
     Some(out)
@@ -698,10 +701,10 @@ fn features(mono: &[f32]) -> Option<Vec<f32>> {
 /// The novelty curve as it builds up, one frame's half-spectrum at a time.
 ///
 /// A struct fed frame by frame rather than a function over the samples,
-/// because [`features`] is already walking the frames for its own
+/// because [`features`] is already stepping through the frames for its own
 /// statistics and there's no reason it should pay for a second transform of
 /// the same audio: it hands the magnitudes it already has straight here.
-/// [`novelty_split`] is that same walk for callers who want nothing else
+/// [`novelty_split`] is that same pass for callers who want nothing else
 /// out of the window.
 #[derive(Default)]
 struct Flux {
@@ -737,13 +740,13 @@ impl Flux {
     }
 }
 
-/// Where the drum band ends. Kick and snare body live under here; hats,
+/// Where the drum band ends. Kick and snare body fall under here; hats,
 /// cymbals and strummed strings almost entirely above. The exact figure is
-/// loose on purpose: it only has to catch the drums that carry a beat and
-/// miss the brightness that carries its subdivisions.
+/// loose: it only has to catch the drums that carry a beat and miss the
+/// brightness that marks its subdivisions.
 const DRUMS_HZ: f32 = 350.0;
 
-/// One mono window's novelty, twice over one walk: the full-band curve,
+/// One mono window's novelty, twice over one pass: the full-band curve,
 /// [`Flux`] over every frame with one value per [`HOP`] and so one every
 /// 23 ms at [`RATE`], and the same flux summed over only the bins under
 /// [`DRUMS_HZ`].
@@ -757,8 +760,8 @@ const DRUMS_HZ: f32 = 350.0;
 /// The low curve exists for the tempo estimator's octave. A full-band
 /// curve says something starts, never what: a hat between two kicks makes
 /// as much flux as a third kick would, and the two read identically at
-/// every lag. The low curve is the one place the difference survives, since
-/// a kick lands in it and a hat doesn't, so it's what can say whether the
+/// every lag. The low curve is the one place the difference shows, since
+/// a kick lands in it and a hat doesn't, so it can say whether the
 /// events between a candidate's beats are drums or decoration.
 fn novelty_split(mono: &[f32]) -> (Vec<f32>, Vec<f32>) {
     let bins = (DRUMS_HZ / (RATE as f32 / FFT as f32)) as usize;
@@ -781,11 +784,11 @@ fn novelty_split(mono: &[f32]) -> (Vec<f32>, Vec<f32>) {
 /// query standardizes every dimension against the corpus, a NaN makes that
 /// dimension's mean NaN, and every vector measured against it comes back
 /// NaN too, so every score ties and the nearest tracks become whichever
-/// ones have the lowest ids. A float-format file carrying NaN samples is
+/// ones have the lowest ids. A float-format file with NaN samples is
 /// all it takes: the band logs and the energy spread here propagate it
 /// straight through, and so does the network. The storage layer skips a row
-/// like this on read as well, but the pass is where there's still a filename
-/// to name in the log.
+/// like this on read as well, but only the pass still has a filename to
+/// name in the log.
 fn usable(vector: &[f32]) -> bool {
     vector.iter().all(|v| v.is_finite())
 }
@@ -856,8 +859,8 @@ mod tests {
         // A format the writer has no path for keeps its row and nothing more.
         assert!(!tags_this_track(Tags, &pending("/m/a.ogg", 0)));
         assert!(!tags_this_track(Tags, &pending("/m/a.wav", 0)));
-        // A cue subsong is a span of an image twelve tracks share, so there
-        // is nowhere on disk that means "track four sounds like this".
+        // A cue subsong is a span of an image twelve tracks share, so
+        // there's nowhere on disk that means "track four sounds like this".
         assert!(!tags_this_track(Tags, &pending("/m/disc.flac", 4)));
     }
 
@@ -893,7 +896,7 @@ mod tests {
 
     /// A local model's name comes off its own bytes, which is the whole
     /// reason a user-supplied file is safe to store beside the catalog's:
-    /// two checkpoints can't land in one set of coordinates, and the same
+    /// two checkpoints can't end up in one set of coordinates, and the same
     /// file picked twice keeps the vectors it already wrote.
     #[test]
     fn a_local_model_is_named_after_its_own_bytes() {
@@ -959,8 +962,8 @@ mod tests {
     }
 
     /// A burst every `per_sec` over silence: transients and nothing else.
-    /// Each one decays over a few milliseconds so it survives the window as
-    /// a spectral jump rather than a single sample the FFT smears away.
+    /// Each one decays over a few milliseconds so it registers as a
+    /// spectral jump rather than a single sample the FFT smears away.
     fn pulses(per_sec: f32, secs: f32) -> Vec<f32> {
         let n = (secs * RATE as f32) as usize;
         let period = (RATE as f32 / per_sec) as usize;
@@ -985,7 +988,7 @@ mod tests {
     /// other: a change here that shifts a number by a hundredth doesn't
     /// break anything visibly, it quietly makes every track analyzed after
     /// it a slightly different distance from every track analyzed before,
-    /// and there is nothing in the app that would say so.
+    /// and there's nothing in the app that would say so.
     const BEFORE_THE_FLUX_MOVED: [f32; DIM] = [
         -15.965477,
         -15.965543,
@@ -1063,7 +1066,7 @@ mod tests {
     /// same curve [`features`] reduced, rather than a second one computed
     /// alongside it. The flux mean, the flux spread and the onset rate are
     /// the three numbers in the vector that come off it, so all three
-    /// landing exactly is the whole claim.
+    /// matching exactly is the whole claim.
     #[test]
     fn the_curve_the_tempo_estimator_reads_is_the_one_the_vector_came_from() {
         let audio = pulses(8.0, 2.0);
@@ -1075,9 +1078,8 @@ mod tests {
         assert_eq!(onset_rate(&curve, secs), vector[DIM - 2]);
     }
 
-    /// The onset rate is what tells a beat from a drone at the same
-    /// brightness, so a pulse train has to read as busy and a held tone as
-    /// still. Steady noise counts as still too, which is the point: it's
+    /// The onset rate tells a beat from a drone at the same brightness, so
+    /// a pulse train has to read as busy and a held tone as still. Steady noise counts as still too, which is the point: it's
     /// loud and broadband, but nothing in it ever starts.
     #[test]
     fn onsets_separate_a_drone_from_a_beat() {

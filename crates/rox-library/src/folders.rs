@@ -2,7 +2,7 @@
 //! projection's interned folder strings. Building the trie, collapsing the
 //! dead prefix above the library, sorting the children, and folding the
 //! per-folder counts up the tree are all arithmetic over strings, so they
-//! live here and the panel just draws what comes back.
+//! belong here and the panel just draws what comes back.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::MAIN_SEPARATOR;
@@ -10,16 +10,16 @@ use std::path::MAIN_SEPARATOR;
 use crate::sort::natural_cmp;
 
 /// One folder in the reconstructed hierarchy. The path is the exact
-/// interned folder string, which is what the subtree filter pick matches
-/// by prefix; the count is the context tracks in this subtree.
+/// interned folder string, the one the subtree filter pick matches by
+/// prefix; the count is the context tracks in this subtree.
 pub struct Node {
     pub label: String,
     pub path: String,
-    /// Every song in this subtree, whatever the query - the tree is the
+    /// Every song in this subtree, whatever the query: the tree is the
     /// full hierarchy, so this never changes with a search.
     pub total: u32,
     /// Of those, how many pass the active query (text and facet). Equal to
-    /// `total` when nothing is active; a subtree with zero here is what a
+    /// `total` when nothing is active; a subtree with zero here is one a
     /// filter dims or, in Hide mode, drops.
     pub matched: u32,
     pub children: Vec<Node>,
@@ -40,7 +40,7 @@ pub fn build_roots(folders: &[String]) -> Vec<Node> {
         children: BTreeMap<String, Trie>,
         /// The full path down to this node, sliced from an inserted string.
         path: String,
-        /// Whether this exact path is an interned folder - a directory
+        /// Whether this exact path is an interned folder: a directory
         /// holding tracks itself, not just the ancestor of one.
         has_tracks: bool,
     }
@@ -70,7 +70,7 @@ pub fn build_roots(folders: &[String]) -> Vec<Node> {
             .next()
             .unwrap_or(trie.path.as_str())
             .to_string();
-        // Natural and case-folded, so "Disc 10" lands after "Disc 2" the way
+        // Natural and case-folded, so "Disc 10" sorts after "Disc 2" the way
         // the track rows in the same panel already read. natural_cmp wants
         // lowercase in, and the key is built once per node rather than twice
         // per comparison; the raw label breaks ties so two folders differing
@@ -128,7 +128,7 @@ pub fn build_roots(folders: &[String]) -> Vec<Node> {
 }
 
 /// The node at an exact path, descending only into the branch whose path
-/// prefixes the target so the walk stays O(depth), not O(nodes).
+/// prefixes the target so the descent stays O(depth), not O(nodes).
 pub fn node_at<'a>(nodes: &'a [Node], path: &str) -> Option<&'a Node> {
     for node in nodes {
         if node.path == path {
@@ -182,7 +182,7 @@ mod tests {
         assert_eq!(top.path, "/mnt/Zeal/Music");
         let labels: Vec<&str> = top.children.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, ["Air - Moon Safari", "Apocalyptica - Cult"]);
-        // The multi-disc album nests its discs; the disc folders carry the
+        // The multi-disc album nests its discs; the disc folders hold the
         // exact interned paths so a pick matches them.
         let cult = &top.children[1];
         assert_eq!(cult.children.len(), 2);

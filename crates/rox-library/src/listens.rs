@@ -1,6 +1,6 @@
 //! ADR 11's listen history: an append-only events table in the library
-//! database. A listen row carries the track id, when the play began, and
-//! a snapshot of the identifying tags at play time - the deletion hedge.
+//! database. A listen row holds the track id, when the play began, and
+//! a snapshot of the identifying tags at play time, the deletion hedge.
 //! While a track exists, reads resolve through the live catalog, so a
 //! fixed tag re-buckets history with it; once the track is gone the
 //! snapshot keeps the row readable. Every stat is derived from these
@@ -10,7 +10,7 @@
 //! said then never change. The join back to the catalog is maintenance,
 //! not history: a prune kills the track id, and when the file returns
 //! under a fresh id [`reattach`] moves the events onto it by the path
-//! recorded at play time, so a track's play count survives its file
+//! recorded at play time, so a track's play count is kept across its file
 //! leaving and coming back. The path column is that join hint, nothing a
 //! view shows.
 
@@ -18,9 +18,8 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-/// The events table beside the tracks it keys to. No foreign key on
-/// purpose: deleting a track keeps its history, that is the snapshot's
-/// whole job.
+/// The events table beside the tracks it keys to. No foreign key here:
+/// deleting a track keeps its history, which is the snapshot's whole job.
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS listens (
@@ -52,15 +51,15 @@ pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Match events back to the catalog after a scan, the same maintenance
 /// [`crate::playlists::reattach`] runs for members: a pruned-and-returned
-/// file lands under a fresh id, and the events that played its old row
-/// relink to it - by the recorded path first, then by the tag snapshot
+/// file comes back under a fresh id, and the events that played its old row
+/// relink to it: by the recorded path first, then by the tag snapshot
 /// when it names exactly one track. Events with a live track just keep
 /// their path current. The event itself (played_at, the tag snapshot)
 /// never changes. Returns how many events relinked.
 pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
     // The snapshot key is the fragment form a TrackKey serializes to: the
     // bare path for a plain file, path#sub for a cue track. Matching on the
-    // bare path would land every listen of a rip on whichever of its rows
+    // bare path would attach every listen of a rip to whichever of its rows
     // sorts first, so both the refresh and the relink build the same
     // expression the recorder wrote.
     conn.execute(
@@ -96,7 +95,7 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(by_path + by_tags)
 }
 
-/// One listen as it lands: the track's identity, when the play began
+/// One listen as it's recorded: the track's identity, when the play began
 /// (unix seconds), its tags at play time, and the key that played in
 /// fragment form (path#sub for a cue track), the reattach key.
 pub struct Listen {
@@ -111,7 +110,7 @@ pub struct Listen {
 
 /// Build the listen for a playing path from the live catalog. Ok(None)
 /// when the path is not in the library: an unindexed file plays without
-/// history, since events key to track identity. Answers for plain files
+/// history, since events key to track identity. Works for plain files
 /// only; a cue track's listen is built by the recorder from the row it
 /// already resolved, since a bare path can't say which span played.
 pub fn listen_for_path(
@@ -157,7 +156,7 @@ pub fn append(conn: &Connection, listen: &Listen) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// One track's line in a history view. Recent rows carry one event each
+/// One track's line in a history view. Recent rows hold one event each
 /// (plays 1, last_played that event's time); rollup rows aggregate a
 /// track's whole history; never-played rows have neither (both 0).
 #[derive(Clone)]
@@ -270,7 +269,7 @@ const BROWSE_ORDER: &str = "album_artist, album, disc_no, track_no";
 
 impl NeverOrder {
     /// The ORDER BY expression this key sorts on. Text sorts fold case, so
-    /// a lowercase title lands among its peers rather than after Z.
+    /// a lowercase title sorts among its peers rather than after Z.
     fn column(self) -> &'static str {
         match self {
             NeverOrder::Browse => BROWSE_ORDER,
@@ -327,7 +326,7 @@ pub enum Rollup {
 }
 
 /// One name's line in a stats rollup. `sub` is the line's secondary
-/// text: the album rollup carries the album artist there (an album name
+/// text: the album rollup puts the album artist there (an album name
 /// alone reads ambiguous), the others leave it empty.
 #[derive(Clone)]
 pub struct NamePlays {
@@ -342,7 +341,7 @@ pub struct NamePlays {
 }
 
 /// Play counts grouped under one tag, most first, over the events at or
-/// after `since` (0 counts them all) - the stats panel's range knob.
+/// after `since` (0 counts them all), the stats panel's range knob.
 /// Grouping goes through the live catalog first, so fixing a tag
 /// re-buckets its history; untagged plays (empty name) stay out of the
 /// list.
@@ -499,7 +498,7 @@ pub fn earliest(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 
 /// Listens bucketed over time for the chart: one count per `bucket`
 /// seconds from `since` up to `now`, empty buckets included, so the
-/// bars carry the quiet stretches too.
+/// bars show the quiet stretches too.
 pub fn histogram(
     conn: &Connection,
     since: i64,
@@ -521,7 +520,7 @@ pub fn histogram(
     })?;
     for row in rows {
         let (index, count) = row?;
-        // A listen stamped past `now` (clock skew) lands in the last bar
+        // A listen stamped past `now` (clock skew) goes in the last bar
         // rather than out of bounds.
         let index = (index.max(0) as usize).min(n - 1);
         counts[index] += count;
@@ -547,7 +546,7 @@ pub fn ids_for_name(
         Rollup::Genre => "genre",
     };
     // A genre name is one value out of the "; " lists and a folded name
-    // is a casing class, neither of which SQL equality finds; walk the
+    // is a casing class, neither of which SQL equality finds; read the
     // rows in the same order and match in Rust. The exact artist and
     // album lookups keep the indexed query.
     if fold || matches!(by, Rollup::Genre) {
@@ -726,7 +725,7 @@ mod tests {
 
     /// A "; " genre list re-buckets its plays onto each value: the rollup
     /// splits before ranking, and the drilldown resolves a value back to
-    /// every track whose list carries it.
+    /// every track whose list includes it.
     #[test]
     fn genre_rollup_splits_lists() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -828,8 +827,7 @@ mod tests {
     /// The waiting set orders by any of its tag columns, and the sort runs
     /// in SQL so it picks the top of the library rather than re-arranging
     /// the page the limit already cut. Ties fall back to the browse order,
-    /// which is what keeps a sort by year from scrambling the albums
-    /// inside it.
+    /// which keeps a sort by year from scrambling the albums inside it.
     #[test]
     fn never_played_takes_a_sort() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -908,7 +906,7 @@ mod tests {
     /// A rollup name resolves to tracks so a stats row can queue what it
     /// counts, which means it can only offer rows with a file behind them.
     /// Both lookups need the bound: the indexed one an exact artist takes,
-    /// and the row walk a genre or a folded name falls back to.
+    /// and the row scan a genre or a folded name falls back to.
     #[test]
     fn another_sources_row_is_not_queueable() {
         let mut conn = Connection::open_in_memory().unwrap();

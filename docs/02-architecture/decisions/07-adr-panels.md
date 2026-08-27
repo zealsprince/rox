@@ -15,17 +15,17 @@ and the most code. `gpui-component` is a permissively-licensed, actively-maintai
 built for exactly this, and it collapses a lot of the widget work, but it's another pre-1.0
 dependency tracking gpui's churn, and its dock is in-window only. Our pop-out requirement is
 a separate mechanism regardless of which dock we pick (gpui multi-window with shared
-entities), so we build that ourselves either way. The call: take the acceleration, own the
-two panel behaviors that are core to the product, and be ready to vendor the dock if we
+entities), so we build that ourselves either way. So we take the acceleration, own the two
+panel behaviors that are core to the product, and stay ready to vendor the dock if we
 outgrow it.
 
 **Amendment: the escape hatch is exercised.** The dock behaviors we need next
 (suppressing the tab bar for single-panel groups, whole-tab middle-click close, clearing
 the stale zoom flag) have no upstream hooks, so the dock is vendored as `rox-dock`:
-gpui-component 0.5.1's `dock` module plus the three modules it reaches into with
+gpui-component 0.5.1's `dock` module plus the three modules it depends on through
 pub(crate) coupling (`resizable`, `tab`, `history`), under their Apache-2.0 license.
 Everything else, widgets and theme included, still comes from the upstream crate, which
 stays pinned per ADR 1. The alternative was a full fork via `[patch.crates-io]`; vendoring
-one leaf module keeps custody scoped to the code we actually change. The new cost lands on
-gpui-component bumps: re-diff `rox-dock` against upstream's `src/dock` as part of that
+one leaf module keeps custody scoped to the code we actually change. The new cost is paid
+at gpui-component bumps: re-diff `rox-dock` against upstream's `src/dock` as part of that
 budgeted task.

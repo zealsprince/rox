@@ -1,6 +1,6 @@
 //! OS media controls: one MPRIS service on Linux (SMTC on Windows, the remote
-//! command center on macOS) that answers the hardware media keys and shows the
-//! now-playing track in the desktop's media widget. The D-Bus name carries a
+//! command center on macOS) that handles the hardware media keys and shows the
+//! now-playing track in the desktop's media widget. The D-Bus name includes a
 //! per-process instance suffix so a second rox can run without colliding on
 //! the MPRIS name, and this is wired to the primary workspace only.
 //!
@@ -10,14 +10,14 @@
 //! Two directions cross the thread boundary here. Key presses arrive on
 //! souvlaki's own event-loop thread; the attach callback maps each one to a
 //! [`MediaCommand`] and hands it to the UI over an async channel the session
-//! awaits, so there is no poll. State and metadata go the other way: the
+//! awaits, so there's no poll. State and metadata go the other way: the
 //! session pushes the playing track and play state back out on the player
 //! observer, and the gating here keeps a steady stream of frame notifies from
 //! turning into a stream of D-Bus writes.
 //!
 //! [`MediaSession`] wraps both directions into one entity so the service can
-//! outlive the window that opened it. That is what keeps the media keys
-//! answering while the app sits in the tray with no window at all: the close
+//! outlive the window that opened it. That keeps the media keys working
+//! while the app runs in the tray with no window at all: the close
 //! hands the session to the tray's hold, and the reopen hands it back.
 
 use std::path::Path;
@@ -37,7 +37,7 @@ use rox_services::player::NowPlaying;
 
 /// A media-key press mapped off souvlaki's own event vocabulary onto the
 /// transport verbs the player already speaks. Play and Pause stay distinct
-/// from Toggle so the OS "play" and "pause" buttons land on the right edge
+/// from Toggle so the OS "play" and "pause" buttons hit the right transition
 /// instead of flipping whatever state we happen to be in.
 pub enum MediaCommand {
     Toggle,
@@ -57,18 +57,18 @@ pub enum MediaCommand {
 const SEEK_STEP: f64 = 5.0;
 
 /// How far the reported position may drift from where a steady playback would
-/// have carried the last pushed one before it counts as a seek worth re-pushing.
-/// Wide enough to sit above notify-cadence jitter, well under any real seek.
+/// have moved the last pushed one before it counts as a seek worth re-pushing.
+/// Wide enough to stay above notify-cadence jitter, well under any real seek.
 const SEEK_EPSILON: Duration = Duration::from_millis(1000);
 
-/// The souvlaki handle plus the receiver its callback feeds. Kept alive for
+/// The souvlaki handle plus the receiver its callback sends to. Kept alive for
 /// the whole session: dropping it tears the media service down and ends the
 /// event stream.
 pub struct MediaKeys {
     controls: MediaControls,
     events: async_channel::Receiver<MediaCommand>,
     /// The play state last written out, so a same-state notify (the player
-    /// pump fires one every frame while audio moves) does not write again.
+    /// pump fires one every frame while audio moves) doesn't write again.
     /// `None` means stopped, `Some(playing)` means a track is loaded.
     state: Option<bool>,
     /// Set by a track change to push the next play-state write through even
@@ -77,11 +77,11 @@ pub struct MediaKeys {
     /// isn't mistaken for the force sentinel.
     force: bool,
     /// The current track's tags, kept so a cover that resolves after the text
-    /// can re-emit the metadata whole - souvlaki writes every field in one
+    /// can re-emit the metadata whole. souvlaki writes every field in one
     /// `set_metadata`, so a late cover can't be pushed on its own.
     meta: Option<NowPlayingMeta>,
     /// The `file://` URL of the current track's cached cover. `None` until the
-    /// art resolves, and while a track carries none.
+    /// art resolves, and while a track has none.
     cover: Option<String>,
     /// The position last written out and when, the baseline a seek is measured
     /// against. MPRIS clients extrapolate the playhead from the last pushed
@@ -160,7 +160,7 @@ impl MediaKeys {
     /// turns over, so the resolve behind it stays off the frame path. A
     /// `None` clears the widget back to nothing playing. The cover is dropped
     /// here and pushed later through [`set_cover`](Self::set_cover), since it
-    /// resolves off the UI thread and lands after the text.
+    /// resolves off the UI thread and arrives after the text.
     pub fn set_track(&mut self, meta: Option<NowPlayingMeta>) {
         self.meta = meta;
         self.cover = None;
@@ -172,7 +172,7 @@ impl MediaKeys {
     }
 
     /// Attach the resolved cover to the current track and re-emit. The
-    /// workspace resolves art off the UI thread and calls this when it lands,
+    /// workspace resolves art off the UI thread and calls this when it's ready,
     /// guarded so a cover only reaches the track it belongs to. `None` leaves
     /// the widget coverless (the track has none, or the read failed).
     pub fn set_cover(&mut self, url: Option<String>) {
@@ -181,7 +181,7 @@ impl MediaKeys {
     }
 
     /// Write the whole metadata block out. souvlaki takes every field in one
-    /// `set_metadata`, so the text and the cover ride together each time.
+    /// `set_metadata`, so the text and the cover go out together each time.
     fn emit(&mut self) {
         let _ = self.controls.set_metadata(match &self.meta {
             Some(m) => MediaMetadata {
@@ -247,14 +247,14 @@ impl MediaKeys {
 /// one is open and in the tray's hold while none is.
 pub struct MediaSession {
     keys: MediaKeys,
-    /// The player and library this service speaks for. A reopen from the tray
-    /// adopts the same state, so the session carries over untouched.
+    /// The player and library this service reports on. A reopen from the tray
+    /// adopts the same state, so the session persists untouched.
     state: AppState,
     /// The track the widget's tags currently reflect, so the library resolve
     /// behind them only runs on a track change, not every notify.
     track: Option<TrackKey>,
     /// The player pump notifies every tick while a session runs; the publish
-    /// rides it and its own gating drops the ones that would write nothing.
+    /// runs on it and its own gating drops the ones that would write nothing.
     _player: Subscription,
     /// The await loop pulling media-key presses off souvlaki's thread; dropped
     /// with the session, which ends the loop.
@@ -262,7 +262,7 @@ pub struct MediaSession {
 }
 
 impl MediaSession {
-    /// Register the OS media service over `state` and start answering keys.
+    /// Register the OS media service over `state` and start handling keys.
     /// `None` when the platform backend won't come up, so the app runs on
     /// without media keys. Takes a window because Windows' SMTC binds to its
     /// HWND; the other two backends read nothing from it.
@@ -328,8 +328,8 @@ impl MediaSession {
         let now = self.state.player.read(cx).now_playing();
         let playing = self.state.player.read(cx).is_playing();
         // Keyed on the whole track, not the file: two cue tracks of one
-        // image are the same path, and the widget would sit on the first
-        // one's title and cover for the rest of the disc.
+        // image are the same path, and the widget would keep showing the
+        // first one's title and cover for the rest of the disc.
         let key = now.as_ref().map(|now| now.key.clone());
         if key != self.track {
             self.track = key.clone();
@@ -344,11 +344,11 @@ impl MediaSession {
     }
 
     /// Resolve the current track's cover off the UI thread and hand it to the
-    /// media widget when it lands. `set_track` already cleared the old cover
+    /// media widget when it's ready. `set_track` already cleared the old cover
     /// with the text, so a track with no art (or `None`, nothing playing)
     /// needs no further work. The result is dropped when the track has moved
-    /// on by the time the read finishes, so a late cover never lands on the
-    /// wrong track.
+    /// on by the time the read finishes, so a late cover is never attached to
+    /// the wrong track.
     fn publish_cover(&mut self, track: Option<TrackKey>, cx: &mut Context<Self>) {
         let Some(track) = track else {
             return;
@@ -446,7 +446,7 @@ fn window_hwnd(_window: &Window) -> Option<*mut std::ffi::c_void> {
 }
 
 /// Stash the now-playing cover to a scratch file and hand back its `file://`
-/// URL for the transport widget. souvlaki wants a URL, not bytes, on every
+/// URL for the transport widget. souvlaki takes a URL rather than bytes on every
 /// platform: MPRIS forwards it as `mpris:artUrl`, and SMTC and the macOS
 /// center load the file themselves. Blocking file writes; run it off the UI
 /// thread.
@@ -474,8 +474,8 @@ pub fn cache_now_playing_art(track: &Path, bytes: &[u8], mime: &str) -> Option<S
     url::Url::from_file_path(&file).ok().map(|u| u.to_string())
 }
 
-/// The file extension for a cover mime. Cosmetic - every platform sniffs the
-/// bytes rather than trusting the name - but a right extension keeps the
+/// The file extension for a cover mime. Cosmetic, since every platform sniffs
+/// the bytes rather than trusting the name, but a right extension keeps the
 /// scratch file honest. Unknown mimes fall back to a bare `img`.
 fn mime_ext(mime: &str) -> &'static str {
     match mime {

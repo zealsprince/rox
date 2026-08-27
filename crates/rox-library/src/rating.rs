@@ -1,10 +1,10 @@
 //! One rating, three shapes. The app holds a 0-100 value (0 unrated,
 //! a star is 20 points, the numeric scale's 7.5 is 75) and every tag
-//! write carries it twice: a whole-star POPM/RATING for the players that
-//! only speak stars, and an exact FMPS_Rating decimal so half points
-//! survive the round trip. This module owns every conversion between
+//! write stores it twice: a whole-star POPM/RATING for the players that
+//! only understand stars, and an exact FMPS_Rating decimal so half points
+//! come through the round trip. This module owns every conversion between
 //! those shapes, so the writer, the scanner, and the store agree on one
-//! set of thresholds - lofty's MusicBee mapping, the de-facto default.
+//! set of thresholds: lofty's MusicBee mapping, the de-facto default.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
@@ -80,7 +80,7 @@ pub fn parse_popm_text(s: &str) -> Option<u8> {
     })
 }
 
-/// The popularimeter text for a value, empty email on purpose: lofty
+/// The popularimeter text for a value, with an empty email: lofty
 /// merges an empty email to a bare POPM frame on ID3v2 and a bare
 /// RATING key on Vorbis, the forms other players read without knowing
 /// us. The counter stays zero; rox counts plays in its own listens.
@@ -105,8 +105,8 @@ pub fn from_popm_byte(byte: u8) -> u8 {
 /// A file's rating for the scanner: FMPS first, the exact value, then
 /// the star forms. One targeted tag parse (properties off); the formats
 /// the writer cannot write read the same way they were written by
-/// whoever wrote them. None (never an error) when nothing readable
-/// carries one - a scan must not lose a file over its rating.
+/// whoever wrote them. None (never an error) when nothing readable has
+/// one: a scan must not lose a file over its rating.
 pub fn read(path: &Path, kind: FileType) -> Option<u8> {
     catch_unwind(AssertUnwindSafe(|| read_inner(path, kind)))
         .ok()
@@ -136,12 +136,12 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
     }
 }
 
-/// The rating carried by an already-parsed ID3v2 tag: FMPS first, the
+/// The rating held by an already-parsed ID3v2 tag: FMPS first, the
 /// exact value, then the popularimeter's stars. The scanner parses the
 /// MPEG file once for its generic tags and hands that same tag here, so a
-/// scan never re-opens the file just for the rating. FMPS lives in a TXXX
-/// frame and POPM in its own frame, neither of which the generic tag
-/// carries, so this reads the native frames directly.
+/// scan never re-opens the file just for the rating. FMPS is stored in a
+/// TXXX frame and POPM in its own frame, neither of which the generic tag
+/// exposes, so this reads the native frames directly.
 pub fn from_id3v2(tag: &Id3v2Tag) -> Option<u8> {
     let mut popm = None;
     for frame in tag {
@@ -160,10 +160,10 @@ pub fn from_id3v2(tag: &Id3v2Tag) -> Option<u8> {
     popm
 }
 
-/// The rating carried by an already-parsed Vorbis comment block, the FLAC
-/// mirror of [`from_id3v2`]: FMPS first, then a bare RATING or a
-/// RATING:email key. The scanner's single FLAC parse feeds this so a scan
-/// reads the file once, not twice.
+/// The rating held by an already-parsed Vorbis comment block, the FLAC
+/// counterpart of [`from_id3v2`]: FMPS first, then a bare RATING or a
+/// RATING:email key. The scanner's single FLAC parse supplies this so a
+/// scan reads the file once, not twice.
 pub fn from_vorbis(tag: &VorbisComments) -> Option<u8> {
     let mut popm = None;
     for (key, value) in tag.items() {

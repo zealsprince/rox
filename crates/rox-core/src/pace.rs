@@ -8,17 +8,17 @@
 //! the counter into "about 2 hours left", and a rate persisted from the last
 //! pass (`SessionState`) prices the next one before it starts.
 //!
-//! Everything here is deliberately rough and says so in its wording. The
-//! honest source is the pass itself, measured on this machine over these
-//! files; nothing is estimated from baked-in constants, because a laptop, a
-//! dev build, and a network mount would each make a liar of them. No rate
-//! measured yet simply means no estimate shown.
+//! Everything here is rough and says so in its wording. The only source is
+//! the pass itself, measured on this machine over these files; nothing is
+//! estimated from baked-in constants, because a laptop, a dev build, and a
+//! network mount would each make a liar of them. No rate measured yet means
+//! no estimate shown.
 
 use std::sync::Mutex;
 use std::time::Instant;
 
 /// Below this many finished tracks, or this many seconds, a rate is one
-/// outlier wearing a trend's clothes: the first files of a pass carry the
+/// outlier rather than a trend: the first files of a pass include the
 /// model load and the cold page cache, and one long album track would set
 /// the pace for a library. Past both, the average is worth repeating.
 const MIN_DONE: usize = 3;
@@ -29,15 +29,15 @@ const MIN_SECS: f64 = 5.0;
 #[derive(Default)]
 pub struct Pace {
     /// When the work list was ready and real work began. None until then,
-    /// so time spent walking the database or loading a model doesn't bill
+    /// so time spent scanning the database or loading a model doesn't bill
     /// the first track.
     started: Mutex<Option<Instant>>,
 }
 
 impl Pace {
     /// Start the clock. Called when the work list is built rather than when
-    /// the pass is created; everything before that is overhead the tracks
-    /// shouldn't wear.
+    /// the pass is created; everything before that is overhead that
+    /// shouldn't count against the tracks.
     pub fn begin(&self) {
         *self.started.lock().unwrap() = Some(Instant::now());
     }
@@ -86,10 +86,10 @@ pub fn sample_indices(len: usize, count: usize) -> Vec<usize> {
 /// A rough cost for `missing` tracks at `workers`, off a measured pace in
 /// worker-seconds per track. None when there's nothing to do or nothing has
 /// been measured yet: an estimate off baked-in constants would be wrong on
-/// every machine but whichever one they were taken from, so the honest
-/// answer is silence until a pass has run here.
+/// every machine but whichever one they were taken from, so nothing is
+/// shown until a pass has run here.
 ///
-/// Worker-seconds is what makes the prompt's slider live: the passes are
+/// Worker-seconds makes the prompt's slider live: the passes are
 /// close enough to linear in workers that dividing is a fair answer to
 /// "what would twice as many buy me", which is the only question the slider
 /// is being asked.
@@ -107,8 +107,8 @@ pub fn workers_phrase(workers: usize) -> String {
 
 /// A duration as a person would say it, hedged to match how rough it is:
 /// "under a minute", "about 20 minutes", "about 2.5 hours", "about 3 days".
-/// The precision shrinks as the number grows, because a pass that will run
-/// all day genuinely can't promise the half hour.
+/// The precision shrinks as the number grows, because a pass that runs
+/// all day can't promise the half hour.
 pub fn human(secs: f64) -> String {
     let minutes = secs / 60.0;
     if minutes < 1.0 {
@@ -141,7 +141,7 @@ pub fn human(secs: f64) -> String {
 mod tests {
     use super::*;
 
-    /// The clock doesn't run until the pass says so, and too small a sample
+    /// The clock doesn't run until the pass starts it, and too small a sample
     /// stays quiet rather than projecting a library from one track.
     #[test]
     fn no_rate_before_work_or_off_a_sliver() {
@@ -167,10 +167,9 @@ mod tests {
     }
 
     /// The slider's whole promise: twice the workers, half the wait. Worth
-    /// pinning because the readout is what someone commits an afternoon
-    /// against.
+    /// pinning because someone commits an afternoon against the readout.
     ///
-    /// Pinned in English under the shared lock. The wording lives in the
+    /// Pinned in English under the shared lock. The wording is in the
     /// locale files now, so without this the assertions below would read
     /// whatever the OS locale negotiated to and fail on a German machine.
     #[test]
@@ -186,7 +185,7 @@ mod tests {
         rox_i18n::set_locale(None);
     }
 
-    /// A sample reaches across the work list, never just its head, and never
+    /// A sample spreads across the work list, never just its head, and never
     /// asks for an item that isn't there.
     #[test]
     fn a_sample_spreads_across_the_work_list() {

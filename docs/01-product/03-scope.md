@@ -1,7 +1,7 @@
 # Scope
 
-What's core, what's peripheral, what's delivered through extensions, what's out on
-purpose, and the requirements handed down to architecture.
+What's core, what's peripheral, what's delivered through extensions, what's out of
+scope, and the requirements handed down to architecture.
 
 ## What's core versus peripheral
 
@@ -19,7 +19,7 @@ Peripheral, edges that can exist without being the point:
 - Listening stats. Every real listen recorded on disk, rolled up per track, artist,
   album, and genre, surfaced in a history panel (most played, never played, recently
   played) and a stats panel. Closest to core of anything on this list: the library obsessive treats
-  their history as part of the library. It sits behind the library because it's
+  their history as part of the library. It ranks below the library because it's
   worthless if browsing doesn't hold up first.
 - Last.fm scrobbling. Wanted, and the community expects it, but it isn't the reason to
   switch. It measures a listen the way stats does, played time rather than wall time,
@@ -27,10 +27,10 @@ Peripheral, edges that can exist without being the point:
 - Lyric display. A lyrics panel that shows words for the playing track, fetched or from a
   local file.
 - Auto-tagging. Fingerprint a track and pull correct metadata (MusicBrainz / AcoustID) to
-  fix a messy import. Sits behind manual tagging, which is the core.
+  fix a messy import. Ranks below manual tagging, which is the core.
 - Internet radio.
-- ReplayGain: closer to core than the rest, a large-library person leans on it, but it
-  sits behind the tagging and browsing experience.
+- ReplayGain: closer to core than the rest, a large-library person relies on it, but it
+  ranks below the tagging and browsing experience.
 - DSP / audio effect chain. Foobar has it, most people never touch it.
 - System integration. Media keys and the OS transport surface (MPRIS on Linux), and a
   tray presence with quit-to-tray. Expected of a desktop player, invisible until missing.
@@ -40,8 +40,8 @@ Peripheral, edges that can exist without being the point:
 The local library is the core, but it's one source among several. rox grows an
 extension system whose first job is playback sources:
 Spotify, YouTube / YouTube Music, Tidal, each showing up as its own library view backed
-by a community-maintained extension, think VSCode extensions by proxy. This is what
-gives rox a life beyond people who keep a large local collection.
+by a community-maintained extension, think VSCode extensions by proxy. That gives rox a
+life beyond people who keep a large local collection.
 
 Extensions are the vehicle rather than core code for a practical reason: the viable
 integration paths for these services (librespot for Spotify, yt-dlp for YouTube) are
@@ -50,7 +50,7 @@ updates on its own release cycle, and rox itself is never the thing that's broke
 
 Sources aren't equal, and the product shows the difference instead of papering over it:
 
-- **Full.** The source hands rox decodable audio (Tidal's API, yt-dlp streams,
+- **Full.** The source provides rox decodable audio (Tidal's API, yt-dlp streams,
   librespot's decoded samples). It plays through rox's engine, so gapless, ReplayGain,
   and visualizers all work.
 - **Tapped.** rox remote-controls playback elsewhere but captures the local audio
@@ -59,15 +59,13 @@ Sources aren't equal, and the product shows the difference instead of papering o
 - **Remote.** Browse and control only.
 
 A unified library, one view merging local and streaming catalogs with matching across
-them, is an ambition rather than a promise. What the core owes it is not closing the
-door: track identity that isn't welded to file paths.
+them, is an ambition rather than a promise. All the core owes it is track identity that
+isn't welded to file paths.
 
 The extension surface stays narrow: a source is a library provider plus a playback
-provider. It is not a scripting layer for the UI.
+provider. It's not a scripting layer for the UI.
 
 ## Out of scope
-
-Deliberately, not by oversight:
 
 - **Mobile.** This is a desktop composition tool. The panel model doesn't translate to a
   phone and pretending otherwise wastes effort.
@@ -75,7 +73,7 @@ Deliberately, not by oversight:
   storage problem someone else already solves.
 - **CD ripping.** Adjacent, well-served elsewhere, not part of the core loop.
 - **Scripted theming or UI extensions.** Foobar's component ecosystem was its deepest
-  magic and its biggest maintenance burden, and the fragility lived in scripted panels.
+  magic and its biggest maintenance burden, and the fragility came from scripted panels.
   Extensions add sources, not behavior inside the UI: themes stay tokens, layouts stay
   declarative artifacts.
 
@@ -97,16 +95,16 @@ Requirements product owns, structure is the architect's call:
 - **Don't paint sources into a corner.** Streaming isn't core, but two things are cheap
   in the initial design and brutal to retrofit. Track identity is source-qualified, with
   local files as the first source rather than the assumption baked into every key. And
-  playback keeps a clean command-in, state-out seam so a second source engine can sit
-  behind the same contract. How extensions are hosted is an open question and doesn't
+  playback keeps a clean command-in, state-out seam so a second source engine can
+  implement the same contract. How extensions are hosted is an open question and doesn't
   constrain the core.
 - **Themes are tokens, layouts are shareable, nothing is scripted.** A theme is colors,
   fonts, spacing, and accent. A layout is a saved arrangement of panels and their configs.
   Both are artifacts a person can hand to someone else and have work. No scripting layer,
   that's where Foobar's theming turned fragile.
 - **Listening history is a record, not counters.** A real listen (a skip isn't a
-  listen) lands on disk as an event with when it happened, keyed to track identity, so
-  history survives rescans and file moves, and any stat someone thinks of later can be
+  listen) is written to disk as an event with when it happened, keyed to track identity,
+  so history persists across rescans and file moves, and any stat someone thinks of later can be
   derived from what was kept. Data volume isn't a concern worth trading the raw record
   against. Recording never touches the audio path and never slows browse.
 - **Panels pop out into real OS windows**, not fake in-app floats. Multi-monitor is the

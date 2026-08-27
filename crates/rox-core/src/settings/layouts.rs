@@ -1,8 +1,9 @@
 //! Named dock layouts the user saved into the live look. Each is a full dock
 //! dump under a name; the settings window lists them, and the mini-player
 //! button toggles between the two a user picks as primary and mini. Presets
-//! belong to the workspace they were saved in, so they ride `workspace.json`
-//! with the rest of the look and travel inside a shared bundle.
+//! belong to the workspace they were saved in, so they're stored in
+//! `workspace.json` with the rest of the look and travel inside a shared
+//! bundle.
 
 use serde_json::Value;
 
@@ -31,7 +32,7 @@ pub fn all(settings: &Settings) -> Vec<Preset> {
         .collect()
 }
 
-/// Resolve a preset name to its dump and size. None when nothing carries that
+/// Resolve a preset name to its dump and size. None when no preset has that
 /// name.
 pub fn resolve(settings: &Settings, name: &str) -> Option<Preset> {
     settings
@@ -70,7 +71,7 @@ mod tests {
         s
     }
 
-    /// `all` lists every saved preset in save order, dumps and sizes carried
+    /// `all` lists every saved preset in save order, dumps and sizes passed
     /// through untouched.
     #[test]
     fn all_lists_presets_in_order() {
@@ -79,7 +80,7 @@ mod tests {
         assert_eq!(presets.len(), 2);
         assert_eq!(presets[0].name, "Compact");
         assert_eq!(presets[1].name, "Wide");
-        // The size rides along with the preset that has one.
+        // The size comes back with the preset that has one.
         assert_eq!(presets[0].size.map(|z| z.width), Some(800.0));
         assert!(presets[1].size.is_none());
     }
@@ -94,7 +95,7 @@ mod tests {
         assert_eq!(hit.size.map(|z| z.height), Some(600.0));
         // A preset with no stored size resolves with None, not a default.
         assert!(resolve(&s, "Wide").unwrap().size.is_none());
-        // Nothing carries this name.
+        // No preset has this name.
         assert!(resolve(&s, "Nope").is_none());
     }
 }

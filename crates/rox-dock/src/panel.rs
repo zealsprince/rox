@@ -191,7 +191,7 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
     /// body. True keeps the tab panel's body right-click out of the way, so
     /// the content's menu never opens stacked under the panel dropdown; the
     /// dropdown stays reachable from the tab and the toolbar. Default is
-    /// `false`: the body answers right-click with the panel dropdown.
+    /// `false`: the body opens the panel dropdown on right-click.
     fn content_context_menu(&self, cx: &App) -> bool {
         false
     }

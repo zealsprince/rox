@@ -8,7 +8,7 @@
 //! [`rox_playback::analysis`]; the UI samples an `Arc<Progress>` on a timer,
 //! the way the scan badge samples a scan.
 //!
-//! Where the numbers land follows the [`ReplayGainSave`] setting, read once
+//! Where the numbers get written follows the [`ReplayGainSave`] setting, read once
 //! when the pass starts so a mid-run flip can't split one album across two
 //! destinations.
 
@@ -46,7 +46,7 @@ pub struct Progress {
     /// quarter second of audio.
     cancel: AtomicBool,
     /// The pass's clock, for the "about 2 hours left" half of the readout.
-    /// Started once the work list is built, so the album walk doesn't bill
+    /// Started once the work list is built, so the album query doesn't bill
     /// the first file.
     pace: rox_core::pace::Pace,
 }
@@ -101,13 +101,13 @@ struct Running(Option<Arc<Progress>>);
 
 impl Global for Running {}
 
-/// The running pass's progress, for a UI that wants to show it. None when
+/// The running pass's progress, for any UI that shows it. None when
 /// nothing is measuring.
 pub fn progress(cx: &App) -> Option<Arc<Progress>> {
     cx.try_global::<Running>().and_then(|r| r.0.clone())
 }
 
-/// Ask the running pass to stop at the next file. What it already wrote
+/// Signal the running pass to stop at the next file. What it already wrote
 /// stays; a no-op when nothing is running.
 pub fn stop(cx: &mut App) {
     if let Some(progress) = progress(cx) {
@@ -150,8 +150,8 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     })
     .detach();
     cx.spawn(async move |cx| {
-        // The library says where its database is, and asking here rather
-        // than up top is what keeps a caller inside its update safe. The
+        // The library holds its own database path, and reading it here
+        // rather than up top keeps a caller inside its update safe. The
         // read only fails with the app already on its way out, where the
         // flag raised above has nothing left to mislead.
         let Ok(db_path) = cx.update(|cx| library.read(cx).db_path()) else {
@@ -185,7 +185,7 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
                 // filled in.
                 Ok((_, stored)) if stored > 0 => library.reload_projection(cx),
                 // Tags mode has files to re-read. A pass that wrote nothing
-                // either way hands back an empty list, where this is only
+                // either way returns an empty list, where this is only
                 // the readouts refreshing.
                 Ok((paths, _)) => {
                     library.reindex_written(paths, cx);
@@ -207,11 +207,11 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
 ///
 /// The switch is read here rather than inside [`start`], because the button
 /// has to keep working with the switch off: this is the only caller the
-/// setting speaks for. Nothing else needs guarding - the pass no-ops while
+/// setting applies to. Nothing else needs guarding: the pass no-ops while
 /// one is already running, and its work list is whatever has no gain, so a
 /// settle that brought nothing measurable starts a pass that finds nothing.
 ///
-/// Only what the watcher brought in, deliberately. The backlog a library
+/// Only what the watcher brought in. The backlog a library
 /// starts with is priced and agreed to when the switch goes on; after that
 /// every settle only ever sees the delta, which is the case this exists for.
 pub fn follow(library: &Entity<Library>, cx: &mut App) {
@@ -228,14 +228,14 @@ pub fn follow(library: &Entity<Library>, cx: &mut App) {
 /// worker-seconds per file, the unit [`rox_core::pace::estimate`] divides.
 ///
 /// Nothing is written. Measurement is only sound over a whole album, and a
-/// probe deliberately samples across the library rather than working through
-/// one record, so what it measures isn't a shape that can be saved. In tags
+/// probe samples across the library rather than working through one
+/// record, so what it measures isn't a shape that can be saved. In tags
 /// mode saving would also mean rewriting audio files, which is not something
 /// a button called Estimate should do. The cost is a few seconds of decoding
 /// spent to avoid guessing at hours.
 ///
 /// Rougher than the acoustic probe by nature: measuring reads the whole file,
-/// so its cost follows duration, and three files can't know a library's
+/// so its cost follows duration, and three files can't tell you a library's
 /// average length. It's the difference between "about 3 hours" and "about 5",
 /// not between hours and days, which is the question being asked.
 pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
@@ -279,8 +279,8 @@ pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
 /// An album gain is the whole record gated as one program. Measure half the
 /// tracks and the number you get is for a different record than the one on
 /// disk, so a partial album gets track values only and its album columns are
-/// left alone. Nothing is lost by that: the tracks that already carry tags
-/// carry their album figures too, and those were measured over the real
+/// left alone. Nothing is lost by that: the tracks that already have tags
+/// keep their album figures too, and those were measured over the real
 /// thing.
 ///
 /// A file with no album tag is `grouped: false` and never earns one however
@@ -290,10 +290,10 @@ fn measures_album(grouped: bool, measured: usize, album_total: usize) -> bool {
     grouped && measured > 0 && measured == album_total
 }
 
-/// The blocking half: walk the albums, measure, write. Returns the paths
+/// The blocking half: iterate the albums, measure, write. Returns the paths
 /// whose files were rewritten, which is empty in database mode, and the rows
 /// that took a gain, which is zero in tags mode. Each save mode reports
-/// through its own half, and the caller refreshes off whichever spoke.
+/// through its own half, and the caller refreshes off whichever one reported.
 ///
 /// Album-parallel through a bounded pool, the acoustic pass's shape. The
 /// album is the unit rather than the file because an album gain is measured
@@ -302,7 +302,7 @@ fn measures_album(grouped: bool, measured: usize, album_total: usize) -> bool {
 /// plentiful enough to keep every worker busy on their own.
 ///
 /// The one thing workers share is the database, behind a mutex. That
-/// serializes the writes, which is what SQLite wants anyway, and they're a
+/// serializes the writes, which suits SQLite anyway, and they're a
 /// rounding error next to the decode either way.
 fn run(
     db_path: &Path,
@@ -322,7 +322,7 @@ fn run(
     let rewritten = Mutex::new(Vec::new());
     // Rows that actually took a gain in database mode, counted so a pass
     // that measured nothing doesn't buy a projection reload it has no use
-    // for - the auto pass runs off every watch settle.
+    // for. The auto pass runs off every watch settle.
     let stored = AtomicUsize::new(0);
     // The first write that failed, which ends the pass: a database that
     // won't take a row won't take the next one either, and grinding through
@@ -357,7 +357,7 @@ fn run(
 }
 
 /// One album measured and written. Errors are the database's alone: a file
-/// that won't decode and a tag write that won't land are both counted as
+/// that won't decode and a tag write that fails are both counted as
 /// skipped and left behind, because the next album is unaffected by either.
 fn measure_album(
     album: &store::AlbumToMeasure,
@@ -414,7 +414,7 @@ fn measure_album(
                 .map(String::as_str)
                 .zip(gains.iter().copied())
                 .collect();
-            // Rows that already carry a gain are skipped by the store, so
+            // Rows that already have a gain are skipped by the store, so
             // the count is what actually took rather than what was offered.
             let took = store::set_measured_replaygain(&mut conn.lock().unwrap(), &rows)
                 .map_err(|e| e.to_string())?;
@@ -425,13 +425,13 @@ fn measure_album(
                 let file = PathBuf::from(path);
                 // commit_replay_gain clears any field it's handed None,
                 // which is right for a re-measure and wrong here: the
-                // partial case leaves the album pair empty on purpose,
-                // and a file that already carried album numbers from a
-                // tagger would lose them. Carry the row's through.
+                // partial case leaves the album pair empty, and a file that
+                // already had album numbers from a tagger would lose them.
+                // Copy the row's through.
                 //
                 // The lock is held for the read alone: the tag write is the
                 // slow half and touches only this file, so every other
-                // worker is free to reach the database while it runs.
+                // worker is free to take the database lock while it runs.
                 let gain = fill_album(&conn.lock().unwrap(), path, gain);
                 match writer::commit_replay_gain(&file, gain) {
                     Ok(()) => rewritten.lock().unwrap().push(file),
@@ -459,7 +459,7 @@ fn bridge(gain: rox_playback::gain::ReplayGain) -> replaygain::ReplayGain {
 
 /// Fill a measurement's empty album fields from what the row already holds,
 /// so a tag write only ever adds. A row we can't read leaves them empty,
-/// which is the same answer as a row that never had them.
+/// which is the same result as a row that never had them.
 fn fill_album(
     conn: &Connection,
     path: &str,
@@ -493,7 +493,7 @@ mod tests {
     use super::*;
 
     /// A whole album measured together earns an album gain; anything less
-    /// does not, however close it gets.
+    /// doesn't, however close it gets.
     #[test]
     fn only_a_whole_album_earns_an_album_gain() {
         assert!(measures_album(true, 12, 12));
@@ -508,8 +508,8 @@ mod tests {
     }
 
     /// A partial album's track numbers go in without disturbing whatever
-    /// album figures the file already carried, which is what keeps a tag
-    /// write from being a deletion.
+    /// album figures the file already had, which keeps a tag write from
+    /// being a deletion.
     #[test]
     fn a_blank_album_pair_falls_back_to_the_row() {
         let existing = replaygain::ReplayGain {
@@ -532,7 +532,7 @@ mod tests {
     }
 
     /// A whole album measured here keeps its own figures; the row's older
-    /// pair does not get a vote.
+    /// pair is ignored.
     #[test]
     fn a_measured_album_pair_wins_over_the_row() {
         let existing = replaygain::ReplayGain {

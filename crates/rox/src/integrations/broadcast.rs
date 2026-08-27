@@ -1,9 +1,9 @@
 //! The broadcast sink's app side (ADR 22): rox-playback owns the encoder,
 //! the icecast source connection, and the retry clock; this module owns
-//! what only the app knows - the settings that configure it and the
-//! library tags behind the stream metadata. The metadata rides the same
-//! player observer the media widget publishes on, keyed to the track so a
-//! steady stream of clock notifies writes nothing.
+//! what only the app knows: the settings that configure it and the
+//! library tags behind the stream metadata. The metadata is sent from the
+//! same player observer the media widget publishes on, keyed to the track
+//! so a steady stream of clock notifies writes nothing.
 
 use gpui::App;
 
@@ -28,7 +28,7 @@ pub fn apply() {
     broadcast::configure(config);
 }
 
-/// Apply the configured sink and start feeding it metadata off the player
+/// Apply the configured sink and start sending it metadata off the player
 /// observer. App-level, once per process, beside the control socket.
 pub fn start(state: &AppState, cx: &mut App) {
     apply();

@@ -16,8 +16,8 @@ are lofty 0.24, the parallel scans are rayon, the title finder is memchr's memme
 
 One database at `data_dir/rox/library.db` (so `~/.local/share/rox/library.db` on
 Linux), opened in WAL mode with `synchronous = NORMAL`. WAL is load-bearing: it gives
-concurrent readers, which is what the sharded projection load rides on. The catalog is
-one table, with the listens (ADR 11), playlists (ADR 16), and genre opinions riding the
+concurrent readers, which the sharded projection load depends on. The catalog is
+one table, with the listens (ADR 11), playlists (ADR 16), and genre opinions in the
 same database:
 
 ```sql
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS tracks (
 );
 ```
 
-- `id` is the SQLite rowid and the durable track identity. The projection carries it
+- `id` is the SQLite rowid and the durable track identity. The projection stores it
   as `db_id`, and playback resolves it back to a path through `paths_for`.
 - Identity is source-qualified per the components contract: `(source, path)` is
   unique, `local` is the first source, and a streaming extension adds rows under its
@@ -61,14 +61,14 @@ CREATE TABLE IF NOT EXISTS tracks (
 - `mtime` (seconds since epoch) and `size` are the scanner's change key, read back in
   one pass by `local_files` before a scan.
 - The read path is `scan_range`, which streams the projection columns for one rowid
-  range in id order. Everything the projection needs comes through it; paths do not,
-  they stay in SQLite until playback asks.
+  range in id order. Everything the projection needs comes through it; paths don't,
+  they stay in SQLite until playback asks for them.
 - The four ReplayGain columns are nullable rather than defaulted (ADR 19): 0 dB is a
   real measurement, and a column that couldn't tell it from an untagged file would level
   every untagged track to the reference. `rg_source` says which filled them, the file's
   tags or rox's own measurement pass, and the upsert's `KEEPS_MEASURED_GAIN` condition
-  is the precedence rule: tags win wherever a file carries them, a measurement survives
-  a rescan that still finds none.
+  is the precedence rule: tags win wherever a file has them, a measurement is kept
+  through a rescan that still finds none.
 - `rating` and `added` are the app's own, never read from a tag, which is why they're
   the two columns whose migrations don't reset `mtime`.
 
@@ -127,10 +127,10 @@ pub struct Projection {
 - **Interning**: artist, album artist, album, genre, codec, and folder all repeat
   heavily, so each interns to a `u32` symbol through a hash map during load. The finished `SymTable` is the symbol table
   plus a lowercase copy of every entry, built in parallel. Symbol tables run a
-  hundredth the row count or less, which is what makes search and sort cheap.
-- **ReplayGain**: the two gains ride the projection so the library's Gain column can
-  draw and sort without a query per row, packed to hundredths of a dB in an `i16`
-  since every real gain sits inside the +-40 dB the engine acts on. `i16::MIN` is
+  hundredth the row count or less, which makes search and sort cheap.
+- **ReplayGain**: the two gains are stored in the projection so the library's Gain
+  column can draw and sort without a query per row, packed to hundredths of a dB in an
+  `i16` since every real gain falls inside the +-40 dB the engine acts on. `i16::MIN` is
   untagged, which also sorts it ahead of every real value. The peaks stay in SQLite:
   they bound playback and nothing browsing reads them. `gain_db(row, album_first)`
   applies the leveling mode's pick and its fallback, the same one the engine levels
@@ -181,21 +181,21 @@ pipeline, per ADR 4's single metadata layer:
    the one list an external open uses too), and sort the list so scan order is
    deterministic.
 3. Per file: stat it, and if `(mtime, size)` matches the stored row, skip it without
-   opening the file. This is what makes a rescan of an unchanged library cheap.
+   opening the file. That's why a rescan of an unchanged library is cheap.
 4. Otherwise read tags through lofty, wrapped in `catch_unwind`: a malformed file
    that errors or panics the parser costs that one file its tags, never the scan.
    Title falls back to the filename stem if the tag is missing or empty; a file whose
-   tags will not read at all is still indexed under its filename with empty fields,
+   tags won't read at all is still indexed under its filename with empty fields,
    so the library never silently loses a playable file.
 5. Upsert in batches of 512 rows, one transaction each.
 
-The scan returns a `ScanSummary` (`indexed`, `unchanged`, `untagged`) that feeds the
-status line. Tag fields carried: title, artist, album artist, album, genre, year, disc
+The scan returns a `ScanSummary` (`indexed`, `unchanged`, `untagged`) for the status
+line. Tag fields read: title, artist, album artist, album, genre, year, disc
 and track number, rating (FMPS exact, POPM stars), and the four ReplayGain values, all
 from the primary (or first) tag. Multi-value genres join on the `"; "` convention
-`rox_library::genre` owns, so a list survives the round trip through one column. Duration,
-codec, bitrate, sample rate, and bit depth come off the parsed stream properties rather
-than any tag, so an untagged file still reports what it is.
+`rox_library::genre` owns, so a list makes the round trip through one column intact.
+Duration, codec, bitrate, sample rate, and bit depth come off the parsed stream
+properties rather than any tag, so an untagged file still reports what it is.
 
 ## Cold open
 
@@ -208,8 +208,8 @@ The load is sharded, one reader per core (`available_parallelism`):
 
 1. One connection reads `MAX(id)` and the rowid space splits into equal ranges.
 2. One thread per shard opens its own connection and streams its range through
-   `scan_range` into a shard-local builder with shard-local interners. WAL is what
-   lets the readers run concurrently.
+   `scan_range` into a shard-local builder with shard-local interners. WAL lets the
+   readers run concurrently.
 3. Shards merge: each shard's symbol table is re-interned into a global table once
    (a `u32` remap array per shard), symbol columns rewrite through the remap, arenas
    append with offsets rebased, plain columns concatenate.
@@ -221,8 +221,8 @@ background task, so the UI receives projection and order together and paints onc
 
 ## Rescan and swap
 
-The projection is never patched in place; it is rebuilt from SQLite and swapped
-whole. That is the entire consistency mechanism between store and projection.
+The projection is never patched in place; it's rebuilt from SQLite and swapped
+whole. That's the entire consistency mechanism between store and projection.
 
 ```
  folder walk + lofty tags           SQLite (WAL)                  projection (RAM)
@@ -233,7 +233,7 @@ whole. That is the entire consistency mechanism between store and projection.
  (play resolution, UI conn)                              order / search / filter views
 ```
 
-The sequence, driven by the library panel in `crates/rox/src/panels/library.rs`:
+The sequence, driven by the library panel in `crates/rox-panels/src/library.rs`:
 
 1. The panel marks itself busy and spawns one background task.
 2. On the background executor: if a scan root was given, open a connection and run
@@ -245,9 +245,9 @@ The sequence, driven by the library panel in `crates/rox/src/panels/library.rs`:
    its `Arc`, then frees.
 
 Because the swap is whole, the projection cannot half-reflect a scan. Because upserts
-keep rowids, identity survives the swap: a queue built against the old projection
-still resolves. The view re-derives on every search keystroke, an empty query shares
-the canonical order's `Arc` and a non-empty one allocates a fresh hit vector.
+keep rowids, identity is preserved across the swap: a queue built against the old
+projection still resolves. The view re-derives on every search keystroke, an empty
+query shares the canonical order's `Arc` and a non-empty one allocates a fresh hit vector.
 
 Playback resolution is the one projection-to-store hop: double-clicking a row queues
 it and up to 999 rows behind it in view order, mapping view rows to `db_id`s and
@@ -258,12 +258,12 @@ those ids back through the same hop.
 
 ## Reference
 
-The service lives in `crates/rox-library`: `store.rs` (schema, upsert, range reads),
+The service is in `crates/rox-library`: `store.rs` (schema, upsert, range reads),
 `migrate.rs` (the user_version ladder both databases run), `projection.rs` (arena,
 interning, search, sort, sharded load), `scanner.rs` (walk, change key, lofty),
 `genre.rs` and `genre_meta.rs` (the multi-value convention and the alias table behind
 it), `replaygain.rs` (the tag values and where they came from), `art.rs` (cover art off
-a track's tags, with a folder image as the fallback). The app wires it in `crates/rox/src/panels/library.rs`. The scale
+a track's tags, with a folder image as the fallback). The app wires it in `crates/rox-panels/src/library.rs`. The scale
 harness was `crates/rox-prototype-library` (git history, commit bd22dc1), which
 reuses these modules against a generated catalog: `cargo run -p
 rox-prototype-library --release -- --tracks 10_000_000` reproduces the

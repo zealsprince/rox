@@ -1,4 +1,4 @@
-# ADR 25: Shader surfaces carry a stack, edited as folds
+# ADR 25: Every shader surface has a stack, edited as folds
 
 **Status:** Proposed
 
@@ -14,12 +14,12 @@ The stack is a list and never a graph. This is ADR 23's refusal held, not
 revisited: that record put the rendering ceiling at "chains under a fixed
 compositor" and named an A/B blend as the shape it expected. A stack is that
 compositor, generalized from two slots to N and made ordinal instead of a
-crossfade. Entries see the accumulation below them and nothing else; there is no
+crossfade. Entries see the accumulation below them and nothing else; there's no
 routing an entry's output sideways, no naming another entry's passes, and no
 topology in the config. What a bundle stores stays a list of shaders in an order,
 which is the thing a person can read.
 
-`screen` means what's underneath you, and that call is what makes a stack worth
+`screen` means what's underneath you, and that call makes a stack worth
 building. Today the binding is the composed frame under the surface's rect. In a
 stack it becomes the frame with every entry below this one already drawn over it,
 so filters compose: Tube over Dither is a dithered CRT, and neither shader learns
@@ -35,7 +35,7 @@ blend appended.
 
 Signals go per entry, and this is the one change with real teeth. A chain shares
 one `ShaderParams` across its passes today, filled once per draw, so all sixteen
-slots belong to the program. Stacked entries each carry their own routes, so the
+slots belong to the program. Stacked entries each have their own routes, so the
 uniform has to be filled per pass from the entry that pass came from. The renderer
 already builds a `ShaderParams` inside the per-pass loop; what changes is where
 the values come from, plus carrying an entry index on each composed pass. Nothing
@@ -46,28 +46,28 @@ same routes.
 The pass cap becomes a budget on the stack. Eight passes and eight images are per
 program today; they stay per composed program, which means a stack spends them
 together and Dither's four leave room for three more entries plus their blends.
-That is a real ceiling and it's the right one: past it the thing being expressed
-wants a render graph, which is the refusal above. The error has to name the entry
+That's a real ceiling and it's the right one: past it the thing being expressed
+needs a render graph, which is the refusal above. The error has to name the entry
 that overflowed rather than reporting a number about a program nobody wrote, and
-the settings fold is where it lands, next to the entry.
+the settings fold is where it shows, next to the entry.
 
 Nothing migrates, the same way nothing migrated for chains. A config holding one
 shader deserializes as a one-entry stack, so every layout, bundle, and settings
 file in the wild reads without a version bump, and a stack of one serializes back
 to the old shape when it can. Approval stays per source rather than per stack:
 each entry keeps its own fingerprint, the machine-local list is untouched, and a
-bundle carrying a four-deep stack asks about the sources in it that this machine
-hasn't already agreed to. Hot reload likewise stays per entry, which the pool
+bundle with a four-deep stack asks about the sources in it that this machine
+hasn't already approved. Hot reload likewise stays per entry, which the pool
 watch already does for named shaders and the per-surface watch does for files.
 
-The UI is the Signals page's, deliberately. That page solved this exact problem
+The UI is the Signals page's. That page solved this exact problem
 already: a variable-length list of things with too many knobs to show at once,
 where the identity has to stay visible and the tuning folds away. Copying it means
 the shader sections stop being a wall of rows the moment a surface has more than
-one shader, and it means the two pages read as one app. The header carries what
+one shader, and it means the two pages read as one app. The header shows what
 the entry is, its Scene or Overlay mark, and its switch, so a stack can be read
 without opening anything. Reorder controls belong in that header too, since order
-is the whole semantic, and up-down buttons are the honest v1 over drag: the list
+is the whole semantic, and up-down buttons are the right v1 over drag: the list
 is short, and the dock already owns every drag gesture in the app.
 
 Refused or deferred, with reasons. Blend modes past premultiplied-over (add,
@@ -89,6 +89,6 @@ prefixed pass and asset names, rebinds `screen` per entry, and appends the blend
 pass for entries that declare `// @overlay`; the gpui patch grows per-pass uniform
 fill and an entry index on the composed pass description; the three settings
 surfaces grow the fold list, which is the Signals page's block shape over a
-different item. Acceptance is a Critters variant that wears Dither with Tube over
-it, and a panel wearing Wall with Badge on top, neither shader edited to know
+different item. Acceptance is a Critters variant running Dither with Tube over
+it, and a panel running Wall with Badge on top, neither shader edited to know
 about the other.

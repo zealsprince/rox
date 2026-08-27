@@ -1,12 +1,12 @@
 //! Panel presets: one saved panel, rebuilt on demand. A preset is the same
-//! leaf a layout dump carries per panel, so building one is the restore path
-//! a layout takes for that node - the registry name routes through
-//! [`PanelRegistry`], the config blob feeds back in, and a composite's
+//! leaf a layout dump stores per panel, so building one is the restore path
+//! a layout takes for that node: the registry name routes through
+//! [`PanelRegistry`], the config blob goes back in, and a composite's
 //! children come along.
 //!
 //! Saving happens down in `rox_panel_api::panel_settings` (the dropdown that
 //! owns the panel); everything that turns a saved preset back into a live
-//! panel is here, because only this crate knows the catalog.
+//! panel is here, because only this crate has the catalog.
 
 use std::sync::Arc;
 
@@ -20,18 +20,18 @@ use rox_dock::{DockArea, PanelInfo, PanelRegistry, PanelState, PanelView};
 
 use crate::panel_catalog::{self as catalog, PanelPlacement};
 
-/// What the presets group is called and what it wears wherever a panel
+/// What the presets group is called and the icon it shows wherever a panel
 /// picker lists it, so the group reads the same in every menu that has one.
 pub(crate) const GROUP_LABEL: &str = "Presets";
 pub(crate) const GROUP_ICON: &str = icons::COPY;
 
-/// Every preset the live look carries, in save order. Read at the moment a
+/// Every preset the live look holds, in save order. Read at the moment a
 /// menu opens rather than held, the way the layout flyouts read theirs.
 pub(crate) fn saved() -> Vec<PanelPreset> {
     rox_core::settings::panel_presets::all(&Settings::load())
 }
 
-/// The icon a preset's row wears: the icon of the panel inside it, so a
+/// The icon a preset's row shows: the icon of the panel inside it, so a
 /// preset reads as the thing it makes. A preset whose panel isn't in the
 /// catalog falls back to the group's own glyph.
 pub(crate) fn icon_for(preset: &PanelPreset) -> &'static str {
@@ -44,7 +44,7 @@ pub(crate) fn icon_for(preset: &PanelPreset) -> &'static str {
 
 /// Where a preset's panel joins the layout when it's opened from a menu with
 /// no group under the pointer: its catalog entry's placement, center for a
-/// panel the catalog doesn't carry.
+/// panel the catalog doesn't list.
 pub(crate) fn placement_for(preset: &PanelPreset) -> PanelPlacement {
     preset
         .panel_name()
@@ -53,9 +53,9 @@ pub(crate) fn placement_for(preset: &PanelPreset) -> PanelPlacement {
         .unwrap_or(PanelPlacement::Center)
 }
 
-/// Whether a preset holds a composition host, which is what the slot pickers
-/// gray out: a composite can sit in a tab but not in another composite's
-/// slot, and a preset of one is still one.
+/// Whether a preset holds a composition host, which the slot pickers gray
+/// out: a composite can go in a tab but not in another composite's slot,
+/// and a preset of one is still one.
 pub(crate) fn is_arrangement(preset: &PanelPreset) -> bool {
     preset
         .panel_name()
@@ -109,7 +109,7 @@ pub(crate) fn build_named(
 /// Lead a panel picker with the Presets group: one flyout of the saved
 /// panels above the catalog's own groups, skipped whole when nothing is
 /// saved. A pick builds the preset and hands it to `on_pick`, which decides
-/// where it lands, the same split [`crate::composite::pick_items`] draws.
+/// where it goes, the same split [`crate::composite::pick_items`] draws.
 ///
 /// `no_composites` grays the presets that hold a composition host, for the
 /// slot pickers that can't take one.
@@ -159,7 +159,7 @@ mod tests {
 
     /// A dump makes the round trip a save and an add put it through: a panel
     /// state to JSON, the kind readable off it without parsing, and back to
-    /// the state the registry builds from. The two halves live in different
+    /// the state the registry builds from. The two halves are in different
     /// crates, so nothing else checks they agree on the shape.
     #[test]
     fn a_dump_round_trips_through_a_preset() {
@@ -173,7 +173,7 @@ mod tests {
             panel: serde_json::to_value(&dump).expect("a dump serializes"),
         };
         assert_eq!(preset.panel_name(), Some("spectrum"));
-        // The catalog answers what that name is and where it goes.
+        // The catalog resolves what that name is and where it goes.
         assert_eq!(icon_for(&preset), icons::AUDIO_LINES);
         assert!(matches!(placement_for(&preset), PanelPlacement::Bottom));
         assert!(!is_arrangement(&preset));
@@ -186,7 +186,7 @@ mod tests {
         );
     }
 
-    /// A preset of a composition host says so, which is what keeps it out of
+    /// A preset of a composition host reads as one, which keeps it out of
     /// another composite's slot.
     #[test]
     fn a_composite_preset_reads_as_one() {

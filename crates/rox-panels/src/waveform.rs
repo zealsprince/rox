@@ -6,8 +6,8 @@
 //! ([`crate::peaks`]) when the track
 //! has played before, otherwise from a full decode on a background thread
 //! that then fills the cache; while a decode runs the strip shows a gray
-//! pulsing stand-in shape. Every change of what the strip shows - stand-in
-//! to peaks, one track's peaks to the next, blank to anything - is a short
+//! pulsing stand-in shape. Every change of what the strip shows (stand-in
+//! to peaks, one track's peaks to the next, blank to anything) is a short
 //! morph in geometry and color, never a pop. Painting is a row of quads;
 //! with no track up (idle, or the queue played out) the panel is blank and
 //! completely still.
@@ -85,7 +85,7 @@ impl Default for WaveformConfig {
 }
 
 impl WaveformConfig {
-    /// The bar rhythm, clamped to as far as the knobs reach, typed
+    /// The bar rhythm, clamped to the knobs' range, typed
     /// values past the strip included, so a hand-edited file can't
     /// collapse the step to nothing.
     fn bars(&self) -> (f32, f32) {
@@ -148,7 +148,7 @@ impl Shape {
         }
     }
 
-    /// How many rows this shape wants, or None where it adapts to
+    /// How many rows this shape needs, or None where it adapts to
     /// whatever layout the other shape sets (blank and the stand-in).
     fn lanes(&self) -> Option<usize> {
         match self {
@@ -182,7 +182,7 @@ pub struct WaveformPanel {
     /// Time zero for the generating animation's phase.
     epoch: Instant,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Wakes the panel when a session starts, so an idle window notices the
     /// new track without the player bar's frame pump.
@@ -212,9 +212,9 @@ impl WaveformPanel {
         }
     }
 
-    /// The playing track changed: fetch its peaks off the UI thread - the
+    /// The playing track changed: fetch its peaks off the UI thread (the
     /// disk cache when it holds the track, a full decode that then fills
-    /// the cache otherwise - and swap them in when done.
+    /// the cache otherwise) and swap them in when done.
     fn start_decode(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.track = Some(path.clone());
         self.peaks = Peaks::Decoding;
@@ -228,8 +228,8 @@ impl WaveformPanel {
                         return Ok::<_, String>(peaks);
                     }
                     // Stamp the file before the decode reads it, so a track
-                    // still landing on disk keys the entry it had, not the
-                    // one it finishes as.
+                    // still being written to disk keys the entry it had,
+                    // not the one it finishes as.
                     let stamp = peaks::identity(&path);
                     let decoded = engine::decode_peaks(&path, PEAK_BINS)?;
                     peaks::store(&path, stamp, &decoded);
@@ -257,8 +257,8 @@ impl WaveformPanel {
     /// Point the strip at what it should show: the same shape refreshes in
     /// place (the live playhead), a different one starts a morph from
     /// whatever was showing. A morph interrupted early keeps its original
-    /// source, so an intermediate that barely painted - the stand-in when a
-    /// cache hit lands a frame after a track switch - never flashes, and
+    /// source, so an intermediate that barely painted (the stand-in when a
+    /// cache hit arrives a frame after a track switch) never flashes, and
     /// one track's peaks morph straight into the next's.
     fn retarget(&mut self, shape: Shape) {
         if self.to.same(&shape) {
@@ -337,8 +337,8 @@ fn placeholder_bar(i: usize, lane: usize, count: usize, t: f32, max_bar: f32) ->
     ((0.2 + 0.8 * seed) * (0.25 + 0.75 * pulse) * max_bar).max(MIN_BAR / 2.0)
 }
 
-/// A lane's extremes over display bar `i` of `count`, so transients survive
-/// the downsample. None for a lane with no pairs to bucket.
+/// A lane's extremes over display bar `i` of `count`, so transients aren't
+/// lost in the downsample. None for a lane with no pairs to bucket.
 fn bucket(lane: &[(f32, f32)], i: usize, count: usize) -> Option<(f32, f32)> {
     if lane.is_empty() {
         return None;
@@ -358,7 +358,7 @@ fn bucket(lane: &[(f32, f32)], i: usize, count: usize) -> Option<(f32, f32)> {
 /// A shape's bar `i` of `count` in display lane `lane` of `lanes`: top and
 /// bottom in strip-local y, and the bar's color. `center` and `max_bar` are
 /// the display lane's geometry; a shape whose own lane layout differs maps
-/// into it - a single lane feeds every row, a wider set folds together.
+/// into it: a single lane fills every row, a wider set folds together.
 /// `x_mid` and `w` place the bar against the shape's playhead for the
 /// played/ghost split.
 #[allow(clippy::too_many_arguments)]
@@ -415,7 +415,7 @@ fn sample(
 /// instead of popping. Split shapes repeat the same blend per row, the
 /// lane layout following the incoming shape. Each shape that has a
 /// playhead draws it, the retiring one fading out as the incoming one
-/// fades in; the scrobble marker, when asked for, rides the same fade.
+/// fades in; the scrobble marker, when it's on, uses the same fade.
 #[allow(clippy::too_many_arguments)]
 fn paint_morph(
     from: &Shape,
@@ -440,7 +440,7 @@ fn paint_morph(
     // solid shape with no seams.
     let draw_w = (step - gap).max(1.0);
 
-    // The row layout: the incoming shape's when it cares, the retiring
+    // The row layout: the incoming shape's when it sets one, the retiring
     // one's through a fade to blank, one row when neither does.
     let lanes = to.lanes().or(from.lanes()).unwrap_or(1);
     let lane_h = h / lanes as f32;
@@ -482,7 +482,7 @@ fn paint_morph(
                 // outline look.
                 window.paint_quad(gpui::outline(bar, color, BorderStyle::default()));
             } else {
-                // Merged bars: trace the silhouette instead - 1px top and
+                // Merged bars: trace the silhouette instead, with 1px top and
                 // bottom edges plus risers spanning the jump to the neighbor,
                 // one continuous outlined shape.
                 for y in [top, bottom - 1.0] {
@@ -678,8 +678,6 @@ impl Panel for WaveformPanel {
         false
     }
 
-    /// The layout dump carries the panel's config; the builder registered
-    /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -694,6 +692,8 @@ impl Panel for WaveformPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
+    /// The layout dump stores the panel's config; the builder registered
+    /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -786,7 +786,7 @@ impl WaveformPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let player = self.state.player.read(cx);
         // A played-out queue counts as nothing playing: the strip clears
-        // instead of sitting there fully lit.
+        // instead of staying there fully lit.
         let now = player.now_playing().filter(|_| !player.queue_ended());
         let playing = player.is_playing();
         // The engine's position clock blinks off for a moment between
@@ -799,20 +799,20 @@ impl WaveformPanel {
         // Kick a decode when the playing track changes.
         if let Some(now) = &now {
             // Keyed on the file: the strip draws the whole image's shape,
-            // and a cue rip's tracks all live inside one.
+            // and a cue rip's tracks are all inside one.
             if self.track.as_deref() != Some(now.path()) {
                 let path = now.path().to_path_buf();
                 self.start_decode(path, cx);
             }
         }
 
-        // The marker only shows where a scrobble could actually land: the
+        // The marker only shows where a scrobble could actually happen: the
         // toggle on and the scrobbler armed.
         let marker = (self.config.scrobble_marker)
             .then(|| self.state.scrobbler.read(cx).marker())
             .flatten();
 
-        // The seek preview rides on real peaks only: the placeholder and
+        // The seek preview only shows on real peaks: the placeholder and
         // the unavailable message have no track shape to point along.
         let mut hover_duration: Option<f64> = None;
         let body = match (&now, &self.peaks) {
@@ -858,11 +858,11 @@ impl WaveformPanel {
         };
 
         // While playing, the direct observe re-renders the strip on every
-        // pump tick - the rate the playhead actually moves at, so frame
+        // pump tick, the rate the playhead actually moves at, so frame
         // polling on top only redraws identical pixels. Frames are for the
-        // windows the pump does not notify through: the morph, the
+        // windows the pump doesn't notify through: the morph, the
         // generating stand-in, and the between-tracks blink (pause and
-        // skips do not notify on their own, so those windows carry the
+        // skips don't notify on their own, so those windows cover the
         // transitions). A paused strip with a settled shape parks; the
         // pump's play-state notify wakes it on resume.
         let morphing = self.morph_at.elapsed().as_secs_f32() < tokens::EASE_SECS;

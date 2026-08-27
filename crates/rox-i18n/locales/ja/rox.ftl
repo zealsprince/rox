@@ -1,13 +1,7 @@
 ### 日本語。en-CA/rox.ftl をキーごとにそのまま写したもの。
 ### rox-i18n のパリティテストがそれを守っている。
-
-### The source locale. Every key lives here first, the other locales
-
-### mirror this file one for one, and the parity test in rox-i18n is
-
-### what holds them to it. Keys are surface-prefixed kebab-case; a
-
-### row's description rides the label's message as an attribute.
+### キーは画面ごとの接頭辞付き kebab-case。行の説明文はラベルの
+### メッセージに付く属性。
 
 ## Shared widgets
 tracking-title = 追従
@@ -24,7 +18,7 @@ valign-bottom = 下
 
 ## Panel source and search rows
 source-track = トラック
-    .description = 再生中のものを追うか、ライブラリで選択中のものを追うか
+    .description = 再生中を追うか、ライブラリの選択を追うか
 source-follow-playing = 再生中を追う
 source-follow-selection = 選択を追う
 source-playing = 再生中
@@ -63,7 +57,7 @@ signal-aggregate-unpicked = 何も選ばれていないので、このトータ�
 signal-rate = レート
     .description = 入力が最大のときの毎秒の周回数。1 を超えると 0 に戻ってまた登るので、シェーダーはこれを位相として読む
 signal-reset-on-track = 曲頭でリセット
-    .description = 新しい曲が始まったらゼロまで抜く。位相が前の曲の合計を引きずらないように
+    .description = 新しい曲が始まったらゼロまで戻す。位相が前の曲の合計から始まらないように
 signal-flush = ゼロに戻す
 signal-routes-in-panel = { $count ->
    *[other] このパネル内の { $count } 個のルート
@@ -77,9 +71,9 @@ route-shared-note = このシグナル上のすべてのルートで共有
 route-signal-gone = このルートのシグナルが失われています。上で別のものを選ぶまで、つまみはスライダーの値を保ちます。
 route-range-note = このパラメーターだけの範囲
 route-quiet = 無音時
-    .description = 無音のときにつまみが届く値。自身の設定値に対する割合
+    .description = 無音のときにつまみが示す値。自身の設定値に対する割合
 route-loud = 最大時
-    .description = シグナルが最大のときに届く値。100% はスライダー自身の値、無音時より下なら下向きに変調する
+    .description = シグナルが最大のときに示す値。100% はスライダー自身の値、無音時より下なら下向きに変調する
 route-slot = スロット
     .description = シェーダーの 16 個のシグナルスロットのうち、このルートが埋めるもの
 route-slot-quiet-description = 無音のときスロットが示す値
@@ -106,7 +100,7 @@ panel-rename-hint-after = で名前を変更
 panel-was-closed = パネルは閉じられました
 panel-reset = リセット
 panel-inverse = 反転
-panel-apply-song-theme = 曲のテーマを適用
+panel-apply-song-theme = 曲テーマを適用
 panel-page-appearance = 外観
 panel-page-behavior = 動作
 panel-page-shader = シェーダー
@@ -126,7 +120,7 @@ panel-locked = ロック
 panel-drag-anchor = ドラッグ領域
     .description = パネル上のどこをドラッグしてもウィンドウが動き、普通のクリックはコントロールに届く。ウィンドウ枠なしのレイアウト向け
 panel-slot-controls = スロット操作
-    .description = このパネルが抱えるパネルを入れ替え・削除する隅のボタンを表示する。隠しても、レイアウトは設定のワークスペースページのツリーから編集できる
+    .description = このパネルの中に置いたパネルを入れ替え・削除する隅のボタンを表示する。隠しても、レイアウトは設定のワークスペースページのツリーから編集できる
 panel-min-width = 最小幅
     .description = リサイズがパネルを狭めるのをやめる位置。書いたとおりに効き、パネル自身の下限より下も許すので、細いストリップは既定より詰められる。空なら下限はそのまま
 panel-max-width = 最大幅
@@ -153,7 +147,7 @@ panel-font-size = フォントサイズ
 panel-surface-shader = 面のシェーダー
     .description = このパネルの本体に WGSL シェーダーを走らせる。アプリの画面シェーダーの下に入る
 panel-run-when-idle = 無音時も動かす
-    .description = 音が止まっていてもフレームを描き続ける。オフならシェーダーはその場で止まり、パネルは負荷ゼロになる
+    .description = 音が止まっていてもフレームを描き続ける。オフならシェーダーは最後のフレームで止まり、パネルは負荷ゼロになる
 panel-shader-is-scene = このシェーダーはシーンなので、パネル本体の上に重ねるのではなく覆ってしまいます。バンドルか古い設定から来たものです。上のリストには、パネルが読めるまま残るシェーダーだけが並びます。
 
 ## Shader picker and saving
@@ -195,6 +189,7 @@ settings-language = 言語
 settings-language-system = (システムの言語)
 settings-language-search = 言語を検索
 picker-no-matches = 一致なし
+settings-search-no-matches = "{ $text }" に一致するものがありません
 
 ## Embed dialog
 bake-window-title = rox - 保存済みメタデータの埋め込み
@@ -203,7 +198,7 @@ bake-intro = 保存済みのメタデータをファイル自体に書き込み�
 bake-formats = MP3 と FLAC のみ。他の形式と CUE のトラックはスキップされます
 bake-source-lyrics = 歌詞
 bake-source-gain = ReplayGain
-bake-source-acoustic = 音響的な特徴
+bake-source-acoustic = 音響的な記述
 bake-detail-nothing = 埋め込む保存データがない
 bake-detail-only-skipped = 書き込むものなし、{ $skipped } 件スキップ
 bake-detail-writes = { $count ->
@@ -224,6 +219,13 @@ bake-hint-key = Enter
 bake-hint-after = を押す
 bake-embed = 埋め込む
 bake-cancel = キャンセル
+bake-summary-files = { $count ->
+   *[other] { $count } 件のファイル
+}
+bake-summary-updated = { $files } を更新
+bake-summary-stopped = { $files } を更新したところで停止
+bake-summary-skipped = 、{ $count } 件をスキップ
+bake-summary-failed = 、{ $count } 件が失敗
 
 ## Arrange editors and header pieces
 arrange-shown = 表示
@@ -277,6 +279,8 @@ panel-reveal-in-browser = ファイルマネージャーで表示
 panel-play-next = 次に再生
 panel-add-to-queue = キューに追加
 panel-add-to-playlist = プレイリストに追加
+panel-favourite-add = お気に入りに追加
+panel-favourite-remove = お気に入りから削除
 shader-pick-missing = { $name } (見つかりません)
 shader-pick-custom = カスタム
 
@@ -334,7 +338,7 @@ dock-expand = 広げる
 shader-note-empty = まずサンプルを選ぶか、fs_user(uv) を定義したフラグメントステージを持つ .wgsl ファイルを rox に指定してください
 shader-note-missing = { $name } はこのワークスペースのシェーダーにもう無いので、何も描かれません。ここで別のものを選べば、このパネルは自前のソースを持ちます。
 shader-note-shared = このワークスペース内で共有。編集すると、これを使うすべての面に反映されます。
-shader-note-file = { $path }。シェーダーを描いたまま保存を再読み込みし、ソースはレイアウトやバンドルの中にも保存されるので、そのファイルを持たないマシンでも動きます。
+shader-note-file = { $path }。保存するたびシェーダーを描いたまま読み込み直します。ソースはレイアウトやバンドルの中にも保存されるので、そのファイルを持たないマシンでも動きます。
 shader-note-custom = このソースはレイアウトやバンドルの中に保存されていて、裏にファイルはありません。ファイルとして編集すると書き出され、以後の保存を拾います。
 
 ## Panel pages and shared sides
@@ -345,6 +349,7 @@ panel-page-source = ソース
 panel-page-bindings = バインド
 panel-page-emitters = エミッター
 panel-page-forces = 力
+panel-page-scene = シーン
 side-left = 左
 side-right = 右
 genre-face-mosaic = モザイク
@@ -371,7 +376,7 @@ library-headers = 見出し
 library-group-by = グループ化
     .description = 見出しが何で区切るか。ジャンルと年はリストを並べ替える
 library-header-row = 見出し行
-    .description = 一行見出しに左から右へ何を詰めるか。スペーサーか区切り線で左右に分かれる
+    .description = 一行見出しが左から右へ何を出すか。スペーサーか区切り線で左右に分かれる
 library-header-lines = 見出しの行
     .description = ブロックの行を上から下へ。空の行は消える
 library-follow-description = 曲が変わるたびに再生中の行までスクロールする
@@ -402,7 +407,7 @@ library-stripes = 交互の背景色
     .description = 一行おきにトラック行を色づけし、長いリストを追いやすくする
 library-row-borders = 行の境界線
     .description = 各トラック行の下の細い線
-library-art-description = 拡張見出しのタイル。カバー、アーティストの写真、ジャンルの表紙のいずれか
+library-art-description = 拡張見出しのタイル。カバー、アーティストの写真、ジャンルの表示のいずれか
 library-art-rounding = アートの角の丸み
     .description = アートの角を丸める
 library-art-position = アートの位置
@@ -411,7 +416,7 @@ library-art-margin = アートの余白
     .description = タイルをブロックの内側に寄せる。正方形を保つように縮む
 library-circular-portraits = 円形の写真
     .description = アーティストでグループ化したとき、角の丸みの設定ではなくウォール全体を円に切り抜く
-library-genre-face = ジャンルの表紙
+library-genre-face = ジャンルの表示
     .description = ジャンルでグループ化したとき、タイルに何を出すか。カバー、ジャンルの色をかけたカバー、または図形を敷いたカラーカード
 
 ## Album grid panel
@@ -573,18 +578,18 @@ settings-audio-output-buffer = バッファ
     .description = サウンドカードが一度に抱える音の量。短いほど反応は速いが、負荷の高いマシンでは早く音が途切れる。長いほど安全でのんびりする
 settings-audio-output-buffer-default = 既定 (10 ms)
 settings-audio-output-device = デバイス
-    .description-default = システムの既定は、デスクトップ側で設定されているものに従います
-    .description-linux = 排他モードはカーネルから直接カードを掴むので、一覧はデスクトップの出力ではなくサウンドカードになります。Bluetooth などサウンドサーバー経由のデバイスは掴めるカードがなく、排他をオフにしたときだけ出ます
-    .description-other = 排他モードはデバイスを rox 専用にするので、モードをオフにするまでデスクトップの他のものはそこから音を出せません
+    .description-default = システムの既定は、デスクトップ側で設定されているものに従う
+    .description-linux = 排他モードはカーネルから直接カードを掴むので、一覧はデスクトップの出力ではなくサウンドカードになる。Bluetooth などサウンドサーバー経由のデバイスは掴めるカードがなく、排他をオフにしたときだけ出る
+    .description-other = 排他モードはデバイスを rox 専用にするので、モードをオフにするまでデスクトップの他のものはそこから音を出せない
 settings-audio-output-device-system-default = システムの既定
 settings-audio-output-experimental-badge = 実験的
 settings-audio-output-experimental-tooltip = このプラットフォームの排他バックエンドは、公開されているオーディオ仕様から書かれていますが、開発者が実機で動かしたことはありません。デバイスを掴むか、理由を示して共有モードに落ちるかのどちらかで、無音になることはないはずです。おかしな挙動をしたらオフにして、このバッジの横のボタンから何が起きたか報告してください。
 settings-audio-output-format = フォーマット
-    .description = rox がカードに渡す形式。選んだ形式を受けないカードは持っている中で一番広い形式で動き、下のステータスにどれかが出る
+    .description = rox がカードに渡すフォーマット。選んだフォーマットを受けないカードは持っている中で一番広いもので動き、どれになったかは下のステータスに出る
 settings-audio-output-format-f32 = 32 ビット浮動小数点
 settings-audio-output-format-s16 = 16 ビット整数
 settings-audio-output-format-s32 = 32 ビット整数
-settings-audio-output-format-widest = 利用できる最も広い形式
+settings-audio-output-format-widest = 利用できる最も広いフォーマット
 settings-audio-output-issue-tooltip = このマシンで排他モードがどう振る舞ったかを報告します。プラットフォームと合意されたストリームを埋めた GitHub の issue を開きます。
 settings-audio-output-mode-exclusive = 排他
 settings-audio-output-mode-shared = 共有
@@ -594,7 +599,7 @@ settings-audio-output-sample-rate = サンプルレート
     .description = 追従するとファイルごとのレートでデバイスを開き直すので、レートが変わる境目で無音が入る。一つのレートに固定すればそれは起きず、合わないものはリサンプリングされる
 settings-audio-output-status-error-hint = 別のデバイスを選ぶか、排他をオフにしてください
 settings-audio-output-status-error-title = 出力なし
-settings-audio-output-status-idle-hint = 曲を再生すると、デバイスが受け入れた形式が出ます
+settings-audio-output-status-idle-hint = 曲を再生すると、デバイスが受け入れたフォーマットが出ます
 settings-audio-output-status-idle-title = 再生していません
 settings-audio-replaygain-level-by = 基準
     .description = すべての曲を ReplayGain タグが測った音量で鳴らし、シャッフルがマスターごとに跳ねないようにする。トラックはファイル単位、アルバムは盤全体のゲインを全曲に使うので、アルバム内の静と動はそのまま残る
@@ -614,7 +619,7 @@ settings-audio-replaygain-save = 測定したゲインの保存先
 settings-audio-replaygain-status-measured = スキャン済み { $total } 曲すべてに基準となるゲインがあり、うち { $measured } 曲は rox が測定しました
 settings-audio-replaygain-status-tagged = スキャン済み { $total } 曲すべてに ReplayGain タグがあります
 settings-audio-replaygain-untagged = タグのないファイル
-    .description = ReplayGain タグを持たないファイルをどの音量で鳴らすか。誰も測っていないので、これは測定の代わりの当て推量です。0 のままにすれば、タグのない曲は今までどおり鳴ります
+    .description = ReplayGain タグを持たないファイルをどの音量で鳴らすか。誰も測っていないので、これは測定の代わりの当て推量。0 のままにすれば、タグのない曲は今までどおり鳴る
 settings-audio-section-broadcast = 配信
 settings-audio-section-equalizer = イコライザー
 settings-audio-section-output = 出力
@@ -732,11 +737,11 @@ settings-library-tempo-status-tagged = スキャン済み { $total } 曲すべ�
 settings-library-watch-folders = フォルダーを監視
     .description = 追加・編集・削除されたファイルを、手動の再スキャンなしでその場でライブラリに取り込む
 settings-library-write-stored = 保存済みの内容をファイルに書き込む
-    .description = 3 つの保存先設定は次回の書き込みからしか効かないので、タグに切り替える前に保存したものは rox の中だけにあります。これは rox が既に持っている歌詞・ゲイン・記述をファイル自体に書き込み、他のプレイヤーに渡したフォルダーでも読めるようにします。再計算はしません
+    .description = 3 つの保存先設定は次回の書き込みからしか効かないので、タグに切り替える前に保存したものは rox の中だけにある。これは rox が既に持っている歌詞・ゲイン・記述をファイル自体に書き込み、そのフォルダーを読む他のプレイヤーにも見えるようにする。再計算はしない
 
 ## Settings: MCP
 settings-mcp-client-config = クライアント設定
-    .description = MCP クライアント (Claude Code、Claude Desktop、その他何でも) のサーバー一覧に貼り付けると、ライブラリ・再生中の曲・再生操作について rox に問い合わせられます。rox が起動している必要があり、ツールは制御ソケット経由で動きます
+    .description = MCP クライアント (Claude Code、Claude Desktop、その他何でも) のサーバー一覧に貼り付けると、ライブラリ・再生中の曲・再生操作について rox に問い合わせられる。rox が起動している必要があり、ツールは制御ソケット経由で動く
 settings-mcp-enable = MCP サーバーを有効にする
     .description = 接続した MCP クライアントからのツール呼び出しに応じる。プロキシは呼び出しごとにこれを見るので、オフのあいだクライアントは理由付きで拒否される。下の設定はどちらの状態でも用意できる
 
@@ -841,24 +846,24 @@ settings-storage-cover-thumbnails = カバーのサムネイル
 settings-storage-logs = ログ
     .description = 不具合報告のために各実行が書き出すもの (logs/rox.log)。サイズ上限で切り替えるので大きくならない
 settings-storage-looks-layouts = 見た目とレイアウト
-    .description = 今アプリが着ている見た目 (workspace.json) と、保存したワークスペース、書き出したシェーダーファイル、アイコンパック。小さく、その一バイト一バイトが自分で作ったもの
+    .description = 今アプリが使っている見た目 (workspace.json) と、保存したワークスペース、書き出したシェーダーファイル、アイコンパック。小さく、その一バイト一バイトが自分で作ったもの
 settings-storage-lyrics = 歌詞
     .description = 取得・編集した歌詞をアプリ自身の保管場所 (lyrics/) に置く。ライブラリのフォルダーは汚れない
 settings-storage-measured-tempos = 測定したテンポ
-    .description = タグにテンポが無い曲について rox が音から数えた値。タグ自身の数値には触れていません。消すと、それらの曲はライブラリページの「未処理を解析」の対象に戻ります。改良したビート検出を古い値に行き渡らせるのがこの手です
+    .description = タグにテンポが無い曲について rox が音から数えた値。タグ自身の数値には触れない。消すと、それらの曲はライブラリページの「未処理を解析」の対象に戻るので、改良したビート検出で古いパスが書いた数値を置き換えられる
 settings-storage-model-fallback-this = このモデル
 settings-storage-music-summary = { $tracks }、{ $albums }、{ $size }
 settings-storage-model-weights = モデルの重み
     .description = 音響解析のためにダウンロードしたモデル (models/)。取得と削除は ML モデルのページで、1 行が 1 モデル
 settings-storage-models-empty = モデル
-    .description = まだ何もライブラリを記述していません。ライブラリページで音響解析をオンにするとここが埋まり、走ったモデルごとに行ができます
+    .description = まだ何もライブラリを記述していない。ライブラリページで音響解析をオンにするとここが埋まり、走ったモデルごとに行ができる
 settings-storage-music-files = 音楽ファイル
-    .description = スキャンしたフォルダーの中身。ファイルはその場から動きません
+    .description = スキャンしたフォルダーの中身。ファイルはその場から動かない
 settings-storage-none = なし
 settings-storage-playlists-history = プレイリストと履歴
     .description = プレイリストとその中身、再生した記録、ライブラリのジャンルのメモ。library.db の他の部分に比べればどれも小さい
 settings-storage-reclaimable = 回収できる領域
-    .description = 削除が library.db の中に残した空きページ。新しい書き込みがまた埋めるので、ファイルは縮む前にまず膨らむのをやめます
+    .description = 削除が library.db の中に残した空きページ。新しい書き込みがまた埋めるので、ファイルは縮む前にまず膨らむのをやめる
     .keywords = vacuum 圧縮 縮小 データベース compact shrink
 settings-storage-section-acoustic = 音響的な記述
 settings-storage-section-app-data = アプリのデータ
@@ -937,9 +942,9 @@ settings-common-use = 使う
 settings-confirm-apply-body = レイアウト、パレット、外観がワークスペースのものに置き換わります。
 settings-confirm-apply-imported-body = ワークスペースに保存されました。今これを適用すると、レイアウト、パレット、外観がワークスペースのものに置き換わります。
 settings-confirm-clear = クリア
-settings-confirm-clear-embeddings-body = 記述が消え、その分の領域が戻ります。また持つには、解析パスがライブラリ全曲を聴き直すことになります。
+settings-confirm-clear-embeddings-body = 記述が消え、その分の領域が戻ります。もう一度そろえるには、ライブラリの全曲に解析パスをかけ直すことになります。
 settings-confirm-clear-embeddings-title = "{ $model }" が記述した内容を消しますか?
-settings-confirm-clear-measured-bpm-body = rox が割り出したテンポはすべて未測定に戻ります。ファイル自身のタグの数値は残ります。また持つには、テンポのパスがそれらの曲をデコードし直すことになります。
+settings-confirm-clear-measured-bpm-body = rox が割り出したテンポはすべて未測定に戻ります。ファイル自身のタグの数値は残ります。もう一度そろえるには、それらの曲にテンポのパスをかけ直すことになります。
 settings-confirm-clear-measured-bpm-title = 測定したテンポを消しますか?
 settings-confirm-overwrite-workspace-body = 保存済みのワークスペースが現在の状態に置き換わります。
 settings-confirm-overwrite-workspace-title = ワークスペース "{ $name }" を上書きしますか?
@@ -1092,7 +1097,7 @@ tasks-scan-folder-count = { $count ->
 }
 tasks-scan-last-scanned = { $folders }、最後のスキャンは { $ago } 前
 tasks-scan-never-scanned = { $folders }、未スキャン
-tasks-scan-no-folders = フォルダーがまだ追加されていません。ファイルメニューから開いてください
+tasks-scan-no-folders = フォルダーがまだ追加されていません。設定のライブラリで追加してください
 tasks-start-analyze-missing = 未処理を解析
 tasks-start-measure-missing = 未測定を測る
 tasks-start-rescan = 再スキャン
@@ -1101,7 +1106,7 @@ tasks-stopping = 停止中...
 tasks-tempo-all = { $count } 曲すべてにテンポがあります
 tasks-tempo-off = 曲の速さの割り出しは、設定のライブラリでオフになっています
 tasks-tempo-partial = { $total } 曲中 { $missing } 曲にテンポがありません
-tasks-timing = 測定中 { $progress }
+tasks-timing = 計測中 { $progress }
 tasks-tip = ライブラリのタスクを開く
 tasks-window-title = rox - タスク
 tasks-working-out-missing = 何が未処理か調べています...
@@ -1171,7 +1176,7 @@ about-update-failed = 更新に失敗しました: { $error }
 about-version = バージョン { $version }
 about-version-available = バージョン { $version } が利用できます
 about-version-ready = バージョン { $version } の準備ができました
-about-window-title = rox - rox について
+about-window-title = rox - バージョン情報
 
 ## Welcome window
 welcome-add-folder = フォルダーを追加
@@ -1205,7 +1210,7 @@ welcome-rearrange-after = を押しながらパネルのどこかをドラッグ
 welcome-rearrange-before = タブをドラッグするか、
 welcome-settings-hint-after = で設定が開きます。パレット、透過、動作。
 welcome-shelf-caption = 選ぶとメインウィンドウの見た目が入れ替わり、ツアーが終わります。このウィンドウは「アプリケーション > ようこそ」からいつでも開けます。
-welcome-stage-lead-quick-start = ワークスペースを選ぶと、メインウィンドウがそれを着ます。レイアウト、パレット、見た目のすべて。
+welcome-stage-lead-quick-start = ワークスペースを選ぶと、メインウィンドウがそれに切り替わります。レイアウト、パレット、見た目のすべて。
 welcome-stage-lead-welcome = Foobar が 20XX 年に作られていたら。
 welcome-stage-title-quick-start = クイックスタート
 welcome-stage-title-welcome = rox へようこそ
@@ -1331,7 +1336,7 @@ keymap-stamp-line = 歌詞に時刻を打つ
 keymap-toggle-playback = 再生 / 一時停止
     .description = 今の曲を再生するか、その場で一時停止する
 keymap-toggle-post-shader = オーバーレイシェーダーを切り替え
-    .description = 画面シェーダーをオンオフする。意図してどこでも割り当ててある。シェーダーは、そのキーで辿り着くはずのコントロールをすべて埋めてしまえるので
+    .description = 画面シェーダーをオンオフする。シェーダーがオフにするためのコントロールごと覆い隠すことがあるので、どこでも効くように割り当ててある
 keymap-toggle-zoom = パネルグループを最大化
     .description = 最後にクリックしたパネルグループでドックを埋める、または元に戻す
 
@@ -1364,6 +1369,7 @@ panel-catalog-queue = キュー
 panel-catalog-queue-widget = キューウィジェット
 panel-catalog-seek = シーク
 panel-catalog-slide = スライド
+panel-catalog-spectrogram = スペクトログラム
 panel-catalog-spectrum = スペクトラム
 panel-catalog-stats-widget = 統計ウィジェット
 panel-catalog-status = ステータス
@@ -1388,6 +1394,8 @@ updater-size-mismatch = サーバーの提示は { $claimed } バイト、リリ
 lastfm-import-matching = ライブラリと照合中
 lastfm-import-read = お気に入りの曲を { $count } 件読み込みました
 lastfm-import-stopped = お気に入りの曲 { $count } 件で止まりました
+lastfm-import-matched = 、{ $count } 件が一致
+lastfm-import-added = 、{ $count } 件をお気に入りに追加
 
 ## Tag tools
 tags-editor-clear-all = すべて消去
@@ -1403,9 +1411,11 @@ tags-editor-guess-pattern-label = パターン
 tags-editor-loading = タグを読み込み中...
 tags-editor-look-up = 検索
 tags-editor-multiple-values = 複数の値
+tags-editor-clear-on-save = 保存すると消去されます
 tags-editor-other-tags = その他のタグ ({ $count })
 tags-editor-remove = 削除
 tags-editor-reveal = 場所を開く
+tags-editor-save-errors = { $count } 件のファイルが失敗しました。{ $error }
 tags-editor-saving-progress = 保存中 { $done }/{ $total }...
 tags-editor-table-view = テーブル
 tags-editor-tags-section = タグ
@@ -1414,7 +1424,7 @@ tags-editor-unread-count = { $total } 件中 { $failed } 件のファイルの�
 tags-editor-will-clear = 消去されます
 tags-editor-will-remove = 削除されます
 tags-editor-window-title = rox - タグエディター
-tags-guess-empty-segment = パターンの結果がフォルダー名かファイル名が空になります
+tags-guess-empty-segment = パターンの結果でフォルダー名かファイル名が空になります
 tags-guess-no-placeholders = プレースホルダーがありません
 tags-guess-skip-renders-nothing = %skip% に読み捨てるものがありません
 tags-guess-unclosed = % が閉じていません
@@ -1435,7 +1445,7 @@ tags-matcher-window-title = rox - メタデータを探す
 tags-rename-blocked-cue = CUE のトラックで、専用のファイルがありません
 tags-rename-blocked-duplicate = 2 曲が同じ名前になります
 tags-rename-blocked-occupied = そこには既にファイルがあります
-tags-rename-blocked-outside-roots = すべてのライブラリのルートの外です
+tags-rename-blocked-outside-roots = どのライブラリのルートにも入っていません
 tags-rename-blocked-unresolved = まだカタログにありません
 tags-rename-move-error = { $name }: { $error }
 tags-rename-move-errors = { $count } 件のファイルが失敗しました。{ $error }
@@ -1448,6 +1458,7 @@ tags-rename-unchanged = 変更なし
 tags-rename-will-move = { $total } 件中 { $count } 件が移動します
 tags-rename-window-title = rox - ファイル名の変更
 tags-repair-affected-files = 対象のファイル
+tags-repair-section = 修復
 tags-repair-check-to-repair = 修復するファイルにチェックを入れてください
 tags-repair-count = { $count ->
    *[other] { $count } 件のファイル
@@ -1475,6 +1486,8 @@ tags-repair-window-title = rox - タグの修復
 
 ## Convert
 convert-arg-names-file = "{ $token }" はファイルを指しています。出力先はフォルダーとパターンから決まります
+convert-section-output = 出力
+convert-section-preview = プレビュー
 convert-arg-not-flag-or-value = "{ $token }" はフラグでも、その値でもありません
 convert-check-wrote-nothing = ffmpeg は正常終了しましたが、何も書き出しませんでした
 convert-custom-ext-empty = コンテナを決めるのは拡張子なので、指定が要ります
@@ -1482,7 +1495,7 @@ convert-custom-ext-invalid = "{ $ext }" はコンテナ名ではありません�
 convert-dialog-browse = 参照...
 convert-dialog-check-passed = ffmpeg がこの設定で無音を一瞬エンコードできたので、動きます
 convert-dialog-check-waiting = 入力が止まると ffmpeg で確認します
-convert-dialog-checking = ffmpeg に確認中...
+convert-dialog-checking = ffmpeg で確認中...
 convert-dialog-choose-folder = 書き出し先のフォルダーを選ぶ
 convert-dialog-convert-button = 変換
 convert-dialog-custom-label = カスタム
@@ -1520,7 +1533,7 @@ convert-summary-files = { $count ->
 convert-summary-line = { $files } を { $dest } へ
 convert-summary-skipped = 、{ $count } 件をスキップ
 convert-summary-stopped = { $files } を { $dest } へ書き出したところで停止
-convert-version-answered = { $binary } が応答しました
+convert-version-answered = { $binary } は動きましたが、バージョンを返しませんでした
 
 ## Duplicates
 duplicates-auto-select = 自動選択
@@ -1566,6 +1579,8 @@ smart-playlist-matched-tracks = 一致した曲
 smart-playlist-new-title = 新しいスマートプレイリスト
 smart-playlist-no-matches = 一致する曲がありません
 smart-playlist-query-label = クエリ
+smart-playlist-sort-default = 既定の順
+smart-playlist-sort-added = 追加日
 smart-playlist-sort-label = 並べ替え
 smart-playlist-unknown-field = "{ $field }:" は項目名ではないので、この語は普通のテキストとして扱われます
 smart-playlist-window-title = rox - { $verb }
@@ -1582,9 +1597,12 @@ cover-art-back = 裏
 cover-art-disc = 盤面
 cover-art-front = 表
 cover-artwork = アートワーク
-    .description = どの画像を出すか。ファイルが持っていない枠は表ジャケットに戻る
+    .description = どの画像を出すか。ファイルにその枠が無ければ表ジャケットを出す
 cover-disc-style = ディスクの見せ方
     .description = アートワークを CD、またはレコードのレーベル面に見立てる
+cover-disc-off = オフ
+cover-disc-cd = CD
+cover-disc-vinyl = レコード
 cover-editor-choose-image = 画像を選ぶ
 cover-editor-multiple = 複数
 cover-editor-none = なし
@@ -1655,7 +1673,7 @@ lyrics-falloff-edge = 減衰する側
 lyrics-find-online = オンラインで歌詞を探す...
 lyrics-follow-playback = 再生に追従
     .description = 同期歌詞の再生に合わせて、現在行を中央へなめらかに送る
-lyrics-font = 歌詞の書体。既定はアプリのフォントに従う
+lyrics-font = フォント
     .description = 歌詞の書体。既定はアプリのフォントに従う
 lyrics-gap-threshold = 間奏のしきい値
     .description = イントロや間奏がどれくらい続いたら休符を出すか
@@ -1841,7 +1859,7 @@ particles-width = 幅
 
 ## Spectrum panel
 spectrum-axis-labels = 軸のラベル
-    .description = パネル上に範囲の目盛りを出す。オクターブ (C1、C2、...) か周波数 (100、1k、10k)
+    .description = パネル上に範囲の目盛りを出す。オクターブ (C1, C2, ...) か周波数 (100, 1k, 10k)
 spectrum-bar-gap = バーの間隔
     .description = バーどうしの隙間。広げるほど本数は減る
 spectrum-bar-width = バーの太さ
@@ -1934,6 +1952,40 @@ vu-style = スタイル
 vu-style-continuous = 連続
 vu-style-segments = セグメント
 
+## Spectrogram panel
+spectrogram-ceiling = 天井
+    .description = カラーマップの明るい端に対応するレベル。これより大きい音はすべてここに張り付く
+spectrogram-colormap = カラーマップ
+    .description = 音量を色にどう対応させるか
+spectrogram-colormap-cover = カバー
+spectrogram-colormap-grayscale = グレースケール
+spectrogram-colormap-ice = アイス
+spectrogram-colormap-magma = Magma
+spectrogram-colormap-theme = テーマ
+spectrogram-colormap-viridis = Viridis
+spectrogram-direction = 方向
+    .description = 新しい列が入ってくる辺。これによって周波数軸がパネルを上に伸びるか、横に伸びるかも決まる
+spectrogram-fft-size = FFT サイズ
+    .description = 解析に使う窓のサイズ。列がトランジェントに素早く反応するか、低い 2 つの音をきれいに分けられるかのトレードオフ
+spectrogram-floor = フロア
+    .description = カラーマップの暗い端に対応するレベル。これより小さい音はすべて背景として表示される
+spectrogram-grid = 目盛り
+    .description = 画面の上に重ねる周波数の区切り線
+spectrogram-high-bound = 上限
+    .description = 周波数軸の上端。ナイキスト周波数より下に抑えて、ほぼ無音な上の方のオクターブを省く
+spectrogram-history = 履歴
+    .description = 一番古い列が流れて消える前に、パネルがいくつの列を保持しておくか
+spectrogram-hold-on-pause = 一時停止で止める
+    .description = 一時停止中は静止した画面を保持し、無音を流し込まないようにする
+spectrogram-labels = ラベル
+    .description = パネルに余裕がある場所に沿って表示する周波数の数字
+spectrogram-log-scale = 対数スケール
+    .description = 実験機器のような均等な Hz 間隔ではなく、すべてのオクターブに同じ幅を与える、音楽的な読み方
+spectrogram-low-bound = 下限
+    .description = 周波数軸の下端
+spectrogram-speed = 速さ
+    .description = 画面がどれくらいの速さでスクロールするか。1 秒あたりの列数
+
 ## Oscilloscope panel
 
 oscilloscope-channels = チャンネル
@@ -1978,6 +2030,12 @@ shader-panel-note-off-body = ソースとバインドはそのまま残って止
 shader-panel-note-off-title = このシェーダーはオフです。
 shader-panel-note-pending-body = このマシンからではなくレイアウトかワークスペースと一緒に届いたので、確認するまで止まっています。
 shader-panel-note-pending-title = このシェーダーはまだ確認されていません。
+shader-pending-origin-file = 出どころは { $path } とされています
+shader-pending-origin-inline = 裏にファイルはなく、ソースはレイアウトと一緒に届きました
+shader-pending-more-lines = ... 他 { $count } 行
+shader-eject-name-taken = { $name } はこのワークスペースのシェーダーに既に { $count } 件の連番コピーがあります
+shader-eject-not-in-pool = { $name } はこのワークスペースのシェーダーにありません
+shader-eject-failed = 書き出し: { $error }
 shader-panel-pick = シェーダーを選ぶ
 shader-panel-run-shader = シェーダーを動かす
     .description = オフにするとソース、参照先、バインドはそのままで、何も描かれない
@@ -2119,6 +2177,7 @@ folder-tree-title = ツリー
 art-always = 何も再生していなくてもカバーを引っ込めたままにする。カーソルを乗せたカバーだけがはっきり見える
 art-convert = 変換...
 art-covers-section = カバー
+matcher-section-matches = 候補
 art-desaturate = 再生中のアルバム以外のカバーをグレースケールにする。カーソルを乗せたカバーは色が戻る
 art-dim-while-playing = 再生中のアルバム以外のカバーを暗くする。カーソルを乗せたカバーは戻る
 art-disc-style = ディスクの見せ方
@@ -2128,7 +2187,7 @@ art-fill-panel = パネルを埋める
     .description = 中央のカバーの大きさをパネルの高さだけで決める (縦向きのときは幅)。両側のカバーは縮まず縁からはみ出す
 art-follow-description = 曲が変わるたびに再生中のアルバムを中央に置く
 art-glow = グロー
-    .description = 中央のカバーの後ろにアクセント色をにじませる。アートの色づけがオンなら再生中のアルバムの色になる
+    .description = 中央のカバーの後ろにアクセント色をにじませる。曲テーマがオンなら再生中のアルバムの色になる
 art-layout-section = レイアウト
 art-perspective = パース
     .description = 両側のカバーを平たく潰さず、実際の 3D で回す
@@ -2178,7 +2237,7 @@ queue-widget-open-on-click = クリックでキューを開く
     .description = ウィジェットをクリックすると、開いているキューパネルへ移動する。無ければウィンドウでキューを開く
 queue-widget-section-click = クリック
 queue-widget-title = キューウィジェット
-queue-widget-up-next = 次に再生
+queue-widget-up-next = 次の曲
 
 ## Biography panel
 biography-background = 背景
@@ -2198,7 +2257,7 @@ biography-not-found = { $name } は見つかりませんでした
 biography-plays-count = { $count } 回再生
 biography-refresh = 更新
 biography-similar-artists = 似たアーティスト
-    .description = 関連する聴かれ方が寄っている名前を下部に出す
+    .description = 聴かれ方の近い関連アーティストを下部に出す
 biography-similar-heading = 似たアーティスト
 biography-stats = 統計
     .description = Last.fm のリスナー数と再生数を名前の下に出す
@@ -2234,7 +2293,7 @@ output-detail-label = 詳しさ
 output-device-name = デバイス名
     .description = 見出しに動作中のデバイス名を出す。オフなら、行はモード・レート・フォーマットだけになる
 output-file-rate = ファイルのレート
-    .description = 何も変換していないときに、再生中のファイル自身のレートを確かめる。変換しているときはどちらにせよ表示される。警告したいのはそこなので
+    .description = 何も変換していないときに、再生中のファイル自身のレートを確かめる。警告の対象は変換なので、変換中はどちらにせよ表示される
 output-mode-exclusive = 排他
 output-mode-shared = 共有
 output-no-output = 出力なし
@@ -2250,7 +2309,7 @@ output-rate-resampled = 再生中のファイルは { $rate } Hz で、デバイ
 output-rate-resampled-short = { $rate } Hz ファイル、リサンプリング済み
 output-rate-native = 再生中のファイルは { $rate } Hz なので、リサンプリングはされていません
 output-rate-native-short = { $rate } Hz ファイル、リサンプリングなし
-output-start-track-hint = 曲を再生すると、デバイスが受け入れた形式が出ます
+output-start-track-hint = 曲を再生すると、デバイスが受け入れたフォーマットが出ます
 output-title = 出力
 
 ## Track columns
@@ -2401,6 +2460,7 @@ panel-title-particles = パーティクル
 panel-title-playback = 再生
 panel-title-seek = シーク
 panel-title-shader = シェーダー
+panel-title-spectrogram = スペクトログラム
 panel-title-spectrum = スペクトラム
 panel-title-theme-toggle = テーマ切り替え
 panel-title-track-info = 曲情報
@@ -2410,6 +2470,8 @@ panel-title-waveform = 波形
 
 ## Everything else
 choice-both = 両方
+choice-dim = 暗く
+choice-hide = 非表示
 composite-add-panel = パネルを追加
 composite-host-settings = { $host } の設定
 composite-move-left = 左へ移動
@@ -2485,7 +2547,7 @@ tasks-rest-takes = 、残りは { $estimate }
 tasks-measuring-takes = 、測定には { $estimate }
 tasks-working-out-takes = 、割り出しには { $estimate }
 tasks-time-left = 、残り { $left }
-tasks-skipped-suffix = ({ $count } 件スキップ)
+tasks-failed-suffix = ({ $count } 件失敗)
 tasks-file-suffix = - { $file }
 tasks-no-beat-suffix = ({ $count } 件拍不明)
 tasks-estimate-at-workers = ({ tasks-estimate-at })
@@ -2560,11 +2622,11 @@ model-summary-panns-cnn10 = 音が何であるかを認識するよう AudioSet 
 
 ## Shipped workspaces
 workspace-shipped-default = (既定)
-workspace-shipped-default-blurb = rox の素の見た目。デスクトップの上に半透明の面、ウィンドウ枠なし、アートの色づけはオフ。ここにある他の見た目は、すべてここから離れていったもの。
+workspace-shipped-default-blurb = rox の素の見た目。デスクトップの上に半透明の面、ウィンドウ枠なし、曲テーマはオフ。ここにある他の見た目は、すべてここから離れていったもの。
 workspace-shipped-catrox-blurb = すべての始まりだった foobar2000 のスキンを作り直したもの。カバーを円形の CD として描き、メタデータの項目を左に並べ、アルバムごとにまとめた曲にレーティングの点を添える。
 workspace-shipped-critters-blurb = アプリ全体を 1 ビットの印刷物にしたもの。すべての面に規則的なディザをかけ、階調はサブベースで潰れ、ノイズの壁が曲に合わせてうねる。Critters for Sale より。
-workspace-shipped-diffuse-blurb = 再生中のアルバムだけ。カバーと再生カードをひとつのグループにしてウィンドウを埋め、背景の上に透明な面を継ぎ目なく置く。ライブラリ、キュー、歌詞は右端のドロワーで待ち、ハンドルにカーソルを乗せると音楽の上に滑り出す。モノクロなのは意図的で、色はカバーが担う。
+workspace-shipped-diffuse-blurb = 再生中のアルバムだけ。カバーと再生カードをひとつのグループにしてウィンドウを埋め、背景の上に透明な面を継ぎ目なく置く。ライブラリ、キュー、歌詞は右端のドロワーで待ち、ハンドルにカーソルを乗せると音楽の上に滑り出す。モノクロなので、色はカバーが担う。
 workspace-shipped-foobar-blurb = このプロジェクト全体が相手取っているレイアウト。不透明なパネル、アーティストとアルバムのフィルター列、詰まった曲のテーブル、そしてメニューバーは昔からの場所に。
 workspace-shipped-llama-winamp-blurb = 実際にそうだった Winamp ではなく、記憶の中の Winamp。Tahoma、ダーク、枠なし、上に点で描いたスペクトラム、ミニレイアウトにはシェードモード。
-workspace-shipped-metro-blurb = Segoe UI のフラットなパネルとゆったりした行。アートの色づけがオンで、パレット全体が再生中のカバーに従う。
+workspace-shipped-metro-blurb = Segoe UI のフラットなパネルとゆったりした行。曲テーマがオンで、パレット全体が再生中のカバーに従う。
 workspace-shipped-phosphor-blurb = すべて等幅。Consolas、黒地に緑、クイック再生にカバーなし。たまたま音楽を鳴らす端末。

@@ -1,7 +1,7 @@
 //! The two catalog-shaped pieces the lyrics matcher and the lyrics panel
 //! both need: what a provider gets asked for a track, and where a found
-//! sheet lands. Neither renders anything, so both sit down here where the
-//! panel and the matcher window can each reach them.
+//! sheet is saved. Neither renders anything, so both are down here where
+//! the panel and the matcher window can each get at them.
 
 use std::path::Path;
 
@@ -36,7 +36,7 @@ pub fn query_for(library: &Entity<Library>, key: &TrackKey, cx: &App) -> TrackQu
     }
 }
 
-/// Where a saved sheet lands, per the Providers page's tag/sidecar/store
+/// Where a saved sheet goes, per the Providers page's tag/sidecar/store
 /// choice. Shared by the matcher's Apply and the panel's auto-search so
 /// both honor the one destination setting.
 pub fn save_target(path: &Path) -> Source {

@@ -1,8 +1,8 @@
 //! The signals window: the shared pool of audio signals the panels bind
 //! their knobs to, in one window of its own.
 //!
-//! It sits at the top level because the pool does. Every panel's routes ride
-//! the same signals, and an edit here lands on all of them, so tending it
+//! It's a top-level window because the pool is. Every panel's routes read
+//! the same signals, and an edit here applies to all of them, so tending it
 //! from inside one particles panel's settings made an app-wide thing look
 //! like that panel's own. The routes stay where they belong: under the knobs
 //! they drive, in the panel's settings, through [`signal_ui::bindable_row`].
@@ -12,7 +12,7 @@
 //! it too while it's open, so the readouts move against the music with
 //! nothing else on screen.
 //!
-//! It carries a spectrum and a transport for the same reason the equalizer
+//! It has a spectrum and a transport for the same reason the equalizer
 //! does: a band is picked by eye against what's playing, and going back to
 //! the workspace window for every pause breaks the loop you tune in.
 
@@ -36,13 +36,13 @@ use rox_panel_kit::ValueEdit;
 use rox_panels::spectrum::{self, Labels, SpectrumConfig, SpectrumPanel};
 
 /// Wide enough for the spectrum to be worth reading a band off, since the
-/// tuning rows sit under it and a bound is picked against what's on screen.
+/// tuning rows are under it and a bound is picked against what's on screen.
 const MIN: gpui::Size<gpui::Pixels> = gpui::Size {
     width: px(520.),
     height: px(420.),
 };
 
-/// How tall the spectrum stands. Context for the sliders rather than the
+/// How tall the spectrum is. Context for the sliders rather than the
 /// subject, so it takes a strip off the top instead of a share of the
 /// window that would grow with it.
 const SPECTRUM_H: f32 = 132.;
@@ -123,8 +123,8 @@ struct SignalsWindow {
     /// every open.
     about: bool,
     scroll: ScrollHandle,
-    /// Wakes the window when playback moves, which is what starts the meters
-    /// again after a pause: the frame loop below only sustains itself while
+    /// Wakes the window when playback moves, which starts the meters again
+    /// after a pause: the frame loop below only sustains itself while
     /// something is playing.
     _player_changed: Option<Subscription>,
 }
@@ -269,15 +269,15 @@ impl SignalsWindow {
         )
     }
 
-    /// Advance the hub off the player's feed and say whether the meters
-    /// should keep asking for frames. The hub throttles itself, so ticking
-    /// from here costs nothing extra when a particles panel is already
-    /// doing it. While audio moves the player observe re-renders on every
-    /// pump tick, the only rate new values arrive at, so frame polling is
-    /// just for the drain after playback stops: a signal decaying to
-    /// nothing is exactly the part worth watching, and it outlives
-    /// [`SignalHub::live`]. Once every signal settles the window parks,
-    /// and a resume wakes it through the pump's play-state notify.
+    /// Advance the hub off the player's feed and report whether the meters
+    /// need another frame. The hub throttles itself, so ticking from here
+    /// costs nothing extra when a particles panel is already doing it.
+    /// While audio moves the player observe re-renders on every pump tick,
+    /// the only rate new values arrive at, so frame polling is just for the
+    /// drain after playback stops: a signal decaying to nothing is exactly
+    /// the part worth watching, and it outlives [`SignalHub::live`]. Once
+    /// every signal settles the window stops requesting frames, and a
+    /// resume wakes it through the pump's play-state notify.
     fn step(&self, cx: &mut Context<Self>) -> bool {
         let Some(state) = self.state.as_ref() else {
             return false;
@@ -295,7 +295,7 @@ impl SignalsWindow {
 }
 
 /// The pool editor reads this window through the trait. It owns no routes,
-/// so [`SignalHost::routes`] keeps its default: the routes riding these
+/// so [`SignalHost::routes`] keeps its default: the routes bound to these
 /// signals belong to the panels, which edit them under their own knobs.
 impl SignalHost for SignalsWindow {
     fn hub(&self) -> &Arc<SignalHub> {
@@ -318,7 +318,7 @@ impl SignalHost for SignalsWindow {
 impl Render for SignalsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // With no workspace player to theme to, tint to this window's own id,
-        // which the palette map doesn't know, so it reads the base palette.
+        // which isn't in the palette map, so it reads the base palette.
         let player = self
             .state
             .as_ref()
@@ -411,8 +411,8 @@ impl Render for SignalsWindow {
                                 .child(Scrollbar::vertical(&self.scroll)),
                         ),
                 )
-                // Nothing to read the music off, so the meters would sit at
-                // nothing without saying why. Pinned under the pool rather
+                // Nothing to read the music off, so the meters would stay at
+                // zero with no explanation. Pinned under the pool rather
                 // than in it, since a page scrolled down is exactly where
                 // the dead meters are.
                 .when(orphaned, |d| {
@@ -446,7 +446,7 @@ fn blurb() -> Div {
     };
     // The glyph shown rather than named: the reader has to recognize the
     // mark in a menu, and the way to teach that is to show it. It leads the
-    // line instead of sitting mid-sentence, because a flex row wraps by
+    // line instead of appearing mid-sentence, because a flex row wraps by
     // child: a sentence split around the icon breaks onto its own line and
     // then runs off the edge, having no width of its own to wrap inside.
     let marked = div()

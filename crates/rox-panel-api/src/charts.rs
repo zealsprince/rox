@@ -1,8 +1,8 @@
 //! Small chart elements over gpui's paint primitives, shared by
-//! whichever views want one (the stats window today): a bar chart over
-//! counts with a hover pick. It draws with quads inside a canvas - cheap
-//! at any plausible size - and stays palette-agnostic: the caller passes
-//! colors, so it rides panel and song theming wherever it lands. Text
+//! whichever views need one (the stats window today): a bar chart over
+//! counts with a hover pick. It draws with quads inside a canvas, cheap
+//! at any plausible size, and stays palette-agnostic: the caller passes
+//! colors, so it picks up panel and song theming wherever it's used. Text
 //! stays out of the paint closure (labels need the text system); the
 //! caller reads the hover pick back and writes its own readout.
 
@@ -15,8 +15,8 @@ use gpui::{
 
 use rox_design::palette;
 
-/// The hover state a bar chart shares between paint, which knows the
-/// chart's bounds, and the mouse handlers, which know the pointer: the
+/// The hover state a bar chart shares between paint, which has the
+/// chart's bounds, and the mouse handlers, which have the pointer: the
 /// hovered bucket's index, for the caller's readout. Behind Arcs so the
 /// paint closure, the handlers, and the owning view all hold it.
 #[derive(Clone, Default)]
@@ -86,7 +86,7 @@ pub fn bars<V: 'static>(
         )
 }
 
-/// The bars into their bounds, a hairline gap once they are wide enough
+/// The bars into their bounds, a hairline gap once they're wide enough
 /// to afford one; the hovered bucket gets a full-height wash behind its
 /// bar so even an empty one marks the pick.
 fn paint_bars(

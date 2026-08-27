@@ -1,6 +1,6 @@
 //! Listening history recording per ADR 11: the scrobbler's listen
-//! signal lands as an append-only event row in the library database.
-//! The recorder rides the scrobbler's [`Listened`] event rather than
+//! signal is written as an append-only event row in the library database.
+//! The recorder subscribes to the scrobbler's [`Listened`] event rather than
 //! watching the player itself, so it inherits the fixed listen rule
 //! (half the track or four minutes, minimum length, seeks and pauses
 //! don't count) without re-deriving it from the position clock. Appends
@@ -16,7 +16,7 @@ use rox_library::{listens, store};
 
 use crate::lastfm::{Listened, Scrobbler};
 
-/// A listen landed on disk; history views re-query, and the library
+/// A listen was written to disk; history views re-query, and the library
 /// bumps the track's cached play count in place.
 pub enum HistoryEvent {
     Recorded { track_id: i64 },
@@ -33,9 +33,9 @@ impl EventEmitter<HistoryEvent> for History {}
 impl History {
     pub fn new(scrobbler: &Entity<Scrobbler>, cx: &mut Context<Self>) -> Self {
         let _listened = cx.subscribe(scrobbler, |this: &mut Self, _, event: &Listened, cx| {
-            // The event already carries the row it resolved to and the tags
+            // The event already includes the row it resolved to and the tags
             // to snapshot, so nothing here has to ask the database who
-            // played. That matters for a cue rip: the path would answer with
+            // played. That matters for a cue rip: the path would resolve to
             // whichever track of the disc sorts first, every single time.
             let Some(track_id) = event.track_id else {
                 return;
@@ -58,7 +58,7 @@ impl History {
     }
 
     /// Append one listen off the UI thread. A file outside the library never
-    /// gets here - events key to track identity, and the scrobbler drops the
+    /// gets here: events key to track identity, and the scrobbler drops the
     /// id for one it couldn't resolve. Failures log and never touch playback,
     /// like the scrobbler's own submissions.
     fn record(&self, listen: listens::Listen, cx: &mut Context<Self>) {

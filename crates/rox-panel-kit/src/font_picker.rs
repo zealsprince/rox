@@ -1,7 +1,7 @@
 //! The font-family picker: the field the app settings window and every
 //! panel's Appearance page drop their typeface list from. The machinery
-//! is [`search_picker`](crate::search_picker::search_picker); what stays
-//! here is the family list, enumerated once, and the Default head that
+//! is [`search_picker`](crate::search_picker::search_picker); this file
+//! keeps the family list, enumerated once, and the Default head that
 //! clears the override so the text falls back to whatever the layer
 //! above sets.
 

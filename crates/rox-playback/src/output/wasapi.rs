@@ -6,7 +6,7 @@
 //! file never reaches the converter as 96 kHz. cpal has no exclusive path,
 //! which is why this talks to the API directly.
 //!
-//! The shape mirrors `alsa.rs` deliberately: a device list, an `open` that
+//! The shape matches `alsa.rs`: a device list, an `open` that
 //! either claims or hands back a reason, a `Claim` whose Drop joins the
 //! writer, and a writer that calls the shared `fill` per period. What
 //! differs is forced by COM. Interfaces are apartment-bound and not `Send`,
@@ -15,7 +15,7 @@
 //! waits for it to report what it negotiated, rather than negotiating on the
 //! caller's thread and shipping the handles across.
 //!
-//! The negotiation math is plain Rust and sits above the FFI, so it compiles
+//! The negotiation math is plain Rust and is above the FFI, so it compiles
 //! and gets tested on every platform, not only where the backend runs.
 
 #[cfg(target_os = "windows")]
@@ -75,7 +75,7 @@ struct Candidate {
 /// container with 24 valid bits, and rox writes a plain `i32` whose top 24
 /// bits are the sample, so it's reported as `s32` rather than inventing a
 /// name for a layout that has no Rust type of its own. Packed 24-bit is
-/// deliberately absent for the same reason it is in the ALSA backend.
+/// absent for the same reason it is in the ALSA backend.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const FORMATS: &[Candidate] = &[
     Candidate {
@@ -101,10 +101,10 @@ const FORMATS: &[Candidate] = &[
     },
 ];
 
-/// Walk the ladder against whatever the device says yes to. A named format
-/// the device takes wins; anything else, including a name for a format this
-/// device doesn't have, falls to the best it does. Reporting the result is
-/// what keeps that honest, so a pick the hardware refused reads as the format
+/// Step through the ladder against whatever the device accepts. A named
+/// format the device takes wins; anything else, including a name for a format
+/// this device doesn't have, falls to the best it does. Reporting the result
+/// keeps that honest, so a pick the hardware refused reads as the format
 /// actually running.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn pick_format(
@@ -123,7 +123,7 @@ fn pick_format(
 /// buffer to be exactly one period; a push-mode client like this one asks for
 /// a deeper buffer and leaves the periodicity at a single period. Four is what
 /// the ALSA backend takes and it's the same reasoning: the writer wakes on a
-/// timer, and a buffer one period deep is dry the moment a wake lands late.
+/// timer, and a buffer one period deep is dry the moment a wake comes late.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const PERIODS: i64 = 4;
 
@@ -140,7 +140,7 @@ fn period_hns(want_ms: Option<f64>, default_hns: i64, min_hns: i64) -> i64 {
 
 /// The buffer duration that goes with a period: [`PERIODS`] of them. The
 /// capped period puts the ceiling at 400 ms, the same depth ALSA's four
-/// periods reach, which the 500 ms ring in front can still keep stocked.
+/// periods give, which the 500 ms ring in front can still keep stocked.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn buffer_hns(period: i64) -> i64 {
     period.saturating_mul(PERIODS)
@@ -156,10 +156,10 @@ fn wake_frames(buffer_frames: u32) -> u32 {
 }
 
 /// The other half of the alignment dance: a driver that rejects a duration
-/// tells us the frame count it wanted through `GetBufferSize`, and this turns
+/// tells us the frame count it needs through `GetBufferSize`, and this turns
 /// that count back into the duration to re-initialize with. The half-tick is
 /// the rounding Microsoft's own sample does, and it matters: rounding down
-/// lands one frame short and the driver refuses again.
+/// comes out one frame short and the driver refuses again.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn aligned_hns(frames: u32, rate: u32) -> i64 {
     (HNS_PER_SEC / rate as f64 * frames as f64 + 0.5) as i64
@@ -219,7 +219,7 @@ mod platform {
     /// thread it runs on, so nothing has put that thread in an apartment yet
     /// and the multithreaded one always takes. Doing it this way rather than
     /// borrowing the caller's apartment is the point: rox's UI thread is an
-    /// STA on Windows, and an interface created there could not legally be
+    /// STA on Windows, and an interface created there couldn't legally be
     /// touched from the writer thread.
     struct Com;
 
@@ -243,8 +243,8 @@ mod platform {
     /// raised it, so a sleep asked for half of a 10 ms period comes back
     /// three periods late. A high-resolution waitable timer (Windows 10 1803
     /// and up) fires on time. Where one can't be created we fall back to
-    /// sleeping, and the spare periods in the buffer are what keep that from
-    /// being a dropout on every wake.
+    /// sleeping, and the spare periods in the buffer keep that from being a
+    /// dropout on every wake.
     enum Ticker {
         Timer(HANDLE),
         Sleep(Duration),
@@ -280,7 +280,7 @@ mod platform {
             match self {
                 // Nothing to check on the way out: the timer is periodic, so
                 // the only ways this returns are a tick and an abandon, and
-                // both want the same next move, which is to look at the
+                // both lead to the same next move, which is to look at the
                 // endpoint's padding.
                 Ticker::Timer(handle) => unsafe {
                     WaitForSingleObject(*handle, INFINITE);
@@ -301,8 +301,8 @@ mod platform {
     }
 
     /// The claim on the endpoint: the writer thread plus its stop flag.
-    /// Dropping it stops audio and hands the device back, which is what makes
-    /// toggling exclusive off actually release it.
+    /// Dropping it stops audio and hands the device back, so toggling
+    /// exclusive off actually releases it.
     struct Claim {
         stop: Arc<AtomicBool>,
         writer: Option<JoinHandle<()>>,
@@ -316,7 +316,7 @@ mod platform {
             // The thread checks the flag once per wake and blocks on the
             // timer in between, so this waits half a period at worst.
             // Joining rather than detaching matters: every COM interface
-            // lives in that thread, and a detached thread would still hold
+            // is owned by that thread, and a detached thread would still hold
             // the endpoint while the next session tried to claim it.
             if let Some(writer) = self.writer.take() {
                 let _ = writer.join();
@@ -324,8 +324,8 @@ mod platform {
         }
     }
 
-    /// What the writer thread reports back once the device has agreed to
-    /// something, so `open` can size the rings and answer its caller.
+    /// What the writer thread reports back once the device has accepted
+    /// something, so `open` can size the rings and return to its caller.
     struct Ready {
         negotiated: Negotiated,
         rate: u32,
@@ -350,14 +350,14 @@ mod platform {
         channels: u16,
         rate: u32,
         sample: Sample,
-        /// The ladder rung's name, carried rather than looked back up, so
-        /// what the UI reads is the rung the device actually took.
+        /// The ladder rung's name, stored rather than looked back up, so the
+        /// UI reads the rung the device actually took.
         format: &'static str,
     }
 
     /// Every active render endpoint, by the name the sound control panel
-    /// shows. The id is the endpoint id string, which survives a reboot and a
-    /// rename, unlike the friendly name.
+    /// shows. The id is the endpoint id string, which persists across a
+    /// reboot and a rename, unlike the friendly name.
     pub fn devices() -> Vec<Device> {
         // COM is thread-bound, so the enumeration runs on a thread of our own
         // instead of initializing an apartment on whichever thread the
@@ -548,7 +548,7 @@ mod platform {
         // why, which beats silently converting behind a bit-perfect toggle.
         let rate = request.rate.unwrap_or(DEFAULT_RATE);
 
-        // Stereo first because that's what the ring carries; the mix format's
+        // Stereo first because that's what the ring holds; the mix format's
         // own count is the fallback for an endpoint that only offers its
         // surround layout, and `fill` folds onto whatever comes back the same
         // way it does for cpal.
@@ -613,7 +613,7 @@ mod platform {
     }
 
     /// `IAudioClient::Initialize` plus the alignment dance. A driver whose
-    /// buffer has to land on a frame boundary rejects the first duration with
+    /// buffer has to fall on a frame boundary rejects the first duration with
     /// `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` and then tells us, through
     /// `GetBufferSize`, the count it wanted. The documented recovery is to
     /// throw the client away and activate a fresh one: an `IAudioClient` that
@@ -628,7 +628,7 @@ mod platform {
         period: i64,
     ) -> Result<IAudioClient, Error> {
         let format = wave_format(candidate, rate, channels);
-        // The two durations differ on purpose: the buffer holds several
+        // The two durations differ: the buffer holds several
         // periods so a late wake still has frames to play, while the
         // periodicity stays at the one period the device schedules on. That's
         // legal for a push-mode client; only the event-driven flag forces the
@@ -646,7 +646,7 @@ mod platform {
                 let frames = client.GetBufferSize()?;
                 // The frame count the driver hands back is the whole buffer,
                 // so that's the duration that gets re-asked for. The period
-                // rides along unchanged unless the aligned buffer came back
+                // is left unchanged unless the aligned buffer came back
                 // shorter than it, which would be a periodicity the buffer
                 // can't hold.
                 let aligned = aligned_hns(frames, rate);
@@ -667,7 +667,7 @@ mod platform {
     }
 
     /// Ask the endpoint whether it takes one rung of the ladder. Exclusive
-    /// mode answers yes or no and nothing else: the closest-match out
+    /// mode returns yes or no and nothing else: the closest-match out
     /// parameter is only filled in for shared mode, so there's nothing to ask
     /// for here.
     unsafe fn supports(
@@ -677,9 +677,9 @@ mod platform {
         channels: u16,
     ) -> bool {
         let format = wave_format(candidate, rate, channels);
-        // S_OK exactly, not "not an error": S_FALSE is the shared-mode answer
+        // S_OK exactly, not "not an error": S_FALSE is the shared-mode return
         // meaning a near miss is on offer, and taking that as a yes here is
-        // how a format the endpoint never agreed to ends up in Initialize.
+        // how a format the endpoint never accepted ends up in Initialize.
         client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, format_ptr(&format), None) == S_OK
     }
 
@@ -691,10 +691,10 @@ mod platform {
         (format as *const WAVEFORMATEXTENSIBLE).cast()
     }
 
-    /// Spell one ladder rung as a format the driver can answer about. Always
-    /// extensible rather than plain `WAVEFORMATEX`: valid-bits and the
+    /// Spell one ladder rung as a format the driver can be queried with.
+    /// Always extensible rather than plain `WAVEFORMATEX`: valid-bits and the
     /// channel mask are the two things an exclusive-mode driver checks, and
-    /// only the extensible form carries them.
+    /// only the extensible form has them.
     fn wave_format(candidate: &Candidate, rate: u32, channels: u16) -> WAVEFORMATEXTENSIBLE {
         let block_align = channels * candidate.bits / 8;
         WAVEFORMATEXTENSIBLE {
@@ -760,7 +760,7 @@ mod platform {
         }
     }
 
-    /// The endpoint id string, the one identifier that survives a rename.
+    /// The endpoint id string, the one identifier that persists across a rename.
     /// `GetId` hands back memory COM allocated, so it's freed here rather
     /// than leaked once per device per settings visit.
     unsafe fn endpoint_id(device: &IMMDevice) -> Option<String> {
@@ -848,7 +848,7 @@ mod platform {
 
         // Stop before the client drops so the endpoint goes idle instead of
         // playing out a stale buffer while the next session tries to claim
-        // it. Deliberately not drained first: every path here is a teardown
+        // it. Not drained first: every path here is a teardown
         // and the caller is blocked in join waiting for it.
         let _ = claimed.client.Stop();
     }
@@ -985,7 +985,7 @@ mod tests {
     #[test]
     fn a_device_minimum_past_the_cap_still_wins() {
         // Nonsense hardware, but the floor is the one number that fails the
-        // claim outright, so it has to survive the cap.
+        // claim outright, so it has to come through the cap intact.
         let huge = MAX_PERIOD_HNS * 2;
         assert_eq!(period_hns(Some(5.0), huge, huge), huge);
     }

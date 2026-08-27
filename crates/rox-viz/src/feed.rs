@@ -1,7 +1,7 @@
 //! The seam between playback and the audio views. The app drains the
 //! engine's PCM tap on the UI thread and pushes what it got here; the views
 //! copy the most recent window back out for analysis. Neither side is
-//! real-time, so a short mutex hold is fine - the RT boundary is the tap
+//! real-time, so a short mutex hold is fine. The RT boundary is the tap
 //! ring itself, inside rox-playback.
 
 use std::collections::VecDeque;
@@ -59,7 +59,7 @@ impl AudioFeed {
     }
 
     /// Copy the newest frames into `out`, mono-folded, newest last. Returns
-    /// how many frames landed; short means not enough audio buffered yet.
+    /// how many frames were copied; short means not enough audio buffered yet.
     pub fn latest_mono(&self, out: &mut [f32]) -> usize {
         let buf = self.buf.lock().unwrap();
         let n = (buf.len() / 2).min(out.len());
@@ -70,10 +70,10 @@ impl AudioFeed {
         n
     }
 
-    /// Copy the newest frames split into their two channels, newest last -
+    /// Copy the newest frames split into their two channels, newest last:
     /// what a stereo meter (the VU panel, a goniometer) needs instead of the
     /// mono fold. `left` and `right` fill to the same length; returns how
-    /// many frames landed, short when the ring hasn't buffered enough yet.
+    /// many frames were copied, short when the ring hasn't buffered enough yet.
     pub fn latest_stereo(&self, left: &mut [f32], right: &mut [f32]) -> usize {
         let buf = self.buf.lock().unwrap();
         let n = (buf.len() / 2).min(left.len()).min(right.len());
@@ -140,7 +140,8 @@ mod tests {
     fn latest_stereo_splits_channels_newest_last() {
         let feed = AudioFeed::new();
         // Three frames: (L, R) = (1, 2), (3, 4), (5, 6). The out buffers only
-        // fit two, so the two newest land, in order, split by channel.
+        // fit two, so only the two newest are copied out, in order, split by
+        // channel.
         feed.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let mut left = [0.0f32; 2];
         let mut right = [0.0f32; 2];
@@ -155,7 +156,8 @@ mod tests {
         let feed = AudioFeed::new();
         feed.push(&[1.0, 1.0]);
         let mut out = [0.0f32; 8];
-        // Only one frame buffered, so only one lands even though out is longer.
+        // Only one frame buffered, so only one is copied out even though out
+        // is longer.
         let n = feed.latest_mono(&mut out);
         assert_eq!(n, 1);
         assert_eq!(out[0], 1.0);
@@ -164,8 +166,8 @@ mod tests {
     #[test]
     fn ring_drops_oldest_past_capacity() {
         let feed = AudioFeed::new();
-        // Overrun the ring by one frame, then the newest sample must survive
-        // and the write counter must reflect everything ever pushed.
+        // Overrun the ring by one frame, then the newest sample must still be
+        // there and the write counter must reflect everything ever pushed.
         let total = KEEP_SAMPLES + 2;
         let samples: Vec<f32> = (0..total).map(|i| i as f32).collect();
         feed.push(&samples);

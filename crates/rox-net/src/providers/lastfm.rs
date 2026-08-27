@@ -1,10 +1,10 @@
 //! Last.fm (ws.audioscrobbler.com): the artist lookup behind the
 //! biography panel. artist.getInfo is one of the API's unsigned reads,
-//! so it rides the shared agent with just an api key - the build's own
-//! identity or the settings override, the scrobbler's fallback order -
+//! so it goes over the shared agent with just an api key (the build's own
+//! identity or the settings override, the scrobbler's fallback order),
 //! and no account or session enters into it. The wiki text arrives as
-//! HTML with a "Read more" anchor and a license sentence riding its
-//! tail; both strip here so callers hold plain paragraphs.
+//! HTML with a "Read more" anchor and a license sentence after it; both
+//! strip here so callers hold plain paragraphs.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,10 +14,11 @@ use super::{agent, net_reason, string, ArtCandidate, ArtProvider, TrackQuery};
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
-/// One artist as Last.fm knows them, the biography panel's sheet: the
+/// One artist as Last.fm records them, the biography panel's sheet: the
 /// wiki text as plain paragraphs, the listening stats, the genre tags,
 /// and the similar names. Serialized as the artist store's cache file;
-/// missing fields default, so an old entry survives shape drift.
+/// missing fields default, so an old entry still loads after the shape
+/// drifts.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ArtistInfo {
@@ -26,7 +27,7 @@ pub struct ArtistInfo {
     /// The artist's Last.fm page, the attribution link the panel shows.
     pub url: String,
     /// The full wiki text, HTML stripped, paragraphs separated by blank
-    /// lines. Empty when the wiki carries no article.
+    /// lines. Empty when the wiki has no article.
     pub bio: String,
     pub listeners: u64,
     pub playcount: u64,
@@ -37,7 +38,7 @@ pub struct ArtistInfo {
 }
 
 /// The key the lookup calls with: the settings override when the user
-/// entered one, the build's own identity otherwise - the scrobbler's
+/// entered one, the build's own identity otherwise, the scrobbler's
 /// order. Empty when neither exists, which reads as the lookup being
 /// unavailable rather than as an error.
 fn api_key() -> String {
@@ -49,15 +50,15 @@ fn api_key() -> String {
     }
 }
 
-/// Fetch an artist's info, blocking: Ok(None) is Last.fm not knowing
-/// the name (or no api key to ask with), Err the network or the API
+/// Fetch an artist's info, blocking: Ok(None) is Last.fm having no such
+/// name (or no api key to ask with), Err the network or the API
 /// failing. Background executor only.
 pub fn artist_info(name: &str, lang: &str) -> Result<Option<ArtistInfo>, String> {
     let key = api_key();
     if key.is_empty() || name.trim().is_empty() {
         return Ok(None);
     }
-    // An API error still carries a JSON body worth reading, so a status
+    // An API error still has a JSON body worth reading, so a status
     // failure parses like a success, the scrobbler's move.
     let request = agent()
         .get(API)
@@ -136,9 +137,9 @@ fn names(wrapper: Option<&serde_json::Value>, key: &str) -> Vec<String> {
 }
 
 /// Last.fm's wiki HTML down to plain paragraphs: the "Read more on
-/// Last.fm" anchor and the license sentence riding after it drop first
-/// (cut there, not at the first link - bios carry inline links whose
-/// text should survive), then tags strip, the common entities decode,
+/// Last.fm" anchor and the license sentence after it drop first
+/// (cut there, not at the first link, since bios have inline links whose
+/// text should stay), then tags strip, the common entities decode,
 /// and runs of blank lines fold to one paragraph break.
 fn strip_wiki(html: &str) -> String {
     let cut = html

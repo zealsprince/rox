@@ -5,7 +5,7 @@
 //! order; resolving those paths to catalog tracks is the library's job.
 //!
 //! The store is still the source of truth, files are a snapshot you generate
-//! and re-read, never where playlists live.
+//! and re-read, never where playlists are kept.
 
 use crate::playlists::ExportTrack;
 

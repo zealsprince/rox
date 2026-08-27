@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "WorkspaceBundle",
-  "description": "A shareable workspace: a named set of layout presets with their\nmini-player roles, the palette, and the appearance that dress them. The\nunit rox's sharing ecosystem trades - written to a file by export, shipped\nin the app's assets, and imported into the collection. Versioned so a file\nsurvives shape moves; the layouts inside carry their own dock-layout\nversion the workspace validates on apply. Machine- and account-bound state\n(library folders, Last.fm, window frames) is deliberately left out, so a\nbundle travels between installs as pure look.",
+  "description": "A shareable workspace: a named set of layout presets with their\nmini-player roles, the palette, and the appearance that dress them. The\nunit rox's sharing ecosystem trades: written to a file by export, shipped\nin the app's assets, and imported into the collection. Versioned so a file\nstill loads when the shape moves; the layouts inside have their own\ndock-layout version the workspace validates on apply. Machine- and\naccount-bound state (library folders, Last.fm, window frames) is left out,\nso a bundle travels between installs as pure look.",
   "type": "object",
   "properties": {
     "version": {
@@ -17,14 +17,14 @@
       "default": ""
     },
     "layouts": {
-      "description": "The layout presets the workspace carries, each a named dock dump.",
+      "description": "The layout presets the workspace holds, each a named dock dump.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/NamedLayout"
       }
     },
     "panel_presets": {
-      "description": "The panel presets the workspace carries, each a named single panel.\nThey ride the bundle rather than the user's settings because a panel\ncan name a shader out of the pool below, and that name only means\nsomething while this workspace's pool is the live one.",
+      "description": "The panel presets the workspace holds, each a named single panel.\nThey're stored in the bundle rather than in the user's settings\nbecause a panel can name a shader out of the pool below, and that name\nonly means something while this workspace's pool is the live one.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/PanelPreset"
@@ -57,14 +57,14 @@
       }
     },
     "signals": {
-      "description": "The shared signal pool the workspace's looks ride: a layout that\npulses to the kick is meaningless without \"Kick\", so the pool\ntravels with the look and an apply replaces it wholesale.",
+      "description": "The shared signal pool the workspace's looks route from: a layout that\npulses to the kick is meaningless without \"Kick\", so the pool\ntravels with the look and an apply replaces it wholesale.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/Signal"
       }
     },
     "shaders": {
-      "description": "The shader pool the workspace's looks point into: every named WGSL\nthe bundle carries, in one place. A panel that names \"Grain\" is\nmeaningless without it, so the pool travels with the look exactly the\nway the signal pool above does, and an apply replaces it wholesale.",
+      "description": "The shader pool the workspace's looks point into: every named WGSL\nthe bundle holds, in one place. A panel that names \"Grain\" is\nmeaningless without it, so the pool travels with the look exactly the\nway the signal pool above does, and an apply replaces it wholesale.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/NamedShader"
@@ -75,7 +75,7 @@
       "$ref": "#/$defs/WorkspaceMeta"
     },
     "post_shader": {
-      "description": "The whole-window shader the workspace wears, the screen-sized twin of\nthe per-panel ones its layouts carry.\n\nNone applies as the disabled default rather than as \"leave what's\nthere\". An apply replaces the look wholesale, and a workspace that\nsays nothing about a screen shader means a look without one, so\nswitching to it can't leave the last look's shader running over it.",
+      "description": "The whole-window shader the workspace applies, the screen-sized twin of\nthe per-panel ones its layouts hold.\n\nNone applies as the disabled default rather than as \"leave what's\nthere\". An apply replaces the look wholesale, and a workspace that\nsays nothing about a screen shader means a look without one, so\nswitching to it can't leave the last look's shader running over it.",
       "anyOf": [
         {
           "$ref": "#/$defs/PostShaderConfig"
@@ -86,7 +86,7 @@
       ]
     },
     "backdrop_shader": {
-      "description": "The shader painted over the backdrop and under everything else, so\nit only ever reads the art wash and the panels stay untouched. The\nsame config shape as the screen shader, but it lives in the bundle\nrather than the machine settings: a backdrop treatment is part of\nthe look, not of this install. None means a bare backdrop, the\nsame replace-wholesale read as `post_shader`'s.",
+      "description": "The shader painted over the backdrop and under everything else, so\nit only ever reads the art wash and the panels stay untouched. The\nsame config shape as the screen shader, but it's stored in the bundle\nrather than the machine settings: a backdrop treatment is part of\nthe look, not of this install. None means a bare backdrop, the\nsame replace-wholesale read as `post_shader`'s.",
       "anyOf": [
         {
           "$ref": "#/$defs/PostShaderConfig"
@@ -128,7 +128,7 @@
   },
   "$defs": {
     "NamedLayout": {
-      "description": "A dock layout the user saved as a named preset: a full dock dump under\na name. The dump stays raw JSON like [`Settings::layout`] so the file\nsurvives layout-schema moves; the workspace validates it on apply.",
+      "description": "A dock layout the user saved as a named preset: a full dock dump under\na name. The dump stays raw JSON like [`Settings::layout`] so the file\nstill loads when the layout schema moves; the workspace validates it on\napply.",
       "type": "object",
       "properties": {
         "name": {
@@ -169,7 +169,7 @@
       }
     },
     "PanelPreset": {
-      "description": "A single configured panel the user saved under a name: the panel's own\ndump, the leaf a layout carries per panel. Adding one back builds the\npanel with its config, its rename, and whatever children a composite\nholds, so a dialed-in panel is reproducible without redoing its settings.\n\nThe dump stays raw JSON for the reasons [`NamedLayout`]'s does: rox-core\nstays off the dock crate, and the file survives a config-schema move.",
+      "description": "A single configured panel the user saved under a name: the panel's own\ndump, the leaf a layout holds per panel. Adding one back builds the\npanel with its config, its rename, and whatever children a composite\nholds, so a dialed-in panel is reproducible without redoing its settings.\n\nThe dump stays raw JSON for the reasons [`NamedLayout`]'s does: rox-core\nstays off the dock crate, and the file still loads through a\nconfig-schema move.",
       "type": "object",
       "properties": {
         "name": {
@@ -214,13 +214,13 @@
           "default": 0.30000001192092896
         },
         "threshold": {
-          "description": "The gate: anything under this reads as nothing, 0 to 1 against the\nsignal's own output, 0 for no gate. What it buys is silence between\nthe hits - a band riding room tone holds every knob on it slightly\noff its slider forever, and a gate is how the quiet parts get to be\nquiet. Above the threshold the output isn't the raw value but a\nsmoothstep of it across what's left of the range, 0 at the cross\nand 1 at full scale, so clearing the gate hands over nothing rather\nthan a jump, and a level hovering right on it ripples instead of\nstrobing. On a trigger source this is the fire level instead of a\ngate: the pulse fires the moment the band reaches it.",
+          "description": "The gate: anything under this reads as nothing, 0 to 1 against the\nsignal's own output, 0 for no gate. What it buys is silence between\nthe hits: a band picking up room tone holds every knob on it slightly\noff its slider forever, and a gate is how the quiet parts get to be\nquiet. Above the threshold the output isn't the raw value but a\nsmoothstep of it across what's left of the range, 0 at the cross\nand 1 at full scale, so clearing the gate outputs nothing rather\nthan a jump, and a level hovering right on it ripples instead of\nstrobing. On a trigger source this is the fire level instead of a\ngate: the pulse fires the moment the band reaches it.",
           "type": "number",
           "format": "float",
           "default": 0.0
         },
         "reset_on_track": {
-          "description": "Aggregates only: drain back to zero when the track changes, so a\nphase doesn't carry a song's worth of accumulation into the next\none. A drain rather than a snap, since a shader riding the phase\nwould pop on a jump.",
+          "description": "Aggregates only: drain back to zero when the track changes, so a\nphase doesn't take a song's worth of accumulation into the next\none. A drain rather than a snap, since a shader driven by the phase\nwould pop on a jump.",
           "type": "boolean",
           "default": false
         }
@@ -266,7 +266,7 @@
           ]
         },
         {
-          "description": "A pulse on each transient in the band: 1 the moment the band jumps\npast its own recent average, decaying at the response rate. The\nsignal a hit rides, where Band is the signal a swell rides.",
+          "description": "A pulse on each transient in the band: 1 the moment the band jumps\npast its own recent average, decaying at the response rate. The\nsignal for a hit, where Band is the signal for a swell.",
           "type": "object",
           "properties": {
             "lo": {
@@ -289,7 +289,7 @@
           ]
         },
         {
-          "description": "A pulse when the band reaches a line the user drew: 1 the moment it\ncrosses the signal's threshold, decaying at the response rate,\narmed again once the band falls back under. Onset with the\njudgment moved from a moving reference to a fixed level, for\nmaterial where the reference never gets to drop - a kick over\nsustained sub fires here where Onset arms once and goes quiet.",
+          "description": "A pulse when the band crosses a line the user drew: 1 the moment it\npasses the signal's threshold, decaying at the response rate,\narmed again once the band falls back under. Onset with the\njudgment moved from a moving reference to a fixed level, for\nmaterial where the reference never gets to drop: a kick over\nsustained sub fires here where Onset arms once and goes quiet.",
           "type": "object",
           "properties": {
             "lo": {
@@ -312,7 +312,7 @@
           ]
         },
         {
-          "description": "A running total of another signal's output: music-driven time. It\nclimbs by `of`'s value times `rate` each second and wraps at 1, so\na shader reads it as a phase (`sin(TAU * s)` runs straight through\nthe wrap) and it keeps its precision however long the app is up,\nwhich an unbounded float would not.\n\nIts own signal rather than a second channel on `of`: a route, a\nmeter and a shader slot all address one id and read one number, and\na signal carrying two values would break that everywhere at once.\nWanting both the level and its total is two pool entries.",
+          "description": "A running total of another signal's output: music-driven time. It\nclimbs by `of`'s value times `rate` each second and wraps at 1, so\na shader reads it as a phase (`sin(TAU * s)` runs straight through\nthe wrap) and it keeps its precision however long the app is up,\nwhich an unbounded float would not.\n\nIts own signal rather than a second channel on `of`: a route, a\nmeter and a shader slot all address one id and read one number, and\na signal with two values would break that everywhere at once.\nWanting both the level and its total is two pool entries.",
           "type": "object",
           "properties": {
             "of": {
@@ -338,7 +338,7 @@
       ]
     },
     "NamedShader": {
-      "description": "One shader in a workspace's pool: a name, the WGSL behind it, and\noptionally the file it's being edited in.\n\nThe inline source is canonical. It's what compiles and what runs, and\nit's the only half that survives the trip to another machine, so a\nbundle that travelled carries working shaders rather than paths into\nsomebody else's home directory.\n\nThe path is a local bookmark: eject a pool entry to a file and the\nbookmark links the two, so the hot reload watch can pull edits back into\nthe entry while you work. Export scrubs it ([`WorkspaceBundle::scrub_paths`])\nbecause it's dead weight anywhere but the machine that wrote it, and a\npath riding along would only aim a reload at a file that either isn't\nthere or, worse, is somebody else's.",
+      "description": "One shader in a workspace's pool: a name, the WGSL behind it, and\noptionally the file it's being edited in.\n\nThe inline source is canonical. It's what compiles and what runs, and\nit's the only half that still means anything on another machine, so a\nbundle that travelled holds working shaders rather than paths into\nsomebody else's home directory.\n\nThe path is a local bookmark: eject a pool entry to a file and the\nbookmark links the two, so the hot reload watch can pull edits back into\nthe entry while you work. Export scrubs it ([`WorkspaceBundle::scrub_paths`])\nbecause it's dead weight anywhere but the machine that wrote it, and a\npath kept in the bundle would only aim a reload at a file that either\nisn't there or, worse, is somebody else's.",
       "type": "object",
       "properties": {
         "name": {
@@ -359,7 +359,7 @@
           ]
         },
         "assets": {
-          "description": "The images the source declares with `// @asset`, carried as bytes so\nthe look lands whole. Empty for every shader that only reads the\nscreen, which is most of them, and an empty list writes no key.",
+          "description": "The images the source declares with `// @asset`, stored as bytes so\nthe look arrives whole. Empty for every shader that only reads the\nscreen, which is most of them, and an empty list writes no key.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ShaderAsset"
@@ -368,7 +368,7 @@
       }
     },
     "ShaderAsset": {
-      "description": "One image a shader samples: the flat filename an `// @asset name: file`\nline points at, and the encoded file itself as base64.\n\nThe bytes are canonical for the same reason the source on\n[`NamedShader`] is. A plate referenced by path imports as a hole in the\nlook on anyone else's machine, so the file rides along inside the\nbundle, byte for byte as it sat on disk. Encoded rather than raw pixels\nbecause that's what eject writes back out and what `image` reads in, and\nthe 1-bit imagery this is for costs almost nothing that way.\n\nAssets never gate. Approval is over code, and an image the approved code\nsamples can spoil a look but can't run anything, so no fingerprint ever\ncovers one (ADR 23).",
+      "description": "One image a shader samples: the flat filename an `// @asset name: file`\nline points at, and the encoded file itself as base64.\n\nThe bytes are canonical for the same reason the source on\n[`NamedShader`] is. A plate referenced by path imports as a hole in the\nlook on anyone else's machine, so the file is stored inside the\nbundle, byte for byte as it was on disk. Encoded rather than raw pixels\nbecause that's what eject writes back out and what `image` reads in, and\nthe 1-bit imagery this is for costs almost nothing that way.\n\nAssets never gate. Approval is over code, and an image the approved code\nsamples can spoil a look but can't run anything, so no fingerprint ever\ncovers one (ADR 23).",
       "type": "object",
       "properties": {
         "file": {
@@ -396,7 +396,7 @@
           "type": "string"
         },
         "website": {
-          "description": "Where it lives: the author's page, a repo, a forum thread.",
+          "description": "Where to find it: the author's page, a repo, a forum thread.",
           "type": "string"
         },
         "version": {
@@ -418,7 +418,7 @@
       }
     },
     "PostShaderConfig": {
-      "description": "The whole-window post-process shader: whether it runs and which WGSL\nfile it reads. The source lives in a file rather than here because the\napp has no multi-line editor, and a file gives shader authors hot reload\nwith the editor they already have.",
+      "description": "The whole-window post-process shader: whether it runs and which WGSL\nfile it reads. The source is kept in a file rather than here because the\napp has no multi-line editor, and a file gives shader authors hot reload\nwith the editor they already have.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -434,7 +434,7 @@
           ]
         },
         "source": {
-          "description": "The fragment stage inline, the same way a panel shader stores it.\nEmpty is the older behaviour, where the path above is read at\nstartup; anything else is what actually runs. Storing it here is what\nlets the screen shader travel inside a bundle, since a path alone\nimports as a dead pass on anyone else's machine.",
+          "description": "The fragment stage inline, the same way a panel shader stores it.\nEmpty is the older behaviour, where the path above is read at\nstartup; anything else is what actually runs. Storing it here lets\nthe screen shader travel inside a bundle, since a path alone imports\nas a dead pass on anyone else's machine.",
           "type": "string"
         },
         "name": {
@@ -445,19 +445,19 @@
           ]
         },
         "all_windows": {
-          "description": "Whether child windows (settings, stats, equalizer, popped-out\npanels) wear the shader too. Off shades only the workspace\nwindows; meaningless while the switch above is off. The confirm\ndialog stays bare either way, so a hostile shader can't take the\nway out with it.",
+          "description": "Whether child windows (settings, stats, equalizer, popped-out\npanels) get the shader too. Off shades only the workspace\nwindows; meaningless while the switch above is off. The confirm\ndialog stays bare either way, so a hostile shader can't take the\nway out with it.",
           "type": "boolean",
           "default": false
         },
         "routes": {
-          "description": "The signal routes filling the shader's sixteen slots, the same list\na panel's surface shader carries. Empty is the older behaviour and\nstays supported rather than migrated: the pool feeds the slots in\nits own order, signal i into slot i. Adding one route takes over the\nwhole feed, so an unrouted slot reads zero from then on.",
+          "description": "The signal routes filling the shader's sixteen slots, the same list\na panel's surface shader holds. Empty is the older behaviour and\nstays supported rather than migrated: the pool fills the slots in\nits own order, signal i into slot i. Adding one route replaces that\nfill entirely, so an unrouted slot reads zero from then on.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/Route"
           }
         },
         "manual": {
-          "description": "Hand-set slot values, the twin of the Shader panel config's list:\nwhat a slot reads with nothing feeding it, which is how a screen\nshader's named parameters get tuned without a signal in sight. A\nroute on the same slot wins while it's there; the hand-set value\ncomes back when it goes. Under the legacy no-routes feed a hand-set\nslot is likewise held out of the pool's order.",
+          "description": "Hand-set slot values, the twin of the Shader panel config's list:\nwhat a slot reads with nothing routed to it, which is how a screen\nshader's named parameters get tuned without a signal in sight. A\nroute on the same slot wins while it's there; the hand-set value\ncomes back when it goes. Under the legacy no-routes fill a hand-set\nslot is likewise held out of the pool's order.",
           "type": "array",
           "items": {
             "type": "array",
@@ -478,14 +478,14 @@
           }
         },
         "run_when_idle": {
-          "description": "Keep frames coming while the audio is silent, the panel shaders'\nswitch grown app-wide. Off, a paused player parks the pass on its\nlast frame and it costs nothing; on, the pass keeps drawing. The\nclock only advances with the signal feed either way, so idle frames\ntrack the mouse without the animation creeping forward. A shader\nthat reads the pointer asks for its own frames while the pointer\nstill counts for anything, so it follows the cursor with nothing\nplaying whichever way this sits.",
+          "description": "Keep frames coming while the audio is silent, the panel shaders'\nswitch grown app-wide. Off, a paused player parks the pass on its\nlast frame and it costs nothing; on, the pass keeps drawing. The\nclock only advances with the signal feed either way, so idle frames\ntrack the mouse without the animation creeping forward. A shader\nthat reads the pointer requests its own frames while the pointer\nstill counts for anything, so it follows the cursor with nothing\nplaying whichever way this is set.",
           "type": "boolean",
           "default": false
         }
       }
     },
     "Route": {
-      "description": "One attachment of a signal to a parameter. `from`/`to` are fractions of\nthe target parameter's own range - the value at silence and the value\nat full signal - so a route sweeps exactly what a hand on the slider\ncould, and an inverted span modulates downward. Unknown target ids and\nmissing signals are skipped, so configs degrade quietly.",
+      "description": "One attachment of a signal to a parameter. `from`/`to` are fractions of\nthe target parameter's own range (the value at silence and the value\nat full signal), so a route sweeps exactly what a hand on the slider\ncould, and an inverted span modulates downward. Unknown target ids and\nmissing signals are skipped, so configs degrade quietly.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -494,7 +494,7 @@
           "default": true
         },
         "signal": {
-          "description": "The pool signal this rides, by id.",
+          "description": "The pool signal this route reads, by id.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
@@ -519,7 +519,7 @@
       }
     },
     "AppearanceBundle": {
-      "description": "The appearance a workspace carries: the visual knobs it dresses the app\nwith, pulled from and pushed back to [`Settings`]. The subset that reads\nas pure look, so a bundle recolors and rearranges without dragging along\nanother machine's folders or account. The theme pick stays out: a\nworkspace brings both palettes and the user's dark/light/System choice\ndecides which one shows. The app font size stays out for the same reason -\nit's a per-user readability choice, not a look to hand around, so applying\na workspace never resizes the text out from under someone.",
+      "description": "The appearance a workspace holds: the visual knobs it dresses the app\nwith, pulled from and pushed back to [`Settings`]. The subset that reads\nas pure look, so a bundle recolors and rearranges without dragging along\nanother machine's folders or account. The theme pick stays out: a\nworkspace brings both palettes and the user's dark/light/System choice\ndecides which one shows. The app font size stays out for the same reason:\nit's a per-user readability choice, not a look to hand around, so applying\na workspace never resizes the text out from under someone.",
       "type": "object",
       "properties": {
         "surface_opacity": {
@@ -535,7 +535,7 @@
           "default": 1.0
         },
         "backdrop_all_windows": {
-          "description": "Whether the child windows (settings, editors, dialogs, popped-out\npanels) paint the cover backdrop too, wearing the transparency the\nsame way the workspaces do. On by default; off keeps the treatment\nto the workspace windows and the children on their plain surfaces.",
+          "description": "Whether the child windows (settings, editors, dialogs, popped-out\npanels) paint the cover backdrop too, with the transparency applied\nthe same way the workspaces do. On by default; off keeps the treatment\nto the workspace windows and the children on their plain surfaces.",
           "type": "boolean",
           "default": true
         },
@@ -565,7 +565,7 @@
           "default": false
         },
         "app_font": {
-          "description": "The app-wide font family, the base every window and panel inherits.\nNone follows the platform default. A panel's own font override layers\nover this; a name that is not installed falls back at render, so the\nfile survives moving between machines.",
+          "description": "The app-wide font family, the base every window and panel inherits.\nNone follows the platform default. A panel's own font override layers\nover this; a name that isn't installed falls back at render, so the\nfile still works when it moves between machines.",
           "type": [
             "string",
             "null"
@@ -597,7 +597,7 @@
           "default": false
         },
         "os_decorations": {
-          "description": "Whether the main workspace windows carry the OS's own decorations\n(titlebar, borders). Off asks the compositor for a bare\nclient-drawn window; the window controls panel stands in for the\nmissing buttons. Child windows (settings, popouts, editors) keep\nthe OS chrome either way.",
+          "description": "Whether the main workspace windows get the OS's own decorations\n(titlebar, borders). Off asks the compositor for a bare\nclient-drawn window; the window controls panel stands in for the\nmissing buttons. Child windows (settings, popouts, editors) keep\nthe OS chrome either way.",
           "type": "boolean",
           "default": true
         },
@@ -609,7 +609,7 @@
       }
     },
     "Frame": {
-      "description": "ADR 13's frame knobs lifted to the app: the cell margin, the inner\npadding, the corner rounding, and the border width, all in px. Margin,\npadding, and border carry a value per side, written as one number\nwhile the four match. These\nare the defaults every panel inherits; a panel's own [`PanelTheme`]\noverrides any of them knob for knob. Zero each by default, so a fresh\nlook carries no frame until asked, matching what an unthemed panel drew\nbefore the lift.",
+      "description": "ADR 13's frame knobs lifted to the app: the cell margin, the inner\npadding, the corner rounding, and the border width, all in px. Margin,\npadding, and border hold a value per side, written as one number while\nthe four match. These are the defaults every panel inherits; a panel's\nown [`PanelTheme`] overrides any of them knob for knob. Zero each by\ndefault, so a fresh look has no frame until asked, matching what an\nunthemed panel drew before the lift.",
       "type": "object",
       "properties": {
         "margin": {
@@ -665,7 +665,7 @@
       ]
     },
     "QuickPlayConfig": {
-      "description": "How the quick-play modal draws its result list, the knobs its inline\nconfig panel edits. Persisted so the look survives reopening the modal,\nwhich the workspace rebuilds each time.",
+      "description": "How the quick-play modal draws its result list, the knobs its inline\nconfig panel edits. Persisted so the look persists across reopening the\nmodal, which the workspace rebuilds each time.",
       "type": "object",
       "properties": {
         "show_cover": {

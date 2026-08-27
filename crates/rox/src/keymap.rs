@@ -7,11 +7,11 @@
 //! from the settings file when it has an opinion and from the command's
 //! own defaults when it doesn't. That split is the whole design: the file
 //! only ever holds what someone changed, so a default that moves in a
-//! later build reaches everyone who left it alone.
+//! later build applies to everyone who left it alone.
 //!
 //! Rebinding at runtime means rebuilding the keymap, because gpui only
-//! offers add and clear - there's no remove. Clearing takes the widget
-//! library's bindings with it (every text input's editing keys live in
+//! offers add and clear: there's no remove. Clearing takes the widget
+//! library's bindings with it (every text input's editing keys are in
 //! there), so [`init`] snapshots what was already registered before rox
 //! adds its own, and every rebuild lays that snapshot back down first.
 //! Anything binding keys after [`init`] runs would be lost on the first
@@ -37,17 +37,16 @@ use crate::workspace::{
 /// Bindings match key contexts along the focus path, so this scope holds
 /// anywhere inside a workspace window except while the library search box
 /// is focused: there space and arrows keep typing into the query.
-/// Bindings win over key listeners, so the exclusion is what hands the
-/// keys back.
+/// Bindings win over key listeners, so the exclusion hands the keys back.
 ///
 /// The exclusion is for bare chords only. A command rebound onto a
-/// modified chord widens to [`WORKSPACE`] at build time, since ctrl-f is
-/// nothing the search box wants and losing the binding while you type is
-/// the whole complaint. See [`Command::binding`].
+/// modified chord widens to [`WORKSPACE`] at build time, since ctrl-f
+/// isn't anything the search box needs and losing the binding while you
+/// type is the whole complaint. See [`Command::binding`].
 const PLAYBACK: Option<&str> = Some("Workspace && !SearchInput");
 
 /// The plain workspace scope: anywhere in a workspace window, the search
-/// box included, since everything bound here carries a modifier.
+/// box included, since everything bound here has a modifier.
 const WORKSPACE: Option<&str> = Some("Workspace");
 
 /// The lyrics editor's own scope, deeper along the focus path than the
@@ -65,7 +64,7 @@ pub enum Group {
 }
 
 impl Group {
-    /// The groups the page walks, in the order it draws them.
+    /// The groups the page steps through, in the order it draws them.
     pub const ALL: &'static [Group] =
         &[Group::Playback, Group::Windows, Group::View, Group::Editing];
 
@@ -101,13 +100,12 @@ pub struct Command {
     /// Where the chord is live. `None` is everywhere, including the
     /// settings and about windows and popped-out panels.
     pub context: Option<&'static str>,
-    /// The chords this command carries out of the box, in gpui's own
-    /// syntax ("ctrl-shift-s"). More than one is an alias, not a
-    /// sequence.
+    /// The chords this command ships with, in gpui's own syntax
+    /// ("ctrl-shift-s"). More than one is an alias, not a sequence.
     pub defaults: &'static [&'static str],
     /// Builds the binding for one chord. Each command names a distinct
     /// action type, so the type has to be baked in here rather than
-    /// carried as data.
+    /// stored as data.
     build: fn(&str, Option<&'static str>) -> KeyBinding,
 }
 
@@ -134,7 +132,7 @@ impl Command {
 }
 
 /// Whether a chord opens on a modified keystroke. Shift doesn't count:
-/// shift-letter is typing, and a text box wants it. The first keystroke
+/// shift-letter is typing, and a text box needs it. The first keystroke
 /// decides, since that's the one a focused input would otherwise eat.
 fn modified(chord: &str) -> bool {
     chord
@@ -162,8 +160,8 @@ macro_rules! command {
 }
 
 // The platform forks, pulled out of the list below so each command reads
-// as one line. macOS puts app-level chords on Cmd; everywhere else they
-// sit on Ctrl.
+// as one line. macOS puts app-level chords on Cmd; everywhere else
+// they're on Ctrl.
 #[cfg(target_os = "macos")]
 mod defaults {
     pub const SETTINGS: &[&str] = &["cmd-,", "ctrl-i"];
@@ -198,9 +196,9 @@ mod defaults {
 /// A `Vec` behind [`LazyLock`] rather than a `const` slice, because the
 /// label and description strings resolve through the locale bundles at
 /// first use, and that lookup isn't `const fn`. Every `.iter()` call site
-/// reaches it through [`LazyLock`]'s deref to the built `Vec`; a bare
+/// goes through [`LazyLock`]'s deref to the built `Vec`; a bare
 /// `for command in COMMANDS` needs `.iter()` added, since deref coercion
-/// doesn't reach `IntoIterator`.
+/// doesn't apply to `IntoIterator`.
 pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     vec![
         command!(
@@ -343,8 +341,8 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
 
 /// The command with this id, if the registry still has one. A settings
 /// file written by an older or newer build can name commands this one
-/// doesn't know; those entries stay in the file untouched and are simply
-/// not bound.
+/// doesn't know; those entries stay in the file untouched and just aren't
+/// bound.
 pub fn command(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|command| command.id == id)
 }
@@ -354,17 +352,17 @@ pub fn command(id: &str) -> Option<&'static Command> {
 ///
 /// This is a shape check, and a loose one, because gpui's own parse is
 /// loose: any word that isn't a modifier is taken as a key name, so
-/// "ctrl-nonsense" binds cleanly and simply never fires, and a bare
-/// "ctrl" is a real binding on a modifier tap. What's left to reject is
-/// the empty chord, which is what an emptied field in a hand-edited file
-/// leaves behind.
+/// "ctrl-nonsense" binds cleanly and never fires, and a bare "ctrl" is a
+/// real binding on a modifier tap. That leaves only the empty chord to
+/// reject, which is what an emptied field in a hand-edited file leaves
+/// behind.
 pub fn parses(chord: &str) -> bool {
     let mut keystrokes = chord.split_whitespace().peekable();
     keystrokes.peek().is_some() && keystrokes.all(|key| Keystroke::parse(key).is_ok())
 }
 
-/// The chords a command is running: what the file says when it says
-/// anything, the command's own defaults when it doesn't.
+/// The chords a command is running: the file's when it has an opinion,
+/// the command's own defaults when it doesn't.
 pub fn chords(command: &Command, overrides: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     match overrides.get(command.id) {
         Some(chords) => chords.clone(),
@@ -372,8 +370,8 @@ pub fn chords(command: &Command, overrides: &BTreeMap<String, Vec<String>>) -> V
     }
 }
 
-/// Whether a command still carries exactly what it ships with, which is
-/// what decides if the page offers a reset.
+/// Whether a command still has exactly what it ships with, which decides
+/// if the page offers a reset.
 pub fn is_default(command: &Command, overrides: &BTreeMap<String, Vec<String>>) -> bool {
     match overrides.get(command.id) {
         Some(chords) => chords.as_slice() == command.defaults,
@@ -444,7 +442,7 @@ pub fn apply(cx: &mut App) {
     cx.bind_keys(bindings);
 }
 
-/// Give `id` another chord on top of what it already carries. A chord the
+/// Give `id` another chord on top of what it already has. A chord the
 /// command already holds is dropped, so pressing the same keys twice
 /// doesn't bind it twice.
 pub fn add(id: &str, chord: String, cx: &mut App) {
@@ -489,8 +487,8 @@ pub fn restore(map: BTreeMap<String, Vec<String>>, cx: &mut App) {
 
 /// Read a command's chords, change them, write them back, rebind. The
 /// read seeds from the defaults when the file has nothing yet, so the
-/// first edit to a command carries its other chords along instead of
-/// dropping them.
+/// first edit to a command keeps its other chords instead of dropping
+/// them.
 fn edit(id: &str, cx: &mut App, change: impl FnOnce(&mut Vec<String>) + Send + 'static) {
     let id = id.to_string();
     let defaults: Vec<String> = command(&id)
@@ -651,7 +649,7 @@ mod tests {
     }
 
     /// gpui takes a bare modifier as a binding on that modifier's tap,
-    /// and takes an unknown word as a key that simply never fires. Both
+    /// and takes an unknown word as a key that never fires. Both
     /// are things a hand-edited file can hold, and neither should cost
     /// the file the rest of its bindings.
     #[test]

@@ -210,7 +210,7 @@ pub struct ResizablePanel {
     size_range: Range<Pixels>,
     children: Vec<AnyElement>,
     visible: bool,
-    /// rox addition: mirrored off the group for the handle this panel
+    /// rox addition: copied off the group for the handle this panel
     /// hosts on its leading edge.
     seams_override: Option<bool>,
 }

@@ -2,8 +2,8 @@
 //! thumbnails over the durable store in [`crate::artists`], the shape
 //! [`crate::thumbs`] takes for covers. Renders ask by artist name and get
 //! a texture or nothing; a miss kicks a lookup on the background
-//! executor, bounded to a few in flight. There is no request queue - a
-//! visible tile re-asks every paint and a landing face repaints the
+//! executor, bounded to a few in flight. There is no request queue: a
+//! visible tile re-asks every paint and an arriving face repaints the
 //! panels, so freed slots refill with whatever is still on screen.
 //!
 //! One service per workspace rather than one cache per view, so the
@@ -27,7 +27,7 @@ use crate::artists;
 /// below that the LRU thrashes every paint.
 const CAP: usize = 256;
 
-/// Lookups in flight at once. Low on purpose: a cold one is a deezer
+/// Lookups in flight at once. Kept low: a cold one is a deezer
 /// round trip, and a wall scrolled fast would otherwise fire hundreds at
 /// a service that is doing us a favor.
 const POOL: usize = 4;
@@ -43,7 +43,7 @@ struct Entry {
 
 #[derive(Default)]
 pub struct Portraits {
-    /// The decoded faces, keyed by the folded name the store answers on,
+    /// The decoded faces, keyed by the folded name the store keys on,
     /// so casing drift in the tags shares one entry.
     entries: HashMap<String, Entry>,
     /// Names with a lookup in flight; also the pool gauge.
@@ -55,7 +55,7 @@ pub struct Portraits {
 impl Portraits {
     /// An artist's portrait, from the cache or on its way. A miss starts
     /// a lookup when a pool slot is free and reports None either way; the
-    /// landing notifies, so visible tiles re-ask and drain the misses
+    /// finished lookup notifies, so visible tiles re-ask and drain the misses
     /// without a queue. None also covers a settled miss, where the caller
     /// falls back to an album cover.
     pub fn get(&mut self, name: &str, cx: &mut Context<Self>) -> Option<Arc<Image>> {
@@ -91,7 +91,7 @@ impl Portraits {
             this.update(cx, |this, cx| {
                 this.pending.remove(&key);
                 // A network failure stays uncached, so the next look asks
-                // again once the connection is back; only a settled answer
+                // again once the connection is back; only a settled result
                 // takes a slot.
                 let image = match result {
                     Ok(bytes) => bytes.map(|b| Arc::new(Image::from_bytes(ImageFormat::Jpeg, b))),

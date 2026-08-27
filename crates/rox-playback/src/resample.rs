@@ -1,5 +1,5 @@
 //! Linear resampler from the track rate to the device rate, interleaved
-//! stereo. Quality is spike-grade on purpose; the real engine gets a proper
+//! stereo. Quality is spike-grade; the real engine gets a proper
 //! windowed-sinc resampler (rubato) when the implementation doc is written.
 
 pub struct Resampler {
@@ -143,7 +143,7 @@ mod tests {
     }
 
     /// A known upsample produces the expected number of output frames. Feeding
-    /// N source frames at ratio dst/src and flushing lands close to N*ratio
+    /// N source frames at ratio dst/src and flushing yields close to N*ratio
     /// output frames, with the last frame present. Guards the frame count from
     /// drifting if the loop bounds change.
     #[test]
@@ -170,9 +170,9 @@ mod tests {
         assert_eq!(out[out.len() - 1], -9.0);
     }
 
-    /// Downsampling drops frames by design (decimation), so the exact last
-    /// source frame need not appear; what matters is flush is safe to call and
-    /// leaves the resampler reusable.
+    /// Downsampling drops frames (decimation), so the exact last source frame
+    /// need not appear; this checks that flush is safe to call and leaves the
+    /// resampler reusable.
     #[test]
     fn flush_is_idempotent() {
         let mut r = Resampler::new(24000, 48000);

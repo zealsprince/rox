@@ -1,9 +1,9 @@
 //! The VU meter panel: per-channel loudness over the player's PCM tap, the
 //! classic level meter. One or two meters (mono fold or stereo L/R) grow from
 //! the configured edge, colored by the shared loudness ramp, with peak-hold
-//! marks riding above. Two ballistics: VU integrates slowly for the needle
-//! feel, Peak snaps up and eases down for the PPM look. Like the spectrum, it
-//! is paint primitives on the UI thread and parks once the meters settle, so
+//! marks above them. Two ballistics: VU integrates slowly for the needle
+//! feel, Peak snaps up and eases down for the PPM look. Like the spectrum, it's
+//! paint primitives on the UI thread and parks once the meters settle, so
 //! an idle app pays nothing. The frequency vocabulary (the growth edge, the
 //! color ramp) is shared with the spectrum panel.
 
@@ -41,7 +41,7 @@ const MAX_METERS: usize = 2;
 const WINDOW: usize = 4096;
 
 /// dB window the meters normalize into, on samples where a full-scale sine
-/// sits at 0 dB - the top of the meter. The floor is the quiet end the bar
+/// is 0 dB, the top of the meter. The floor is the quiet end the bar
 /// falls to.
 const FLOOR_DB: f32 = -60.0;
 const MAX_DB: f32 = 0.0;
@@ -56,12 +56,12 @@ const DB_MARKS: [f32; 3] = [-6.0, -18.0, -36.0];
 const VU_RATE: f32 = 9.0;
 
 /// The peak ballistic's rates, per second: snap up near-instantly, ease down
-/// slowly - the PPM look where a transient pins the meter and drifts back.
+/// slowly, the PPM look where a transient pins the meter and drifts back.
 const PEAK_ATTACK: f32 = 60.0;
 const PEAK_RELEASE: f32 = 7.0;
 
 /// The default rate peak-hold caps accelerate downward at, meter heights per
-/// second squared - the same floaty drift the spectrum caps use.
+/// second squared, the same floaty drift the spectrum caps use.
 const HOLD_GRAVITY: f32 = 0.05;
 const GRAVITY_MIN: f32 = 0.01;
 const GRAVITY_MAX: f32 = 1.0;
@@ -81,7 +81,7 @@ const METER_GAP: f32 = 3.0;
 const EPSILON: f32 = 0.002;
 
 /// How long the feed may sit still before it reads as stopped audio rather
-/// than the gap between pump ticks - same as the spectrum's, and for the
+/// than the gap between pump ticks. Same as the spectrum's, and for the
 /// same reason: between ticks the meters hold instead of dipping.
 const SILENT_AFTER: f32 = 0.15;
 
@@ -149,7 +149,7 @@ fn ballistics_choices() -> [(SharedString, Ballistics); 2] {
 /// The VU panel's per-view config: what a saved layout restores and what the
 /// customize window edits. Missing fields take the defaults, so a layout
 /// dumped before a field existed still loads. The growth edge and color ramp
-/// reuse the spectrum's types so the two visualizers speak the same terms.
+/// reuse the spectrum's types so the two visualizers use the same terms.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VuConfig {
@@ -174,7 +174,7 @@ pub struct VuConfig {
     pub seg_height: f32,
     /// Dark seam between cells in the segment style, px.
     pub seg_gap: f32,
-    /// Peak-hold marks riding above the meters.
+    /// Peak-hold marks above the meters.
     pub caps: bool,
     /// How hard the caps fall, meter heights per second squared.
     pub cap_gravity: f32,
@@ -225,7 +225,7 @@ impl VuConfig {
     }
 
     /// The custom ramp's ends parsed, falling back to the theme ramp's when a
-    /// hand-edited hex doesn't parse - the same fallback the spectrum uses.
+    /// hand-edited hex doesn't parse, the same fallback the spectrum uses.
     fn custom_ramp(&self) -> (Rgba, Rgba) {
         (
             palette::parse_hex(&self.gradient_lo)
@@ -265,7 +265,7 @@ struct Meters {
     right: Vec<f32>,
     /// How many meters are live: one folded, or two split.
     count: usize,
-    /// What each meter eases toward, and where it sits now.
+    /// What each meter eases toward, and where it is now.
     targets: [f32; MAX_METERS],
     levels: [f32; MAX_METERS],
     holds: [f32; MAX_METERS],
@@ -345,8 +345,8 @@ impl Meters {
         for i in 0..self.count {
             let target = self.targets[i];
             if hold {
-                // Frozen: land on the target at once - the next tick parks
-                // again, so an ease would strand the meter partway.
+                // Frozen: jump to the target at once, since the next tick
+                // parks again and an ease would strand the meter partway.
                 self.levels[i] = target;
             } else {
                 let rate = match config.ballistics {
@@ -362,8 +362,8 @@ impl Meters {
                 self.levels[i] += (target - self.levels[i]) * (rate * dt).min(1.0);
             }
 
-            // The cap rides up with the meter and falls back under gravity
-            // once it drops away. Caps off: the holds shadow the meters so
+            // The cap follows the meter up and falls back under gravity
+            // once it drops away. Caps off: the holds track the meters so
             // they don't keep the panel animating.
             if !config.caps || self.levels[i] >= self.holds[i] {
                 self.holds[i] = self.levels[i];
@@ -452,7 +452,7 @@ impl Meters {
                 };
                 let line = window.text_system().shape_line(text, fs, &[run], None);
                 let lw = f32::from(line.width);
-                // Sit the tag just clear of its line, along the base edge, then
+                // Place the tag just clear of its line, along the base edge, then
                 // clamp so a mark near a corner never spills out of the panel.
                 let (tx, ty) = match orientation {
                     Orientation::Bottom => (ox + 2.0, oy + (h - d) - fh - 1.0),
@@ -542,12 +542,12 @@ pub struct VuPanel {
     /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
     /// The custom ramp's pickers, base then tip, built on the first settings
-    /// render - the panel itself constructs without a window, which the picker
-    /// state needs.
+    /// render, since the panel itself constructs without a window and the
+    /// picker state needs one.
     ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
     _ramp_changes: Vec<Subscription>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Wakes the panel when a session starts, so an idle window resumes
     /// animating without the player bar's frame pump.
@@ -693,7 +693,7 @@ impl PanelSettings for VuPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // The custom ramp's pickers on first need; each edit writes its hex
-        // back into the config, the format the layout dump carries.
+        // back into the config, the format the layout dump stores.
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
             let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
@@ -931,7 +931,7 @@ impl Panel for VuPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered in
+    /// The layout dump stores the panel's config; the builder registered in
     /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);

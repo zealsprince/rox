@@ -3,15 +3,15 @@
 //! Appearance holds the song-theming switch, ADR 10's transparency pair,
 //! and the palette editor, a labeled swatch grid per listing group;
 //! Library manages the scanned folders over the shared catalog entity.
-//! Edits land live through the palette setters and persist to the
+//! Edits apply live through the palette setters and persist to the
 //! settings file per change, the volume slider's cadence. The window
 //! edits a working copy of the user palette, so the swatches show the
 //! base even while a playing track's seed tints the app over it; while
 //! song theming is on the editor locks, because the track is driving.
 //! Palettes import and export as the settings map's role-to-hex JSON,
 //! so a file, the settings entry, and a shared theme are one shape.
-//! Layout mirrors the opening workspace's dock tree - every split, tab
-//! group, and panel - with each panel's settings a click away, and
+//! Layout shows the opening workspace's dock tree (every split, tab
+//! group, and panel) with each panel's settings a click away, and
 //! moves whole compositions in and out as the layout dump's JSON.
 
 use std::collections::BTreeMap;
@@ -73,12 +73,12 @@ use rox_services::player::Player;
 use rox_services::thumbs::Thumbs;
 use rox_viz::signal::Route;
 
-/// The folder table's fixed columns: the rollup numbers and the remove
-/// control, the last sized to [`icon_button`]'s footprint so the header
-/// aligns.
 mod keymap_page;
 mod workspace_page;
 
+// The folder table's fixed columns: the rollup numbers and the remove
+// control, the last sized to `icon_button`'s footprint so the header
+// aligns.
 const TRACKS_COL_W: Pixels = px(56.);
 const ALBUMS_COL_W: Pixels = px(56.);
 const SIZE_COL_W: Pixels = px(72.);
@@ -86,7 +86,7 @@ const ACTION_COL_W: Pixels = px(22.);
 
 /// The rates the exclusive picker offers: the two base clocks and their
 /// doubles and quadruples, which is every rate consumer hardware actually
-/// runs. A card that hasn't got one lands on its nearest and reports that.
+/// runs. A card that hasn't got one falls back to its nearest and reports that.
 const RATES: &[u32] = &[44100, 48000, 88200, 96000, 176400, 192000];
 
 /// The periods the buffer picker offers, in milliseconds, either side of the
@@ -94,8 +94,8 @@ const RATES: &[u32] = &[44100, 48000, 88200, 96000, 176400, 192000];
 const PERIODS_MS: &[f64] = &[2.5, 5.0, 10.0, 20.0, 40.0];
 
 /// How often the Leveling section samples a running measurement pass. Slower
-/// than the scan badge on purpose: a file takes seconds to decode, so there
-/// is nothing to see at 100 ms.
+/// than the scan badge: a file takes seconds to decode, so there's nothing
+/// to see at 100 ms.
 const RG_POLL: Duration = Duration::from_millis(250);
 
 /// The open settings window, if any: opening again focuses it instead
@@ -105,12 +105,12 @@ struct OpenSettings(WindowHandle<Root>);
 impl Global for OpenSettings {}
 
 /// Open the settings window, or bring the open one to the front. The
-/// state carries the library for the Library page, which edits it live,
+/// state holds the library for the Library page, which edits it live,
 /// and the shared art bake for the window's own backdrop. The workspace
-/// and its window handle are the Layout page's subject: the tree walks
-/// its dock, and an imported layout rebuilds in its window. The dock
-/// rides along as its own handle because open runs inside a workspace
-/// update, where the workspace entity can't be read.
+/// and its window handle are the Layout page's subject: the tree renders
+/// its dock, and an imported layout rebuilds in its window. The dock is
+/// passed separately as its own handle because open runs inside a
+/// workspace update, where the workspace entity can't be read.
 pub fn open(
     state: AppState,
     workspace: WeakEntity<Workspace>,
@@ -169,15 +169,14 @@ enum Page {
 }
 
 /// The sidebar order: every page A-Z by its label, with Development
-/// pinned after them. Alphabetical because there's no reading order that
-/// survives a tenth page, and one that's only in someone's head costs a
-/// scan of the whole list to find Storage. Development sits out because
-/// it's the escape hatch, not a subject: it belongs with the raw file and
-/// the data folder at the bottom rather than wedged between Audio and
-/// Integrations.
+/// pinned after them. Alphabetical because no reading order still holds up
+/// at a tenth page, and one that's only in someone's head costs a scan of
+/// the whole list to find Storage. Development stays out of the sort
+/// because it's the escape hatch: it goes with the raw file and the data
+/// folder at the bottom rather than wedged between Audio and Integrations.
 ///
-/// Nothing keys off a page's position here - the sidebar, the search
-/// results stack, and every jump carry the [`Page`] itself - so this list
+/// Nothing keys off a page's position here (the sidebar, the search
+/// results stack, and every jump use the [`Page`] itself), so this list
 /// can be resorted without touching anything else.
 const PAGES: &[(Page, &str, &str)] = &[
     (Page::Appearance, "settings-page-appearance", icons::PALETTE),
@@ -210,7 +209,7 @@ const PAGES: &[(Page, &str, &str)] = &[
 
 /// Where a model for a given job comes from: the shelf rox keeps, or a file
 /// the user supplies. Every model category on the ML Models page reads this
-/// way, so a second category (whatever it ends up answering) inherits the
+/// way, so a second category (whatever job it ends up doing) inherits the
 /// same two halves rather than inventing its own arrangement.
 #[derive(Clone, Copy, PartialEq)]
 enum ModelKind {
@@ -254,9 +253,9 @@ fn shuffle_modes() -> Vec<panel::ModeSpec<ShuffleMode>> {
 /// which tracks join the queue, and not one of them touches the order the
 /// queue already has.
 ///
-/// There's no Radio here. The radio draw is what the Similar order does when
-/// it runs out, so it rides that pick instead of being a fourth strategy that
-/// only ever made sense alongside it.
+/// There's no Radio here. The Similar order does the radio draw when it runs
+/// out, so it's part of that pick instead of a fourth strategy that only ever
+/// made sense alongside it.
 fn continuation_modes() -> Vec<panel::ModeSpec<continuation::Mode>> {
     vec![
         panel::ModeSpec {
@@ -284,12 +283,12 @@ fn continuation_modes() -> Vec<panel::ModeSpec<continuation::Mode>> {
 struct StorageInfo {
     /// The whole library's rollup: tracks, albums, bytes of music.
     music: Stats,
-    /// Where library.db's pages went, bucket by bucket. Its buckets are what
-    /// the page reads out rather than the file's size, which says only that
+    /// Where library.db's pages went, bucket by bucket. The page reads out
+    /// these buckets rather than the file's size, which says only that
     /// something in there is large.
     breakdown: Storage,
     /// Every acoustic model with vectors in the database, including ones
-    /// this build knows nothing about.
+    /// this build doesn't recognize.
     models: Vec<rox_library::embeddings::ModelRows>,
     /// thumbs.db with its WAL sidecars.
     thumbs: u64,
@@ -301,7 +300,7 @@ struct StorageInfo {
     artists: u64,
     /// The downloaded model weights (models/).
     weights: u64,
-    /// The look the app is wearing plus everything set up around it: the
+    /// The look the app is using plus everything set up around it: the
     /// saved workspaces, the ejected shaders, the icon packs.
     app_data: u64,
     /// The log file and its rolled back file (logs/).
@@ -362,14 +361,14 @@ enum Pending {
     OverwritePreset(String),
     /// Replace a saved workspace with the current state.
     OverwriteWorkspace(String),
-    /// Replace the whole live look with a workspace bundle's. Carries the
+    /// Replace the whole live look with a workspace bundle's. Holds the
     /// card the dialog reads out, built when the dialog opens so the bundle
     /// behind it isn't reparsed every frame the dialog is up.
     ApplyWorkspace {
         card: crate::workspaces::ApplyCard,
         /// Whether the bundle just arrived from a file, which changes what
         /// the dialog says: an import has already saved it, so the offer is
-        /// to wear it now rather than to replace what's there.
+        /// to apply it now rather than to replace what's there.
         imported: bool,
     },
     /// Drop one acoustic model's vectors out of the library, by model id.
@@ -385,10 +384,9 @@ enum Pending {
     ClearEmbeddings(String),
     /// Forget every tempo rox measured, the way the vectors go: the numbers
     /// don't come back until a pass has decoded every one of those tracks
-    /// over, so this yes gets asked for too. What it's for is a better
-    /// estimator: the pass only ever measures tracks with no tempo, so
-    /// clearing is how improved beat counting reaches numbers already
-    /// written.
+    /// over, so this yes gets asked for too. It's for a better estimator:
+    /// the pass only ever measures tracks with no tempo, so clearing is how
+    /// improved beat counting gets applied to numbers already written.
     ClearMeasuredBpm,
 }
 
@@ -399,18 +397,18 @@ struct SettingsWindow {
     /// [`Query`] under its own breadcrumb.
     search: Entity<SearchBox>,
     /// The working copy of the user palette: what the swatches show and
-    /// what edits write through [`palette::set`]. Mirrors the active
+    /// what edits write through [`palette::set`]. A copy of the active
     /// theme's side; `editor_mode` tracks which.
     base: Palette,
-    /// The theme side the working copy mirrors. Render re-seeds the copy
+    /// The theme side the working copy came from. Render re-seeds the copy
     /// and the pickers when the live mode moves off it: a theme switch
     /// here, the OS flipping under System, a workspace apply.
     editor_mode: palette::Mode,
     keep_theme: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
-    /// The Transparency section's All Windows switch, mirrored like the
-    /// scalars beside it.
+    /// The Transparency section's All Windows switch, copied from settings
+    /// like the scalars beside it.
     backdrop_all_windows: bool,
     /// The app font size's working copy: what the Typography slider shows
     /// and writes through [`palette::set_app_font_size`].
@@ -420,15 +418,15 @@ struct SettingsWindow {
     frame: Frame,
     restore_last_track: bool,
     /// Whether the library watches its folders for changes, the Folders page
-    /// toggle. Mirrors the setting; flipping it arms or drops the watcher on
+    /// toggle. Copies the setting; flipping it arms or drops the watcher on
     /// the shared library.
     watch_library: bool,
     /// Whether values differing only by case merge, the Folders page's
-    /// case toggle. Mirrors the setting; flipping it reloads the
+    /// case toggle. Copies the setting; flipping it reloads the
     /// projection so the symbol tables re-intern under the new rule.
     fold_case: bool,
     /// Whether commas and slashes split genre lists, the Folders page's
-    /// separator toggle. Mirrors the setting; flipping it reloads the
+    /// separator toggle. Copies the setting; flipping it reloads the
     /// projection so the genre surfaces re-derive under the new rule.
     split_genre_compounds: bool,
     /// The separator toggle's value when the window opened. While the
@@ -439,14 +437,14 @@ struct SettingsWindow {
     split_genre_compounds_at_open: bool,
     /// The portable marker's presence, what the Behavior toggle shows;
     /// the running app stays on the data folder it started with either
-    /// way, so a flip only lands on the next launch.
+    /// way, so a flip only takes effect on the next launch.
     portable: bool,
     /// Whether the executable's folder takes writes, probed once on
     /// open: install dirs are often read-only, and the toggle reads
     /// inert there.
     portable_writable: bool,
-    /// A portable seed copy is running; the toggle sits out until it
-    /// lands.
+    /// A portable seed copy is running; the toggle is disabled until it
+    /// finishes.
     portable_busy: bool,
     rating_style: RatingStyle,
     rating_dots: bool,
@@ -471,21 +469,21 @@ struct SettingsWindow {
     /// The one readout being typed into across this window's sliders.
     value_edit: panel::ValueEdit,
     /// The page body's scroll position, shared with the scrollbar so it
-    /// can show how much page hangs below the fold.
+    /// can show how much page is left below the fold.
     scroll: ScrollHandle,
     /// The sidebar nav's own scroll position, for a window too short to
-    /// stand every page at once.
+    /// show every page at once.
     nav_scroll: ScrollHandle,
     /// The shared catalog, the Library page's subject.
     library: Entity<Library>,
     /// The app-wide signal pool, for the screen shader's route editor: the
-    /// routes it edits are the app's, and so are the signals they ride.
+    /// routes it edits are the app's, and so are the signals they read.
     signals: Arc<rox_viz::signal::SignalHub>,
     /// The workspace that opened this window, the Layout page's subject:
-    /// the tree walks its dock and imports rebuild it. Weak, so the
+    /// the tree renders its dock and imports rebuild it. Weak, so the
     /// settings window never keeps a closed workspace alive.
     workspace: WeakEntity<Workspace>,
-    /// The workspace's OS window, for reaching its `Window` when an
+    /// The workspace's OS window, for getting at its `Window` when an
     /// imported layout rebuilds the dock there.
     workspace_window: AnyWindowHandle,
     /// The shared art bake and this window's slice of the backdrop, so
@@ -505,8 +503,8 @@ struct SettingsWindow {
     /// The two ReplayGain dB sliders' scrubs, the Leveling section.
     preamp_scrub: ScrubState,
     fallback_scrub: ScrubState,
-    /// Whether exclusive output is asked for, the Output toggle. What's
-    /// actually running is the readout under it, and the two disagree
+    /// Whether exclusive output is asked for, the Output toggle. The
+    /// readout under it shows what's actually running, and the two differ
     /// whenever a claim failed.
     output_exclusive: bool,
     /// The devices the current mode can open, listed when the window opens
@@ -524,7 +522,7 @@ struct SettingsWindow {
     discord_enabled: bool,
     discord_show_lastfm_button: bool,
     discord_show_youtube_button: bool,
-    /// The api credential inputs; edits mirror into the scrobbler per
+    /// The api credential inputs; edits write through to the scrobbler per
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
     lastfm_secret: Entity<InputState>,
@@ -537,7 +535,7 @@ struct SettingsWindow {
     broadcast_user: Entity<InputState>,
     broadcast_password: Entity<InputState>,
     broadcast_name: Entity<InputState>,
-    /// The switch and the bitrate, mirrored from settings so the section
+    /// The switch and the bitrate, copied from settings so the section
     /// renders without re-reading the file.
     broadcast_enabled: bool,
     broadcast_bitrate: u32,
@@ -546,11 +544,11 @@ struct SettingsWindow {
     /// without a restart.
     ffmpeg_path: Entity<InputState>,
     /// What the last press of the Test button learned: the version line the
-    /// binary answered with, or why it didn't. An edit to the path clears
+    /// binary returned, or why it didn't. An edit to the path clears
     /// it, so the callout never describes a binary the input has moved past.
     ffmpeg_test: Option<Result<String, String>>,
     threshold_scrub: ScrubState,
-    /// The storage page's numbers; None until the first walk lands.
+    /// The storage page's numbers; None until the first walk finishes.
     storage: Option<StorageInfo>,
     /// Whether a measurement is out on the background executor, so the
     /// things that ask for fresh numbers can ask as often as they like
@@ -577,13 +575,13 @@ struct SettingsWindow {
     /// The Workspace page's save-current-as-workspace name field.
     workspace_name: Entity<InputState>,
     /// The workspace whose card is open on the Workspace page, with an input
-    /// per editable line. None while every row sits collapsed, which is how
+    /// per editable line. None while every row is collapsed, which is how
     /// the page opens.
     workspace_card: Option<workspace_page::CardEditor>,
     /// Who made each saved workspace, by name, for the credit line under a
     /// list row. Read once here rather than per render: the saved list is a
-    /// directory read by design, and pulling an author out means parsing a
-    /// bundle's worth of layout dumps. Refreshed by the page's own writes,
+    /// directory read, and pulling an author out means parsing a bundle's
+    /// worth of layout dumps. Refreshed by the page's own writes,
     /// which are the only thing that moves it while the window is up.
     workspace_authors: BTreeMap<String, String>,
     /// The Appearance page's new-icon-pack name field.
@@ -596,7 +594,7 @@ struct SettingsWindow {
     /// The confirm dialog waiting on the user, if any: an overwrite or a
     /// workspace apply. None when no dialog is up.
     pending: Option<Pending>,
-    /// The chords moved off their defaults, mirrored from the file so the
+    /// The chords moved off their defaults, copied from the file so the
     /// Keymap page doesn't load settings per render. Every edit on that
     /// page writes the file and re-reads this.
     keymap: BTreeMap<String, Vec<String>>,
@@ -620,7 +618,7 @@ struct SettingsWindow {
     /// of the Application page. Also gates whether the MCP and ML Models
     /// pages show in the sidebar.
     ai_enabled: bool,
-    /// Whether the MCP surface answers tool calls, the MCP page's own
+    /// Whether the MCP surface serves tool calls, the MCP page's own
     /// toggle under the AI gate above.
     mcp_enabled: bool,
     /// Whether the experimental panels show in the panel menus, the
@@ -644,14 +642,14 @@ struct SettingsWindow {
     /// slider, the estimate, and the start itself; the section buttons only
     /// raise it, and the tasks window raises the same one.
     prompt: Option<pass_prompt::Prompt>,
-    /// How many tracks each pass works on at once, mirrored from settings so
+    /// How many tracks each pass works on at once, copied from settings so
     /// the coverage notes can price a pass per render without re-reading the
-    /// file. The prompt's slider is what moves them.
+    /// file. The prompt's slider moves them.
     acoustic_workers: usize,
     rg_workers: usize,
     tempo_workers: usize,
     /// What the last acoustic pass measured on this machine, worker-seconds
-    /// per track by model id, mirrored from the session file so the coverage
+    /// per track by model id, copied from the session file so the coverage
     /// note can price a pass per render without re-reading it. Refreshed
     /// when a pass ends, which is the only time it changes.
     acoustic_pace: std::collections::HashMap<String, f32>,
@@ -674,13 +672,13 @@ struct SettingsWindow {
     /// two: closing this window leaves it going.
     tempo_job: Option<Arc<tempo_job::Progress>>,
     /// Which extractor the pass runs and the similarity queries read, the
-    /// Library page's switch. Mirrors the live pick; the coverage above is
+    /// Library page's switch. Copies the live pick; the coverage above is
     /// counted against whatever this names.
     acoustic_source: rox_acoustic::Source,
     /// The model the ML Models page has marked as the one to use, which the
     /// Library page's extractor switch turns on. Separate from the field
-    /// above because that one is what the library is running right now: the
-    /// two differ whenever the switch is sitting on the built-in extractor.
+    /// above because that one is the extractor the library runs right now:
+    /// the two differ whenever the switch is set to the built-in extractor.
     acoustic_ml_source: rox_acoustic::Source,
     /// Which half of a model category is showing: the ones rox recommends
     /// and can fetch, or the file the user supplies. A view state rather
@@ -688,14 +686,14 @@ struct SettingsWindow {
     /// change what the library runs.
     models_kind: ModelKind,
     /// The weights file the user pointed at, if any, and why the last pick
-    /// was refused. The error lives here rather than in a log because a file
-    /// that isn't this network is the ordinary outcome of browsing to the
-    /// wrong `.safetensors`, and the row that caused it is where the reason
-    /// belongs.
+    /// was refused. The error is kept here rather than in a log because a
+    /// file that isn't this network is the ordinary outcome of browsing to
+    /// the wrong `.safetensors`, and the reason belongs on the row that
+    /// caused it.
     acoustic_local: Option<settings::LocalModel>,
     acoustic_local_error: Option<String>,
     /// Whether a picked file is being hashed and loaded. It's a 25 MB read
-    /// and a forward pass, so the row says it's working rather than sitting
+    /// and a forward pass, so the row shows it's working rather than sitting
     /// still for a second.
     acoustic_local_checking: bool,
     /// The running model download, while one runs. Polled on the same timer
@@ -706,32 +704,32 @@ struct SettingsWindow {
     /// rather than per frame: a stat per model per paint is a syscall per
     /// model per paint.
     model_sizes: Vec<(&'static str, u64)>,
-    /// The stored language pick, mirrored from settings like the icon
+    /// The stored language pick, copied from settings like the icon
     /// pack below: None is System, and the row marks its segment without
     /// re-reading the settings file per render.
     language: Option<String>,
-    /// The active icon pack, mirrored from settings so the Appearance page's
+    /// The active icon pack, copied from settings so the Appearance page's
     /// pack list marks the current one without re-reading the settings file
-    /// (which carries the dock dumps) on every render.
+    /// (which contains the dock dumps) on every render.
     active_icon_pack: Option<String>,
     /// The pack folders as last listed, so the Icons section doesn't walk
     /// the directory on every Appearance render; create, switch, and
     /// delete refresh it.
     icon_packs: Vec<String>,
-    /// The screen shader's file and all-windows option, mirrored from
+    /// The screen shader's file and all-windows option, copied from
     /// settings so the Shader page doesn't re-read the file per
-    /// render. The enable switch is not mirrored: the hotkey and menu row
+    /// render. The enable switch isn't copied: the hotkey and menu row
     /// flip it from outside this window, so the row reads the workspace's
     /// live static, like the menubar toggle does. The compile error reads
     /// the workspace's live readout the same way, since the hot reload
-    /// rewrites it without this window hearing about it.
+    /// rewrites it without notifying this window.
     post_shader_path: Option<PathBuf>,
-    /// The pool name and inline source, mirrored beside the path so the
-    /// picker can say which entry the config sits on without a settings
+    /// The pool name and inline source, copied beside the path so the
+    /// picker can show which entry the config names without a settings
     /// load per render.
     post_shader_name: Option<String>,
     post_shader_source: String,
-    /// The apply generation every mirror below was seeded from. Render
+    /// The apply generation every copied field below was seeded from. Render
     /// re-seeds them when the workspace's counter moves past it, the way
     /// the palette editor follows a theme switch: a workspace apply
     /// replaces the whole shader config from outside this window.
@@ -740,24 +738,25 @@ struct SettingsWindow {
     post_shader_save_name: ShaderNameField,
     post_shader_all_windows: bool,
     post_shader_run_idle: bool,
-    /// The screen shader's routes, mirrored for the same reason the path
+    /// The screen shader's routes, copied for the same reason the path
     /// is: the section renders per keystroke under search and the settings
-    /// file carries the dock dumps. Edits write here, into the workspace's
+    /// file contains the dock dumps. Edits write here, into the workspace's
     /// live feed, and into the file on a debounce.
     post_shader_routes: Vec<Route>,
     /// The route editor's span sliders and fold state, kept in step with
     /// the list above on every render.
     post_shader_route_ui: RouteEditState,
-    /// The screen shader's hand-set slot values, mirrored like the routes
-    /// and written through the same three layers: this mirror, the
+    /// The screen shader's hand-set slot values, copied like the routes
+    /// and written through the same three layers: this copy, the
     /// workspace's live feed, the file on a debounce.
     post_shader_manual: Vec<(u8, f32)>,
     /// One scrub state per slot for the hand-set sliders.
     post_shader_slot_scrubs: Vec<panel::ScrubState>,
-    /// The Backdrop section's editor state. The config itself lives in the
-    /// look's bundle behind a cache the section reads per render, so only
-    /// what has to survive a render sits here: the route editor's folds,
-    /// the slot scrubs, the save field, and the write debounces.
+    /// The Backdrop section's editor state. The config itself is stored in
+    /// the look's bundle behind a cache the section reads per render, so
+    /// only what has to persist across a render is kept here: the route
+    /// editor's folds, the slot scrubs, the save field, and the write
+    /// debounces.
     backdrop_route_ui: RouteEditState,
     backdrop_slot_scrubs: Vec<panel::ScrubState>,
     backdrop_save_name: ShaderNameField,
@@ -772,7 +771,7 @@ struct SettingsWindow {
     /// current values once the scrub settles instead of rewriting the whole
     /// settings file per tick.
     persist_gen: u64,
-    /// Whether the debounced appearance write carries the palette map too.
+    /// Whether the debounced appearance write includes the palette map too.
     /// Picker edits set it; reset clears it, since stock persists as an
     /// empty map that a later write must not refill with explicit defaults.
     persist_palette: bool,
@@ -780,8 +779,8 @@ struct SettingsWindow {
     _lastfm_changes: Vec<Subscription>,
     _broadcast_changes: Vec<Subscription>,
     _ffmpeg_changed: Subscription,
-    /// The connect flow's phases land through here, so the page's status
-    /// line follows along.
+    /// The connect flow's phases arrive through here, so the page's status
+    /// line updates with them.
     _scrobbler_changed: Subscription,
     _library_changed: Subscription,
     /// Scan progress ticks notify the library without emitting Updated;
@@ -826,7 +825,7 @@ impl SettingsWindow {
         let _player_changed = rox_services::player::observe_output(&playback, cx);
         let _player_view = rox_services::player::observe_view(&playback, cx);
         // Off the player rather than the file: it holds the live copy, and a
-        // toggle flipped here has to agree with the session it rebuilds.
+        // toggle flipped here has to match the session it rebuilds.
         let output_exclusive = playback.read(cx).exclusive_output();
         let output_devices = output::devices(output_mode(output_exclusive));
         let library = state.library;
@@ -872,7 +871,7 @@ impl SettingsWindow {
                 // in, so the Library page's tempo line moves with either.
                 this.bpm_coverage = library.read(cx).bpm_breakdown();
                 // A finished scan moves the storage numbers too; remeasure
-                // if they are on screen.
+                // if they're on screen.
                 if this.page == Page::Storage {
                     this.refresh_storage(cx);
                 }
@@ -1030,8 +1029,8 @@ impl SettingsWindow {
         });
         // The search box up top: typing filters every page at once. The
         // first search measures storage so the Storage rows have numbers
-        // without a page visit; after that the numbers ride until the
-        // page's own refresh paths run.
+        // without a page visit; after that the numbers stay as they are
+        // until the page's own refresh paths run.
         let search = cx.new(|cx| {
             SearchBox::new(rox_i18n::t!("query-search"), "", window, cx)
                 .small()
@@ -1186,7 +1185,7 @@ impl SettingsWindow {
             bpm_coverage,
             tempo_job,
             // Open on whichever half holds the model the page is offering,
-            // so someone running their own file lands on it rather than on a
+            // so someone running their own file opens on it rather than on a
             // shelf that looks like nothing is picked.
             models_kind: match &settings.acoustic_local_model {
                 Some(local) if local.id == acoustic_ml_source.id() => ModelKind::Custom,
@@ -1266,8 +1265,9 @@ impl SettingsWindow {
             }
         }
         palette::set(self.base, cx);
-        // The palette is live above; the file write rides the debounce, since
-        // a picker drag fires a change per tick like the sliders do.
+        // The palette is live above; the file write goes through the
+        // debounce, since a picker drag fires a change per tick like the
+        // sliders do.
         self.persist_palette = true;
         self.persist_appearance_soon(cx);
     }
@@ -1282,11 +1282,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The theme pick: which palette side renders, with System following
-    /// the OS. Through the settings pipe so the side re-resolves and every
-    /// window eases over; render then re-seeds the editor onto that side.
-    /// The radio reads the settings static, not a cached field, so this
-    /// and the theme toggle panel never show different states.
     /// The interface language. Through the settings pipe so every window
     /// repaints in the new locale at once; the pick persists as the
     /// registry id, and None keeps following the OS.
@@ -1297,6 +1292,11 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// The theme pick: which palette side renders, with System following
+    /// the OS. Through the settings pipe so the side re-resolves and every
+    /// window eases over; render then re-seeds the editor onto that side.
+    /// The radio reads the settings static, not a cached field, so this
+    /// and the theme toggle panel never show different states.
     fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         settings::set_theme(theme, cx);
         Settings::update(move |s| s.theme = theme);
@@ -1349,18 +1349,18 @@ impl SettingsWindow {
     /// Catch the Typography slider up to a size this window didn't write:
     /// the zoom shortcuts step the same live value from anywhere in the
     /// app. Runs from render, `sync_editor_side`'s shape, since every step
-    /// repaints all windows. The slider's own scrub lands back on the value
+    /// repaints all windows. The slider's own scrub ends up back on the value
     /// it just wrote, so this only moves for outside writers.
     fn sync_font_size(&mut self) {
         self.font_size = palette::app_font_size();
     }
 
-    /// Catch the Shader page's mirrors up to a config this window didn't
+    /// Catch the Shader page's copies up to a config this window didn't
     /// write: a workspace apply swaps the screen shader wholesale, and the
-    /// picker kept naming the one the old look wore. Runs from render off
+    /// picker kept naming the one the old look used. Runs from render off
     /// the workspace's apply counter, `sync_editor_side`'s shape, since
     /// every apply repaints all windows. This window's own edits move the
-    /// counter too, and land back on the values they just wrote.
+    /// counter too, and end up back on the values they just wrote.
     fn sync_post_shader(&mut self) {
         let gen = crate::workspace::post_shader_gen();
         if gen == self.post_shader_gen {
@@ -1375,7 +1375,7 @@ impl SettingsWindow {
         self.post_shader_path = config.path;
         self.post_shader_all_windows = config.all_windows;
         self.post_shader_run_idle = config.run_when_idle;
-        // The routes and hand-set slots ride along: the apply already
+        // The routes and hand-set slots update too: the apply already
         // pushed the file's copies into the live feed the shader reads, so
         // leaving the editor on the old lists would show one thing and
         // drive another.
@@ -1391,7 +1391,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The watch-folders switch: flip the mirror and hand it to the shared
+    /// The watch-folders switch: flip the local copy and hand it to the shared
     /// library, which persists it and arms or drops the watcher on the spot.
     fn set_watch_library(&mut self, on: bool, cx: &mut Context<Self>) {
         self.watch_library = on;
@@ -1458,9 +1458,9 @@ impl SettingsWindow {
     }
 
     /// The portable switch. On creates rox-data beside the executable,
-    /// seeds it from the current data folder when it is new, and drops
+    /// seeds it from the current data folder when it's new, and drops
     /// the marker file launch checks for; off removes the marker and
-    /// leaves rox-data where it is - going back doesn't migrate, that
+    /// leaves rox-data where it is. Going back doesn't migrate; that
     /// data is the user's to keep or delete. Either way the running app
     /// stays on the folder it started with.
     fn set_portable(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -1483,12 +1483,12 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
-        // Seed rox-data from the live data folder off the UI thread - the
-        // caches can be big - and only drop the marker once the copy
-        // lands, so a restart mid-copy never boots on a half folder. The
+        // Seed rox-data from the live data folder off the UI thread (the
+        // caches can be big) and only drop the marker once the copy
+        // finishes, so a restart mid-copy never boots on a half folder. The
         // copy is best-effort over live databases, the same risk copying
-        // the folder by hand takes; the restart requirement is what keeps
-        // the window small.
+        // the folder by hand takes; the restart requirement keeps the
+        // window small.
         self.portable = true;
         self.portable_busy = true;
         let source = settings::data_dir();
@@ -1645,7 +1645,7 @@ impl SettingsWindow {
                 .await;
             // A later tick bumped the gen past this capture, so only the last
             // edit in a burst writes. The palette rereads at fire time so an
-            // immediate writer (reset, import) landing inside the wait isn't
+            // immediate writer (reset, import) that runs inside the wait isn't
             // undone; the capture only stands in when the window closed
             // before the timer.
             let (latest, palette) = this
@@ -1660,7 +1660,7 @@ impl SettingsWindow {
             if latest == gen {
                 // The font size comes off the live static rather than a
                 // capture: the zoom shortcuts write it from outside this
-                // window, and one landing inside the wait would otherwise
+                // window, and one that runs inside the wait would otherwise
                 // get rolled back to whatever the slider last wrote.
                 let font_size = palette::app_font_size();
                 Settings::update(move |s| {
@@ -1738,7 +1738,7 @@ impl SettingsWindow {
     /// range, the px readout alongside. Always set, since these are the
     /// defaults themselves; a panel's own settings are where an override
     /// forks off them. Typed values may run past the strip's top, the
-    /// setters take what lands.
+    /// setters accept whatever comes in.
     fn frame_row(
         &self,
         scrub: &ScrubState,
@@ -1808,7 +1808,7 @@ impl SettingsWindow {
     /// Seed the working palette from the other theme's, flipped across
     /// the designed ladders: editing dark, Inverse From Light Theme pulls
     /// the light side's look dark, and the other way around. The map
-    /// persists like any other edit, so the flip survives a restart.
+    /// persists like any other edit, so the flip is kept across a restart.
     fn inverse_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let other = match self.editor_mode {
             palette::Mode::Dark => palette::Mode::Light,
@@ -1820,7 +1820,7 @@ impl SettingsWindow {
 
     /// Bake the song theme into the palette: the colors the playing track
     /// derives become the working palette, then song theming turns off so
-    /// they hold. What a track dressed the app in leaves as a fixed theme.
+    /// they hold. The look a track gave the app is kept as a fixed theme.
     /// The resolved palette is read before theming goes off, since turning
     /// it off retargets the tint back to the base.
     fn apply_song_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2108,7 +2108,7 @@ impl SettingsWindow {
 
     /// The Shader page: the whole-window post-process and what drives it.
     /// Its own page rather than a section under Appearance because it
-    /// isn't a look setting - it's a program the app runs over every
+    /// isn't a look setting: it's a program the app runs over every
     /// frame, with a file, a compile error, and sixteen signal routes,
     /// and it had already outgrown sitting between Transparency and
     /// Frame. Matches the panel settings window, where a panel's shader
@@ -2120,10 +2120,10 @@ impl SettingsWindow {
     }
 
     /// The Screen Shader section: a WGSL post-process over the whole
-    /// window, run by the workspace's driver. The toggle and source land in
-    /// settings and reapply everywhere; the error line reads the driver's
-    /// live readout, so a broken edit caught by the hot reload shows here
-    /// without a round trip through this window.
+    /// window, run by the workspace's driver. The toggle and source are
+    /// written to settings and reapply everywhere; the error line reads
+    /// the driver's live readout, so a broken edit caught by the hot
+    /// reload shows here without a round trip through this window.
     fn screen_shader_section(
         &mut self,
         q: &Query,
@@ -2140,8 +2140,8 @@ impl SettingsWindow {
         // wherever a shader gets picked. The file case diverges from the
         // panels in one way: the driver reads and watches the file itself,
         // and an inline source wins over the bookmark, so the bookmark only
-        // reads as the file choice while nothing is inlined over it - and
-        // the picker only asks whether something resolves, so a stand-in
+        // reads as the file choice while nothing is inlined over it. The
+        // picker only checks whether something resolves, so a stand-in
         // spares the section a file read per render.
         let name = self.post_shader_name.clone();
         let file_mode = name.is_none()
@@ -2164,7 +2164,7 @@ impl SettingsWindow {
             clear: Some(|this: &mut Self, cx| this.clear_post_shader_source(cx)),
             // The whole window is the one surface where a scene doesn't
             // decorate the app, it replaces it, so the list only offers
-            // shaders that say they leave it usable.
+            // shaders that declare they leave it usable.
             overlays_only: true,
             use_example: |this: &mut Self, index, cx| this.use_post_shader_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_post_shader_pool(name, cx),
@@ -2179,19 +2179,19 @@ impl SettingsWindow {
         .render(window, cx);
         // A scene over the whole window hides the app, this row included.
         // The countdown is the way back out and stays the real safety net;
-        // this is the sentence that means nobody has to find that out by
-        // watching their library disappear. Read off what's installed, so
-        // it speaks for the file the driver compiled as well as for a
-        // source this window can see.
+        // this line means nobody has to find that out by watching their
+        // library disappear. Read off what's installed, so it applies to
+        // the file the driver compiled as well as to a source this window
+        // can see.
         let covers = enabled && crate::workspace::post_shader_overlay() == Some(false);
         // The same route editor the panel Shader page and the Shader
-        // panel's Bindings page wear, over the app-wide list. Its slot
+        // panel's Bindings page use, over the app-wide list. Its slot
         // names come off the file the workspace compiled, so a shader that
         // declares them reads the same here as it does on a panel.
         let hub = self.signals.clone();
         let labels = crate::workspace::post_shader_slot_labels();
         // The Bindings page's slot list over the app-wide config: a routed
-        // slot shows the value reaching the shader, an unrouted one is a
+        // slot shows the value going to the shader, an unrouted one is a
         // hand-set knob, which is how a screen shader's named parameters get
         // tuned without editing WGSL.
         let slots = signal_ui::slots::SlotList {
@@ -2274,11 +2274,11 @@ impl SettingsWindow {
                     );
                 rows = match error {
                     Some(error) => rows.custom(&["shader", "error", "compile"], || {
-                        // The callout the output section wears for a failed
+                        // The callout the output section shows for a failed
                         // device, for the same reason: the switch above reads as
                         // on, and a muted line under it is not enough to say that
                         // nothing behind it is running. A backend with no shader
-                        // pipeline turns every source down with one word, which
+                        // pipeline rejects every source with one word, which
                         // on its own reads as a stray label rather than a reason.
                         match panel::shader::unsupported(&error) {
                             true => panel::banner(
@@ -2349,7 +2349,7 @@ impl SettingsWindow {
         )
     }
 
-    /// One edit to the screen shader's routes: into this window's mirror,
+    /// One edit to the screen shader's routes: into this window's copy,
     /// into the workspace's live feed so the shader follows the drag, and
     /// into the file once the burst settles. The file write waits because
     /// it reloads and reserializes every shard, dock dumps and all, which
@@ -2382,7 +2382,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// One hand-set slot edit: into this window's mirror, into the
+    /// One hand-set slot edit: into this window's copy, into the
     /// workspace's live feed so the shader follows the drag, and into the
     /// file once the burst settles, the routes' exact write path.
     fn set_post_shader_manual(&mut self, slot: usize, value: f32, cx: &mut Context<Self>) {
@@ -2414,7 +2414,7 @@ impl SettingsWindow {
     }
 
     /// The shader switch: into the file, then every shaded window
-    /// reapplies, which is also what clears the pass when it goes off.
+    /// reapplies, which also clears the pass when it goes off.
     /// Turning it on runs the countdown confirm; a shader can bury the
     /// very toggle that would undo it, so the change has to prove itself
     /// or roll back on its own. Off needs no proof.
@@ -2452,10 +2452,10 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// One edit to the screen shader's source trio: the mirrors, the file,
-    /// the reapply, and the countdown when the change lands on a running
+    /// One edit to the screen shader's source trio: the copies, the file,
+    /// the reapply, and the countdown when the change applies to a running
     /// shader. Every picker action funnels through here; `confirm` is
-    /// false for the moves that change where the text lives without
+    /// false for the moves that change where the text is stored without
     /// changing what draws (detach, eject, save), which have nothing for
     /// a countdown to revert.
     fn edit_post_shader_source(
@@ -2499,12 +2499,12 @@ impl SettingsWindow {
 
     /// Point the screen at one of the workspace's shaders. Nothing is
     /// approved on the way through, the same as a panel picking a name: a
-    /// pool entry that rode in with a bundle still has to be read first.
+    /// pool entry that arrived with a bundle still has to be read first.
     fn use_post_shader_pool(&mut self, name: String, cx: &mut Context<Self>) {
         self.edit_post_shader_source(Some(name), String::new(), None, true, cx);
     }
 
-    /// Take a private copy of the pool shader the screen is wearing. The
+    /// Take a private copy of the pool shader the screen is using. The
     /// same text keeps running, so there's nothing for a countdown to do.
     fn detach_post_shader(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self
@@ -2519,9 +2519,9 @@ impl SettingsWindow {
 
     /// Write the screen shader out to a file and hand it to whatever opens
     /// `.wgsl`, the panel pages' authoring loop. A named shader ejects
-    /// through its pool entry, so the edits reach every surface wearing
-    /// the name; an inline one lands under the live workspace's shaders
-    /// and the config moves onto the file, which is the one mode the
+    /// through its pool entry, so the edits apply to every surface using
+    /// the name; an inline one is written under the live workspace's
+    /// shaders and the config moves onto the file, the one mode the
     /// screen driver's own watch hot reloads.
     fn eject_post_shader(&mut self, cx: &mut Context<Self>) {
         let config = Settings::load().post_shader;
@@ -2547,15 +2547,17 @@ impl SettingsWindow {
                 cx.open_with_system(&path);
             }
             Err(error) => {
-                crate::workspace::note_post_shader_error(format!("ejecting: {error}"));
+                crate::workspace::note_post_shader_error(
+                    rox_i18n::t!("shader-eject-failed", error = error.to_string()).to_string(),
+                );
                 cx.notify();
             }
         }
     }
 
     /// Promote the screen shader's own source into the workspace's shaders
-    /// and wear it by name from there, the panel pages' move. A file-mode
-    /// config hands over the file's text and the bookmark rides onto the
+    /// and use it by name from there, the panel pages' move. A file-mode
+    /// config hands over the file's text and the bookmark moves onto the
     /// pool entry, so the authoring loop carries on through the pool's
     /// watch.
     fn save_post_shader_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
@@ -2586,7 +2588,7 @@ impl SettingsWindow {
     }
 
     /// Browse for the shader file. Picking one turns nothing on by itself;
-    /// the toggle stays the one switch. A pick that lands while the shader
+    /// the toggle stays the one switch. A pick made while the shader
     /// runs takes visible effect, so that path runs the confirm too. The
     /// name and inline source go with it: both would win over the file at
     /// resolve time, so leaving either behind would make the pick a no-op.
@@ -2613,7 +2615,7 @@ impl SettingsWindow {
     }
 
     /// Put the just-applied shader on the countdown clock, with this
-    /// window's mirrors refreshed if the clock wins.
+    /// window's copies refreshed if the clock wins.
     fn confirm_post_shader(&mut self, prior: settings::PostShaderConfig, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         crate::settings::shader_confirm::open(
@@ -2644,8 +2646,8 @@ impl SettingsWindow {
     /// The backdrop shader as the look holds it, the base of every read
     /// and edit on the Backdrop section. Absent reads as an untouched
     /// default with All Windows on: shading every backdrop is the whole-app
-    /// read, and a look that wants its children bare says so, the way
-    /// Diffuse does.
+    /// read, and a look that leaves its children bare turns it off
+    /// explicitly, the way Diffuse does.
     fn backdrop_config() -> settings::PostShaderConfig {
         settings::backdrop_shader().unwrap_or_else(|| settings::PostShaderConfig {
             all_windows: true,
@@ -2659,8 +2661,8 @@ impl SettingsWindow {
     /// panels paint over this pass whatever it does, so it can never bury
     /// the switch that would undo it.
     ///
-    /// A config walked all the way back to nothing collapses to None, so
-    /// clearing the shader leaves no empty block riding the look's exports.
+    /// A config cleared all the way back to nothing collapses to None, so
+    /// clearing the shader leaves no empty block in the look's exports.
     fn write_backdrop(&mut self, config: settings::PostShaderConfig, cx: &mut Context<Self>) {
         let config =
             (config.configured() || !config.routes.is_empty() || !config.manual.is_empty())
@@ -2720,7 +2722,7 @@ impl SettingsWindow {
         self.edit_backdrop_source(Some(name), String::new(), None, cx);
     }
 
-    /// Take a private copy of the pool shader the backdrop is wearing.
+    /// Take a private copy of the pool shader the backdrop is using.
     fn detach_backdrop(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = Self::backdrop_config()
             .name
@@ -2742,7 +2744,9 @@ impl SettingsWindow {
             Some(name) => match panel::shader::eject_pool_entry(name) {
                 Ok(path) => cx.open_with_system(&path),
                 Err(error) => {
-                    crate::workspace::note_backdrop_shader_error(format!("ejecting: {error}"));
+                    crate::workspace::note_backdrop_shader_error(
+                        rox_i18n::t!("shader-eject-failed", error = error.to_string()).to_string(),
+                    );
                     cx.notify();
                 }
             },
@@ -2759,7 +2763,9 @@ impl SettingsWindow {
                         cx.open_with_system(&path);
                     }
                     Err(error) => {
-                        crate::workspace::note_backdrop_shader_error(format!("ejecting: {error}"));
+                        crate::workspace::note_backdrop_shader_error(
+                        rox_i18n::t!("shader-eject-failed", error = error.to_string()).to_string(),
+                    );
                         cx.notify();
                     }
                 }
@@ -2769,7 +2775,7 @@ impl SettingsWindow {
     }
 
     /// Promote the backdrop's own source into the workspace's shaders and
-    /// wear it by name from there.
+    /// use it by name from there.
     fn save_backdrop_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
         let config = Self::backdrop_config();
         let name = name.trim().to_string();
@@ -2801,9 +2807,9 @@ impl SettingsWindow {
     }
 
     /// Read a file into the config's inline source, with the path as the
-    /// bookmark the surface watches. Inline rather than file-mode on
-    /// purpose: the backdrop runs through the panel surface machinery,
-    /// which resolves a name or an inline source and nothing else.
+    /// bookmark the surface watches. Inline rather than file-mode: the
+    /// backdrop runs through the panel surface machinery, which resolves
+    /// a name or an inline source and nothing else.
     fn load_backdrop_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match std::fs::read_to_string(&path) {
             Ok(source) => {
@@ -2879,8 +2885,8 @@ impl SettingsWindow {
     }
 
     /// The Backdrop Shader section: the same surface machinery a panel
-    /// wears, painted between the art wash and the panels, so whatever it
-    /// does stays under the whole window. It lives in the look's bundle
+    /// uses, painted between the art wash and the panels, so whatever it
+    /// does stays under the whole window. It's stored in the look's bundle
     /// rather than the machine settings and travels with the workspace.
     fn backdrop_shader_section(
         &mut self,
@@ -3042,15 +3048,15 @@ impl SettingsWindow {
     }
 
     /// The Icons section: the built-in set and every pack the user has as a
-    /// list, each a set to switch to; the current one carries an Active
+    /// list, each a set to switch to; the current one gets an Active
     /// badge. Creating a new pack, seeded with the built-in icons for an
-    /// author to edit, rides the header.
+    /// author to edit, is in the header.
     fn icons_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let active = self.active_icon_pack.clone();
         let packs = self.icon_packs.clone();
 
-        // New-pack-from-name rides the header, so a pack is one name away
-        // and lands pre-filled with the current icons.
+        // New-pack-from-name is in the header, so a pack is one name away
+        // and arrives pre-filled with the current icons.
         let controls = div()
             .flex()
             .flex_row()
@@ -3099,7 +3105,7 @@ impl SettingsWindow {
 
     /// One icons row: the built-in set (None) or a pack by name, an Active
     /// badge on the current one and a Use button on the rest. A pack also
-    /// carries Open Folder, to edit its SVGs, and Delete.
+    /// gets Open Folder, to edit its SVGs, and Delete.
     fn icon_pack_row(
         &self,
         name: Option<String>,
@@ -3189,7 +3195,7 @@ impl SettingsWindow {
     }
 
     /// Delete a pack. If it was the active one, fall back to the built-in
-    /// set so the resolver never points at a folder that is gone.
+    /// set so the resolver never points at a folder that's gone.
     fn delete_pack(&mut self, name: &str, cx: &mut Context<Self>) {
         if self.active_icon_pack.as_deref() == Some(name) {
             self.set_icon_pack(None, cx);
@@ -3314,7 +3320,7 @@ impl SettingsWindow {
     /// The ReplayGain section: which of a file's two gains to level by, the
     /// two offsets around it, and where the measurement pass puts what it
     /// measures. The offsets only show once a mode is picked, since with
-    /// leveling off there is nothing for them to offset.
+    /// leveling off there's nothing for them to offset.
     fn replay_gain_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let modes: Vec<(SharedString, GainModeSetting)> = vec![
             (
@@ -3331,7 +3337,7 @@ impl SettingsWindow {
             ),
         ];
         let rg = self.playback.read(cx).replay_gain();
-        // A running pass owns the line under the section: its count, the
+        // A running pass takes over the line under the section: its count, the
         // file it's on, and whatever it had to skip. With nothing scanned
         // there's no coverage to state either.
         let split = self.rg_coverage;
@@ -3470,7 +3476,7 @@ impl SettingsWindow {
     /// has measured would start hours of decoding at the next watch sync
     /// without anyone having seen a number first. The prompt prices that
     /// backlog and measures it now; declining is a no to the switch too, and
-    /// lands back here through `pass_refused`.
+    /// comes back here through `pass_refused`.
     ///
     /// Nothing to ask about with nothing missing, or with a pass already
     /// working through it, so the switch just goes on.
@@ -3518,7 +3524,7 @@ impl SettingsWindow {
     /// The Favourites section's header control: start the loved-tracks
     /// import, or stop the one that's running. The ReplayGain section's
     /// control in every respect but the work, since it's the same shape of
-    /// thing - a job started from a page that doesn't have to stay open for
+    /// thing: a job started from a page that doesn't have to stay open for
     /// it. Inert with its reason on the line below, so a disconnected
     /// account reads as a state rather than a dead button.
     fn import_control(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3547,7 +3553,7 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// Mirror the running pass into the section, the scan badge's cadence.
+    /// Copy the running pass into the section, the scan badge's cadence.
     /// Stops itself once the pass clears the global.
     fn poll_measuring(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| loop {
@@ -3570,9 +3576,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// The running pass as one line: how far along, what it's on, and what
-    /// it gave up on. The work list is built first, so a zero total means
-    /// the pass is still deciding what to measure.
     /// A rough cost for measuring `missing` files at the current worker
     /// setting, ready to append to the coverage line, or nothing until a
     /// pass has measured this machine's pace. Off the last pass's own
@@ -3592,6 +3595,9 @@ impl SettingsWindow {
         }
     }
 
+    /// The running pass as one line: how far along, what it's on, and what
+    /// it gave up on. The work list is built first, so a zero total means
+    /// the pass hasn't finished building it.
     fn measure_progress_line(job: &replaygain_job::Progress) -> String {
         let total = job.total();
         if total == 0 {
@@ -3623,7 +3629,7 @@ impl SettingsWindow {
         if failed > 0 {
             line.push_str(&format!(
                 " {}",
-                rox_i18n::t!("tasks-skipped-suffix", count = failed as u64)
+                rox_i18n::t!("tasks-failed-suffix", count = failed as u64)
             ));
         }
         line
@@ -3676,8 +3682,8 @@ impl SettingsWindow {
         )
     }
 
-    /// The badge and its report button ride the Output header rather than the
-    /// Exclusive Mode row: they're about the whole backend, not the switch,
+    /// The badge and its report button are in the Output header rather than
+    /// the Exclusive Mode row: they're about the whole backend, not the switch,
     /// and the header's right edge is where a section-wide caveat belongs.
     /// Returns None where nothing is being warned about.
     fn exclusive_notice(&self, cx: &Context<Self>) -> Option<AnyElement> {
@@ -3793,8 +3799,8 @@ impl SettingsWindow {
         !self.output_exclusive || !output::exclusive_supported()
     }
 
-    /// The rate the device runs at: following each file's own is what makes
-    /// a mixed-rate library play without a resampler anywhere, so it leads.
+    /// The rate the device runs at: following each file's own lets a
+    /// mixed-rate library play without a resampler anywhere, so it leads.
     fn output_rate_row(&self, cx: &mut Context<Self>) -> Div {
         let mut options: Vec<(Option<u32>, SharedString)> =
             vec![(None, rox_i18n::t!("settings-audio-output-rate-follow"))];
@@ -3825,7 +3831,7 @@ impl SettingsWindow {
     }
 
     /// The sample format asked for. Widest-available is right almost always;
-    /// the pick exists for a card whose driver is happier on one of them.
+    /// the pick exists for a card whose driver works better on one of them.
     fn output_format_row(&self, cx: &mut Context<Self>) -> Div {
         let options: Vec<(Option<String>, SharedString)> = vec![
             (None, rox_i18n::t!("settings-audio-output-format-widest")),
@@ -3860,7 +3866,7 @@ impl SettingsWindow {
         )
     }
 
-    /// The period, which is the latency trade stated as what it is.
+    /// The period, the latency trade stated plainly.
     fn output_period_row(&self, cx: &mut Context<Self>) -> Div {
         let mut options: Vec<(Option<f64>, SharedString)> =
             vec![(None, rox_i18n::t!("settings-audio-output-buffer-default"))];
@@ -3889,7 +3895,7 @@ impl SettingsWindow {
     }
 
     /// The device picker for the mode that's on, the system default at the
-    /// head so switching back is one pick. Rescan sits beside it because the
+    /// head so switching back is one pick. Rescan is beside it because the
     /// list is taken when the window opens: plugging an interface in while
     /// it's up shouldn't mean closing and reopening.
     fn output_devices_block(&self, cx: &mut Context<Self>) -> Div {
@@ -3973,7 +3979,7 @@ impl SettingsWindow {
             .is_some_and(|source| source != negotiated.sample_rate);
         // The tone is the whole point of the callout, and the two bad cases
         // aren't the same size. A claim that failed is a setting that didn't
-        // take, which is an error: exclusive is switched on and you are not
+        // take, which is an error: exclusive is switched on and you aren't
         // hearing it. Resampling is the mode working and still not being
         // bit-perfect, which is worth flagging without crying wolf.
         let tone = if negotiated.fallback.is_some() {
@@ -3983,7 +3989,7 @@ impl SettingsWindow {
         } else {
             panel::Tone::Good
         };
-        // The experimental note rides the banner too: someone reading only
+        // The experimental note goes in the banner too: someone reading only
         // the status line should know the mode they're hearing is the one
         // nobody has hardware-tested.
         let experimental =
@@ -4010,8 +4016,8 @@ impl SettingsWindow {
 
     /// Ask for exclusive output, or give the device back. The player
     /// rebuilds its running session onto the other backend right here, so
-    /// the switch lands without a restart, and the device list is the other
-    /// backend's from this point.
+    /// the switch takes effect without a restart, and the device list is
+    /// the other backend's from this point.
     fn set_output_exclusive(&mut self, on: bool, cx: &mut Context<Self>) {
         self.output_exclusive = on;
         self.playback
@@ -4034,13 +4040,13 @@ impl SettingsWindow {
     }
 
     /// The Application page: how the app itself behaves, from the AI gate
-    /// through launch, layout, window residency, where the data lives, and
-    /// the control socket under it all. Everything about how the music
-    /// plays lives on Playback instead.
+    /// through launch, layout, window residency, where the data is kept,
+    /// and the control socket under it all. Everything about how the music
+    /// plays is on the Playback page instead.
     fn application_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
-        // The portable row's control by where the toggle stands: inert
-        // text where the exe folder refuses writes or while the seed
-        // copy runs, the live switch otherwise.
+        // The portable row's control depends on the state: inert text
+        // where the exe folder can't take writes or while the seed copy
+        // runs, the live switch otherwise.
         let portable_control: AnyElement = if !self.portable_writable {
             readout(rox_i18n::t!("settings-application-portable-not-writable").to_string())
                 .into_any_element()
@@ -4062,9 +4068,9 @@ impl SettingsWindow {
                     )),
                     portable_control,
                 ));
-        // The restart note keys on the marker disagreeing with the run,
-        // not on a flip this session: it stays up across window reopens
-        // until a launch actually lands the change.
+        // The restart note keys on the marker not matching the run, not
+        // on a flip this session: it stays up across window reopens
+        // until a launch actually applies the change.
         if self.portable != settings::portable() && !self.portable_busy {
             portable_row = portable_row.child(
                 div()
@@ -4101,8 +4107,8 @@ impl SettingsWindow {
                         &["release", "version", "upgrade"],
                         panel::toggle(self.check_updates, Self::set_check_updates, cx),
                     )
-                    // Meaningless where the install can't replace itself - a
-                    // distro package, a read-only folder - so the row only
+                    // Meaningless where the install can't replace itself (a
+                    // distro package, a read-only folder), so the row only
                     // exists where the updater can act on it.
                     .when(updater::can_update(), |rows| {
                         rows.keyed(
@@ -4188,7 +4194,7 @@ impl SettingsWindow {
                                             ));
                                         },
                                     ))
-                                    // A named pipe lives outside the filesystem,
+                                    // A named pipe isn't in the filesystem,
                                     // so Windows has nothing to reveal.
                                     .when(!cfg!(windows), |d| {
                                         d.child(small_button(
@@ -4269,8 +4275,8 @@ impl SettingsWindow {
     /// What the transport's shuffle and continue buttons are doing when
     /// they're on.
     ///
-    /// Here rather than behind the buttons themselves, which is where these
-    /// two lists used to live as press-and-hold menus. Both are a pick
+    /// Here rather than behind the buttons themselves, where these two
+    /// lists used to be as press-and-hold menus. Both are a pick
     /// between strategies that differ in kind, and the difference is the
     /// whole question: a menu of four bare words next to a menu of two bare
     /// words made the two buttons read as the same button twice. A settings
@@ -4371,12 +4377,12 @@ impl SettingsWindow {
         // for someone who knows they already did this.
         let elsewhere = scrobbler.connected_elsewhere();
         // A build with its own api identity connects in one click; only
-        // one without asks for the user's pair.
+        // one without needs the user's pair.
         let builtin = has_builtin_keys();
         let keys_ready = builtin || (!config.api_key.is_empty() && !config.api_secret.is_empty());
 
-        // The connect strip: where the connection stands, and the one
-        // action that moves it along.
+        // The connect strip: the connection state, and the one action
+        // that moves it along.
         let status: SharedString = if connected {
             rox_i18n::t!(
                 "settings-integrations-lastfm-status-connected",
@@ -4452,10 +4458,10 @@ impl SettingsWindow {
             }
         };
 
-        // What the mirror has left to do, and why it stopped if it did. A
-        // love that failed into a log file is two sides disagreeing with
-        // nothing on screen to say so, so this line is the whole point of
-        // the queue keeping its reason.
+        // What the love sync has left to do, and why it stopped if it did.
+        // A love that failed into a log file is two sides out of sync with
+        // nothing on screen to say so, so this line is why the queue keeps
+        // its reason.
         let hearts = |n: usize| {
             rox_i18n::t!("settings-integrations-lastfm-hearts", n = n as u64).to_string()
         };
@@ -4653,8 +4659,8 @@ impl SettingsWindow {
                                 cx.listener(|this, _, _, cx| this.test_ffmpeg(cx)),
                             )),
                     )
-                    // The callout the test answers with, in the output
-                    // status block's register: what the binary said, and
+                    // The callout the test produces, in the output status
+                    // block's register: what the binary returned, and
                     // whether that's fine, readable before any of it is.
                     .when_some(self.ffmpeg_test.as_ref(), |rows, answer| {
                         rows.custom(&["ffmpeg", "convert", "test", "version"], || {
@@ -4678,7 +4684,7 @@ impl SettingsWindow {
                     })
                     // The passive note keeps covering the case where nothing
                     // was pressed, in the same banner dress as the test's
-                    // answer; once a test has spoken, that says it better.
+                    // result; once a test has run, its result says it better.
                     // Warn rather than Bad: nothing failed, a capability is
                     // just absent.
                     .when(
@@ -4699,14 +4705,14 @@ impl SettingsWindow {
     }
 
     /// The Icecast section (ADR 22): the source client, which is the audio
-    /// half of the refused web server. The switch is what connects and
+    /// half of the refused web server. The switch connects and
     /// disconnects; the fields write through as they're typed and the sink
     /// re-applies when one is left.
     ///
     /// Everything under the switch only appears once it's on. A mount, a
     /// source login and a bitrate are four rows of setup for something most
-    /// people never turn on, and off they'd sit on the page as a question
-    /// nobody asked.
+    /// people never turn on, and with the switch off they'd only be a
+    /// question nobody asked.
     fn icecast_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         Section::new(
             q,
@@ -4761,9 +4767,9 @@ impl SettingsWindow {
         )
     }
 
-    /// The broadcast switch. Applying reads the file the field edits landed
-    /// in, so the sink comes up on whatever the rows say; off tears the
-    /// connection down, which is what releases the mount.
+    /// The broadcast switch. Applying reads the file the field edits were
+    /// written to, so the sink comes up on whatever the rows say; off tears
+    /// the connection down, which releases the mount.
     fn set_broadcast_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         self.broadcast_enabled = on;
         Settings::update(move |s| s.broadcast.enabled = on);
@@ -4805,8 +4811,8 @@ impl SettingsWindow {
     }
 
     /// Run the version probe against whatever the input holds, off the UI
-    /// thread since it spawns a process, and keep the answer for the
-    /// callout. The probe cache learns the result too, so a pass flips the
+    /// thread since it spawns a process, and keep the result for the
+    /// callout. The probe cache records it too, so a pass flips the
     /// Convert surfaces on right here.
     fn test_ffmpeg(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
@@ -4991,7 +4997,7 @@ impl SettingsWindow {
 
     /// One cell of the color grid: the picker with its label beside it,
     /// or a dimmed inert swatch while song theming drives the palette.
-    /// The inert swatch shows the derived color the track landed on, the
+    /// The inert swatch shows the derived color the track produced, the
     /// same values export saves, not the base underneath.
     fn color_cell(&self, role: &Role, picker: &Entity<ColorPickerState>, locked: bool) -> Div {
         let control: AnyElement = if locked {
@@ -5120,7 +5126,7 @@ impl SettingsWindow {
     fn library_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let busy = self.library.read(cx).busy();
         let scanning = busy.is_some();
-        // Past the ceiling the watch turns itself off, so the toggle grays
+        // Past the ceiling the watch stays off, so the toggle grays
         // out at off and the note says why, with the numbers. Folders summed
         // off the cached rollups, not a per-frame count; the roots never
         // nest, so nothing counts twice. Matched to the catalog's own limit,
@@ -5215,9 +5221,9 @@ impl SettingsWindow {
             .child(table)
             .when_some(note, |d, note| {
                 d.child(
-                    // w_full on purpose: truncate with no definite width
-                    // measures at min-content and the line collapses to a
-                    // bare ellipsis.
+                    // w_full: truncate with no definite width measures at
+                    // min-content and the line collapses to a bare
+                    // ellipsis.
                     div()
                         .w_full()
                         .min_w_0()
@@ -5228,8 +5234,8 @@ impl SettingsWindow {
                 )
             });
 
-        // Add folder and rescan ride the section header like the colors
-        // controls do.
+        // Add folder and rescan are in the section header like the colors
+        // controls.
         let controls = div()
             .flex()
             .flex_row()
@@ -5251,9 +5257,9 @@ impl SettingsWindow {
                     this.library.update(cx, |library, cx| library.rescan(cx));
                 }),
             ))
-            // The tag repair window: find and rewrite files carrying the
+            // The tag repair window: find and rewrite files with the
             // broken ID3v2.4 tag shape lofty reads mangled, where a user
-            // lands after seeing garbled tags.
+            // ends up after seeing garbled tags.
             .child(small_button(
                 rox_i18n::t!("settings-library-repair-tags"),
                 icons::FILE_TEXT,
@@ -5264,8 +5270,8 @@ impl SettingsWindow {
                     crate::tags::repair::open(library, now_art, cx);
                 }),
             ))
-            // The duplicates window: find tracks the library carries more
-            // than once and move the spare copies to the trash.
+            // The duplicates window: find tracks the library has more than
+            // once and move the spare copies to the trash.
             .child(small_button(
                 rox_i18n::t!("settings-library-duplicates"),
                 icons::COPY,
@@ -5277,7 +5283,7 @@ impl SettingsWindow {
                     crate::duplicates::open(library, thumbs, now_art, cx);
                 }),
             ));
-        // The lead-in describes the table, so both carry the same terms
+        // The lead-in describes the table, so both use the same terms
         // and a search never turns up one without the other.
         let folders = ["scan", "rescan", "music", "add", "remove"];
         PageBody::new()
@@ -5339,10 +5345,10 @@ impl SettingsWindow {
     /// The catch-up for the three save settings: what rox is already holding
     /// written into the files themselves.
     ///
-    /// It sits here, under the acoustic radio, because this page is where two
-    /// of the three questions it answers already live - the save mode for
-    /// descriptions is the row above it, and the folder tools at the top of
-    /// the page are the other things that rewrite a library's files. The
+    /// It's here, under the acoustic radio, because this page already has two
+    /// of the three questions it answers: the save mode for descriptions is
+    /// the row above it, and the folder tools at the top of the page are the
+    /// other things that rewrite a library's files. The
     /// counts belong to the dialog rather than this row: working out how many
     /// files each source would touch means reading their tags, which is not
     /// something a settings page should do on the way past.
@@ -5387,7 +5393,7 @@ impl SettingsWindow {
     /// file, which is a tenth of a second on a described library, and the
     /// artist and model stores are counted file by file on top of that.
     ///
-    /// The snapshot swaps in whole when it lands, so a remeasure leaves the
+    /// The snapshot swaps in whole when it arrives, so a remeasure leaves the
     /// numbers already on screen up rather than blanking them, and the first
     /// one shows zeros for the moment it takes. One walk at a time: the
     /// library fires its update repeatedly through a scan, and every search
@@ -5395,7 +5401,7 @@ impl SettingsWindow {
     fn refresh_storage(&mut self, cx: &mut Context<Self>) {
         if self.storage_measuring {
             // A walk that's already out was started before whatever just
-            // changed, so what it takes back is stale on arrival. Queue one
+            // changed, so what it brings back is stale on arrival. Queue one
             // behind it rather than dropping the ask or running a second
             // walk over the same files alongside the first.
             self.storage_remeasure = true;
@@ -5423,7 +5429,7 @@ impl SettingsWindow {
 
     /// Empty the thumbnail store. The delete runs off the UI thread on
     /// the service's own connection, so it serializes against in-flight
-    /// loads; the sizes refresh when it lands.
+    /// loads; the sizes refresh when it finishes.
     fn clear_thumbs(&mut self, cx: &mut Context<Self>) {
         let Some(conn) = self.thumbs.read(cx).store_conn() else {
             return;
@@ -5463,7 +5469,7 @@ impl SettingsWindow {
 
     /// Drop one model's vectors, the confirm dialog's yes. The library holds
     /// the busy badge through the delete and the vacuum behind it and emits
-    /// its update when they land, which is what remeasures this page.
+    /// its update when they finish, which remeasures this page.
     fn clear_embeddings(&mut self, model: &str, cx: &mut Context<Self>) {
         let model = model.to_owned();
         self.library
@@ -5471,8 +5477,8 @@ impl SettingsWindow {
     }
 
     /// The measured-tempos clear, the confirm dialog's yes. The library
-    /// emits Updated once the clear lands, which is what refreshes the
-    /// coverage split this window shows and the row's count with it.
+    /// emits Updated once the clear finishes, which refreshes the coverage
+    /// split this window shows and the row's count with it.
     fn clear_measured_bpm(&mut self, cx: &mut Context<Self>) {
         self.library
             .update(cx, |library, cx| library.clear_measured_bpm(cx));
@@ -5487,10 +5493,10 @@ impl SettingsWindow {
         models: &[rox_library::embeddings::ModelRows],
         cx: &mut Context<Self>,
     ) -> Vec<(String, AnyElement)> {
-        // The library refuses a clear while it's busy, but nothing there can
-        // refuse the analysis pass, which opens the database by path on its
+        // The library rejects a clear while it's busy, but nothing there can
+        // stop the analysis pass, which opens the database by path on its
         // own and would write vectors straight back in behind the delete. The
-        // page that offers the button is what knows a pass is running.
+        // page that offers the button is the one that knows a pass is running.
         let inert = self.acoustic_job.is_some() || self.library.read(cx).busy().is_some();
         models
             .iter()
@@ -5630,8 +5636,8 @@ impl SettingsWindow {
                     if models.is_empty() {
                         // Only once a walk has actually come back. An empty list
                         // is also what the page holds for the beat before the
-                        // first one lands, and saying nothing has been described
-                        // is a lie to tell a described library.
+                        // first one arrives, and saying nothing has been
+                        // described is a lie to tell a described library.
                         return rows.when(measured, |rows| {
                             rows.keyed(
                                 "settings-storage-models-empty",
@@ -5817,8 +5823,8 @@ impl SettingsWindow {
         self.ai_enabled = on;
         Settings::update(move |s| s.ai_enabled = on);
         // Turning it off takes the MCP and ML Models pages out of the
-        // sidebar; a window sitting on one of them lands back where the
-        // toggle lives rather than on an orphaned page.
+        // sidebar; a window on one of them goes back to the page with the
+        // toggle rather than staying on an orphaned page.
         if !on && matches!(self.page, Page::Mcp | Page::MlModels) {
             self.page = Page::Application;
         }
@@ -5837,7 +5843,7 @@ impl SettingsWindow {
         settings::set_experimental(on, cx);
         // The in-window menus read the flag as they draw, so the refresh
         // above is enough for them; the macOS bar is built once and held by
-        // the system, so it has to be told.
+        // the system, so it has to be rebuilt.
         crate::workspace::native_menu::rebuild(cx);
         cx.notify();
     }
@@ -5857,7 +5863,7 @@ impl SettingsWindow {
     /// The follow-the-watcher switch for the analysis pass,
     /// [`Self::set_replay_gain_auto`]'s shape: on the way on it prices the
     /// backlog through the prompt, and declining is a no to the switch too,
-    /// landing back through `pass_refused`.
+    /// coming back through `pass_refused`.
     fn set_acoustic_auto(&mut self, on: bool, cx: &mut Context<Self>) {
         self.acoustic_auto = on;
         Settings::update(move |s| s.acoustic_auto = on);
@@ -5897,11 +5903,11 @@ impl SettingsWindow {
 
     /// The MCP page (ADR 22): where an MCP client is pointed at rox. The
     /// server is the rox-mcp binary beside the executable, proxying the
-    /// control socket, so the page holds the switch that lets it answer and
-    /// the copy-ready config snippet. Only in the sidebar while AI features
-    /// are on, and off at its own toggle even then: revealing the page is
-    /// not the same as opening the door. The socket itself lives on the
-    /// Application page; it's rox's surface, not MCP's.
+    /// control socket, so the page holds the switch that lets it serve
+    /// requests and the copy-ready config snippet. Only in the sidebar while
+    /// AI features are on, and off at its own toggle even then: revealing
+    /// the page is not the same as opening the door. The socket itself is on
+    /// the Application page; it's rox's surface, not MCP's.
     fn mcp_page(&self, q: &Query, window: &mut Window, cx: &mut Context<Self>) -> PageBody {
         let snippet = mcp_config_snippet();
         // A TextView rather than a styled div so the snippet can actually be
@@ -5916,7 +5922,7 @@ impl SettingsWindow {
             q,
             icons::LINK,
             rox_i18n::t!("settings-page-mcp"),
-            // The header's one-click copy only while the server answers: a
+            // The header's one-click copy only while the server is on: a
             // grab-this button on a switched-off surface reads as an
             // invitation the toggle just declined.
             self.mcp_enabled.then(|| {
@@ -5960,12 +5966,12 @@ impl SettingsWindow {
     /// costs to fetch, and which one the library uses.
     ///
     /// Its own page rather than a section under Library because a model is an
-    /// asset with a lifecycle of its own. It's downloaded, it sits on disk, it
-    /// can be replaced by a file the user supplies, and it will one day answer
-    /// more than one question. The Library page picks a job's extractor; this
-    /// page is the shelf that pick reads from.
+    /// asset with a lifecycle of its own. It's downloaded, it takes up disk
+    /// space, it can be replaced by a file the user supplies, and it will one
+    /// day serve more than one job. The Library page picks a job's extractor;
+    /// this page is the shelf that pick reads from.
     ///
-    /// One section per job the models answer, which today is acoustic
+    /// One section per job the models do, which today is acoustic
     /// analysis and one day won't be. Each section is the same shape: a
     /// Recommended half rox keeps a catalog for, and a Custom half that is
     /// whatever file the user points at. That's the whole reason the split
@@ -6139,8 +6145,8 @@ impl SettingsWindow {
 
     /// Whether a model row is the extractor the library is actually running.
     /// Kept apart from the buttons because the shelf and the custom row draw
-    /// differently and have to agree exactly on this. Being the page's pick
-    /// isn't a state a row says anything about: with the Library page on
+    /// differently and have to match exactly on this. Being the page's pick
+    /// isn't a state a row shows: with the Library page on
     /// Built-in nothing here is running, and a row claiming otherwise reads
     /// as though it were describing the library.
     fn model_running(&self, id: &str) -> bool {
@@ -6175,9 +6181,9 @@ impl SettingsWindow {
     /// pass over it.
     ///
     /// Loading it is the validation. There's no checksum to compare against,
-    /// so the only honest way to find out whether a file is this network is
-    /// to ask candle to build it, which fails with the name of the tensor it
-    /// wanted when it isn't.
+    /// so the only way to find out whether a file is this network is to have
+    /// candle build it, which fails with the name of the missing tensor when
+    /// it isn't.
     fn check_local_model(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.acoustic_local_checking = true;
         self.acoustic_local_error = None;
@@ -6244,7 +6250,7 @@ impl SettingsWindow {
     /// instead: the id is the hash, so a checkpoint retrained in place is a
     /// different model and has to be adopted under its own name rather than
     /// filling the old one's coordinates. Nothing else can adopt it for the
-    /// user, since resolving that id refuses the file until it's re-hashed.
+    /// user, since resolving that id rejects the file until it's re-hashed.
     fn use_local_model(&mut self, cx: &mut Context<Self>) {
         let Some(local) = self.acoustic_local.clone() else {
             return;
@@ -6423,11 +6429,10 @@ impl SettingsWindow {
     /// Make a model the active one: what the pass fills and what the
     /// similarity queries read. The coverage line re-counts against it, so
     /// switching immediately says how much of the library this model has
-    /// actually described rather than carrying the last one's number.
-    /// Mark a model as the one the ML Models page offers to the rest of the
-    /// app. When the library is already running a model rather than the
-    /// built-in extractor, the switch follows the new pick straight away;
-    /// when it's on Built-in this only changes what Model would mean.
+    /// actually described rather than keeping the last one's number. When
+    /// the library is already running a model rather than the built-in
+    /// extractor, the switch follows the new pick straight away; when it's
+    /// on Built-in this only changes what Model would mean.
     fn set_acoustic_model(&mut self, source: rox_acoustic::Source, cx: &mut Context<Self>) {
         let id = source.id().to_string();
         self.acoustic_ml_source = source;
@@ -6499,11 +6504,11 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Acoustic analysis, on the Library page because that is what it
+    /// Acoustic analysis, on the Library page because that's what it
     /// describes: the switch, which extractor runs, and how far it has got.
     ///
     /// The extractor choice is two options rather than a list of every model,
-    /// because the shelf lives on the ML Models page. This is a job picking a
+    /// because the shelf is on the ML Models page. This is a job picking a
     /// tool off it, so the question here is only built-in or the model, and
     /// which model is the other page's business.
     fn acoustic_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
@@ -6598,7 +6603,7 @@ impl SettingsWindow {
 
     /// What to call a model id on screen: the catalog's label, or the name of
     /// the file behind a local pick. Ids from a newer build, and local ones
-    /// that have since been replaced, land on the fallback.
+    /// that have since been replaced, get the fallback.
     fn label_for(&self, id: &str, fallback: &str) -> String {
         if let Some(model) = rox_acoustic::models::find(id) {
             return model.label.to_string();
@@ -6657,7 +6662,7 @@ impl SettingsWindow {
             if failed > 0 {
                 line.push_str(&format!(
                     " {}",
-                    rox_i18n::t!("tasks-skipped-suffix", count = failed as u64)
+                    rox_i18n::t!("tasks-failed-suffix", count = failed as u64)
                 ));
             }
             return line;
@@ -6746,12 +6751,12 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// Mirror the running pass into the section, `poll_measuring`'s twin.
+    /// Copy the running pass into the section, `poll_measuring`'s twin.
     /// Stops itself once the pass clears the global, and refreshes the
-    /// coverage once on the way out so the line lands on the final count.
+    /// coverage once on the way out so the line ends on the final count.
     ///
     /// Covers the model download on the same timer rather than on one of its
-    /// own: the two never run together (the analyze button sits out while a
+    /// own: the two never run together (the analyze button is inert while a
     /// download runs), and one loop means one place that decides when the
     /// section has stopped moving.
     fn poll_analyzing(cx: &mut Context<Self>) {
@@ -6792,8 +6797,8 @@ impl SettingsWindow {
 
     /// Tempo analysis, under the acoustic section because it's the same
     /// kind of thing: a pass over the audio that fills a column in. One
-    /// switch and one line, since there's nothing to pick - no model, and
-    /// nowhere but the database for the numbers to land.
+    /// switch and one line, since there's nothing to pick: no model, and
+    /// nowhere but the database for the numbers to go.
     fn tempo_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let on = self.tempo_analysis;
         let auto = self.tempo_auto;
@@ -6852,7 +6857,7 @@ impl SettingsWindow {
 
     /// The line under the tempo switch: what a running pass is doing, or
     /// where the library stands. The three-way split is worth spelling out
-    /// for the ReplayGain section's reason - a number rox worked out and a
+    /// for the ReplayGain section's reason: a number rox worked out and a
     /// number the file arrived with are not the same claim.
     fn tempo_note(&self) -> String {
         if let Some(job) = &self.tempo_job {
@@ -6930,8 +6935,12 @@ impl SettingsWindow {
     fn tempo_estimate_suffix(&self, missing: u64) -> String {
         match rox_core::pace::estimate(self.tempo_pace, missing, self.tempo_workers) {
             Some(estimate) => format!(
-                " ({estimate} at {})",
-                rox_core::pace::workers_phrase(self.tempo_workers)
+                " {}",
+                rox_i18n::t!(
+                    "tasks-estimate-at-workers",
+                    estimate = estimate,
+                    workers = rox_core::pace::workers_phrase(self.tempo_workers)
+                )
             ),
             None => String::new(),
         }
@@ -6968,9 +6977,9 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// Mirror the running tempo pass into the section, `poll_measuring`'s
+    /// Copy the running tempo pass into the section, `poll_measuring`'s
     /// twin. Stops itself once the pass clears the global, and re-reads the
-    /// split on the way out so the line lands on the final count.
+    /// split on the way out so the line ends on the final count.
     fn poll_timing(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(RG_POLL).await;
@@ -6993,7 +7002,7 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Land on a page and leave search: what a sidebar click and a
+    /// Open a page and leave search: what a sidebar click and a
     /// result breadcrumb both do, so arriving anywhere reads the same.
     /// Entering Storage measures the files fresh, so the numbers are
     /// current without a per-frame stat.
@@ -7039,7 +7048,7 @@ impl SettingsWindow {
     /// The results stack: every surviving page under a heading that
     /// jumps to it, in sidebar order, so a search reads as the settings
     /// laid flat. The heading centers over rules running to both edges,
-    /// a level above the section headers underneath it. `pages` is what
+    /// a level above the section headers underneath it. `pages` holds what
     /// [`Self::build_page`] kept per sidebar entry; a search that kept
     /// nothing says so instead.
     fn search_results(
@@ -7055,7 +7064,7 @@ impl SettingsWindow {
                 .items_center()
                 .justify_center()
                 .text_color(palette::text_muted())
-                .child(format!("Nothing matches \"{text}\""))
+                .child(rox_i18n::t!("settings-search-no-matches", text = text))
                 .into_any_element();
         }
         div()
@@ -7099,8 +7108,8 @@ impl SettingsWindow {
             .into_any_element()
     }
 
-    /// A sidebar footer row: hands something to the system - the raw
-    /// settings file, the data folder - so it reads quieter than the
+    /// A sidebar footer row: hands something to the system (the raw
+    /// settings file, the data folder), so it reads quieter than the
     /// pages above.
     fn sidebar_action(
         &self,
@@ -7140,7 +7149,7 @@ fn indent(depth: usize) -> Pixels {
     px(14. * depth as f32)
 }
 
-/// Where a layout tree node sits among its siblings, for the reorder
+/// A layout tree node's position among its siblings, for the reorder
 /// arrows: inside a split, inside a tab group, or nowhere movable (the
 /// dock root, and a composite's hosted children, which the composite
 /// orders itself).
@@ -7166,7 +7175,7 @@ const TREE_ROW_GROUP: &str = "tree-row";
 
 /// Hide a tree row control until its row is hovered, so the tree reads
 /// as names at rest. The closed lock skips this in `panel_row`: it
-/// carries state worth seeing without a hover.
+/// shows state worth seeing without a hover.
 fn reveal(control: Div) -> Div {
     control
         .opacity(0.)
@@ -7174,7 +7183,7 @@ fn reveal(control: Div) -> Div {
 }
 
 /// A structure line of the layout tree: a split or tab group, muted so
-/// the panels carry the page, with the move controls riding the right
+/// the panel rows lead the page, with the move controls on the right
 /// edge when the node can move. Padded to the icon buttons' height so
 /// the tree keeps one rhythm with and without controls.
 fn chrome_row(depth: usize, label: &'static str, controls: Option<AnyElement>) -> AnyElement {
@@ -7194,9 +7203,7 @@ fn chrome_row(depth: usize, label: &'static str, controls: Option<AnyElement>) -
         .into_any_element()
 }
 
-/// A role badge on a preset row: lit like a filled control when the preset
-/// holds the role, a plain chip otherwise. Clicking toggles the role.
-/// The badge a shipped layout or workspace carries in its list row, telling
+/// The badge a shipped layout or workspace gets in its list row, telling
 /// the app's own read-only entries from the user's saved ones.
 fn shipped_tag() -> Div {
     div()
@@ -7210,6 +7217,8 @@ fn shipped_tag() -> Div {
         .child(rox_i18n::t!("settings-common-built-in"))
 }
 
+/// A role badge on a preset row: lit like a filled control when the preset
+/// holds the role, a plain chip otherwise. Clicking toggles the role.
 fn role_chip(
     label: &'static str,
     active: bool,
@@ -7249,7 +7258,7 @@ fn number_cell(width: Pixels, value: String) -> Div {
         .child(value)
 }
 
-/// What the library actually carries, under the section whose setting
+/// What the library actually has, under the section whose setting
 /// depends on it. Quiet: it's context for the rows above, not a warning.
 fn coverage_note(text: String) -> Div {
     div()
@@ -7258,7 +7267,7 @@ fn coverage_note(text: String) -> Div {
         .child(text)
 }
 
-/// A setting row's value where a control would sit.
+/// A setting row's value in place of a control.
 fn readout(value: String) -> Div {
     div().text_color(palette::text_muted()).child(value)
 }
@@ -7283,11 +7292,8 @@ fn mcp_config_snippet() -> String {
     serde_json::to_string_pretty(&config).unwrap_or_default()
 }
 
-/// The exclusive toggle as the output layer's mode. The two device lists
-/// don't share ids, so which one to ask for follows the toggle rather than
-/// what happens to be running.
 /// The hover note behind the Experimental badge and its issue button. Same
-/// card the track info chip's tooltip wears, so the explanation reads the
+/// card the track info chip's tooltip uses, so the explanation reads the
 /// same wherever it pops up.
 struct ExperimentalTooltip(SharedString);
 
@@ -7324,6 +7330,9 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// The exclusive toggle as the output layer's mode. The two device lists
+/// don't share ids, so which one to ask for follows the toggle rather than
+/// what happens to be running.
 fn output_mode(exclusive: bool) -> output::Mode {
     if exclusive {
         output::Mode::Exclusive
@@ -7382,7 +7391,7 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Every file under one folder, subfolders and all. The caches are flat,
-/// but the ejected shaders sit a folder per workspace deep and the icon
+/// but the ejected shaders are nested a folder per workspace deep and the icon
 /// packs a folder per pack, and a walk that stopped at the top would report
 /// those as nothing. A symlink is measured as the link rather than followed,
 /// so nothing here can walk in a circle.
@@ -7404,7 +7413,7 @@ fn file_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }
 
-/// The pass prompt's host side: where the dialog's state lives on this
+/// The pass prompt's host side: where the dialog's state is kept on this
 /// window, and what the window re-reads once the dialog has done something.
 impl pass_prompt::Host for SettingsWindow {
     fn prompt(&self) -> Option<&pass_prompt::Prompt> {
@@ -7481,14 +7490,14 @@ impl Render for SettingsWindow {
         let columns = grid_columns(window);
 
         // The window renders under the workspace player's art tint and
-        // claims the widget theme while it holds focus, so the pages sit
-        // in the same colors as the app they configure. The Appearance
+        // claims the widget theme while it holds focus, so the pages use
+        // the same colors as the app they configure. The Appearance
         // page's swatches still edit the base palette underneath; the
         // locked swatches show the derived colors through `resolved`.
         let player = self.player;
         palette::note_focus(player, window.is_window_active(), cx);
 
-        // A theme switch lands the live palette on the other side; the
+        // A theme switch moves the live palette to the other side; the
         // editor follows it here since every switch path repaints all
         // windows.
         self.sync_editor_side(window, cx);
@@ -7499,7 +7508,7 @@ impl Render for SettingsWindow {
 
         // Same for the shader config, which a workspace apply replaces
         // from outside this window; the route sync below has to run over
-        // the list that lands here.
+        // the list this brings in.
         self.sync_post_shader();
 
         // The Shader page builds from `&self`, so the shader route
@@ -7563,7 +7572,7 @@ impl Render for SettingsWindow {
                                     .is_some_and(|results| results[index].3.hits() == 0);
                                 // Development isn't one of the subjects, so the
                                 // list breaks before it and it reads back a
-                                // shade - closer to the escape hatches under it
+                                // shade, closer to the escape hatches under it
                                 // than to the pages above.
                                 let apart = matches!(page, Page::Development);
                                 let picked = self.page == page;
@@ -7601,9 +7610,9 @@ impl Render for SettingsWindow {
                     },
                 ))
                 // The escape hatches sink to the bottom: the raw file this
-                // window edits and the folder it lives in. The nav above
-                // takes the slack, so they sit against the bottom edge
-                // with no spacer of their own.
+                // window edits and the folder it's in. The nav above takes
+                // the slack, so they stay against the bottom edge with no
+                // spacer of their own.
                 .child(self.sidebar_action(
                     rox_i18n::t!("settings-sidebar-settings-file"),
                     icons::FILE_TEXT,
@@ -7626,7 +7635,7 @@ impl Render for SettingsWindow {
 
             div()
                 .size_full()
-                // The settings shortcut everywhere: focus lands in the
+                // The settings shortcut everywhere: focus goes to the
                 // search box, the Apple way in.
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "f" && event.keystroke.modifiers.secondary() {
@@ -7650,8 +7659,8 @@ impl Render for SettingsWindow {
                         .min_w_0()
                         .h_full()
                         .relative()
-                        // The page's own surface, the window base the sidebar
-                        // sits beside: opaque at full surface opacity so the
+                        // The page's own surface, the window base beside the
+                        // sidebar: opaque at full surface opacity so the
                         // backdrop only reads through as the surfaces thin,
                         // never at 100% like the sidebar already holds.
                         .bg(palette::bg_elevated())
@@ -7690,9 +7699,9 @@ mod tests {
     use super::{Page, PAGES};
     use rox_design::assets::icons;
 
-    /// The key each page wears in the sidebar. Exhaustive on purpose:
-    /// a new variant doesn't compile until it's named here, and the
-    /// checks below then hold it to the ordering.
+    /// The key each page uses in the sidebar. Exhaustive: a new variant
+    /// doesn't compile until it's named here, and the checks below then
+    /// hold it to the ordering.
     fn label(page: Page) -> &'static str {
         match page {
             Page::Appearance => "settings-page-appearance",
@@ -7729,7 +7738,7 @@ mod tests {
         Page::Development,
     ];
 
-    /// Every page reaches the sidebar under its own label, and the list
+    /// Every page is in the sidebar under its own label, and the list
     /// holds nothing else: a page that exists but isn't in [`PAGES`] can
     /// only be reached by search, which is never what was meant.
     #[test]
@@ -7756,8 +7765,8 @@ mod tests {
         assert_eq!(labels, want, "the sidebar is out of alphabetical order");
     }
 
-    /// The shader lives on its own page, under the icon the panel
-    /// settings window's Shader page wears.
+    /// The shader has its own page, under the icon the panel
+    /// settings window's Shader page uses.
     #[test]
     fn the_shader_page_wears_the_blend_icon() {
         let entry = PAGES

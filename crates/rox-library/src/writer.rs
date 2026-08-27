@@ -8,13 +8,13 @@
 //! run it off the UI thread.
 //!
 //! Fields split two ways, per the component contract. The standard set
-//! rides lofty's SplitTag/MergeTag pair, which carries every frame it does
-//! not understand (PRIV, GEOB, TXXX, unknown frames) through the write
+//! goes through lofty's SplitTag/MergeTag pair, which passes every frame it
+//! doesn't understand (PRIV, GEOB, TXXX, unknown frames) through the write
 //! untouched; custom fields go through the format-specific types directly
 //! (ID3v2 TXXX, Vorbis keys), because the generic ItemKey has no slot for
 //! them.
 //!
-//! One picture guard rides every commit: an ID3v2.4 tag whose header and
+//! One picture guard runs on every commit: an ID3v2.4 tag whose header and
 //! APIC frame both flag unsynchronisation reads back mangled through lofty
 //! (the art module's carve-out), so a blind read-modify-write would bake
 //! that corruption into the file for good. Such a picture is re-read raw
@@ -45,11 +45,11 @@ use crate::genre;
 use crate::rating;
 use crate::replaygain::{self, ReplayGain};
 
-/// A tag field the editor can address. The named set is what the library
-/// projects plus the fields a tag editor is expected to carry; `Custom`
-/// is a format-specific key, an ID3v2 TXXX description or a Vorbis
+/// A tag field the editor can address. The named set is the columns the
+/// library projects plus the fields a tag editor is expected to handle;
+/// `Custom` is a format-specific key, an ID3v2 TXXX description or a Vorbis
 /// comment key, written through the format tag so nothing re-maps it.
-/// `Rating` speaks the 0-10 display number and fans out to two tag forms
+/// `Rating` uses the 0-10 display number and fans out to two tag forms
 /// on write (whole-star POPM/RATING, exact FMPS_Rating); the rating
 /// module owns the conversions.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,12 +70,12 @@ pub enum Field {
     Lyrics,
     Rating,
     /// One of the four ReplayGain numbers, written by
-    /// [`commit_replay_gain`] rather than typed into the editor. It rides
-    /// the generic tag like the rest of the named set, which is what makes
-    /// it safe: lofty maps the four keys itself (TXXX descriptions on
+    /// [`commit_replay_gain`] rather than typed into the editor. It goes
+    /// through the generic tag like the rest of the named set, which is why
+    /// it's safe: lofty maps the four keys itself (TXXX descriptions on
     /// ID3v2, plain keys on Vorbis, freeform atoms on MP4) and matches
     /// them case-insensitively on the way in, so a set replaces whatever
-    /// casing the file already carried instead of landing a second frame
+    /// casing the file already had instead of writing a second frame
     /// beside it.
     ReplayGain(GainKind),
     Custom(String),
@@ -84,8 +84,8 @@ pub enum Field {
     /// id on ID3v2, a Vorbis comment key on FLAC, the owner-prefixed
     /// `PRIV:`/`UFID:` forms for the binary carriers. A clear removes
     /// every carrier of the key; a set writes text back through the
-    /// key's own carrier - the mapped item where lofty knows the key, a
-    /// custom otherwise - so editing a stray tag never lands a TXXX twin
+    /// key's own carrier (the mapped item where lofty knows the key, a
+    /// custom otherwise), so editing a stray tag never writes a TXXX twin
     /// beside the frame it meant to change.
     Unknown(String),
 }
@@ -121,9 +121,9 @@ pub struct Change {
 }
 
 /// A picture slot the cover editor addresses. The curated set a music
-/// library actually carries; lofty's full `PictureType` list is larger,
-/// and any type outside this set rides every commit untouched, the same
-/// as an unmapped text frame.
+/// library actually uses; lofty's full `PictureType` list is larger,
+/// and any type outside this set passes through every commit untouched,
+/// the same as an unmapped text frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PicKind {
     Front,
@@ -205,8 +205,8 @@ fn item_key(field: &Field) -> Option<ItemKey> {
         Field::Comment => ItemKey::Comment,
         Field::Composer => ItemKey::Composer,
         // Always the unsynchronised key on both formats: lofty refuses
-        // ItemKey::Lyrics on ID3v2, and UnsyncLyrics carries LRC text
-        // through USLT and UNSYNCEDLYRICS the same way.
+        // ItemKey::Lyrics on ID3v2, and UnsyncLyrics stores LRC text in
+        // USLT and UNSYNCEDLYRICS the same way.
         Field::Lyrics => ItemKey::UnsyncLyrics,
         Field::ReplayGain(kind) => kind.item_key(),
         // The rating never writes as plain text; `apply_rating` puts its
@@ -216,7 +216,7 @@ fn item_key(field: &Field) -> Option<ItemKey> {
 }
 
 /// The editable field a generic item maps back to, for `read`. `Year`
-/// answers for both date keys, mirroring the scanner's fallback.
+/// covers both date keys, matching the scanner's fallback.
 fn field_of(key: ItemKey) -> Option<Field> {
     Some(match key {
         ItemKey::TrackTitle => Field::Title,
@@ -229,20 +229,20 @@ fn field_of(key: ItemKey) -> Option<Field> {
         ItemKey::DiscNumber => Field::DiscNo,
         ItemKey::Comment => Field::Comment,
         ItemKey::Composer => Field::Composer,
-        // A file may carry either key (or both, if two apps wrote it);
+        // A file may have either key (or both, if two apps wrote it);
         // both read back as the one lyrics field, the first wins.
         ItemKey::UnsyncLyrics | ItemKey::Lyrics => Field::Lyrics,
-        // ReplayGain is write-only here on purpose: it's a measurement, not
-        // something a person types, so it stays out of the editor's field
-        // list and out of [`read`]'s named set.
+        // ReplayGain is write-only here: it's a measurement, not something
+        // a person types, so it stays out of the editor's field list and
+        // out of [`read`]'s named set.
         _ => return None,
     })
 }
 
 /// A file's editable fields: the named set in tag order, then the custom
-/// fields the format carries (TXXX frames, unmapped Vorbis keys). Fields
-/// outside both, sort orders and the like, stay invisible here but ride
-/// every commit untouched. Isolated like the scanner's reads: a parser
+/// fields the format holds (TXXX frames, unmapped Vorbis keys). Fields
+/// outside both, sort orders and the like, stay invisible here but pass
+/// through every commit untouched. Isolated like the scanner's reads: a parser
 /// panic costs an error, never the process.
 pub fn read(path: &Path) -> Result<Vec<(Field, String)>, String> {
     catch_unwind(AssertUnwindSafe(|| read_inner(path)))
@@ -369,7 +369,7 @@ fn unknown_excluded(key: &str) -> bool {
 
 /// Whether a generic key stays out of the unknown list, the mapped-item
 /// side of [`unknown_excluded`]. The popularimeter is where both
-/// formats' rating tags land in the generic tag, and the four gains ride
+/// formats' rating tags end up in the generic tag, and the four gains have
 /// item keys of their own.
 fn unknown_item_excluded(key: ItemKey) -> bool {
     matches!(
@@ -385,9 +385,9 @@ fn unknown_item_excluded(key: ItemKey) -> bool {
 /// A file's tags the editor has no row for: the format's custom keys
 /// ([`read`]'s customs), the items lofty maps but rox has no field for
 /// (BPM, ISRC, the MusicBrainz ids, sort orders), and the ID3v2 frames
-/// that carry bytes rather than text. Kept apart from [`read`] on
-/// purpose: that one's output feeds the editor's field lookups and the
-/// save diff, while this list shows as one ragged set and edits through
+/// that hold bytes rather than text. Kept apart from [`read`]: that one's
+/// output supplies the editor's field lookups and the save diff, while
+/// this list shows as one ragged set and edits through
 /// [`Field::Unknown`] by key. Isolated the same way, so a parser panic
 /// costs an error, not the process.
 pub fn read_unknown(path: &Path) -> Result<Vec<(String, UnknownValue)>, String> {
@@ -430,7 +430,7 @@ fn read_unknown_inner(path: &Path) -> Result<Vec<(String, UnknownValue)>, String
                         frame.id_str().to_string(),
                         UnknownValue::Text(f.timestamp.to_string()),
                     ),
-                    // The owner names the frame here: a file carries
+                    // The owner names the frame here: a file can hold
                     // several PRIVs and they're only told apart by who
                     // wrote them.
                     Frame::Private(f) => (
@@ -447,7 +447,7 @@ fn read_unknown_inner(path: &Path) -> Result<Vec<(String, UnknownValue)>, String
                     ),
                     // Pictures have the cover editor and a bare
                     // popularimeter the rating field; the rest (RVA2,
-                    // OWNE, ETCO, TIPL) carry structure a one-line row
+                    // OWNE, ETCO, TIPL) hold structure a one-line row
                     // would lie about.
                     _ => continue,
                 };
@@ -485,13 +485,13 @@ fn read_unknown_inner(path: &Path) -> Result<Vec<(String, UnknownValue)>, String
 /// the key the format itself writes them under, so a row reads the same
 /// as what another tagger shows for the file; the item key's own name
 /// stands in for the rare mapping that has no key on this format.
-/// Composer and lyrics are absent by construction: [`field_of`] answers
-/// for both, so they're writer-known fields waiting on rows of their
+/// Composer and lyrics are absent by construction: [`field_of`] maps
+/// both, so they're writer-known fields waiting on rows of their
 /// own rather than unknowns.
 ///
 /// `vendor` is the FLAC container's vendor string. The Vorbis split
-/// injects it as an EncoderSoftware item even when the file carries no
-/// such tag, and the encoder's signature is not a tag anyone wrote.
+/// injects it as an EncoderSoftware item even when the file has no such
+/// tag, and the encoder's signature is not a tag anyone wrote.
 fn mapped_unknowns(
     generic: &Tag,
     tag_type: lofty::tag::TagType,
@@ -587,7 +587,7 @@ fn embedded_pictures(
             .map(pic_tuple)
             .collect(),
         // FLAC keeps its pictures as dedicated PICTURE blocks on the file
-        // itself, off the vorbis comments - lofty parses them back there
+        // itself, off the vorbis comments. lofty parses them back there
         // no matter which tag wrote them, so the read and the write both
         // go through the file's own picture store.
         FileType::Flac => parse_flac(path)?
@@ -614,7 +614,7 @@ fn pic_tuple(picture: &Picture) -> (PictureType, Vec<u8>, String) {
 
 /// A file's embedded pictures at the slots the cover editor addresses,
 /// each with its encoded bytes and mime. Exotic-type pictures the editor
-/// does not slot are left out here but ride every commit untouched.
+/// does not slot are left out here but pass through every commit untouched.
 /// Isolated like [`read`]: a parser panic costs an error, not the process.
 pub fn read_pictures(path: &Path) -> Result<Vec<(PicKind, Vec<u8>, String)>, String> {
     catch_unwind(AssertUnwindSafe(|| read_pictures_inner(path)))
@@ -675,7 +675,7 @@ pub fn commit_with(path: &Path, changes: &[Change], pictures: &[PicChange]) -> R
 /// a file that is its own track, is writable.
 ///
 /// Editing the sheet itself would be the honest way to change a cue track's
-/// tags, and rox does not do that yet. Until it does, these edits live in the
+/// tags, and rox doesn't do that yet. Until it does, these edits stay in the
 /// library alone.
 pub fn writes_to_file(sub: u16) -> bool {
     sub == 0
@@ -683,7 +683,7 @@ pub fn writes_to_file(sub: u16) -> bool {
 
 /// [`commit_with`] for a caller holding a subsong key. A cue track's changes
 /// never reach the disk: the file write is skipped and Ok comes back, so a
-/// rating click or a field edit lands in the library's own row instead of
+/// rating click or a field edit goes into the library's own row instead of
 /// stamping every track of the image. A plain file (sub 0) commits normally.
 pub fn commit_key(
     path: &Path,
@@ -713,9 +713,9 @@ pub fn commit_batch(edits: &[Edit]) -> Vec<(PathBuf, Result<(), String>)> {
 
 /// Write a measurement's four ReplayGain numbers into a file's tags, the
 /// opt-in half of ADR 19's levelling: the values go to the database by
-/// default, and this is what puts them where every other player can read
-/// them too. Rides [`commit`], so the whole atomic layer applies - clone,
-/// verify, rename - and nothing but the four items moves.
+/// default, and this puts them where every other player can read them too.
+/// It goes through [`commit`], so the whole atomic layer applies (clone,
+/// verify, rename) and nothing but the four items moves.
 ///
 /// A `None` field removes that item rather than leaving it alone, so a
 /// re-measure that only has a track figure cannot leave last time's album
@@ -733,14 +733,14 @@ pub fn commit_replay_gain(path: &Path, gain: ReplayGain) -> Result<(), String> {
 
 /// Write one model's acoustic vector into a file's tags, the opt-in half of
 /// the analysis pass's saving: the vectors go to the database always, and
-/// this is the second copy that lets a wiped library or a folder carried to
+/// this is the second copy that lets a wiped library or a folder copied to
 /// another machine get its descriptions back without decoding everything
 /// again.
 ///
-/// Rides [`commit`] through [`Field::Custom`], so the whole atomic layer
-/// applies - clone, verify, rename - and the vector lands as an ID3v2 TXXX
-/// frame or a Vorbis comment under [`crate::embed_tag`]'s key, which both
-/// formats spell the same way. Nothing else in the file moves.
+/// It goes through [`commit`] as a [`Field::Custom`], so the whole atomic
+/// layer applies (clone, verify, rename) and the vector is written as an
+/// ID3v2 TXXX frame or a Vorbis comment under [`crate::embed_tag`]'s key,
+/// which both formats spell the same way. Nothing else in the file moves.
 ///
 /// MP3 and FLAC only, the formats this writer handles at all. Anything else
 /// comes back as the error [`file_type`] gives, and the pass treats that as
@@ -796,8 +796,8 @@ fn replay_gain_changes(gain: ReplayGain) -> Vec<Change> {
 }
 
 /// A peak in the form a tag holds it: six decimals of a linear sample
-/// value, which is what the RG spec asks for and what every tagger in the
-/// wild writes. Plenty of resolution for an f32, and it parses as a plain
+/// value, the form the RG spec asks for and every tagger in the wild
+/// writes. Plenty of resolution for an f32, and it parses as a plain
 /// float everywhere.
 fn format_peak(peak: f32) -> String {
     format!("{peak:.6}")
@@ -822,7 +822,7 @@ fn commit_inner(
         None
     };
     // MP3 always verifies its pictures (the unsync hazard); FLAC only when
-    // an edit touches them, since lofty otherwise carries its picture
+    // an edit touches them, since lofty otherwise passes its picture
     // blocks through whole.
     let check_pictures = kind == FileType::Mpeg || !pictures.is_empty();
     let expected_pictures = if check_pictures {
@@ -854,9 +854,9 @@ fn commit_inner(
     fs::rename(tmp, path).map_err(|e| format!("rename over original: {e}"))
 }
 
-/// Apply the changes to the clone. Customs land on the format tag first;
-/// the named set goes through split/merge so every unrecognized frame
-/// rides along untouched.
+/// Apply the changes to the clone. Customs are written to the format tag
+/// first; the named set goes through split/merge so every unrecognized
+/// frame is preserved untouched.
 fn write_tags(
     tmp: &Path,
     kind: FileType,
@@ -878,7 +878,7 @@ fn write_tags(
             fold_tag_gap(&mut file)?;
             // Read through the sanitiser so a tag lofty would de-unsync
             // twice parses clean; the write below zeroes the header flag,
-            // so the saved clone no longer carries the shape at all.
+            // so the saved clone no longer has the shape at all.
             let mut source = crate::tag_source::open(tmp).map_err(|e| format!("open: {e}"))?;
             let mut mpeg = MpegFile::read_from(&mut source, parse_opts())
                 .map_err(|e| format!("parse: {e}"))?;
@@ -904,8 +904,8 @@ fn write_tags(
             // re-read of the mangled one rather than the reverse.
             apply_pictures(&mut generic, pictures);
             let mut tag = remainder.merge_tag(generic);
-            // lofty writes frame content raw but carries the read tag's
-            // header flags along, so a tag read off an unsynchronised
+            // lofty writes frame content raw but keeps the read tag's
+            // header flags, so a tag read off an unsynchronised
             // file would claim unsynchronisation it no longer has, and
             // the next read would collapse byte pairs that were never
             // stuffed. Nothing lofty writes is unsynchronised; say so.
@@ -922,8 +922,8 @@ fn write_tags(
             let mut flac = FlacFile::read_from(&mut source, parse_opts())
                 .map_err(|e| format!("parse: {e}"))?;
             let mut tag = flac.vorbis_comments().cloned().unwrap_or_default();
-            // Unknowns ride the custom path here: a Vorbis key is its own
-            // carrier whichever tier the read filed it under, and a
+            // Unknowns go through the custom path here: a Vorbis key is
+            // its own carrier whichever tier the read filed it under, and a
             // mapped one round-trips through the split unchanged.
             for change in changes {
                 match &change.field {
@@ -980,7 +980,7 @@ fn apply_named(generic: &mut Tag, changes: &[Change]) {
 }
 
 /// The key [`read_unknown`] files an ID3v2 frame under, the address an
-/// unknown edit removes by. Mirrors the read's naming: descriptions for
+/// unknown edit removes by. Matches the read's naming: descriptions for
 /// the user frames, the owner-prefixed forms for PRIV and UFID, the
 /// frame id for everything else.
 fn mpeg_unknown_key(frame: &Frame<'_>) -> String {
@@ -994,8 +994,8 @@ fn mpeg_unknown_key(frame: &Frame<'_>) -> String {
 }
 
 /// One unknown change onto an MP3's format tag, ahead of the split:
-/// every frame the key names goes, whatever tier carried it. A set whose
-/// key lofty has no mapping for lands back as a TXXX here; a mapped one
+/// every frame the key names goes, whatever tier held it. A set whose
+/// key lofty has no mapping for is written back as a TXXX here; a mapped one
 /// waits for [`apply_unknown_generic`], so the value writes through the
 /// format's own frame instead.
 fn apply_unknown_mpeg(tag: &mut Id3v2Tag, key: &str, value: &Option<String>) {
@@ -1009,8 +1009,8 @@ fn apply_unknown_mpeg(tag: &mut Id3v2Tag, key: &str, value: &Option<String>) {
 
 /// The mapped half of an unknown set, after the split: a key lofty knows
 /// writes through its generic item and merges back into the frame the
-/// file carried it in. Clears need nothing here - the format pass
-/// already dropped every carrier.
+/// file held it in. Clears need nothing here: the format pass already
+/// dropped every carrier.
 fn apply_unknown_generic(generic: &mut Tag, tag_type: lofty::tag::TagType, changes: &[Change]) {
     for change in changes {
         let Field::Unknown(key) = &change.field else {
@@ -1025,8 +1025,8 @@ fn apply_unknown_generic(generic: &mut Tag, tag_type: lofty::tag::TagType, chang
 
 /// A rating change fanned out ahead of the write and the verify: the
 /// value normalized to its canonical display form (zero clears), plus
-/// its exact FMPS custom, which rides the ordinary custom path in both
-/// formats. The whole-star half goes through [`apply_rating`].
+/// its exact FMPS custom, which goes through the ordinary custom path in
+/// both formats. The whole-star half goes through [`apply_rating`].
 fn expand_rating(changes: &[Change]) -> Vec<Change> {
     let mut out = Vec::with_capacity(changes.len() + 1);
     for change in changes {
@@ -1053,7 +1053,7 @@ fn expand_rating(changes: &[Change]) -> Vec<Change> {
 
 /// The rating changes onto the generic tag: the whole-star popularimeter
 /// with an empty email, which lofty merges to a bare POPM frame on ID3v2
-/// and a bare RATING key on Vorbis - the forms other players read. One
+/// and a bare RATING key on Vorbis, the forms other players read. One
 /// rating per file: a set replaces every popularimeter, whoever wrote it.
 fn apply_rating(generic: &mut Tag, changes: &[Change]) {
     for change in changes {
@@ -1072,7 +1072,7 @@ fn apply_rating(generic: &mut Tag, changes: &[Change]) {
 /// lofty's Vorbis split hands a bare RATING key through as its raw
 /// number, but its merge only writes the email|stars|counter form back,
 /// so any commit would silently drop a rating another app left there.
-/// Reformat it - at whole-star resolution, all the form carries - when
+/// Reformat it (at whole-star resolution, all the form can express) when
 /// this commit brings no rating of its own.
 fn preserve_bare_rating(generic: &mut Tag, changes: &[Change]) {
     if changes.iter().any(|c| c.field == Field::Rating) {
@@ -1094,7 +1094,7 @@ fn preserve_bare_rating(generic: &mut Tag, changes: &[Change]) {
 
 /// Swap the rescued raw picture bytes in for the front cover lofty read
 /// mangled, or the first picture failing that, keeping its declared type.
-/// The description does not survive the swap; the image does.
+/// The description is dropped in the swap; the image is kept.
 fn set_front_picture(generic: &mut Tag, data: Vec<u8>, mime: &str) {
     let ix = generic
         .pictures()
@@ -1118,7 +1118,7 @@ fn set_front_picture(generic: &mut Tag, data: Vec<u8>, mime: &str) {
 
 /// The picture edits onto the generic tag, addressed by slot type: a set
 /// replaces the picture of that type or pushes a new one, a remove drops
-/// every picture of that type. [`expected_pictures`] mirrors this exactly,
+/// every picture of that type. [`expected_pictures`] matches this exactly,
 /// so the verify step compares the write against the same transformation.
 fn apply_pictures(generic: &mut Tag, pictures: &[PicChange]) {
     for change in pictures {
@@ -1269,10 +1269,10 @@ fn verify_fields(tmp: &Path, kind: FileType, changes: &[Change]) -> Result<(), S
     Ok(())
 }
 
-/// The pictures the clone must carry: what lofty reads off the original,
+/// The pictures the clone must hold: what lofty reads off the original,
 /// the rescued raw bytes standing in for the front cover it mangles, then
 /// the picture edits applied. The rescue substitution and the edit
-/// application mirror [`set_front_picture`] and [`apply_pictures`] step
+/// application match [`set_front_picture`] and [`apply_pictures`] step
 /// for step (both formats through their own picture store), so a clean
 /// write reads back exactly this multiset.
 fn expected_pictures(
@@ -1371,7 +1371,7 @@ fn fold_tag_gap(file: &mut fs::File) -> Result<(), String> {
 }
 
 /// Whether the writer's parser reads `path` clean, for the repair scan:
-/// `Err` carries the parse error a repair pass should surface. A format
+/// `Err` holds the parse error a repair pass should surface. A format
 /// outside the writer's matrix reads as fine, since a rewrite could do
 /// nothing for it anyway.
 pub fn readable(path: &Path) -> Result<(), String> {
@@ -1404,9 +1404,9 @@ fn parse_flac(path: &Path) -> Result<FlacFile, String> {
     FlacFile::read_from(&mut source, parse_opts()).map_err(|e| format!("parse: {e}"))
 }
 
-/// The suffix the writer's working clone carries beside the original while
-/// a commit runs. Public so the library watcher can tell the writer's own
-/// clone-and-rename traffic from real changes.
+/// The suffix on the writer's working clone, the file next to the original
+/// while a commit runs. Public so the library watcher can tell the writer's
+/// own clone-and-rename traffic from real changes.
 pub const CLONE_SUFFIX: &str = ".rox-write";
 
 /// Whether a path is the writer's working clone.
@@ -1427,7 +1427,7 @@ pub(crate) fn tmp_path(path: &Path) -> PathBuf {
 /// The byte range holding the audio stream, so its hash can prove the
 /// write only moved tags. MP3: past the leading ID3v2 tag (footer
 /// included), short of trailing ID3v1 and APE tags. FLAC: past the
-/// metadata blocks, which is where every tag lives.
+/// metadata blocks, where every tag is stored.
 fn audio_span(path: &Path, kind: FileType) -> Result<(u64, u64), String> {
     let mut file = fs::File::open(path).map_err(|e| format!("open: {e}"))?;
     let len = file.metadata().map_err(|e| format!("stat: {e}"))?.len();
@@ -1445,8 +1445,8 @@ fn audio_span(path: &Path, kind: FileType) -> Result<(u64, u64), String> {
             // written over) is not audio, and a repair write drops it:
             // hash from the sync, the same boundary the fold uses, so
             // the span agrees before and after. A file with no sync at
-            // all keeps its declared start; no write survives on it
-            // anyway.
+            // all keeps its declared start; a commit on it would fail
+            // verification anyway.
             file.seek(SeekFrom::Start(start.min(len)))
                 .map_err(|e| format!("seek: {e}"))?;
             let (junk, sync) =
@@ -1472,7 +1472,7 @@ fn audio_span(path: &Path, kind: FileType) -> Result<(u64, u64), String> {
                     .map_err(|e| format!("read: {e}"))?;
                 if &footer[..8] == b"APETAGEX" {
                     // The footer's size counts the items and itself; the
-                    // header, when the flags claim one, sits on top.
+                    // header, when the flags claim one, adds 32 on top.
                     let size = u32::from_le_bytes(footer[12..16].try_into().unwrap()) as u64;
                     let flags = u32::from_le_bytes(footer[20..24].try_into().unwrap());
                     let header = if flags & (1 << 31) != 0 { 32 } else { 0 };
@@ -1614,7 +1614,7 @@ mod tests {
     /// The unknown list's three tiers on one MP3: the TXXX descriptions
     /// [`read`] already surfaces, the frames lofty maps to item keys rox
     /// has no field for, and the binary carriers named by size alone.
-    /// The excluded families ride the same file, so a leak in any of
+    /// The excluded families are in the same file, so a leak in any of
     /// them fails here.
     #[test]
     fn mp3_unknown_tags_cover_the_three_tiers() {
@@ -1741,7 +1741,7 @@ mod tests {
         }
     }
 
-    /// An unknown edit lands through the key's own carrier and a clear
+    /// An unknown edit is written through the key's own carrier and a clear
     /// removes every one: the TXXX tier, the mapped tier (where a set
     /// must not leave a TXXX twin beside the real frame), and the
     /// binary tier, which only clears.
@@ -1916,9 +1916,9 @@ mod tests {
     }
 
     /// Editing any field leaves a file's ReplayGain where it was. lofty
-    /// maps these to item keys rather than carrying them as unknown
-    /// frames, so they ride the split/merge with the named fields; a save
-    /// that dropped them would silently unlevel a track and there'd be
+    /// maps these to item keys rather than leaving them as unknown
+    /// frames, so they go through the split/merge with the named fields;
+    /// a save that dropped them would silently unlevel a track and there'd be
     /// nothing in the library to notice it with.
     #[test]
     fn replaygain_survives_a_field_edit() {
@@ -1946,17 +1946,17 @@ mod tests {
     /// thrown away and the description comes back off the files, without a
     /// second afternoon of decoding.
     ///
-    /// Runs the real path both ways on both writable formats - the pass's
-    /// write, then the pick-up a pass does before it decodes anything - with
+    /// Runs the real path both ways on both writable formats (the pass's
+    /// write, then the pick-up a pass does before it decodes anything) with
     /// the row deleted in between, which is what a wiped library or a folder
-    /// carried to another machine looks like from here.
+    /// copied to another machine looks like from here.
     #[test]
     fn a_vector_written_into_a_file_outlives_its_database_row() {
         use crate::embeddings;
 
         let dir = scratch("embedding-round-trip");
         // Wide enough that the value is a real base64 blob rather than a few
-        // characters, and spread across the scales the raw features live on.
+        // characters, and spread across the scales the raw features use.
         let vec: Vec<f32> = (0..64)
             .map(|i| (i as f32 - 32.0) * 0.37 + (i as f32) * (i as f32) * 0.02)
             .collect();
@@ -2039,7 +2039,7 @@ mod tests {
         }
     }
 
-    /// A measurement written back to the file: the four numbers land in
+    /// A measurement written back to the file: the four numbers go out in
     /// the standard string forms, read back through the ReplayGain parser
     /// as the numbers that went in, and the fields the commit never named
     /// come through untouched. Then a second write with only a track gain
@@ -2145,7 +2145,7 @@ mod tests {
 
     /// The casing carve-out: plenty of taggers write the ID3v2 TXXX
     /// descriptions lowercase, and a write that matched them literally
-    /// would clear nothing and land a second frame beside the stale one.
+    /// would clear nothing and write a second frame beside the stale one.
     /// Going through the generic key means lofty's case-insensitive
     /// mapping does the matching, so a set replaces and a clear removes.
     #[test]
@@ -2196,8 +2196,8 @@ mod tests {
         assert!(fs::read(&path).unwrap().ends_with(&mpeg_audio()));
     }
 
-    /// A "; " genre list writes as each format's native multiples - two
-    /// GENRE comments on FLAC, one null-separated TCON on ID3v2 - and
+    /// A "; " genre list writes as each format's native multiples (two
+    /// GENRE comments on FLAC, one null-separated TCON on ID3v2) and
     /// reads back rejoined. The typed value canonicalizes on the way
     /// through, and an empty list clears the field.
     #[test]
@@ -2249,7 +2249,7 @@ mod tests {
     }
 
     /// The retention half of the contract: a commit naming one field must
-    /// carry every other field through untouched, customs included.
+    /// pass every other field through untouched, customs included.
     #[test]
     fn unrelated_commit_keeps_other_fields() {
         let dir = scratch("retention");
@@ -2275,8 +2275,8 @@ mod tests {
     }
 
     /// The rating's fan-out and round trip on both formats: the exact
-    /// half-point value survives through FMPS, the whole-star companion
-    /// lands beside it, clearing removes both, and the FMPS custom never
+    /// half-point value is kept through FMPS, the whole-star companion is
+    /// written beside it, clearing removes both, and the FMPS custom never
     /// shows up as a custom field.
     #[test]
     fn rating_round_trips_with_half_points() {
@@ -2300,7 +2300,7 @@ mod tests {
     }
 
     /// The lofty 0.24 carve-out this module papers over: a bare Vorbis
-    /// RATING key survives an unrelated commit (at star resolution)
+    /// RATING key is kept through an unrelated commit (at star resolution)
     /// instead of being dropped by the asymmetric split/merge pair.
     #[test]
     fn unrelated_flac_commit_keeps_a_bare_rating() {
@@ -2423,7 +2423,7 @@ mod tests {
         assert_eq!(value_of(&fields, &Field::Title).as_deref(), Some("Harry"));
     }
 
-    /// The acceptance bullet this module carries for the Bandcamp shape:
+    /// The acceptance bullet this module covers for the Bandcamp shape:
     /// an ID3v2.4 tag whose header and APIC frame both flag
     /// unsynchronisation reads back mangled through lofty, so a text
     /// commit that trusted the read would corrupt the cover for good. The
@@ -2512,8 +2512,8 @@ mod tests {
     /// The out-of-tag padding shape: a tagger left zeros between the
     /// declared tag end and the first MPEG frame, deeper than lofty's
     /// write probe searches, so every save died before writing a byte.
-    /// The commit folds the padding into the tag and lands the edit,
-    /// with the audio carried through untouched.
+    /// The commit folds the padding into the tag and writes the edit,
+    /// with the audio passed through untouched.
     #[test]
     fn commit_folds_padding_left_outside_the_tag() {
         let mut frames = b"TIT2".to_vec();
@@ -2603,7 +2603,7 @@ mod tests {
     }
 
     /// A cover set, read back, then replaced and removed, on both formats:
-    /// the write lands the picture at its slot, a second write swaps it,
+    /// the write puts the picture in its slot, a second write swaps it,
     /// and a remove clears it, all over untouched audio.
     #[test]
     fn cover_set_replace_remove_round_trips() {

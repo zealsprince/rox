@@ -23,7 +23,7 @@ use rox_design::{palette, tokens};
 
 use crate::ui as settings_ui;
 
-/// The host's own handler, wrapped so the element can carry it: takes the
+/// The host's own handler, wrapped so the element can hold it: takes the
 /// value a row sets, None for the head row that clears back to default.
 type Pick = Rc<dyn Fn(Option<String>, &mut App)>;
 
@@ -31,7 +31,7 @@ type Pick = Rc<dyn Fn(Option<String>, &mut App)>;
 /// runs.
 type Commit = Rc<dyn Fn(Option<String>, &mut Window, &mut App)>;
 
-/// One row's height. The list is a `uniform_list`, so every row agrees on
+/// One row's height. The list is a `uniform_list`, so every row uses
 /// it.
 const ROW_H: Pixels = px(22.);
 
@@ -39,12 +39,12 @@ const ROW_H: Pixels = px(22.);
 const ROWS: usize = 12;
 
 /// The list runs wider than the field it drops from: the field truncates
-/// a long label, so the list is where the whole label has to fit.
+/// a long label, so the whole label has to fit in the list.
 const LIST_W: Pixels = px(240.);
 
 /// One row of the list: what it reads as, and the value it sets. None is
 /// the head row, the one that clears the override back to whatever the
-/// layer above decides, and the one an active query filters out since
+/// layer above sets, and the one an active query filters out since
 /// nothing about it is a value someone would be typing toward.
 #[derive(Clone, PartialEq)]
 pub struct PickRow {
@@ -61,7 +61,7 @@ pub struct PickRow {
 /// A searchable dropdown over `rows`. `label` is what the closed field
 /// shows; `current` marks the row that's set. The strings are the
 /// caller's because the caller knows whether they translate: the
-/// language picker feeds `t!` copy, the font picker its literals until
+/// language picker passes `t!` copy, the font picker its literals until
 /// the settings pages extract.
 #[allow(clippy::too_many_arguments)]
 pub fn search_picker<P: 'static>(
@@ -91,7 +91,7 @@ pub fn search_picker<P: 'static>(
 }
 
 /// What the picker keeps between frames: the search box, which rows the
-/// query left, and the row the arrows have landed on. It lives in the
+/// query left, and the row the arrows are on. It's kept in the
 /// element's own keyed state, so a host builds a picker the way it
 /// builds a toggle, by calling [`search_picker`], and owns nothing.
 struct Search {
@@ -131,8 +131,8 @@ impl Search {
     }
 
     /// Take a fresh row set and placeholder when they've actually
-    /// changed: the state outlives a locale switch, and this is what
-    /// keeps a reopened list speaking the new language.
+    /// changed: the state outlives a locale switch, and this keeps a
+    /// reopened list in the new language.
     fn retarget(
         &mut self,
         all: &Arc<Vec<PickRow>>,
@@ -199,7 +199,7 @@ impl Search {
         cx.notify();
     }
 
-    /// Walk the list by `delta` rows, stopping at either end.
+    /// Step the list by `delta` rows, stopping at either end.
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.hits.is_empty() {
             return;
@@ -377,10 +377,10 @@ impl RenderOnce for SearchPicker {
     }
 }
 
-/// One list row: the label flush left, a tick riding the right edge of
+/// One list row: the label flush left, a tick on the right edge of
 /// the one that's set, and the menu hover behind whichever the arrows or
 /// the pointer are on. The tick trails rather than leads so unpicked
-/// rows don't all carry its indent.
+/// rows don't all get its indent.
 fn row_body(label: SharedString, picked: bool, selected: bool) -> gpui::Div {
     div()
         .w_full()

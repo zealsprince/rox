@@ -1,12 +1,12 @@
 //! TheAudioDB (theaudiodb.com): the wide artist art the biography panel
-//! wants that Last.fm and deezer don't carry - a banner for the header
+//! needs and Last.fm and deezer don't provide: a banner for the header
 //! and a fanart background behind the text. One keyless search by name
 //! returns both as URLs; the store downloads them beside the deezer
 //! portrait. Blocking, background executor only, like the other
 //! providers.
 //!
-//! The key below is TheAudioDB's public test key. It answers the search
-//! and image endpoints at a low rate, which is all a per-artist lookup
+//! The key below is TheAudioDB's public test key. It works on the search
+//! and image endpoints at a low rate limit, which is all a per-artist lookup
 //! needs; a fork leaning on it harder registers for a supporter key and
 //! drops it in here, the Last.fm identity's trade-off ([`crate::lastfm::keys`]).
 
@@ -17,7 +17,7 @@ use super::{agent, net_reason, normalize, string};
 const API_KEY: &str = "2";
 
 /// The two wide images the panel uses, as URLs; either can be absent when
-/// TheAudioDB carries only one for an artist.
+/// TheAudioDB has only one for an artist.
 #[derive(Clone, Default)]
 pub struct ArtistArt {
     /// The 1000x185-ish banner, the header's first choice.
@@ -32,12 +32,12 @@ impl ArtistArt {
     }
 }
 
-/// The wide art for an artist by name: Ok(None) is TheAudioDB not knowing
-/// the name, Err the network or the API failing. The result has to fold
-/// to the queried name - a name search can hand back a near-miss, and the
+/// The wide art for an artist by name: Ok(None) is TheAudioDB having no
+/// such name, Err the network or the API failing. The result has to fold
+/// to the queried name: a name search can hand back a near-miss, and the
 /// wrong band's banner is worse than none. The wide thumb stands in for a
-/// missing banner or fanart, so an artist with only one still dresses the
-/// panel.
+/// missing banner or fanart, so an artist with only one still fills both
+/// slots.
 pub fn artist_art(name: &str) -> Result<Option<ArtistArt>, String> {
     if name.trim().is_empty() {
         return Ok(None);

@@ -1,11 +1,11 @@
-//! Per-panel surface shaders: any panel can carry a WGSL fragment stage
+//! Per-panel surface shaders: any panel can have a WGSL fragment stage
 //! that runs over its own body rect, layered under the app-wide post
-//! shader. The config rides [`PanelChrome`](super::PanelChrome), so
+//! shader. The config is stored on [`PanelChrome`](super::PanelChrome), so
 //! persistence, duplication, and workspace bundles come free; the render
 //! side is [`PanelSurface`], recorded by the [`Themed`](super::themed)
 //! wrapper after the panel's body has painted.
 //!
-//! Three pieces live here because the upcoming Shader panel wants them
+//! Three pieces are here because the upcoming Shader panel needs them
 //! too: the slot targets a route list resolves into, the `// @slot n:`
 //! label convention, and the eight `meta` floats every rox shader can
 //! count on.
@@ -43,7 +43,7 @@ pub const SLOTS: usize = 16;
 /// demonstrates a different part of the contract, so together they double as
 /// the authoring reference: Plasma is a pure primitive, Trails reads its own
 /// last frame and proves the region pass, Sheen is a transparent overlay
-/// meant to ride another panel's body, Shadow reads the mask capture and
+/// meant to run over another panel's body, Shadow reads the mask capture and
 /// shades under the panel's own content, Cover and Badge bind the playing
 /// track's art, Lamp reads the mouse, Cube fakes a third dimension from
 /// uniforms alone, Bloom is a two-pass chain, and Tube samples the screen
@@ -62,13 +62,13 @@ pub const TUBE: &str = include_str!("shader/tube.wgsl");
 /// One shipped example: what to call it, the one line the settings pages
 /// print under it once it's picked, and the WGSL itself.
 ///
-/// The blurb rides the entry rather than sitting in a section note, so
-/// adding an example stays a file plus a line here instead of a file, a
-/// line, and a sentence somebody has to remember to edit somewhere else.
-/// Whether this shader rides content or replaces it isn't a field here: it
-/// rides the source as an `// @overlay` line, read by [`overlay`]. A pool
-/// shader out of somebody's bundle has no Rust struct to carry a flag on,
-/// and the picker groups both lists by the same read, so the answer lives
+/// The blurb is on the entry rather than in a section note, so adding an
+/// example stays a file plus a line here instead of a file, a line, and a
+/// sentence somebody has to remember to edit somewhere else. Whether this
+/// shader runs over content or replaces it isn't a field here: it's
+/// declared in the source as an `// @overlay` line, read by [`overlay`]. A
+/// pool shader out of somebody's bundle has no Rust struct to hold a flag
+/// on, and the picker groups both lists by the same read, so the answer is
 /// in the one place both kinds of shader have.
 pub struct Preset {
     /// The example's own name, which stays as written: these read as
@@ -133,18 +133,18 @@ pub const PRESETS: &[Preset] = &[
 ];
 
 /// How often a watched source file gets stat'd while its surface draws.
-/// Twice a second: fast enough that a save in the editor lands before the
-/// hand is back on the mouse, slow enough to be one syscall rather than one
+/// Twice a second: fast enough that a save in the editor is picked up before
+/// the hand is back on the mouse, slow enough to be one syscall rather than one
 /// a frame.
 pub const RELOAD_EVERY: Duration = Duration::from_millis(500);
 
 /// A panel's surface shader as it persists: the source text inline, the
 /// file it was last loaded from, and the routes feeding its slots.
 ///
-/// The source is stored inline on purpose. A workspace bundle carrying
-/// only an absolute path would import as a dead shader on anyone else's
-/// machine, so the path is a bookmark for the reload button and the
-/// source is what actually runs.
+/// The source is stored inline. A workspace bundle with only an absolute
+/// path would import as a dead shader on anyone else's machine, so the
+/// path is a bookmark for the reload button and the source is what
+/// actually runs.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PanelShader {
@@ -155,7 +155,7 @@ pub struct PanelShader {
     pub source: String,
     /// A name in the workspace's shader pool. Set, the pool's copy is what
     /// runs and the inline source is ignored, which is how several panels
-    /// wear one shader that the bundle's author edits in one place. See
+    /// share one shader that the bundle's author edits in one place. See
     /// [`resolve_source`] for what a name that resolves to nothing does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -171,10 +171,10 @@ pub struct PanelShader {
     /// it goes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub manual: Vec<(u8, f32)>,
-    /// Keep asking for frames with the hub silent. Off, a shader over a
+    /// Keep requesting frames with the hub silent. Off, a shader over a
     /// paused player freezes where it stands and the panel costs nothing,
-    /// bar the frames a cursor reader asks for itself while the pointer is
-    /// still worth something (see [`cursor_presence`]).
+    /// bar the frames a cursor reader requests for itself while the pointer
+    /// is still worth something (see [`cursor_presence`]).
     pub run_when_idle: bool,
 }
 
@@ -196,8 +196,8 @@ impl PanelShader {
     /// Whether there is anything to paint: switched on, with either a pool
     /// name or source text of its own. A name that turns out to resolve to
     /// nothing still counts here, since whether the pool holds it is a
-    /// question for [`resolve_source`] at registration and not for a config
-    /// that has been asked what it wants.
+    /// question for [`resolve_source`] at registration, not for the config
+    /// itself.
     pub fn runnable(&self) -> bool {
         self.enabled && (self.name.is_some() || !self.source.trim().is_empty())
     }
@@ -208,12 +208,12 @@ impl PanelShader {
 /// same pair of fields.
 ///
 /// A name wins outright: a hit hands back the pool's source, and a miss
-/// hands back None so the surface paints nothing. A miss deliberately
-/// doesn't fall through to the inline copy. A name says "whatever the
-/// workspace calls this", and quietly running some stale text under that
-/// name would be worse than a blank panel. It's the same read as a route
-/// pointing at a signal that's gone, which holds its slot at zero rather
-/// than picking a different signal.
+/// hands back None so the surface paints nothing. A miss doesn't fall
+/// through to the inline copy. A name means "whatever the workspace calls
+/// this", and quietly running some stale text under that name would be
+/// worse than a blank panel. Same read as a route pointing at a signal
+/// that's gone, which holds its slot at zero rather than picking a
+/// different signal.
 ///
 /// Without a name, the inline source runs, and empty text is nothing to run.
 ///
@@ -229,7 +229,7 @@ pub fn resolve_source(name: Option<&str>, inline: &str) -> Option<String> {
     }
 }
 
-/// Which entry of a shader picker a config currently sits on.
+/// Which entry of a shader picker a config currently matches.
 ///
 /// Both shader surfaces grew the same handful of ways to end up with a
 /// shader, and the picker's closed label, the note under it, and which
@@ -255,7 +255,7 @@ pub enum Pick {
 /// runs, so a name this workspace doesn't hold arrives as None and reads as
 /// missing rather than as empty.
 ///
-/// A file bookmark beats an example match on purpose. Editing an example as
+/// A file bookmark beats an example match. Editing an example as
 /// a file leaves the text identical for as long as it takes to make the
 /// first change, and from the moment the file exists it's the thing being
 /// edited, so the rows under the picker have to offer Reload rather than a
@@ -338,7 +338,7 @@ pub fn builtin(source: &str) -> bool {
 
 /// Whether this source may run on this machine.
 ///
-/// Shaders ride layout dumps and workspace bundles as inline WGSL, so
+/// Shaders travel in layout dumps and workspace bundles as inline WGSL, so
 /// applying somebody else's look hands rox somebody else's code. Nothing
 /// registers until its hash is in the machine-local approved list, which
 /// only a direct action writes to: a file pick, a reload, a preset, or the
@@ -365,8 +365,8 @@ pub fn approve(source: &str) {
 /// who wanted a file manager, not another write.
 const EJECT_VARIANTS: u32 = 99;
 
-/// The name of the look the app is wearing, which is the folder ejected
-/// shaders land in. A look that was never saved has no name, and the path
+/// The name of the look the app is running, which is the folder ejected
+/// shaders go into. A look that was never saved has no name, and the path
 /// helper is the one that turns that into `_local`, so this hands the name
 /// over exactly as it found it.
 pub fn live_workspace() -> String {
@@ -376,7 +376,7 @@ pub fn live_workspace() -> String {
 /// Write a shader out to a file an editor can open, under the live
 /// workspace's folder. This is the authoring loop's front door: rox has no
 /// text editor of its own, so a shader that arrived inside a bundle gets a
-/// working copy here and the file watch carries the edits back.
+/// working copy here and the file watch brings the edits back.
 ///
 /// A file already at that name is only written over when it still holds the
 /// same shader, hash for hash. Anything else has diverged, whether somebody
@@ -393,11 +393,11 @@ pub fn eject(name: &str, source: &str) -> std::io::Result<PathBuf> {
     )
 }
 
-/// [`eject`] under a given root and with the images the shader carries,
+/// [`eject`] under a given root and with the images the shader declares,
 /// which is what the tests write into rather than the folder the running
 /// app ejects to.
 ///
-/// The images land beside the `.wgsl` under their own file names, and those
+/// The images are written beside the `.wgsl` under their own file names, and those
 /// are overwritten rather than slid down to a variant. A plate is data the
 /// shader points at by name, so two shaders naming the same file mean the
 /// same file, and a numbered copy would only leave the second shader
@@ -433,7 +433,12 @@ pub fn eject_in(
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::AlreadyExists,
-        format!("{name} already has {EJECT_VARIANTS} files in this workspace's shaders"),
+        rox_i18n::t!(
+            "shader-eject-name-taken",
+            name = name.to_string(),
+            count = EJECT_VARIANTS as u64
+        )
+        .to_string(),
     ))
 }
 
@@ -457,14 +462,14 @@ fn write_assets(
 }
 
 /// Eject a pool entry and bookmark the file on the entry, so [`poll_pool`]
-/// watches it from then on and every panel wearing the name picks up the
-/// edits. Answers the file it wrote, with the shader's images written
+/// watches it from then on and every panel using the name picks up the
+/// edits. Returns the file it wrote, with the shader's images written
 /// beside it.
 pub fn eject_pool_entry(name: &str) -> std::io::Result<PathBuf> {
     let Some(entry) = rox_core::settings::shader_pool_get(name) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("{name} isn't in this workspace's shaders"),
+            rox_i18n::t!("shader-eject-not-in-pool", name = name.to_string()).to_string(),
         ));
     };
     let path = eject_in(
@@ -494,12 +499,12 @@ pub fn eject_name(label: &str, source: &str) -> String {
     }
 }
 
-/// Put an inline shader into the workspace's pool under `name`, answering
+/// Put an inline shader into the workspace's pool under `name`, returning
 /// whether it replaced an entry that was already there. The source approves
 /// on the way in, since promoting a shader is the user vouching for it as
 /// much as picking its file was.
 ///
-/// `path` is the working copy the source came from, carried over so a panel
+/// `path` is the working copy the source came from, kept so a panel
 /// that was already being edited in a file keeps its hot reload after the
 /// promotion. It's the incoming shader's file either way: a replaced entry
 /// drops the bookmark it had, because that file still holds the old shader
@@ -508,7 +513,7 @@ pub fn eject_name(label: &str, source: &str) -> String {
 ///
 /// A shader promoted out of a file takes the images it declares with it,
 /// read from beside that file. Without that the entry would travel as a
-/// look with holes in it, since the plates only ever sat on this machine.
+/// look with holes in it, since the plates only ever existed on this machine.
 pub fn save_to_pool(name: &str, source: &str, path: Option<PathBuf>) -> bool {
     approve(source);
     let captured = sibling_assets(source, path.as_deref());
@@ -518,7 +523,7 @@ pub fn save_to_pool(name: &str, source: &str, path: Option<PathBuf>) -> bool {
             entry.source = source.to_string();
             entry.path = path;
             // Additive: what's on disk wins for the files it holds, and
-            // anything the entry already carried stays, since a plate is
+            // anything the entry already had stays, since a plate is
             // still a plate while its `@asset` line is being edited.
             for asset in captured {
                 match entry.assets.iter_mut().find(|held| held.file == asset.file) {
@@ -567,10 +572,10 @@ fn sibling_assets(source: &str, path: Option<&Path>) -> Vec<rox_core::settings::
 
 /// The pool's own hot reload, and the app's only copy of it.
 ///
-/// A pool entry that has been ejected carries a bookmark, and every panel
-/// wearing that name runs its text, so the watch belongs to the pool rather
+/// A pool entry that has been ejected has a bookmark, and every panel using
+/// that name runs its text, so the watch belongs to the pool rather
 /// than to any one of them: a per-panel watch would stat the same file once
-/// per wearer and race itself writing the answer back. The lock is a
+/// per panel and race itself writing the answer back. The lock is a
 /// `try_lock` for the same reason [`SourceWatch`] throttles: this is called
 /// from paint, and the second panel through in a frame has nothing to add.
 static POOL_WATCH: LazyLock<Mutex<PoolWatch>> = LazyLock::new(|| Mutex::new(PoolWatch::default()));
@@ -582,13 +587,13 @@ struct PoolWatch {
     checked: Option<Instant>,
     /// Each bookmarked entry's last look at its files, by name. An entry
     /// with no stamp yet reads them once, the same rule the per-panel watch
-    /// keeps: an edit made while rox was closed should land on open rather
-    /// than on the edit after it.
+    /// keeps: an edit made while rox was closed should be picked up on open
+    /// rather than on the edit after it.
     stamps: HashMap<String, EntryStamps>,
 }
 
 /// The size and mtime of everything one pool entry watches: its `.wgsl` and
-/// each image it declares, which sit beside it after an eject.
+/// each image it declares, which are beside it after an eject.
 #[derive(Default)]
 struct EntryStamps {
     source: Option<(u64, i64)>,
@@ -602,8 +607,8 @@ struct PoolEdits {
     /// Sources that came back changed, for the caller to approve.
     fresh: Vec<String>,
     /// Whether anything moved at all. An image edit changes no source and
-    /// still has to be written back, since writing the pool is what
-    /// re-registers every panel wearing the name.
+    /// still has to be written back, since writing the pool re-registers
+    /// every panel using the name.
     changed: bool,
 }
 
@@ -614,7 +619,7 @@ struct PoolEdits {
 ///
 /// A source that came back changed is approved, because a reload is a user
 /// action: they pointed rox at the file and then edited it. Writing the pool
-/// bumps its generation, which is what re-registers every wearer.
+/// bumps its generation, which re-registers every panel using it.
 pub fn poll_pool() {
     let Ok(mut watch) = POOL_WATCH.try_lock() else {
         return;
@@ -643,9 +648,9 @@ pub fn poll_pool() {
 
 /// The stat-and-read half of the pool watch, over a pool handed in so a
 /// test can point it at files of its own. Writes what moved into `pool` and
-/// answers with what needs approving and whether anything moved at all.
+/// returns what needs approving and whether anything moved at all.
 ///
-/// An ejected entry's images sit beside its `.wgsl`, so they're watched the
+/// An ejected entry's images are beside its `.wgsl`, so they're watched the
 /// same way, and the list of them comes off the source's own `@asset`
 /// lines. That way declaring a new image and dropping the file next to the
 /// shader is one save, rather than something the entry has to be taught
@@ -679,7 +684,7 @@ fn pool_reload(
             continue;
         };
         for asset in &spec.assets {
-            // The cover binding has no file behind it; the player feeds it.
+            // The cover binding has no file behind it; the player supplies it.
             if asset.is_cover() {
                 continue;
             }
@@ -697,7 +702,7 @@ fn pool_reload(
             let fresh = rox_core::settings::ShaderAsset::from_bytes(asset.file.clone(), &bytes);
             match entry.assets.iter_mut().find(|held| held.file == asset.file) {
                 // The first sweep after an eject stats a file that already
-                // says what the entry does, which is nothing to write back.
+                // holds what the entry does, which is nothing to write back.
                 Some(held) if held.data == fresh.data => {}
                 Some(held) => {
                     *held = fresh;
@@ -717,10 +722,10 @@ fn pool_reload(
     edits
 }
 
-/// The mtime watch behind hot reload, worn by both shader surfaces: the
+/// The mtime watch behind hot reload, used by both shader surfaces: the
 /// Shader panel over its own config, and [`PanelSurface`] over a panel's
 /// chrome. An external editor plus this is the authoring loop, so it never
-/// prompts and never asks for a frame of its own - it rides the paint the
+/// prompts and never requests a frame of its own; it runs on the paint the
 /// shader was already asking for.
 #[derive(Default)]
 pub struct SourceWatch {
@@ -728,7 +733,7 @@ pub struct SourceWatch {
     stamp: Option<(u64, i64)>,
     /// Whether a stamp has been taken for the source in hand. Unseeded, the
     /// first check reads the file whatever the stamp says, so an edit made
-    /// while rox was closed lands on open rather than on the edit after it.
+    /// while rox was closed is picked up on open rather than on the edit after it.
     seeded: bool,
     /// The last stat, so the check costs a syscall every
     /// [`RELOAD_EVERY`] rather than one a frame.
@@ -737,7 +742,7 @@ pub struct SourceWatch {
 
 impl SourceWatch {
     /// A watch for a source that was just read from `path`, so the next
-    /// edit is what wakes it. A source with no file behind it gets an
+    /// edit wakes it. A source with no file behind it gets an
     /// unseeded watch that never has anything to poll.
     pub fn seeded(path: Option<&Path>) -> SourceWatch {
         SourceWatch {
@@ -749,8 +754,8 @@ impl SourceWatch {
 
     /// The file's contents when it has moved since the last look, or None
     /// when it hasn't, when the throttle hasn't elapsed, or when the file
-    /// has gone. A file that disappears leaves the running source alone -
-    /// that is the whole reason the source is stored inline - and the watch
+    /// has gone. A file that disappears leaves the running source alone
+    /// (the whole reason the source is stored inline) and the watch
     /// stays armed for it coming back.
     pub fn poll(&mut self, path: &Path) -> Option<String> {
         let now = Instant::now();
@@ -786,18 +791,18 @@ pub fn target_slot(id: &str) -> Option<usize> {
 /// `// @overlay` line in its source.
 ///
 /// The one question a picker has to answer before somebody hands their whole
-/// window to a shader: does the app survive this. Two shapes claim it, and
-/// they look nothing alike. Sheen and Lamp are transparent, so the frame
-/// blends through them; Dither and Tube are opaque and read `screen`, so they
-/// print the frame themselves. What they share is the only thing that
-/// matters here, which is that you can still read your library afterwards.
+/// window to a shader: does the app stay usable under it. Two shapes claim
+/// it, and they look nothing alike. Sheen and Lamp are transparent, so the
+/// frame blends through them; Dither and Tube are opaque and read `screen`,
+/// so they print the frame themselves. What they share is the only thing
+/// that matters here: you can still read your library.
 ///
 /// It can't be derived, which is why it's declared. Binding `screen` proves
 /// a shader *can* pass the frame through and nothing more, since a chain is
 /// free to sample it and throw it away. Transparency is worse: alpha is a
 /// value the fragment stage computes per pixel, so the only way to know is to
-/// run it. So the shader's author says, and a shader that says nothing is
-/// taken at its most disruptive, which is the safe way to be wrong.
+/// run it. So the shader's author declares it, and a shader that declares
+/// nothing is taken at its most disruptive, which is the safe way to be wrong.
 pub fn overlay(source: &str) -> bool {
     source
         .lines()
@@ -885,8 +890,8 @@ pub fn manual_value(manual: &[(u8, f32)], slot: usize) -> Option<f32> {
         .map(|(_, value)| *value)
 }
 
-/// Set or replace a slot's hand-set value, clamped to the 0..1 every slot
-/// carries.
+/// Set or replace a slot's hand-set value, clamped to the 0..1 range every
+/// slot uses.
 pub fn set_manual_value(manual: &mut Vec<(u8, f32)>, slot: usize, value: f32) {
     let value = value.clamp(0.0, 1.0);
     match manual.iter_mut().find(|(at, _)| *at as usize == slot) {
@@ -951,7 +956,7 @@ pub fn note_window(window: &Window, state: &AppState, cx: &mut App) {
     feeds
         .0
         .retain(|window, feed| live.contains(window) && feed.player.upgrade().is_some());
-    // The cover feeds ride the same liveness: a closed window's art has
+    // The cover feeds follow the same liveness: a closed window's art has
     // nobody left to sample it.
     COVERS
         .write()
@@ -977,9 +982,9 @@ struct CoverFeed {
     /// identity here even though it's the wrong one everywhere a track is
     /// named.
     path: Option<PathBuf>,
-    /// Bumped when the path turns over, which is what the program keys
-    /// hash so a track change re-registers exactly the programs that bind
-    /// the art.
+    /// Bumped when the path turns over, and hashed into the program keys,
+    /// so a track change re-registers exactly the programs that bind the
+    /// art.
     rev: u64,
     image: Option<Arc<AssetImage>>,
 }
@@ -989,14 +994,14 @@ static COVERS: LazyLock<RwLock<HashMap<u64, CoverFeed>>> =
 
 /// The registered cover's cap on its long edge. Registered textures live
 /// until the window closes (the patch never evicts), so a session that
-/// walks a few hundred albums holds a few hundred of these; at this size
+/// goes through a few hundred albums holds a few hundred of these; at this size
 /// that's a megabyte each instead of sixteen, and no shader effect over a
 /// panel resolves finer anyway.
 const COVER_EDGE: u32 = 512;
 
 /// Point a window's cover feed at the playing file, loading and decoding
-/// its art when the path turns over. Answers the feed's revision either
-/// way, which is what the caller folds into its program key. Costs a map
+/// its art when the path turns over. Returns the feed's revision either
+/// way, which the caller folds into its program key. Costs a map
 /// read and a path compare until the track changes, then one art
 /// extraction and decode.
 pub fn note_cover(window: u64, path: Option<&Path>) -> u64 {
@@ -1031,8 +1036,8 @@ pub fn note_cover(window: u64, path: Option<&Path>) -> u64 {
 
 /// [`note_cover`] fed from the window's own player: the playing file, or
 /// None with the player idle. A window with no feed registered (a child
-/// window under the all-windows post shader) leaves its entry alone -
-/// [`adopt_cover`] is what fills those.
+/// window under the all-windows post shader) leaves its entry alone;
+/// [`adopt_cover`] fills those.
 pub fn poll_cover(window: &Window, cx: &App) -> u64 {
     let id = window.window_handle().window_id().as_u64();
     let Some((_, player)) = window_feed(window, cx) else {
@@ -1046,7 +1051,7 @@ pub fn poll_cover(window: &Window, cx: &App) -> u64 {
 }
 
 /// Copy one window's cover feed onto another, for the child-window sweep:
-/// a child wears the primary workspace's program, so it wears its art too.
+/// a child runs the primary workspace's program, so it takes its art too.
 pub fn adopt_cover(from: u64, to: u64) {
     let mut covers = COVERS.write().unwrap();
     let Some(source) = covers
@@ -1094,13 +1099,13 @@ fn load_cover(path: &Path) -> Option<AssetImage> {
     })
 }
 
-/// The one word gpui answers with on a window whose renderer has no shader
-/// pipeline. The patches ride blade's render pipelines, so a DirectX window,
-/// or a Mac build without `macos-blade`, turns every registration down with
-/// this and nothing about the text is wrong.
+/// The one word gpui returns on a window whose renderer has no shader
+/// pipeline. The patches are built on blade's render pipelines, so a DirectX
+/// window, or a Mac build without `macos-blade`, rejects every registration
+/// with this and nothing about the text is wrong.
 const NO_PIPELINE: &str = "unsupported";
 
-/// Whether a registration failure is the backend refusing rather than the
+/// Whether a registration failure is the backend rejecting it rather than the
 /// shader being broken. The asset step fails first when a program declares
 /// an image, so the word arrives prefixed as often as it arrives bare.
 pub fn unsupported(error: &str) -> bool {
@@ -1122,7 +1127,7 @@ pub const NO_PIPELINE_TITLE: &str = "Shaders don't run on this build";
 static ERRORS: LazyLock<RwLock<HashMap<EntityId, String>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// What a panel's shader last said, or None on a clean compile.
+/// A panel's last shader compile message, or None on a clean compile.
 pub fn error(panel: EntityId) -> Option<String> {
     ERRORS.read().unwrap().get(&panel).cloned()
 }
@@ -1144,7 +1149,7 @@ pub fn note_error(panel: EntityId, message: Option<String>) {
 
 /// Sources that failed to compile, keyed by window and source hash. gpui
 /// caches successful registrations by content, but a rejection re-runs
-/// naga every call, and the wrapper registers from paint - so a broken
+/// naga every call, and the wrapper registers from paint, so a broken
 /// shader would re-validate on every unrelated repaint without this.
 static FAILED: LazyLock<RwLock<HashMap<(u64, u64), String>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -1160,15 +1165,15 @@ fn source_hash(source: &str) -> u64 {
 /// What a failed registration memoizes under: the window, the source, where
 /// its images come from, the pool's generation, and the cover feed's.
 ///
-/// The generation rides along because a program can fail over its images
+/// The generation is folded in because a program can fail over its images
 /// rather than its code, and fixing an image changes no source text: the
-/// pool watch pulls the new bytes in and bumps the pool, which is what has
-/// to clear the memo. Without it a panel would sit on an error nobody could
+/// pool watch pulls the new bytes in and bumps the pool, which has to
+/// clear the memo. Without it a panel would sit on an error nobody could
 /// clear short of editing the shader.
 ///
 /// `cover` is the window's cover revision for a source that binds
 /// [`COVER_SOURCE`], and zero for the rest, so a track change re-registers
-/// exactly the programs wearing the art.
+/// exactly the programs that bind the art.
 fn program_key(window: u64, source: &str, ctx: &ProgramCtx, cover: u64) -> (u64, u64) {
     use std::hash::{Hash as _, Hasher as _};
 
@@ -1183,8 +1188,8 @@ fn program_key(window: u64, source: &str, ctx: &ProgramCtx, cover: u64) -> (u64,
 
 /// What a panel's surface is running, per window it draws in. The wrapper
 /// paints from an element with nothing but the panel's entity id to hand,
-/// so the watch and the last good registration live out here rather than on
-/// the panel. Keyed by window as well as panel because a popped-out panel
+/// so the watch and the last good registration are kept out here rather than
+/// on the panel. Keyed by window as well as panel because a popped-out panel
 /// draws in two, and a `UserShaderId` belongs to the window that made it.
 struct Live {
     /// The config source this entry was armed for. An edit in the settings
@@ -1212,12 +1217,12 @@ static LIVE: LazyLock<RwLock<HashMap<(u64, EntityId), Live>>> =
 
 /// The shape of what each publishing panel actually drew inside its body
 /// rect, read back into `meta[7]` when that panel's surface paints. A
-/// frame or glow shader wants to hug the picture, and the picture rarely
+/// frame or glow shader needs to hug the picture, and the picture rarely
 /// fills the rect: the cover letterboxes its art, so the surface alone
-/// can't know where the content ends. One float carries it: the content's
+/// can't know where the content ends. One float holds it: the content's
 /// width over height when it letterboxes centered in the rect, negative
 /// when it fills the rect edge to edge, and no entry when the panel never
-/// said, which reads as zero.
+/// published one, which reads as zero.
 static CONTENT: LazyLock<RwLock<HashMap<EntityId, f32>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -1234,7 +1239,7 @@ pub fn forget_content_shape(panel: EntityId) {
     CONTENT.write().unwrap().remove(&panel);
 }
 
-/// What `panel` said about its content, zero when it never spoke.
+/// What `panel` published about its content, zero when it published nothing.
 fn content_shape(panel: EntityId) -> f32 {
     CONTENT.read().unwrap().get(&panel).copied().unwrap_or(0.0)
 }
@@ -1245,7 +1250,7 @@ const LIVE_TTL: Duration = Duration::from_secs(300);
 
 /// The source a panel's surface is actually running, when a hot reload has
 /// moved it past the copy in the config. The settings window folds this back
-/// into the config, so a layout saved after an external edit carries the
+/// into the config, so a layout saved after an external edit holds the
 /// text that was on screen.
 pub fn hot_source(panel: EntityId) -> Option<String> {
     LIVE.read()
@@ -1256,11 +1261,11 @@ pub fn hot_source(panel: EntityId) -> Option<String> {
 }
 
 /// The render side of a panel's shader, built fresh each render from the
-/// chrome and carried by the [`Themed`](super::themed) wrapper.
+/// chrome and held by the [`Themed`](super::themed) wrapper.
 pub struct PanelSurface {
     source: String,
     /// The pool entry the source came from, so a program declaring images
-    /// finds the bytes the look carries for them.
+    /// finds the bytes the look bundles for them.
     name: Option<String>,
     /// The file the source was last read from, watched for edits.
     path: Option<PathBuf>,
@@ -1273,19 +1278,19 @@ pub struct PanelSurface {
     inset: Sides,
     /// Whether the source mentions the `mask` binding, read once at build so
     /// the wrapper knows to bracket the body's paint as a mask span before
-    /// registration has said anything.
+    /// registration has reported anything.
     wants_mask: bool,
 }
 
 impl PanelSurface {
-    /// The surface a chrome asks for, or None when it carries no runnable
-    /// shader - which includes one waiting on approval. An unapproved
+    /// The surface a chrome asks for, or None when it has no runnable
+    /// shader, which includes one waiting on approval. An unapproved
     /// source builds no surface at all, so the panel renders exactly as it
     /// would with the shader switched off, and the Shader page is where the
     /// pending source and its Approve button live.
     ///
     /// This is where a pool name resolves. A surface is built once per
-    /// render rather than once per frame, and the source it lands on is what
+    /// render rather than once per frame, and the source it resolves to is what
     /// the paint path registers and watches, so resolving here keeps the
     /// lookup off the frame loop and puts the pool's copy through the same
     /// approval gate as an inline one. A name the pool doesn't hold builds
@@ -1330,7 +1335,7 @@ impl PanelSurface {
         let window_id = window.window_handle().window_id().as_u64();
         let (source, last_good) = self.current(window_id, panel);
         let ctx = ProgramCtx::of(self.name.as_deref(), self.path.as_deref());
-        // A program wearing the track's art follows the track: the poll
+        // A program bound to the track's art follows the track: the poll
         // moves the feed when the playing file turns over, the rev moves
         // the key, and the key re-registers the program with the new art.
         let cover = if uses_cover(&source) {
@@ -1373,7 +1378,7 @@ impl PanelSurface {
         };
         let (signals, live) = self.signals(window, cx);
         let mut meta = meta_slots(window, cx);
-        // The wearing panel's published content shape rides the reserved
+        // The panel's published content shape goes in the reserved
         // slot, so a shader framing the panel's picture knows where the
         // picture actually ends. Only panel surfaces get it: the Shader
         // panel and the backdrop have no publisher and read zero.
@@ -1403,7 +1408,7 @@ impl PanelSurface {
         // Docked panels render cached: a clean frame replays the recorded
         // primitive with the values it was recorded with, so an animating
         // shader needs its panel dirtied every frame. `request_animation_frame`
-        // notifies exactly this view, which is the cheap wake - a window
+        // notifies exactly this view, which is the cheap wake; a window
         // `refresh` would rebuild every view in the window uncached and
         // stall the whole frame loop.
         if live || self.run_when_idle || (cursor && meta[6] > 0.0) {
@@ -1416,14 +1421,14 @@ impl PanelSurface {
     /// [`RELOAD_EVERY`], and a file that has moved becomes what runs until
     /// the settings window folds it back into the config.
     ///
-    /// The reload only happens for a surface that is already painting, which
+    /// The reload only happens for a surface that's already painting, which
     /// means already approved. A pending source never gets here, so a bundle
     /// can't have rox read a path of its choosing and trust what comes back.
     fn current(&self, window: u64, panel: EntityId) -> (String, Option<(u64, UserShaderId)>) {
-        // The pool's watch rides along here: it's throttled and app-wide, so
+        // The pool's watch runs here too: it's throttled and app-wide, so
         // whichever surface paints first in a frame pays for it and the rest
         // cost an elapsed check. A named surface doesn't watch a file of its
-        // own, and this is what gives it hot reload anyway.
+        // own, and this gives it hot reload anyway.
         poll_pool();
         let config = source_hash(&self.source);
         let mut fresh = None;
@@ -1457,8 +1462,8 @@ impl PanelSurface {
                     let running = entry.hot.as_deref().unwrap_or(&self.source);
                     if text.trim() != running.trim() {
                         // The user pointed rox at this file, so what comes
-                        // out of it is theirs; approving here is what keeps
-                        // the edit from tripping the gate on restart.
+                        // out of it is theirs; approving here keeps the
+                        // edit from tripping the gate on restart.
                         fresh = Some(text.clone());
                         entry.hot = Some(text);
                     }
@@ -1541,8 +1546,8 @@ fn window_feed(window: &Window, cx: &App) -> Option<(Arc<SignalHub>, gpui::Entit
 /// the Shader panel shares: volume, where the track sits, whether audio is
 /// moving, how long the track runs, how dark the theme renders, which
 /// theme the user actually picked, and how much the cursor still counts
-/// for. The last one reads zero here; a panel surface fills it with the
-/// wearing panel's published content shape (see [`note_content_shape`])
+/// for. The last one reads zero here; a panel surface fills it with that
+/// panel's own published content shape (see [`note_content_shape`])
 /// on its way into the paint.
 pub fn meta_slots(window: &Window, cx: &App) -> [f32; 8] {
     let mut meta = [0.0f32; 8];
@@ -1558,7 +1563,7 @@ pub fn meta_slots(window: &Window, cx: &App) -> [f32; 8] {
     let bg = rox_design::palette::bg_root_opaque();
     meta[4] = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b).clamp(0.0, 1.0);
     // The theme pick itself, same polarity as the luma beside it: 1 light,
-    // 0 dark. Not the same fact as slot 4 and not derivable from it - song
+    // 0 dark. Not the same fact as slot 4 and not derivable from it: song
     // theming can swap the rendered side out from under a cover, and it
     // moves the luma around within a side too, so a shader that wants a
     // clean "which theme am I in" reads this and a shader that wants "how
@@ -1657,7 +1662,7 @@ mod tests {
         );
 
         // A workspace shader. The name wins over everything the config
-        // still carries inline, and a name that resolves to nothing reads
+        // still holds inline, and a name that resolves to nothing reads
         // as missing rather than as empty.
         assert_eq!(
             pick(
@@ -1714,8 +1719,8 @@ mod tests {
             2
         );
         assert_eq!(note_cover(window, None), 3, "stopping is a change too");
-        // Tracks nothing holds art for read as no image, which is what
-        // binds the fallback plate at registration.
+        // Tracks nothing holds art for read as no image, which binds the
+        // fallback plate at registration.
         assert!(window_cover(window).is_none());
 
         note_cover(window, Some(&a));
@@ -1726,7 +1731,7 @@ mod tests {
         assert_eq!(rev(child), Some(1), "adopting the same art moves nothing");
     }
 
-    /// Every example carries its own line for the page to print, so adding
+    /// Every example has its own line for the page to print, so adding
     /// one stays a file plus a row in the table.
     #[test]
     fn every_example_brings_its_own_blurb() {
@@ -1734,7 +1739,7 @@ mod tests {
             // The key has to resolve, not just be non-empty: a blurb
             // nobody wrote a message for renders as the missing marker,
             // which is the failure this guards against now that the
-            // line lives in the locale files.
+            // line is in the locale files.
             let blurb = pick_blurb(index);
             assert!(
                 !blurb.trim().is_empty() && !blurb.contains('⟦'),
@@ -1848,9 +1853,9 @@ mod tests {
         assert_eq!(slot_label(&labels, 7), "slot 7");
     }
 
-    /// A hub carrying one band signal, run up to full off a tone in that
+    /// A hub with one band signal, run up to full off a tone in that
     /// band. The engine's attack takes a stretch of wall clock (the tick
-    /// throttles), so this walks it there rather than faking a value.
+    /// throttles), so this drives it there rather than faking a value.
     fn loud_hub() -> (SignalHub, u64) {
         let hub = SignalHub::new(Vec::new());
         let (id, _) = hub.add(
@@ -1894,13 +1899,13 @@ mod tests {
         };
         let routes = vec![
             route(loud, slot_target(2), 0.0, 1.0, true),
-            // Half the span, so the same signal lands at half strength.
+            // Half the span, so the same signal resolves at half strength.
             route(loud, slot_target(5), 0.0, 0.5, true),
             // Off, so slot 7 stays at rest.
             route(loud, slot_target(7), 0.0, 1.0, false),
-            // A signal the pool never carried contributes nothing.
+            // A signal the pool never had contributes nothing.
             route(999, slot_target(9), 0.0, 1.0, true),
-            // A target nothing answers to is skipped, not a panic.
+            // A target nothing matches is skipped, not a panic.
             route(loud, "nowhere".to_string(), 0.0, 1.0, true),
             // Out of range reads as no slot at all.
             route(loud, slot_target(SLOTS), 0.0, 1.0, true),
@@ -1928,7 +1933,7 @@ mod tests {
         assert_eq!(listed[4], ("slot4".to_string(), "slot 4".to_string()));
     }
 
-    /// A source no list will ever carry, unique per call so two tests
+    /// A source no list will ever hold, unique per call so two tests
     /// approving at once can't see each other's.
     fn novel_source(tag: &str) -> String {
         format!(
@@ -1950,7 +1955,7 @@ mod tests {
         assert!(rox_core::settings::note_approved(&print));
         assert!(approved(&source), "an approved hash runs");
         // The same program with a different name in it is a different
-        // program, and doesn't ride the first one's approval.
+        // program, and doesn't inherit the first one's approval.
         assert!(!approved(&novel_source("arrived twice")));
         rox_core::settings::forget_approved(&print);
         assert!(!approved(&source), "and the gate closes again");
@@ -1992,7 +1997,7 @@ mod tests {
 
     #[test]
     fn a_builtin_survives_a_round_trip_through_a_layout() {
-        // Presets ride a dump as inline source like anything else, and
+        // Presets go into a dump as inline source like anything else, and
         // serde's string round trip is where a trailing newline would go
         // missing. The gate has to still know it as ours on the way back.
         let dumped = serde_json::to_string(&PLASMA.to_string()).expect("dump");
@@ -2013,8 +2018,8 @@ mod tests {
         let path = scratch("unseeded");
         std::fs::write(&path, "one").expect("write");
         let mut watch = SourceWatch::default();
-        // Unseeded, so an edit made while rox was closed lands on open
-        // rather than on the edit after it.
+        // Unseeded, so an edit made while rox was closed is picked up on
+        // open rather than on the edit after it.
         assert_eq!(watch.poll(&path).as_deref(), Some("one"));
         // Throttled: the next look inside the window costs no syscall and
         // reports nothing.
@@ -2034,7 +2039,7 @@ mod tests {
         let path = scratch("seeded");
         std::fs::write(&path, "one").expect("write");
         // What a file pick leaves behind: the source was just read from
-        // here, so the file as it stands is not news.
+        // here, so the file as it stands isn't news.
         let mut watch = SourceWatch::seeded(Some(path.as_path()));
         watch.checked = None;
         assert_eq!(watch.poll(&path), None);
@@ -2092,8 +2097,8 @@ mod tests {
 
         let third = eject_in(&root, "Nightfall", "Grain", "// three", &[]).expect("eject");
         assert_eq!(third, named("Grain-3"));
-        // And the one that already has a numbered file lands back on it
-        // rather than walking further down every time.
+        // And the one that already has a numbered file goes back to it
+        // rather than stepping further down every time.
         assert_eq!(
             eject_in(&root, "Nightfall", "Grain", "// two", &[]).expect("eject"),
             named("Grain-2")
@@ -2226,7 +2231,7 @@ mod tests {
         // Quiet once the stamp has caught up.
         assert!(!pool_reload(&mut stamps, &mut pool).changed);
 
-        // An edit in an image editor lands the same way a shader edit does.
+        // An edit in an image editor is picked up the same way a shader edit is.
         // The stamp is size and mtime and mtime only resolves to the second,
         // so the change here is a length.
         std::fs::write(dir.join("plate.png"), [plate(10), plate(240)].concat()).expect("rewrite");

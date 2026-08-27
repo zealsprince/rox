@@ -6,17 +6,17 @@ contract from
 [components](../02-architecture/02-components.md#ui-shell-and-panel-system) concrete: a
 duplicated panel is a second view with its own config over the same entities, a
 popped-out panel is a second OS window over those same entities, and a layout serializes
-to disk as a shareable artifact. Version-sensitive: the dock lives in the vendored
+to disk as a shareable artifact. Version-sensitive: the dock is the vendored
 `rox-dock` crate, layouts serialize as JSON with serde, the whole thing is gpui entities
 and windows.
 
 ## The layout tree
 
-rox runs one dock tree, not the usual center-plus-side-docks arrangement. The root is a
-vertical `StackPanel`: the center `TabPanel` over a horizontal transport row
+rox runs one dock tree rather than the usual center-plus-side-docks arrangement. The root
+is a vertical `StackPanel`: the center `TabPanel` over a horizontal transport row
 (`StackPanel`) holding the info, playback, seek, and volume panels, the row pinned at
-`TRANSPORT_ROW_H` = 120 px. One tree rather than center-plus-bottom-dock, so closing or
-moving everything in one region collapses the rest up into the space. It is built in
+`TRANSPORT_ROW_H` = 120 px. One tree means closing or moving everything in one region
+collapses the rest up into the space. It's built in
 `crates/rox/src/workspace.rs` with `DockItem::split_with_sizes` and `DockItem::tabs`.
 
 The live tree is `DockItem` nodes (Split, Tabs, Panel, Tiles); `StackPanel` is a
@@ -57,28 +57,27 @@ pub enum PanelInfo {
 }
 ```
 
-Container nodes carry `panel_name` `"StackPanel"` or `"TabPanel"` and their split sizes
-or active tab in `info`; leaf nodes carry the panel's own name (`"library"`, `"spectrum"`,
-`"seek"`) and its config as a raw JSON blob in `PanelInfo::Panel`. Restoring walks the
-tree: containers rebuild from their `Stack` / `Tabs` info, and a leaf routes its name
-through the `PanelRegistry` to build the panel, feeding the config blob back in. An
-unknown name comes back as an invalid-panel placeholder rather than failing the whole
-restore.
+Container nodes set `panel_name` to `"StackPanel"` or `"TabPanel"` and store their split
+sizes or active tab in `info`; leaf nodes store the panel's own name (`"library"`,
+`"spectrum"`, `"seek"`) and its config as a raw JSON blob in `PanelInfo::Panel`.
+Restoring walks the tree: containers rebuild from their `Stack` / `Tabs` info, and a
+leaf routes its name through the `PanelRegistry` to build the panel, feeding the config
+blob back in. An unknown name comes back as an invalid-panel placeholder rather than
+failing the whole restore.
 
 The dump is stored raw, in `workspace.json` rather than the settings file
 ([ADR 20](../02-architecture/decisions/20-adr-settings-split.md)). The live working
 layout is `LookState::layout` (`serde_json::Value`); saved presets are
 `LookState::bundle.layouts`, a `Vec<NamedLayout>` (a `name`, a raw `dump`, and an
-optional window `size`); unsaved edits per preset are `LookState::layout_edits`. Keeping
-the dump as raw JSON is deliberate: the
-file survives a layout-schema move, and the workspace validates a dump against
-`LAYOUT_VERSION` = 1 on apply, falling back to the default layout when the version
-doesn't match.
+optional window `size`); unsaved edits per preset are `LookState::layout_edits`. The dump
+stays raw JSON so the file still reads after a layout-schema move, and the workspace
+validates it against `LAYOUT_VERSION` = 1 on apply, falling back to the default layout
+when the version doesn't match.
 
 Persistence is debounced. `save_layout_soon` waits out `SAVE_DEBOUNCE` = 500 ms of quiet,
 then `persist` writes `to_value(dock.dump())` into `LookState::layout`, along with the
-window frame, the last track, and the queue, which land in their own files. With several
-windows open the last writer wins.
+window frame, the last track, and the queue, which are written to their own files. With
+several windows open the last writer wins.
 
 ## The panel config model
 
@@ -89,8 +88,8 @@ type or id enum. The trait also declares the tab title, min/max size, lock and c
 policy, and `dump`, which produces the panel's `PanelState`.
 
 Per-view config is per panel. Each panel owns a config struct that serializes into its
-`PanelInfo::Panel` blob. The shared frame knobs live in `PanelChrome`
-(`crates/rox/src/panel.rs`), flattened into every config with `#[serde(flatten)]`:
+`PanelInfo::Panel` blob. The shared frame knobs are in `PanelChrome`
+(`crates/rox-panel-api/src/panel.rs`), flattened into every config with `#[serde(flatten)]`:
 
 ```rust
 pub struct PanelChrome {
@@ -105,16 +104,16 @@ pub struct PanelChrome {
 }
 ```
 
-Panel-specific fields sit on the panel's own struct beside the flattened chrome, so a
-spectrum's bands or a grid's tile size live next to the rename and theme in one flat JSON
-object. `dump` writes `to_value(config)` into the leaf node; restore reads it back with
-`config_from_info`, which deserializes the blob and falls back to `Default` on any
+Panel-specific fields go on the panel's own struct beside the flattened chrome, so a
+spectrum's bands or a grid's tile size end up next to the rename and theme in one flat
+JSON object. `dump` writes `to_value(config)` into the leaf node; restore reads it back
+with `config_from_info`, which deserializes the blob and falls back to `Default` on any
 mismatch, so a config from an older shape still opens.
 
-`PanelTheme` (`crates/rox/src/design/palette.rs`) is the per-panel look override: a
+`PanelTheme` (`crates/rox-design/src/palette.rs`) is the per-panel look override: a
 `colors` map of role name to `#rrggbb`, plus optional `surface_opacity`, `margin`,
 `padding`, `rounding`, `border`, and `font`. Empty means inherit the app palette, so a
-panel only carries what it overrides.
+panel only stores what it overrides.
 
 ## Customize windows
 
@@ -128,12 +127,12 @@ A per-panel customize window edits that one panel's config: `panel_settings::ope
 (`crates/rox/src/panel_settings.rs`) opens an OS window keyed to the panel's entity id,
 reusing the existing one if already open, sized around 640x480. It shows the panel's own pages (from `PanelSettings::pages`) then a shared
 Appearance page editing the chrome's palette and frame override. Edits apply live to the
-panel and ride into its next layout dump.
+panel and are written into its next layout dump.
 
 ## Pop-out and entity sharing
 
 A panel pops out into its own OS window without duplicating any state. `pop_out`
-(`crates/rox/src/panel.rs`) detaches the panel from its tab group, then `pop_out_view`
+(`crates/rox-panel-api/src/panel.rs`) detaches the panel from its tab group, then `pop_out_view`
 opens a new window, around 900x600, hosting a `PopoutHost`:
 
 ```rust
@@ -152,8 +151,8 @@ at the same underlying state as the main window. `AppState` is a bundle of share
 entities (player, library, selection), cloned by handle, so playback, library, and
 selection stay shared with no cross-window messaging. The host tracks focus under the
 `"Workspace"` key context so the playback keybindings dispatch in the popout the same as
-the main window, and it observes the now-playing art so its backdrop wakes on a new bake
-(a popped-out window pumps its own frames).
+the main window, and it observes the now-playing art so its backdrop redraws on a new
+bake (a popped-out window pumps its own frames).
 
 Coming back is symmetric. The host's context menu offers Dock Back, which re-adds the
 panel to the last live tab host and removes the window; the dock's middle-drag-out hook
@@ -162,8 +161,8 @@ sends a panel dragged out of the window straight into `pop_out_view`.
 ## Workspaces
 
 A layout is one arrangement of panels and their configs. A workspace is the wider
-shareable unit: a `WorkspaceBundle` (`crates/rox-core/src/settings.rs`) carrying a set of
-named layout presets with their mini-player roles, the palette, and the appearance that
+shareable unit: a `WorkspaceBundle` (`crates/rox-core/src/settings.rs`) holding a set of
+named layout presets with their mini-player roles, plus the palette and appearance that
 dress them.
 
 ```rust
@@ -181,7 +180,7 @@ pub struct WorkspaceBundle {
 }
 ```
 
-`WORKSPACE_VERSION` = 1, independent of the dock `LAYOUT_VERSION` the dumps inside carry,
+`WORKSPACE_VERSION` = 1, independent of the dock `LAYOUT_VERSION` the dumps inside use,
 so a reader can refuse a bundle from a newer format while the layouts still validate on
 their own version. The bundle is pure look: applying it (`workspaces::apply_look`)
 replaces the palettes, signals, appearance, and both kinds of preset wholesale and leaves
@@ -190,19 +189,19 @@ a bundle travels between installs without dragging along another machine's setup
 
 ## Panel presets
 
-Between one panel with its stock config and a whole saved layout sits the panel preset: a
+Between one panel with its stock config and a whole saved layout is the panel preset: a
 `PanelPreset` is one panel's `PanelState` under a name, the same leaf a layout dump
-carries per node. A panel's dropdown saves one (Save As Preset, in
+stores per node. A panel's dropdown saves one (Save As Preset, in
 `rox_panel_api::panel_settings`), and `crate::panel_presets` builds it back through the
-`PanelRegistry` the way a layout restores that node - config, rename, and a composite's
-children included. Presets show as a Presets group in every Add Panel menu, in the Panels
-menu, and in the Window menu's New Window from Panel, which opens one through
+`PanelRegistry` the way a layout restores that node, including config, rename, and a
+composite's children. Presets show as a Presets group in every Add Panel menu, in the
+Panels menu, and in the Window menu's New Window from Panel, which opens one through
 `pop_out_view`.
 
-They ride the bundle rather than the user's settings because a panel can name a shader
-out of the pool beside them (`shader::Pick::Named`), and that name only resolves while
-this workspace's pool is the live one. Everything that reads what a look would paint -
-`unapproved_shaders`, `wears_shaders`, `without_shaders` - walks the presets' dumps
+They're stored in the bundle rather than the user's settings because a panel can name a
+shader out of the pool beside them (`shader::Pick::Named`), and that name only resolves
+while this workspace's pool is the live one. Everything that reads what a look would
+paint (`unapproved_shaders`, `wears_shaders`, `without_shaders`) walks the presets' dumps
 alongside the layouts'.
 
 The live look nests the same struct a saved file holds, so saving a workspace is a clone
@@ -219,5 +218,5 @@ the registry), `state.rs` (`DockAreaState`, `PanelState`, `PanelInfo`). The app 
 in `crates/rox/src/workspace.rs` (the layout tree, persist and restore), `panel.rs`
 (`PanelChrome`, `AppState`, `pop_out`, `PopoutHost`), `panel_settings.rs` (the customize
 windows), `settings.rs` (`NamedLayout`, `WorkspaceBundle`), `design/palette.rs`
-(`PanelTheme`), and `workspaces.rs` (apply). Panel configs live on each panel under
-`crates/rox/src/panels/`.
+(`PanelTheme`), and `workspaces.rs` (apply). Each panel's config is defined beside it
+under `crates/rox/src/panels/`.

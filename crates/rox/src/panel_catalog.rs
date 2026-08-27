@@ -1,4 +1,4 @@
-//! The panel catalog: every openable panel as one entry carrying its menu
+//! The panel catalog: every openable panel as one entry with its menu
 //! label, icon, dock placement, and constructor. The menubar's Panels
 //! menu, the menu panel, the empty window's launcher, and the tab groups'
 //! right-click Add Panel submenu all draw from this table, so adding a
@@ -43,6 +43,7 @@ use rox_panels::queue::{QueueConfig, QueuePanel};
 use rox_panels::search::{SearchConfig, SearchPanel};
 use rox_panels::shader::{ShaderConfig, ShaderPanel};
 use rox_panels::spacer::{SpacerConfig, SpacerPanel};
+use rox_panels::spectrogram::{SpectrogramConfig, SpectrogramPanel};
 use rox_panels::spectrum::{SpectrumConfig, SpectrumPanel};
 use rox_panels::stats_widget::{StatsWidgetConfig, StatsWidgetPanel};
 use rox_panels::status::{StatusConfig, StatusPanel};
@@ -64,18 +65,18 @@ pub(crate) enum PanelPlacement {
     Top,
 }
 
-/// One openable panel: what the menus show for it, where it lands, and
+/// One openable panel: what the menus show for it, where it goes, and
 /// how to build one with a default config. The workspace handle is for
 /// the panels that drive the workspace back (menu, window controls);
 /// everything else ignores it.
 pub(crate) struct PanelDef {
-    /// An i18n key, not display text - resolve through `rox_i18n::t!` or
+    /// An i18n key, not display text. Resolve through `rox_i18n::t!` or
     /// `rox_i18n::t_static` at the point a menu or picker renders it.
     pub label: &'static str,
     /// The panel's registry name, the string its `panel_name` returns and
     /// `workspace::register_panels` registers its builder under. The label
     /// doesn't derive from it ("art view" shows as Album Carousel), so a
-    /// dump-shaped thing - a panel preset - finds its entry through this.
+    /// dump-shaped thing (a panel preset) finds its entry through this.
     pub name: &'static str,
     pub icon: &'static str,
     pub placement: PanelPlacement,
@@ -94,7 +95,7 @@ pub(crate) struct PanelSection {
 }
 
 /// The music collection itself: browse, search, filter, and the play
-/// queues. The panels reached most often when getting around the library.
+/// queues. The panels used most often when getting around the library.
 pub(crate) static CATALOGUE: PanelSection =
     PanelSection {
         group: Some(("panel-catalog-group-catalogue", icons::DISC)),
@@ -448,7 +449,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         // The rating and favourite panels retired from the catalog once
         // the stars and the heart became transport items and track info
         // pieces; the registry still builds them, so a layout that
-        // carries one keeps restoring.
+        // holds one keeps restoring.
         PanelDef {
             label: "panel-catalog-queue-widget",
             name: "queue widget",
@@ -508,6 +509,17 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
                 Arc::new(
                     cx.new(|cx| SpectrumPanel::new(state.clone(), SpectrumConfig::default(), cx)),
                 )
+            },
+        },
+        PanelDef {
+            label: "panel-catalog-spectrogram",
+            name: "spectrogram",
+            icon: icons::WAVES,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| {
+                    SpectrogramPanel::new(state.clone(), SpectrogramConfig::default(), cx)
+                }))
             },
         },
         PanelDef {
@@ -573,7 +585,7 @@ pub(crate) static EXPERIMENTAL: PanelSection = PanelSection {
 };
 
 /// Whether a section holds the composition hosts (group, overlay, slide).
-/// The composite slot pickers gray these out: a composite can sit in a
+/// The composite slot pickers gray these out: a composite can go in a
 /// tab, but not inside another composite's slot, so nesting stays one
 /// level deep while the entries stay visible.
 pub(crate) fn is_arrangement(section: &PanelSection) -> bool {
@@ -585,15 +597,15 @@ pub(crate) fn is_experimental(section: &PanelSection) -> bool {
     std::ptr::eq(section, &EXPERIMENTAL)
 }
 
-/// The panels whose settings carry knobs the shared signal pool can drive,
+/// The panels whose settings have knobs the shared signal pool can drive,
 /// by label, the way the native menu keys its rows. Every menu that lists
-/// the catalog marks these with the signal glyph, which is what the signals
-/// window tells people to look for, so what the pool can reach is readable
-/// from the menus rather than found by opening panels until a bindable row
+/// the catalog marks these with the signal glyph, which the signals window
+/// tells people to look for, so what the pool can drive is readable from
+/// the menus rather than found by opening panels until a bindable row
 /// turns up.
 ///
 /// A panel joins the list by implementing [`rox_panel_api::signal_ui::RouteHost`]
-/// and wrapping the rows it wants bindable in
+/// and wrapping the rows that should be bindable in
 /// [`rox_panel_api::signal_ui::bindable_row`].
 const SIGNAL_PANELS: &[&str] = &["particles", "shader"];
 
@@ -601,7 +613,7 @@ pub(crate) fn supports_signals(def: &PanelDef) -> bool {
     // Registry names, not labels. A label is an i18n key whose whole job
     // is to change per language and get reworded by translators, so
     // matching identity on one is a list that silently stops matching.
-    // The name is what the builder registry and saved presets key off.
+    // The builder registry and saved presets both key off the name.
     SIGNAL_PANELS.contains(&def.name)
 }
 
@@ -620,7 +632,7 @@ static CATALOG: &[&PanelSection] = &[
 ];
 
 /// The sections a panel picker should offer: the whole catalog, minus the
-/// experimental run while the flag is off. Only discovery is gated - the
+/// experimental run while the flag is off. Only discovery is gated: the
 /// restore builders in `workspace::register_panels` stay registered either
 /// way, so a layout holding an experimental panel keeps it after the flag
 /// goes back off.
@@ -632,10 +644,10 @@ pub(crate) fn sections() -> impl Iterator<Item = &'static &'static PanelSection>
 }
 
 /// The catalog entry for a registry name, for the surfaces that start from a
-/// dump rather than a pick: a panel preset knows what it is by name, and
-/// needs the icon and placement that name's entry carries. Ungated on
-/// purpose - the experimental flag hides panels from the pickers, it doesn't
-/// unmake a preset somebody already saved.
+/// dump rather than a pick: a panel preset identifies itself by name, and
+/// needs the icon and placement that name's entry has. Ungated: the
+/// experimental flag hides panels from the pickers, it doesn't unmake a
+/// preset somebody already saved.
 pub(crate) fn def_for(name: &str) -> Option<&'static PanelDef> {
     CATALOG
         .iter()
@@ -643,7 +655,7 @@ pub(crate) fn def_for(name: &str) -> Option<&'static PanelDef> {
         .find(|def| def.name == name)
 }
 
-/// The section a registry name sits in, for the pickers that gate by section.
+/// The section a registry name is in, for the pickers that gate by section.
 /// The composite slot menus gray out the arrangement panels, and a preset of
 /// one has to gray out with them.
 pub(crate) fn section_for(name: &str) -> Option<&'static PanelSection> {
@@ -658,7 +670,7 @@ mod tests {
     use super::*;
 
     /// Every entry's registry name is a distinct lowercase string, and
-    /// [`def_for`] finds each one. Names are what a saved dump carries, so a
+    /// [`def_for`] finds each one. Names are what a saved dump stores, so a
     /// duplicate or a stray capital costs a preset its panel.
     #[test]
     fn names_are_unique_and_resolvable() {
@@ -683,12 +695,12 @@ mod tests {
     /// Every label in the catalog is a real message key.
     ///
     /// The field is documented as an i18n key, but nothing held it to
-    /// that, and for a while some entries carried display text instead.
+    /// that, and for a while some entries held display text instead.
     /// The two failure modes hide each other: an entry holding text
     /// renders correctly in English, and an entry holding a key renders
     /// as the key itself, so the menu looks half broken and only in a
-    /// language nobody on the team reads. The source locale carries
-    /// every key by definition, so resolving there is the whole check.
+    /// language nobody on the team reads. The source locale has every
+    /// key by definition, so resolving there is the whole check.
     #[test]
     fn every_label_is_a_message_key() {
         let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
@@ -738,7 +750,7 @@ mod tests {
             }
         }
         // Resolving it, or handing the key onward for someone else to
-        // resolve, both count. Printing it does not.
+        // resolve, both count. Printing it doesn't.
         const RESOLVED: [&str; 4] = [
             "t!(def.label",
             "t_static(def.label",
@@ -754,7 +766,7 @@ mod tests {
         let mut raw = Vec::new();
         for path in paths {
             let text = std::fs::read_to_string(&path).expect("the source is readable");
-            // Tests below assert on labels as data, which is not a render.
+            // Tests below assert on labels as data, which isn't a render.
             let code = text.split("#[cfg(test)]").next().unwrap_or(&text);
             for (line_no, line) in code.lines().enumerate() {
                 if line.contains("def.label")
@@ -775,7 +787,7 @@ mod tests {
         );
     }
 
-    /// Identity never rides on a label. The signal list is the one place
+    /// Identity never depends on a label. The signal list is the one place
     /// that used to match panels by their display string, which quietly
     /// stops matching the moment a translator rewords it.
     #[test]

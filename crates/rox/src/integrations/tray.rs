@@ -1,13 +1,13 @@
 //! Quit to tray: the app resident with zero windows, music playing, and a
-//! way back in. On Linux that is an SNI icon over D-Bus via ksni, the same
-//! zbus stack the media keys ride; on Windows a notification area icon
+//! way back in. On Linux that's an SNI icon over D-Bus via ksni, the same
+//! zbus stack the media keys use; on Windows a notification area icon
 //! through tray-icon, which is Shell_NotifyIcon with no GTK anywhere; on
-//! macOS the dock already is the tray and this module only carries the held
+//! macOS the dock already is the tray and this module only holds the kept
 //! state for `on_reopen`.
 //!
 //! The research entry (docs/0R-research/03-quit-to-tray.md) holds the
 //! findings this leans on. The shape matches [`crate::integrations::media_controls`]: the
-//! tray's callbacks land on its own service thread and only send commands
+//! tray's callbacks run on its own service thread and only send commands
 //! over an async channel; a drain task on the foreground executor does the
 //! work. State flows the other way through [`set_playing`], gated so player
 //! notifies don't become D-Bus writes.
@@ -25,7 +25,7 @@ use crate::workspace::Adopted;
 use rox_panel_api::panel::AppState;
 
 /// The tray's app-side state. The hold exists on every platform; the icon
-/// handle and its push gate exist where there is a real icon to talk to,
+/// handle and its push gate exist where there's a real icon to talk to,
 /// alive exactly while the setting is on and the platform played along.
 #[derive(Default)]
 struct TrayService {
@@ -52,7 +52,7 @@ struct Held {
     /// service never came up in the first place.
     media: Option<Entity<MediaSession>>,
     /// Keeps the menu's Play/Pause label honest while no workspace drives
-    /// the publish path - a track running out flips it windowless.
+    /// the publish path: a track running out flips it windowless.
     _observer: Subscription,
 }
 
@@ -95,7 +95,7 @@ pub(crate) fn resident(_cx: &mut App) -> bool {
 
 /// Stash the closing primary's state and its media service, and watch the
 /// player so the tray label stays current without a window. The service
-/// keeps running here, which is what answers the media keys from the tray.
+/// keeps running here, so the media keys still work from the tray.
 pub(crate) fn hold(state: AppState, media: Option<Entity<MediaSession>>, cx: &mut App) {
     let observer = cx.observe(&state.player, |player, cx| {
         let (has_track, playing) = {
@@ -403,7 +403,7 @@ fn windows_tray_thread(
 
     // Both crates fan their events through process-wide channels, so a run
     // that turned the setting off and on again can leave the last icon's
-    // clicks sitting there. They mean nothing to this one.
+    // clicks queued there. They mean nothing to this one.
     while TrayIconEvent::receiver().try_recv().is_ok() {}
     while MenuEvent::receiver().try_recv().is_ok() {}
 
@@ -413,7 +413,7 @@ fn windows_tray_thread(
 
     loop {
         let mut msg = MSG::default();
-        // Zero is WM_QUIT, negative is an error there is no recovering from.
+        // Zero is WM_QUIT, negative is an error there's no recovering from.
         if unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } <= 0 {
             break;
         }
@@ -464,7 +464,7 @@ fn windows_tray_thread(
 }
 
 /// Reconcile the icon with the setting, the Windows half. A thread that
-/// cannot get an icon into the notification area leaves the slot empty and
+/// can't get an icon into the notification area leaves the slot empty and
 /// the close path quitting as if the setting were off.
 #[cfg(target_os = "windows")]
 pub(crate) fn sync(cx: &mut App) {
@@ -557,7 +557,7 @@ fn apply(command: TrayCommand, cx: &mut App) -> bool {
 /// Push play state to the icon's menu, gated on change. The push blocks
 /// until the tray thread acks, which the prototype measured as effectively
 /// instant; the menu closures never call back into gpui, so the two
-/// threads cannot wait on each other.
+/// threads can't wait on each other.
 #[cfg(target_os = "linux")]
 pub(crate) fn set_playing(has_track: bool, playing: bool, cx: &mut App) {
     let service = cx.default_global::<TrayService>();

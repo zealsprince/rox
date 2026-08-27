@@ -1,6 +1,6 @@
 //! The control socket's app side (ADR 22): rox-ipc owns the wire, this
 //! module owns the answers. One bind per process at launch, an accept
-//! machinery living entirely in the crate, and a drain here on the
+//! machinery contained entirely in the crate, and a drain here on the
 //! foreground executor, the same marshalling the tray, the media keys, and
 //! the single-instance guard use to get onto the UI thread. Every method
 //! reads or drives the same player and library entities the panels do, so
@@ -89,8 +89,8 @@ impl Snapshot {
 
 /// Publish `event.*` frames to subscribed connections off the player
 /// observer, the same wake the media widget publishes on: the player pump
-/// already notifies on exactly the edges the contract names - play-state
-/// flips, track turnover, queue revision bumps - so this diffs a small
+/// already notifies on exactly the edges the contract names (play-state
+/// flips, track turnover, queue revision bumps), so this diffs a small
 /// snapshot and emits only when something moved. While audio plays the
 /// pump notifies every tick for the clock; the diff makes those free, and
 /// the emit itself never blocks (a consumer that can't keep up is cut off
@@ -119,7 +119,7 @@ fn publish_events(state: &AppState, events: rox_ipc::Events, cx: &mut App) {
 
 /// Route one request. The blocking answers (art reads, the search scan)
 /// leave for the background executor with their responder; everything else
-/// answers right here.
+/// responds right here.
 fn dispatch(state: &AppState, request: Request, cx: &mut App) {
     match request.method.as_str() {
         "library.search" => return search(state, request, cx),
@@ -248,9 +248,9 @@ fn panel_tree(cx: &mut App) -> Result<Value, RpcError> {
     serde_json::to_value(dump).map_err(RpcError::app)
 }
 
-/// The deck at a glance: what's playing, where its clock sits, and the
+/// The deck at a glance: what's playing, where its clock is, and the
 /// queue revision an event consumer will later diff against. Every
-/// transport verb answers with this, so a caller sees what its command did
+/// transport verb replies with this, so a caller sees what its command did
 /// without a second round trip.
 fn status(state: &AppState, cx: &App) -> Value {
     let player = state.player.read(cx);
@@ -344,7 +344,7 @@ fn queue_list(state: &AppState, cx: &App) -> Value {
 /// what's queued, "next" right after the playing track, "now" splices and
 /// jumps. Paths are filtered to decodable audio the same way an OS file
 /// open is; a `path#N` string names a cue track the way the m3u export
-/// does. Answers with how many made the cut.
+/// does. Returns how many made the cut.
 fn queue_add(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let paths = params
         .get("paths")
@@ -456,7 +456,7 @@ fn search(state: &AppState, request: Request, cx: &mut App) {
 }
 
 /// One search hit: the projection row's tags plus the key that plays it,
-/// resolved through the same id the rating writes ride.
+/// resolved through the same id the rating writes use.
 fn search_row(projection: &Projection, row: u32, library: &Library) -> Value {
     let view = projection.resolve(row);
     let id = projection.db_id[row as usize];

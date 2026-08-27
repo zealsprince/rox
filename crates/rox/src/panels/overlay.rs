@@ -1,10 +1,10 @@
 //! The overlay panel: a main panel with a second panel layered over it,
 //! a corner button (or Tab) revealing the overlay with a short fade. The
 //! main stays visible below, dimmed under a scrim, so the overlay reads
-//! as a modal card floating on top instead of a full swap. For the pairs
-//! that share one spot but want both in view (a library with its stats
-//! over it, cover art with lyrics on top). Hosted through
-//! [`crate::composite`]; the overlay costs nothing once it settles hidden.
+//! as a modal card floating on top instead of a full swap. For pairs that
+//! share one spot but need both in view (a library with its stats over it,
+//! cover art with lyrics on top). Hosted through [`crate::composite`]; the
+//! overlay costs nothing once it's hidden and settled.
 
 use std::time::Instant;
 
@@ -66,7 +66,7 @@ pub struct OverlayPanel {
     /// Whether the panel itself is active, so a toggle can hand the overlay
     /// the right active state without waiting on the next dock call.
     active: bool,
-    /// When the last toggle started; a restore lands settled.
+    /// When the last toggle started; a restore starts out settled.
     fade_at: Instant,
     /// The settings page's dim slider strip.
     dim_scrub: ScrubState,
@@ -75,7 +75,7 @@ pub struct OverlayPanel {
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Whether the hosted children have been told which tab panel this
-    /// overlay sits under; see [`composite::introduce_slots`].
+    /// overlay is under; see [`composite::introduce_slots`].
     introduced: bool,
 }
 
@@ -122,7 +122,7 @@ impl OverlayPanel {
         &self.slots
     }
 
-    /// The slot the corner controls act on: the overlay while it is up, the
+    /// The slot the corner controls act on: the overlay while it's up, the
     /// main otherwise.
     fn shown_ix(&self) -> usize {
         usize::from(self.config.revealed)
@@ -130,7 +130,7 @@ impl OverlayPanel {
 
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.config.revealed = !self.config.revealed;
-        // The overlay runs only while it is up; the main below keeps running
+        // The overlay runs only while it's up; the main below keeps running
         // the whole time, since it never leaves view.
         if let Some(overlay) = &self.slots[1] {
             overlay.set_active(self.active && self.config.revealed, window, cx);
@@ -176,7 +176,7 @@ impl OverlayPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // Let the children reach this host from their own menus; the
+        // Let the children open this host from their own menus; the
         // dock never sees a hosted panel, so nothing else offers it.
         let overlay_title = rox_i18n::t!("overlay-title");
         composite::report_hosted(
@@ -244,8 +244,8 @@ impl OverlayPanel {
                     .child(self.slot_content(0, cx)),
             );
 
-        // The overlay layer, scrim and floating card together, only while it
-        // is up or still fading.
+        // The overlay layer, scrim and floating card together, only while
+        // it's up or still fading.
         let root = if overlay_alpha > 0.001 {
             root.child(
                 div()
@@ -263,7 +263,7 @@ impl OverlayPanel {
                     // the dimmed main beneath it. The card only fills while
                     // the slot is empty; a hosted panel's surface is the
                     // background, so its opacity override (the Appearance
-                    // page) decides how much of the main shows through.
+                    // page) sets how much of the main shows through.
                     .child(
                         div().absolute().inset_0().p(OVERLAY_INSET).child(
                             div()

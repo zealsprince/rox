@@ -1,9 +1,9 @@
 //! The geometry behind the wall panels: the album grid, the genre wall, and
 //! the artist wall all pack square tiles into lanes the same way, so the
-//! packing math lives here once and each panel just hands over its config.
+//! packing math is here once and each panel just hands over its config.
 //!
 //! It computes in gpui [`Pixels`] against the panel's measured cross
-//! extent, so it sits in the widget layer rather than down in rox-viz.
+//! extent, so it belongs in the widget layer rather than down in rox-viz.
 
 use gpui::{px, Along, Axis, Pixels, Point};
 
@@ -78,7 +78,7 @@ impl WallLayout {
             return self.fallback_lanes;
         }
         let gap = self.gap;
-        // The caption rides below the tile, so while the wall scrolls
+        // The caption is below the tile, so while the wall scrolls
         // horizontally each tile's footprint along the height grows by it;
         // vertical packing is unchanged, the caption extends the line down
         // into the scroll instead of eating a lane.
@@ -147,7 +147,7 @@ impl WallLayout {
     }
 
     /// A tile's edge: the cross extent split evenly over the lanes with the
-    /// gaps taken out, so the last lane lands on the panel edge instead of
+    /// gaps taken out, so the last lane ends at the panel edge instead of
     /// bleeding past it.
     pub fn tile_side(&self) -> Pixels {
         let cross = f32::from(self.cross);
@@ -158,7 +158,7 @@ impl WallLayout {
         px((((cross - self.gap * (lanes - 1.)) / lanes) - self.cross_label()).max(1.))
     }
 
-    /// Whether tile `ix` sits in the receded set: the tiles the focus
+    /// Whether tile `ix` is in the receded set: the tiles the focus
     /// effects push back. The hovered tile and the playing one are always
     /// exempt. Always mode pushes back every other tile; otherwise only the
     /// rest while audio moves.
@@ -222,7 +222,7 @@ mod tests {
         };
         let lanes = layout.lanes();
         assert_eq!(lanes, 4);
-        // The gaps come out of the cross extent, so the last lane lands on
+        // The gaps come out of the cross extent, so the last lane ends at
         // the panel edge.
         assert!(layout.tile_side() <= px(160.));
         let side = f32::from(layout.tile_side());

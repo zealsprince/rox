@@ -8,7 +8,7 @@ full in-memory columnar projection as the read path for browse, sort, and filter
 Alternatives: redb (pure-Rust embedded KV), sled, a plain serialized in-memory cache, or
 in-memory only.
 
-Trade: the browse workload wants arbitrary filter, group-by-album, and sort-by-any-field,
+Trade: the browse workload needs arbitrary filter, group-by-album, and sort-by-any-field,
 which SQL and secondary indexes give for free and a KV store makes us hand-build. redb is
 the credible pure-Rust runner-up if avoiding the C dependency matters more than SQL; sled
 is effectively abandoned. The catalog is small in RAM (tens of MB even at 100k tracks), so
@@ -20,6 +20,6 @@ a full rebuild. That sync is the most complex part of the library service, and t
 library risk.
 
 Measured at scale in [research 02](../../0R-research/02-library-scale.md): the projection
-costs ~70 MB per million tracks and holds the browse budget at 10M, provided it's built
-columnar and interned rather than as a vector of row structs. Cold open past a few million
-tracks wants a projection snapshot or sharded readers rather than one serial scan.
+costs ~70 MB per million tracks and still meets the browse budget at 10M, provided it's
+built columnar and interned rather than as a vector of row structs. Cold open past a few
+million tracks needs a projection snapshot or sharded readers rather than one serial scan.

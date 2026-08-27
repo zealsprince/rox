@@ -5,10 +5,10 @@
 //! we set is the rate the converter runs at instead of a number the mixer
 //! resamples toward.
 //!
-//! The shape mirrors [`super::alsa`] where the platform allows, but the
+//! The shape matches [`super::alsa`] where the platform allows, but the
 //! render loop is inverted twice over. ALSA blocks in `writei` on a thread we
 //! own; CoreAudio is a pull model like cpal, so there's no writer thread here
-//! at all. The HAL calls [`io_proc`] on its own real-time thread and we feed
+//! at all. The HAL calls [`io_proc`] on its own real-time thread and we hand
 //! the same [`fill`] the same buffer, which is the part of the contract ADR
 //! 19 says every backend keeps.
 //!
@@ -44,7 +44,7 @@ const DEFAULT_RATE: u32 = 48000;
 /// and reading straight back gets the old rate. A hundred polls of 5 ms is
 /// still the half second the USB interfaces that relock their clock need, but
 /// the step is short because the wait blocks whoever called `open`: a built-in
-/// output that agrees immediately costs one step rather than twenty times
+/// output that settles immediately costs one step rather than twenty times
 /// that.
 const RATE_SETTLE_POLLS: u32 = 100;
 const RATE_SETTLE_STEP: Duration = Duration::from_millis(5);
@@ -53,7 +53,7 @@ const RATE_SETTLE_STEP: Duration = Duration::from_millis(5);
 const NOBODY: Pid = -1;
 
 /// Scratch frames to keep in hand for the deinterleaved render path when the
-/// device won't say how big its buffer is. Only a floor; the real size comes
+/// device won't report how big its buffer is. Only a floor; the real size comes
 /// from the buffer frame size we read back.
 const SCRATCH_FLOOR: usize = 4096;
 
@@ -71,7 +71,7 @@ type Pid = i32;
 type AudioDeviceIOProcID = *mut c_void;
 
 /// `const AudioTimeStamp*` in the header. rox never reads one, so the struct
-/// stays out of this file instead of being mirrored from the SDK (it carries
+/// stays out of this file instead of being copied from the SDK (it contains
 /// an SMPTETime, and a field wrong there would be a silent ABI bug for no
 /// gain).
 type AudioTimeStampRef = *const c_void;
@@ -120,7 +120,7 @@ struct AudioBuffer {
 /// C's flexible array trick: the struct declares one [`AudioBuffer`] and the
 /// HAL hands over storage for `number_buffers` of them. Never construct one
 /// by value; it's only ever read through a pointer the HAL owns, and the
-/// buffers are reached with pointer arithmetic from `buffers` rather than by
+/// buffers are addressed with pointer arithmetic from `buffers` rather than by
 /// indexing the one-element array.
 #[repr(C)]
 struct AudioBufferList {
@@ -305,8 +305,8 @@ extern "C" {
 
 // --- The claim ------------------------------------------------------------
 
-/// What the IOProc needs to render, boxed once at open and reached through a
-/// raw pointer because the HAL's client data is a `void*`. Nothing here
+/// What the IOProc needs to render, boxed once at open and accessed through
+/// a raw pointer because the HAL's client data is a `void*`. Nothing here
 /// allocates or locks when it's used, which is the whole reason the scratch
 /// buffer is sized up front.
 struct State {
@@ -319,8 +319,8 @@ struct State {
 }
 
 /// The claim on the device. Dropping it stops the IOProc, unregisters it,
-/// drops what the callback was reading, and hands hog mode back, which is
-/// what makes toggling exclusive off actually release the device.
+/// drops what the callback was reading, and hands hog mode back, so
+/// toggling exclusive off actually releases the device.
 ///
 /// Built empty and filled in as `open` gets further, so a failure halfway
 /// through unwinds through this same Drop instead of needing its own cleanup
@@ -334,7 +334,7 @@ struct Claim {
     /// The `Arc<Shared>` handed to the alive listener. Its own allocation
     /// rather than a borrow of `state`: the listener runs on the HAL's
     /// notification thread while the IOProc is mutating the rings, and two
-    /// threads reaching into one box would be aliasing we'd have to argue
+    /// threads pointing into one box would be aliasing we'd have to argue
     /// our way out of.
     listener: *mut Arc<Shared>,
     hogged: bool,
@@ -437,7 +437,7 @@ unsafe fn claim(
 
     // First, because it's the step that makes this exclusive at all and the
     // one most likely to fail. Everything after it is configuration we'd have
-    // to undo if the claim itself didn't land.
+    // to undo if the claim itself failed.
     take_hog(device)?;
     held.hogged = true;
 
@@ -508,9 +508,9 @@ unsafe fn claim(
 }
 
 /// Devices paired with their AudioObjectID, which `open` needs and the picker
-/// doesn't. The id a [`Request`] carries is the device UID, not the
+/// doesn't. The id a [`Request`] names is the device UID, not the
 /// AudioObjectID: object ids are handed out per boot and get reused, so a
-/// saved id would point at whatever device happened to land in that slot next
+/// saved id would point at whatever device happened to take that slot next
 /// time. The UID is the string the HAL promises is stable for the same
 /// hardware, which is what a setting needs to mean anything after a reboot.
 fn outputs() -> Vec<(AudioObjectID, Device)> {
@@ -659,7 +659,7 @@ unsafe fn default_output() -> Option<AudioObjectID> {
 
 /// Total output channels across the device's streams, read from the same
 /// buffer layout the IOProc will be handed. Zero means this isn't an output
-/// device (or the HAL wouldn't say), and the caller skips it.
+/// device (or the HAL wouldn't report it), and the caller skips it.
 ///
 /// # Safety
 /// `device` has to be a live AudioObjectID.
@@ -688,15 +688,15 @@ unsafe fn output_channels(device: AudioObjectID) -> u32 {
         .sum()
 }
 
-/// Make the backend's one assumption say so out loud: the IOProc is handed the
-/// stream's virtual format, and [`render`] writes `f32` into those buffers
-/// with no conversion at all. A device that virtualizes as anything else would
-/// take that as garbage, so it fails the claim here and the seam falls back to
-/// shared, which handles any format cpal knows.
+/// Check the backend's one assumption instead of leaving it implicit: the
+/// IOProc is handed the stream's virtual format, and [`render`] writes `f32`
+/// into those buffers with no conversion at all. A device that virtualizes
+/// as anything else would take that as garbage, so it fails the claim here
+/// and the seam falls back to shared, which handles any format cpal knows.
 ///
-/// A device that won't answer keeps the assumption. The property lives on the
-/// stream object rather than the device, and a driver that hides its streams
-/// shouldn't lose exclusive over a read we only wanted as a check.
+/// A device whose format won't read keeps the assumption. The property is on
+/// the stream object rather than the device, and a driver that hides its
+/// streams shouldn't lose exclusive over a read we only wanted as a check.
 ///
 /// # Safety
 /// `device` has to be a live AudioObjectID.
@@ -726,7 +726,7 @@ unsafe fn check_float_format(device: AudioObjectID, name: &str) -> Result<(), St
 
 // --- Hog mode -------------------------------------------------------------
 
-/// Take exclusive ownership, or say who has it.
+/// Take exclusive ownership, or report who has it.
 ///
 /// The API here is odd enough to be worth stating: `AudioHardware.h` says the
 /// value passed to a hog mode *set* is ignored, and the set toggles. Nobody
@@ -734,7 +734,7 @@ unsafe fn check_float_format(device: AudioObjectID, name: &str) -> Result<(), St
 /// isn't defensive tidiness, it's load-bearing: setting while we already own
 /// the device would release it. We write our own pid to take and -1 to
 /// release anyway, so the call reads right under either interpretation, and
-/// the read-back is what actually decides whether we got it.
+/// the read-back decides whether we got it.
 ///
 /// # Safety
 /// `device` has to be a live AudioObjectID.
@@ -743,7 +743,7 @@ unsafe fn take_hog(device: AudioObjectID) -> Result<(), String> {
     let me = getpid();
     let owner = property::<Pid>(device, &address, "hog mode")?;
     if owner == me {
-        // Ours already, from a claim whose Drop hasn't landed yet. Treat it
+        // Ours already, from a claim whose Drop hasn't run yet. Treat it
         // as ours to release: rox takes hog mode in exactly one place, so
         // there's no other holder in this process to steal it from.
         return Ok(());
@@ -824,7 +824,7 @@ unsafe fn set_rate(device: AudioObjectID, want: u32) -> Result<u32, String> {
         // read straight back. Off the real-time path by construction: this is
         // open, and the IOProc doesn't exist yet. It does hold up the thread
         // that called open, which today is the UI's, so the loop ends the
-        // moment the device agrees instead of on a fixed tick.
+        // moment the device settles instead of on a fixed tick.
         for _ in 0..RATE_SETTLE_POLLS {
             std::thread::sleep(RATE_SETTLE_STEP);
             match property::<f64>(device, &nominal, "nominal sample rate") {
@@ -843,7 +843,7 @@ unsafe fn set_rate(device: AudioObjectID, want: u32) -> Result<u32, String> {
 }
 
 /// Ask for the requested period and report the buffer the device took, which
-/// is what sizes the scratch staging. A caller that names no period leaves
+/// sizes the scratch staging. A caller that names no period leaves
 /// the device's own buffer alone: CoreAudio's default is already tuned per
 /// driver, and overriding it with a guess would trade latency for dropouts
 /// nobody asked for.
@@ -973,7 +973,7 @@ unsafe fn render(state: &mut State, output: *mut AudioBufferList) {
         if buffer.data.is_null() || channels == 0 {
             return;
         }
-        // Trim to whole frames. A tail shorter than one frame would reach
+        // Trim to whole frames. A tail shorter than one frame would index
         // `frame[1]` on a chunk of length one inside `fill`.
         let samples = (buffer.data_byte_size as usize / size_of::<f32>()) / channels * channels;
         if samples == 0 {

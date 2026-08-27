@@ -33,7 +33,7 @@ struct TabState {
     active_panel: Option<Arc<dyn PanelView>>,
 }
 
-/// A panel move riding the middle mouse button, or Alt+Left where gpui's
+/// A panel move driven by the middle mouse button, or Alt+Left where gpui's
 /// built-in drag isn't listening: the hand-rolled twin of that built-in
 /// left-button drag. The source TabPanel starts it past the drag threshold,
 /// the DockArea tracks the pointer and hosts the chip, and the TabPanel
@@ -42,10 +42,10 @@ struct TabState {
 pub(crate) struct MiddleDrag {
     pub(crate) panel: Arc<dyn PanelView>,
     pub(crate) source: WeakEntity<TabPanel>,
-    /// The chip riding the pointer, prebuilt at drag start.
+    /// The chip drawn at the pointer, prebuilt at drag start.
     pub(crate) chip: Entity<DragPanel>,
     pub(crate) position: Point<Pixels>,
-    /// The button carrying the drag; only its release ends it. Middle, or
+    /// The button holding the drag; only its release ends it. Middle, or
     /// Left when Alt was held at the press.
     pub(crate) button: MouseButton,
 }
@@ -110,13 +110,13 @@ pub struct TabPanel {
     /// dismiss subscription that clears it.
     context_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
     /// Where an arming button (middle, or left with Alt held) went down and
-    /// on which panel - a tab arms its own panel, the body arms the active
+    /// on which panel: a tab arms its own panel, the body arms the active
     /// one. Becomes a [`MiddleDrag`] once the pointer moves past the
     /// threshold; released in place on a tab, a middle press stays a
     /// middle-click close.
     pending_middle_drag: Option<(Point<Pixels>, Arc<dyn PanelView>, MouseButton)>,
     /// The panel body's bounds, recorded at paint: mouse listeners don't
-    /// carry element bounds the way DragMoveEvent does, and the middle-drag
+    /// include element bounds the way DragMoveEvent does, and the middle-drag
     /// placement math needs them.
     content_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
@@ -271,7 +271,7 @@ impl TabPanel {
     /// Rox addition: make a specific panel the active tab and hand it the
     /// keyboard, whether or not it was already the active one. Used by the
     /// dock's focus-by-name so a shortcut can jump straight to a panel that
-    /// sits behind other tabs. No-op if the panel isn't in this group.
+    /// is behind other tabs. No-op if the panel isn't in this group.
     pub fn focus_panel(
         &mut self,
         panel: &Arc<dyn PanelView>,
@@ -423,7 +423,7 @@ impl TabPanel {
         }
 
         // Locked groups (zoomed, or detached from any stack) keep their
-        // panels - except in Tiles, where panels always may close.
+        // panels, except in Tiles, where panels always may close.
         if self.is_locked(cx) && !self.in_tiles {
             return false;
         }
@@ -453,7 +453,7 @@ impl TabPanel {
     }
 
     /// Lift the tab at `ix` out of this group into a group of its own,
-    /// landing right after this one in the parent stack (the settings
+    /// inserted right after this one in the parent stack (the settings
     /// window's layout tree route). A solo tab already is its own group,
     /// so that and out-of-range indices do nothing.
     pub fn lift_panel(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -499,7 +499,7 @@ impl TabPanel {
             cx.emit(PanelEvent::ZoomOut);
         }
         cx.emit(PanelEvent::LayoutChanged);
-        // Wake observers - remaining panels watch the group to know when
+        // Wake observers: remaining panels watch the group to know when
         // they become solo.
         cx.notify();
     }
@@ -606,7 +606,7 @@ impl TabPanel {
         self.panels.len()
     }
 
-    /// The tabs in order, for app-level walks over the live layout, the
+    /// The tabs in order, for app-level traversal of the live layout, the
     /// same entities `dump` serializes.
     pub fn panels(&self) -> &[Arc<dyn PanelView>] {
         &self.panels
@@ -643,7 +643,7 @@ impl TabPanel {
     }
 
     /// Open the right-click menu for a panel: the panel's own dropdown
-    /// items (which carry their own close), then zoom, all acting on that
+    /// items (which include their own close), then zoom, all acting on that
     /// panel rather than the active one. One menu per tab panel; opening
     /// replaces any open one. Public so a composition host inside the tab
     /// can serve the same fallback menu for a hosted child the dock never
@@ -672,9 +672,9 @@ impl TabPanel {
                         rox_i18n::t!("dock-zoom-in")
                     })
                     .disabled(!zoomable)
-                    // Carries the action only so the row shows its chord;
-                    // the on_click below is what actually runs (a menu
-                    // item with a handler ignores the action on click).
+                    // The action is set only so the row shows its chord;
+                    // the on_click below does the work (a menu item with
+                    // a handler ignores the action on click).
                     .action(Box::new(ToggleZoom))
                     .on_click({
                         let view = view.clone();
@@ -774,8 +774,8 @@ impl TabPanel {
                     .dropdown_menu({
                         let zoomable = state.zoomable.map_or(false, |v| v.menu_visible());
 
-                        // The panel's own dropdown carries close on its
-                        // tail, so only zoom joins it here.
+                        // The panel's own dropdown already ends with close,
+                        // so only zoom joins it here.
                         move |menu, window, cx| {
                             view.update(cx, |this, cx| {
                                 this.dropdown_menu(menu, window, cx)
@@ -911,7 +911,7 @@ impl TabPanel {
                 return div().into_any_element();
             }
 
-            // A lone panel gets no tab chrome at all: its management lives
+            // A lone panel gets no tab chrome at all: its management is
             // in the right-click menu, and panels host their own controls
             // when solo (see `panels_count`). Only dock toggle buttons
             // still force a bar.
@@ -991,7 +991,7 @@ impl TabPanel {
                                 }),
                             )
                             // Alt+Left arms the same move, but only when the
-                            // built-in drag above isn't riding the left
+                            // built-in drag above isn't using the left
                             // button; two drags off one press would fight.
                             .when(!state.draggable, |this| {
                                 this.on_mouse_down(
@@ -1081,7 +1081,7 @@ impl TabPanel {
                             }),
                         )
                         // Alt+Left arms the same move, but only when the
-                        // built-in drag below isn't riding the left button
+                        // built-in drag below isn't using the left button
                         // (a collapsed dock's tabs, or a tab that can't
                         // drag); two drags off one press would fight.
                         .when(self.collapsed || !state.draggable, |this| {
@@ -1274,11 +1274,11 @@ impl TabPanel {
                 .absolute()
                 .size_full()
             })
-            // The panel body answers right-click with the same menu as its
-            // tab, so a lone chrome-less panel stays manageable. A panel
+            // The panel body opens the same menu as its tab on right-click,
+            // so a lone chrome-less panel stays manageable. A panel
             // whose content serves context menus of its own opts out: the
             // content's menu opens on the same bubble-phase right-click
-            // without stopping it, so answering here too would stack the
+            // without stopping it, so opening one here too would stack the
             // panel dropdown on top of it.
             .when(!active_panel.content_context_menu(cx), |this| {
                 this.on_mouse_down(
@@ -1380,8 +1380,8 @@ impl TabPanel {
     /// splits left or right. The old envelope style compared normalized
     /// distances, so the top and bottom wedges widened toward the vertical
     /// center and pinched side-by-side into a sliver right before the edge
-    /// took over - worst on thin panels, where that sliver was the whole
-    /// panel.
+    /// took over, worst of all on thin panels where that sliver was the
+    /// whole panel.
     fn placement_for(position: Point<Pixels>, bounds: Bounds<Pixels>) -> Option<Placement> {
         if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
             return None;
@@ -1421,8 +1421,8 @@ impl TabPanel {
         cx.notify()
     }
 
-    /// A release over the panel body: if a hand-rolled drag is riding the
-    /// released button, take it from the dock and land it here.
+    /// A release over the panel body: if a hand-rolled drag is using the
+    /// released button, take it from the dock and drop it here.
     fn on_move_release(
         &mut self,
         event: &MouseUpEvent,
@@ -1490,7 +1490,7 @@ impl TabPanel {
         // Cannot update ui::dock::tab_panel::TabPanel while it is already being updated
         //
         // `ix` was computed at render time, before the detach below shifts
-        // the vec; capture where the panel sat so a rightward same-group
+        // the vec; capture the panel's index first so a rightward same-group
         // drag doesn't land one slot past the indicator.
         let same_tab_from_ix = if is_same_tab {
             let panel_view = panel.view();

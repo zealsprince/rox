@@ -1,7 +1,7 @@
 //! The track columns and album grouping shared by the track-list panels
 //! (playlists, queue, history). Each panel keeps its own row type, data
 //! source, and interactions; this owns the parts that would otherwise drift
-//! across copies - the per-column cell render, the consecutive-run album
+//! across copies: the per-column cell render, the consecutive-run album
 //! grouping and its two-line heading rows, and the settings checklist and
 //! right-click Columns and Headings menus, wired through small host traits.
 
@@ -72,7 +72,7 @@ pub struct Cell<'a> {
 }
 
 /// Render one shared column, or None when the key is a panel's own. The text
-/// columns flex and truncate; number, year, and duration sit in fixed slots;
+/// columns flex and truncate; number, year, and duration get fixed slots;
 /// rating and favourite hand off to the shared controls, which write through
 /// `state`.
 pub fn cell(key: &str, c: &Cell, state: &AppState) -> Option<Div> {
@@ -136,8 +136,8 @@ pub fn cell(key: &str, c: &Cell, state: &AppState) -> Option<Div> {
 }
 
 /// A small rounded cover square, the album tile cut to one row. The panel
-/// resolves the thumbnail; pending and missing wear the quiet placeholder so
-/// a landing cover fills without shifting the row. Shared with the library
+/// resolves the thumbnail; pending and missing use the quiet placeholder so
+/// a cover that arrives later fills without shifting the row. Shared with the library
 /// table's cover column, which draws outside [`cell`].
 ///
 /// The mask is the square: `Cover` overruns the element on the art's long
@@ -181,7 +181,7 @@ pub fn fmt_plays(plays: u32) -> String {
 
 /// Resolve a track's cover thumbnail for the [`Cell::cover`] slot, or None
 /// when the cover column is off or the track has no path. The panel calls
-/// this from its row build, where the context and the file path live.
+/// this from its row build, where the context and the file path are at hand.
 pub fn cover_thumb<P: 'static>(
     state: &AppState,
     path: Option<&std::path::Path>,
@@ -403,7 +403,7 @@ pub trait ColumnHost: 'static + Sized {
     fn set_column(&mut self, key: &'static str, on: bool, cx: &mut Context<Self>);
 }
 
-/// A panel that carries an album heading mode the shared menu edits.
+/// A panel that stores an album heading mode the shared menu edits.
 pub trait HeadingHost: 'static + Sized {
     fn headers(&self) -> Headers;
     fn set_headers(&mut self, headers: Headers, cx: &mut Context<Self>);

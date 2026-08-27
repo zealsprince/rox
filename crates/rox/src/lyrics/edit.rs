@@ -6,7 +6,7 @@
 //! where the sheet came from: the embedded tag through the writer's atomic
 //! layer, or the `.lrc` sidecar or app lyrics store as a plain file. On a
 //! save it rings the app-wide lyrics signal so every panel re-reads, then
-//! closes. Nothing is written until Save; closing walks away clean.
+//! closes. Nothing is written until Save; closing leaves the file untouched.
 //!
 //! One window per track path, registered like the match window, so asking
 //! again focuses the open one instead of stacking a twin.
@@ -45,7 +45,7 @@ actions!(lyrics_edit, [Save]);
 const CONTEXT: &str = "LyricsEdit";
 
 // The sheet is a multi-line input, where plain enter is a newline, so the
-// save rides the platform's primary modifier: Cmd on macOS, Ctrl
+// save uses the platform's primary modifier: Cmd on macOS, Ctrl
 // everywhere else, the fork every app-level chord takes.
 #[cfg(target_os = "macos")]
 const SAVE_CHORD: &str = "cmd-enter";
@@ -60,7 +60,7 @@ pub fn init(cx: &mut App) {
 }
 
 /// The open edit windows, keyed by track path, so a second request for the
-/// same track focuses the first - the match window's registry shape.
+/// same track focuses the first. The match window's registry shape.
 #[derive(Default)]
 struct OpenEditors(Vec<(PathBuf, WindowHandle<Root>)>);
 
@@ -100,15 +100,15 @@ struct LyricsEdit {
     /// The track as the header shows it.
     line: SharedString,
     input: Entity<InputState>,
-    /// Where a save lands, resolved once the baseline read reports the
+    /// Where a save is written, resolved once the baseline read reports the
     /// source; the tag until then, so a brand-new sheet writes a tag.
     target: Source,
     /// The text the file held, what save diffs against; None until the read
-    /// lands, and save stays inert without it.
+    /// comes in, and save stays inert without it.
     baseline: Option<String>,
     /// A failed read or save, shown inline over the buttons.
     error: Option<SharedString>,
-    /// A save is in flight; the buttons hold still until it lands.
+    /// A save is in flight; the buttons hold still until it finishes.
     saving: bool,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
@@ -120,7 +120,7 @@ impl LyricsEdit {
         let input = cx.new(|cx| InputState::new(window, cx).multi_line(true));
         window.focus(&input.read(cx).focus_handle(cx));
         // The header names the track off its library tags, so the window
-        // says what it is even before the file read lands.
+        // says what it is even before the file read comes in.
         let query =
             rox_services::lyrics::query_for(&state.library, &TrackKey::from(path.clone()), cx);
         let line = if query.artist.is_empty() {
@@ -178,7 +178,7 @@ impl LyricsEdit {
         .detach();
     }
 
-    /// Where playback sits within the edited track, or None when a
+    /// Where playback is within the edited track, or None when a
     /// different track (or nothing) is playing. The stamp button keys off
     /// this.
     fn playback_position(&self, cx: &App) -> Option<f64> {
@@ -194,7 +194,7 @@ impl LyricsEdit {
     /// position on the way if a position is available: strip whatever
     /// leading time tag the line has and prepend a fresh one, so a
     /// play-along tags line by line. The step down always happens, even with
-    /// nothing to stamp, and it adds a blank line when there is none below,
+    /// nothing to stamp, and it adds a blank line when there's none below,
     /// so Shift+Enter never dead-ends at the last line.
     fn stamp_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
@@ -218,7 +218,7 @@ impl LyricsEdit {
             let body = lyrics::strip_leading_stamps(&lines[ix]).to_owned();
             lines[ix] = format!("{}{body}", lyrics::format_stamp(position));
         }
-        // Make sure there is a line below to land on, so the last line grows
+        // Make sure there's a line below to move to, so the last line grows
         // a fresh one instead of pinning the cursor in place.
         if ix + 1 >= lines.len() {
             lines.push(String::new());
@@ -287,9 +287,9 @@ impl LyricsEdit {
     /// The window's own actions: the stamp with the position it would
     /// write, the shortcuts for both of them, and the save.
     fn footer(&self, ready: bool, cx: &mut Context<Self>) -> Div {
-        // The stamp button carries the live position it will write, so the
+        // The stamp button shows the live position it will write, so the
         // rhythm is visible; inert until the edited track is the one
-        // playing, since there is nothing to stamp with otherwise.
+        // playing, since there's nothing to stamp with otherwise.
         let position = self.playback_position(cx);
         let stamp_label = match position {
             Some(secs) => rox_i18n::t!("lyrics-edit-stamp-time", time = fmt_time(secs)),

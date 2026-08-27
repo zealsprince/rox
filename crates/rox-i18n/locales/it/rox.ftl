@@ -1,13 +1,7 @@
 ### Italiano. Rispecchia en-CA/rox.ftl chiave per chiave; il test di
-### parità in rox-i18n lo garantisce.
-
-### The source locale. Every key lives here first, the other locales
-
-### mirror this file one for one, and the parity test in rox-i18n is
-
-### what holds them to it. Keys are surface-prefixed kebab-case; a
-
-### row's description rides the label's message as an attribute.
+### parità in rox-i18n lo garantisce. Le chiavi sono in kebab-case con
+### il prefisso della superficie; la descrizione di una riga è un
+### attributo del messaggio dell'etichetta.
 
 ## Shared widgets
 tracking-title = Tracciamento
@@ -15,16 +9,16 @@ tracking-follow = Segui la riproduzione
 tracking-resume = Riprendi quando inattivo
 tracking-smooth = Scorrimento fluido
 align-row = Allineamento
-    .description = Dove sta il contenuto quando il pannello ha spazio in più
+    .description = Dove va il contenuto quando il pannello ha spazio in più
 valign-row = Allineamento verticale
-    .description = Dove sta il contenuto quando il pannello ha altezza in più
+    .description = Dove va il contenuto quando il pannello ha altezza in più
 valign-top = Alto
 valign-middle = Centro
 valign-bottom = Basso
 
 ## Panel source and search rows
 source-track = Traccia
-    .description = Segui ciò che sta suonando, o ciò che è selezionato nella libreria
+    .description = Segui ciò che è in riproduzione, o ciò che è selezionato nella libreria
 source-follow-playing = Segui la riproduzione
 source-follow-selection = Segui la selezione
 source-playing = In riproduzione
@@ -51,7 +45,7 @@ signal-response-pulse = Quanto a lungo ogni impulso risuona prima di spegnersi
 signal-response-drift = 0 scatta con la musica, 100 le va dietro
 signal-threshold = Soglia
 signal-threshold-trigger = Il livello che l'intervallo deve raggiungere per lanciare l'impulso; non riparte finché il livello non ricade sotto il segno sul misuratore sopra
-signal-threshold-gate = Sotto questa soglia il segnale è come se non ci fosse, sopra l'uscita risale da zero, così le parti quiete non muovono la manopola. Il segno sul misuratore qui sopra indica dov'è
+signal-threshold-gate = Sotto questa soglia il segnale conta come zero; sopra, l'uscita risale da zero, così le parti silenziose non muovono la manopola. Il segno sul misuratore qui sopra indica dov'è
 signal-low-bound = Limite inferiore
 signal-high-bound = Limite superiore
 signal-adds-up = Somma
@@ -59,11 +53,11 @@ signal-adds-up = Somma
 signal-aggregate-nothing = Niente da seguire
 signal-aggregate-pick = Scegli un segnale
 signal-aggregate-alone = Non c'è nessun altro segnale nel pool da sommare, quindi resta a zero. Aggiungine uno e comparirà nella lista.
-signal-aggregate-unpicked = Niente scelto, quindi questo totale resta a zero. Scegli un segnale sopra.
+signal-aggregate-unpicked = Niente scelto, quindi questo totale resta a zero. Scegli un segnale qui sopra.
 signal-rate = Frequenza
     .description = Giri al secondo a pieno ingresso; superato 1 riparte da 0 e continua a salire, e per uno shader è una fase
 signal-reset-on-track = Azzera al cambio traccia
-    .description = Torna a zero quando parte un nuovo brano, così una fase non si porta dietro il totale del precedente
+    .description = Torna a zero quando parte un nuovo brano, così una fase non riparte dal totale del brano precedente
 signal-flush = Svuota
 signal-routes-in-panel = { $count ->
     [one] { $count } route in questo pannello
@@ -78,11 +72,11 @@ route-shared-note = Condiviso da ogni route su questo segnale
 route-signal-gone = Il segnale di questa route non c'è più; la manopola resta sul valore del cursore finché non ne scegli un altro qui sopra.
 route-range-note = Intervallo solo per questo parametro
 route-quiet = Silenzio
-    .description = Cosa raggiunge la manopola nel silenzio, come quota della sua impostazione
+    .description = Quanto segna la manopola nel silenzio, come quota della sua impostazione
 route-loud = Pieno
-    .description = Cosa raggiunge a pieno segnale; 100% è il valore del cursore stesso, sotto Silenzio modula verso il basso
+    .description = Quanto segna a pieno segnale; 100% è il valore del cursore stesso, sotto Silenzio modula verso il basso
 route-slot = Slot
-    .description = Quale dei sedici slot di segnale dello shader riempie questa route
+    .description = Quale dei sedici slot di segnale dello shader viene riempito da questa route
 route-slot-quiet-description = Cosa segna lo slot nel silenzio
 route-slot-loud-description = Cosa segna a pieno segnale; sotto Silenzio lo slot va al contrario
 route-slot-signal-description = Quale segnale condiviso segue questa route
@@ -123,7 +117,7 @@ panel-section-slots = Slot
 panel-awaiting-approval = In attesa di approvazione
 panel-size-off = Off
 panel-locked = Bloccato
-    .description = Fissa il pannello al suo posto; il dock non lo lascia trascinare né riordinare
+    .description = Fissa il pannello al suo posto; non si può più trascinare né riordinare nel dock
 panel-drag-anchor = Ancora di trascinamento
     .description = Un trascinamento ovunque sul pannello sposta la finestra, mentre i clic semplici arrivano comunque ai suoi controlli; per layout senza decorazioni
 panel-slot-controls = Controlli degli slot
@@ -154,7 +148,7 @@ panel-font-size = Dimensione carattere
 panel-surface-shader = Shader di superficie
     .description = Fa girare uno shader WGSL sul corpo di questo pannello, sotto lo shader di schermo dell'app
 panel-run-when-idle = Continua da fermo
-    .description = Continua a disegnare fotogrammi mentre l'audio è muto. Off, lo shader resta dov'è e il pannello non costa nulla
+    .description = Continua a disegnare fotogrammi mentre l'audio è muto. Off, lo shader si congela sull'ultimo fotogramma e il pannello non costa nulla
 panel-shader-is-scene = Questo shader è una scena, quindi copre il corpo del pannello invece di disegnarci sopra. Viene da un bundle o da una configurazione più vecchia; la lista qui sopra offre solo shader che lasciano leggibile il pannello.
 
 ## Shader picker and saving
@@ -196,6 +190,7 @@ settings-language = Lingua
 settings-language-system = (Lingua di sistema)
 settings-language-search = Cerca una lingua
 picker-no-matches = Nessun risultato
+settings-search-no-matches = Nessun risultato per "{ $text }"
 
 ## Embed dialog
 bake-window-title = rox - Incorpora i metadati salvati
@@ -206,19 +201,19 @@ bake-source-lyrics = Testi
 bake-source-gain = ReplayGain
 bake-source-acoustic = Descrizioni acustiche
 bake-detail-nothing = niente di salvato da incorporare
-bake-detail-only-skipped = niente da scrivere, { $skipped } saltati
+bake-detail-only-skipped = niente da scrivere, { $skipped } da saltare
 bake-detail-writes = { $count ->
     [one] { $count } file da scrivere
    *[other] { $count } file da scrivere
 }
 bake-detail-writes-skipped = { $count ->
-    [one] { $count } file da scrivere, { $skipped } saltati
-   *[other] { $count } file da scrivere, { $skipped } saltati
+    [one] { $count } file da scrivere, { $skipped } da saltare
+   *[other] { $count } file da scrivere, { $skipped } da saltare
 }
 bake-error-read = Impossibile leggere la libreria: { $error }
 bake-survey-counting = Scansione della libreria...
 bake-survey-progress = Lettura dei tag, { $done } di { $total }
-bake-nothing-to-embed = Niente da incorporare: i file contengono già tutto ciò che rox ha
+bake-nothing-to-embed = Niente da incorporare: i file contengono già tutto ciò che rox ha salvato
 bake-rewrites = { $count ->
     [one] { $count } file verrà riscritto
    *[other] { $count } file verranno riscritti
@@ -228,6 +223,20 @@ bake-hint-key = Invio
 bake-hint-after = per incorporare
 bake-embed = Incorpora
 bake-cancel = Annulla
+bake-summary-files = { $count ->
+    [one] 1 file
+   *[other] { $count } file
+}
+bake-summary-updated = Aggiornamento di { $files }
+bake-summary-stopped = Fermato dopo l'aggiornamento di { $files }
+bake-summary-skipped = { $count ->
+    [one] , { $count } saltato
+   *[other] , { $count } saltati
+}
+bake-summary-failed = { $count ->
+    [one] , { $count } fallito
+   *[other] , { $count } falliti
+}
 
 ## Arrange editors and header pieces
 arrange-shown = Mostrati
@@ -281,6 +290,8 @@ panel-reveal-in-browser = Mostra nel gestore file
 panel-play-next = Riproduci dopo
 panel-add-to-queue = Aggiungi alla coda
 panel-add-to-playlist = Aggiungi alla playlist
+panel-favourite-add = Aggiungi ai preferiti
+panel-favourite-remove = Rimuovi dai preferiti
 shader-pick-missing = { $name } (mancante)
 shader-pick-custom = Personalizzato
 
@@ -328,7 +339,7 @@ playback-item-rating = Valutazione
 ## Dock chrome
 dock-empty-tab = Scheda vuota
 dock-unnamed = Senza nome
-dock-tiles = Riquadri
+dock-tiles = Tessere
 dock-zoom-in = Ingrandisci
 dock-zoom-out = Riduci
 dock-collapse = Comprimi
@@ -338,7 +349,7 @@ dock-expand = Espandi
 shader-note-empty = Scegli un esempio per iniziare, o indica a rox un file .wgsl con uno stadio fragment che definisce fs_user(uv)
 shader-note-missing = { $name } non è più tra gli shader di questo spazio di lavoro, quindi non si disegna niente. Scegli qualcos'altro qui e questo pannello avrà una sorgente sua.
 shader-note-shared = Condiviso in questo spazio di lavoro. Modificarlo aggiorna ogni superficie che lo usa.
-shader-note-file = { $path }. I tuoi salvataggi si ricaricano mentre lo shader disegna, e la sorgente è salvata dentro layout e bundle, così sopravvive a una macchina che non ha mai avuto il file.
+shader-note-file = { $path }. I tuoi salvataggi si ricaricano mentre lo shader disegna, e la sorgente è salvata dentro layout e bundle, così funziona anche su una macchina che non ha mai avuto il file.
 shader-note-custom = Questa sorgente viaggia dentro il suo layout o bundle senza un file dietro. Modifica come file la riscrive su disco e raccoglie i tuoi salvataggi.
 
 ## Panel pages and shared sides
@@ -349,6 +360,7 @@ panel-page-source = Sorgente
 panel-page-bindings = Collegamenti
 panel-page-emitters = Emettitori
 panel-page-forces = Forze
+panel-page-scene = Scena
 side-left = Sinistra
 side-right = Destra
 genre-face-mosaic = Mosaico
@@ -371,11 +383,11 @@ library-disc = Disco { $number }
 library-empty-title = Apri una cartella di musica
 library-empty-note = Verrà scansionata nella libreria (flac, mp3, wav)
 library-headers = Intestazioni
-    .description = Interruzioni di gruppo sulla lista; un ordinamento tiene insieme le sequenze, la ricerca mostra tutto piatto
+    .description = Interruzioni di gruppo sulla lista; un ordinamento tiene insieme le sequenze che ci sono, la ricerca appiattisce tutto
 library-group-by = Raggruppa per
     .description = Su cosa si interrompono le intestazioni; genere e anno riordinano la lista
 library-header-row = Riga di intestazione
-    .description = Cosa impacchettano le intestazioni a una riga, da sinistra a destra; uno spaziatore o un divisore separa i lati
+    .description = Cosa mostrano le intestazioni a una riga, da sinistra a destra; uno spaziatore o un divisore separa i lati
 library-header-lines = Righe di intestazione
     .description = Le righe del blocco, dall'alto in basso; una riga vuota sparisce
 library-follow-description = Scorri alla traccia in riproduzione a ogni cambio di brano
@@ -390,9 +402,9 @@ library-compact-plays = Ascolti compatti
 library-line-height = Altezza riga
     .description = Una riga di intestazione; i blocchi prendono le righe che servono, indipendenti dalle righe delle tracce
 library-text-size = Dimensione testo
-    .description = Il testo delle righe di intestazione, indipendente dall'altezza riga, così la copertina cresce da sola
+    .description = Il testo delle righe di intestazione, indipendente dall'altezza della riga, così la copertina cresce da sola
 library-flush-background = Sfondo a filo
-    .description = Poggia le intestazioni sullo sfondo della lista invece che sulla tinta rialzata; i colori del brano le muovono insieme
+    .description = Metti le intestazioni sullo sfondo della lista invece che sulla tinta rialzata; i colori del brano le muovono insieme
 library-gap-above = Spazio sopra
     .description = Ritagliato dalla cima del blocco; la lista traspare, e le righe si stringono
 library-gap-below = Spazio sotto
@@ -410,7 +422,7 @@ library-art-description = La tessera delle intestazioni espanse: la copertina, i
 library-art-rounding = Arrotondamento copertina
     .description = Arrotonda gli angoli della copertina
 library-art-position = Posizione copertina
-    .description = Su quale lato del blocco sta la tessera delle intestazioni espanse
+    .description = Su quale lato del blocco va la tessera delle intestazioni espanse
 library-art-margin = Margine copertina
     .description = Rientra la tessera nel blocco; si rimpicciolisce per restare quadrata
 library-circular-portraits = Ritratti circolari
@@ -440,7 +452,7 @@ grid-dim-amount = Intensità
 grid-desaturate = Desatura durante la riproduzione
     .description = Porta ogni copertina tranne quella dell'album in riproduzione in scala di grigi; passandoci sopra torna il colore
 grid-always = Sempre
-    .description = Tieni le copertine in secondo piano anche quando non suona nulla; solo la tessera sotto il puntatore si vede intera
+    .description = Tieni le copertine in secondo piano anche quando non suona niente; solo la tessera sotto il puntatore si vede intera
 grid-show-titles = Mostra i titoli
     .description = Stampa album e artista sotto ogni copertina, stile iTunes, invece che solo al passaggio del puntatore
 grid-title-alignment = Allineamento titoli
@@ -476,7 +488,7 @@ settings-appearance-border = Bordo
     .description = Una linea attorno al bordo di ogni pannello, nel colore del ruolo Bordo; un lato a zero non ne disegna nessuna
 settings-appearance-colors-locked-note = I colori del brano sono attivi, quindi la traccia in riproduzione guida questi colori e l'esportazione li salva. Disattivali qui sopra per modificarli
 settings-appearance-design-mode = Modalità progettazione
-    .description = Modifica il layout dov'è: le voci aggiungi, rinomina, duplica, stacca e chiudi dei menu dei pannelli, i controlli che un contenitore fa fluttuare sui suoi slot, e il trascinamento delle schede. Off nasconde tutto questo; la pagina Spazio di lavoro modifica comunque l'albero
+    .description = Modifica il layout sul posto: le voci aggiungi, rinomina, duplica, stacca e chiudi dei menu dei pannelli, i controlli che un contenitore fa fluttuare sui suoi slot, e il trascinamento delle schede. Off nasconde tutto questo; la pagina Spazio di lavoro modifica comunque l'albero
     .keywords = modifica disposizione riordina blocca
 settings-appearance-font = Carattere
     .description = Il carattere di tutta l'app; i pannelli possono sovrascriverlo nelle proprie impostazioni
@@ -495,7 +507,7 @@ settings-appearance-margin = Margine
     .description = Tira ogni pannello dentro dalla sua cella; un pannello può sovrascriverlo nelle proprie impostazioni
 settings-appearance-new-pack = Nuovo pacchetto
 settings-appearance-os-decorations = Decorazioni di sistema
-    .description = La barra del titolo e i bordi del sistema sulle finestre principali; off si appoggia ai controlli finestra e ai pannelli con ancora di trascinamento
+    .description = La barra del titolo e i bordi del sistema sulle finestre principali; off si affida ai controlli finestra e ai pannelli ancora di trascinamento
 settings-appearance-pack-name-placeholder = Nome del pacchetto
 settings-appearance-padding = Spaziatura interna
     .description = Spazio dentro il bordo di ogni pannello, tenuto nel suo sfondo
@@ -582,7 +594,7 @@ settings-audio-output-device = Dispositivo
     .description-other = L'esclusiva prende il dispositivo per rox soltanto, quindi nient'altro sul desktop può suonarci finché la modalità non è disattivata
 settings-audio-output-device-system-default = Predefinito di sistema
 settings-audio-output-experimental-badge = Sperimentale
-settings-audio-output-experimental-tooltip = Il backend esclusivo di questa piattaforma è scritto sul contratto audio documentato della piattaforma, ma gli sviluppatori non l'hanno mai fatto girare su hardware reale. Dovrebbe prendere il dispositivo o ripiegare su condiviso con una motivazione, mai restare muto. Se si comporta male, disattivalo e segnala cos'è successo con il pulsante accanto a questo badge.
+settings-audio-output-experimental-tooltip = Il backend esclusivo di questa piattaforma è scritto a partire dal contratto audio che la piattaforma documenta, ma gli sviluppatori non l'hanno mai fatto girare su hardware reale. Dovrebbe prendere il dispositivo o ripiegare su condiviso con una motivazione, mai restare muto. Se si comporta male, disattivalo e segnala cos'è successo con il pulsante accanto a questo badge.
 settings-audio-output-format = Formato
     .description = Cosa passa rox alla scheda. Una scheda che non accetta la scelta gira nel formato più ampio che ha, e lo stato qui sotto mostra quale
 settings-audio-output-format-f32 = Float a 32 bit
@@ -601,24 +613,27 @@ settings-audio-output-status-error-title = Nessuna uscita
 settings-audio-output-status-idle-hint = Avvia una traccia per vedere il formato che il dispositivo ha accettato
 settings-audio-output-status-idle-title = Niente in riproduzione
 settings-audio-replaygain-level-by = Livella per
-    .description = Riproduci ogni traccia al volume misurato dai suoi tag ReplayGain, così una riproduzione casuale smette di saltare tra masterizzazioni diverse. Traccia livella ogni file per conto suo; Album usa il guadagno del disco su tutte le sue tracce, il che tiene i passaggi quieti e forti di un album dove sono stati messi
+    .description = Riproduci ogni traccia al volume misurato dai suoi tag ReplayGain, così una riproduzione casuale smette di saltare tra masterizzazioni diverse. Traccia livella ogni file per conto suo; Album usa il guadagno del disco su tutte le sue tracce, il che lascia i passaggi silenziosi e quelli forti di un album dove sono stati messi
     .keywords = normalizzazione volume livellamento
 settings-audio-replaygain-measure-missing-button = Misura i mancanti
 settings-audio-replaygain-measure-new = Misura i nuovi file
-    .description = Misura ciò che la sorveglianza porta dentro appena arriva, una volta che la sincronizzazione si è assestata, così una libreria che cresce tiene i suoi guadagni senza tornare qui. I numeri finiscono dove punta Salva i guadagni misurati. Attivarlo propone di misurare prima ciò che già manca; dopo vede solo i file appena arrivati
+    .description = Misura i file nuovi appena la sorveglianza li rileva, una volta che la sincronizzazione si è assestata, così una libreria che cresce tiene i suoi guadagni senza dover tornare qui. I numeri vanno dove punta Salva i guadagni misurati. Attivarlo propone di misurare prima ciò che già manca; dopo vede solo i file appena arrivati
 settings-audio-replaygain-measuring-progress = Misurazione di { $done } su { $total }
 settings-audio-replaygain-measuring-start = Misurazione: calcolo cosa manca...
 settings-audio-replaygain-mode-album = Album
 settings-audio-replaygain-mode-off = Off
 settings-audio-replaygain-mode-track = Traccia
 settings-audio-replaygain-preamp = Preamplificazione
-    .description = Aggiunta a ogni guadagno taggato. Il riferimento di ReplayGain sta sotto il livello a cui si masterizzano i dischi moderni, quindi una libreria livellata suona più piano della stessa libreria grezza; è qui che lo si recupera. Un aumento non satura mai: il picco taggato lo limita
+    .description = Aggiunta a ogni guadagno taggato. Il riferimento di ReplayGain è più basso del livello a cui si masterizzano i dischi moderni, quindi una libreria livellata suona più piano della stessa libreria grezza; è qui che lo si recupera. Un aumento non satura mai: il picco taggato lo limita
 settings-audio-replaygain-save = Salva i guadagni misurati
     .description = Dove la misurazione mette i suoi numeri. Il database della libreria lascia intatti i tuoi file; i tag mettono gli stessi valori dove li legge ogni altro lettore, al prezzo di riscrivere i file audio
-settings-audio-replaygain-status-measured = Tutte le { $total } tracce scansionate hanno un guadagno su cui livellare, { $measured } misurate da rox
-settings-audio-replaygain-status-tagged = Tutte le { $total } tracce scansionate hanno tag ReplayGain
+settings-audio-replaygain-status-measured = { $measured ->
+    [one] Tutte le { $total } tracce scansionate hanno un guadagno su cui livellare, { $measured } misurata da rox
+   *[other] Tutte le { $total } tracce scansionate hanno un guadagno su cui livellare, { $measured } misurate da rox
+}
+settings-audio-replaygain-status-tagged = Tutte le { $total } tracce scansionate hanno i tag ReplayGain
 settings-audio-replaygain-untagged = File senza tag
-    .description = A che livello suona un file senza tag ReplayGain. Niente l'ha misurato, quindi questa è una stima al posto di una misura, lascialo a zero e le tracce senza tag suoneranno come hanno sempre fatto
+    .description = A che livello suona un file senza tag ReplayGain. Niente l'ha misurato, quindi questa è una stima al posto di una misura. Lascialo a zero e le tracce senza tag suoneranno come hanno sempre fatto
 settings-audio-section-broadcast = Trasmissione
 settings-audio-section-equalizer = Equalizzatore
 settings-audio-section-output = Uscita
@@ -652,7 +667,7 @@ settings-integrations-lastfm-hearts = { $n ->
 }
 settings-integrations-lastfm-import-loved = Importa i brani amati
 settings-integrations-lastfm-intro-builtin = Connetti il tuo account Last.fm: autorizza rox nel browser e le tracce riprodotte vengono scrobblate lì
-settings-integrations-lastfm-intro-custom = Questa build non porta un'identità api, quindi lo scrobbling richiede un account api tuo (Last.fm/api/account/create); incolla la sua chiave e il segreto condiviso, poi connetti
+settings-integrations-lastfm-intro-custom = Questa build non include un'identità api, quindi lo scrobbling richiede un account api tuo (Last.fm/api/account/create); incolla la sua chiave e il segreto condiviso, poi connetti
 settings-integrations-lastfm-key-placeholder = Chiave API
 settings-integrations-lastfm-love-failed = L'ultimo è fallito: { $error }
 settings-integrations-lastfm-love-pending = { $hearts } in attesa di invio
@@ -696,7 +711,7 @@ settings-keymap-undo-last = Annulla l'ultimo ripristino
 ## Settings: library
 settings-library-acoustic-all-described = Tutte le { $total } tracce scansionate sono descritte da { $label }
 settings-library-acoustic-auto = Descrivi i nuovi file
-    .description = Descrivi ciò che la sorveglianza porta dentro appena arriva, una volta che la sincronizzazione si è assestata, così una libreria che cresce tiene le sue descrizioni senza tornare qui. Off, i nuovi file aspettano il pulsante Analizza i mancanti. Attivarlo propone di analizzare prima ciò che già manca; dopo vede solo i file appena arrivati
+    .description = Descrivi i file nuovi appena la sorveglianza li rileva, una volta che la sincronizzazione si è assestata, così una libreria che cresce tiene le sue descrizioni senza dover tornare qui. Off, i nuovi file aspettano il pulsante Analizza i mancanti. Attivarlo propone di analizzare prima ciò che già manca; dopo vede solo i file appena arrivati
 settings-library-acoustic-enable = Descrivi come suonano le tracce
     .description = Ricava come suona ogni traccia, così la libreria può trovare musica che assomiglia a quella in riproduzione. Tutto gira su questa macchina, e descrivere una libreria grande richiede un po'
     .keywords = simile suono impronta descrivere
@@ -704,10 +719,10 @@ settings-library-acoustic-extractor = Estrattore
 settings-library-acoustic-extractor-model = Modello
 settings-library-acoustic-fallback = Analisi
 settings-library-acoustic-partial = { $label } descrive { $done } di { $total } tracce scansionate. Analizza i mancanti lavora sul resto
-settings-library-acoustic-progress = { $running } di { $done } su { $total }
+settings-library-acoustic-progress = { $running } è a { $done } su { $total }
 settings-library-acoustic-progress-start = { $running }: calcolo cosa manca...
 settings-library-acoustic-save = Salva le descrizioni
-    .description = Dove la passata mette ciò che ricava. Il database da solo lascia intatti i tuoi file; i tag mettono una copia anche in ogni file, così le descrizioni sopravvivono alla ricostruzione della libreria o allo spostamento della cartella su un'altra macchina, al prezzo di riscrivere i file audio. I tag arrivano solo a MP3 e FLAC, ogni altro formato tiene la copia nel database
+    .description = Dove la passata mette ciò che ricava. Il database da solo lascia intatti i tuoi file; i tag mettono una copia anche in ogni file, così le descrizioni restano se la libreria viene ricostruita o la cartella si sposta su un'altra macchina, al prezzo di riscrivere i file audio. I tag valgono solo per MP3 e FLAC; ogni altro formato tiene la copia nel database
 settings-library-add-folder = Aggiungi cartella
 settings-library-duplicates = Duplicati...
 settings-library-embed-button = Incorpora i metadati salvati...
@@ -718,7 +733,7 @@ settings-library-folder-col-tracks = Tracce
 settings-library-folders-intro = Cartelle scansionate nella libreria; rimuoverne una toglie le sue tracce dal catalogo e lascia stare i file
 settings-library-genre-separator-nudge = Separatori cambiati: la navigazione si adegua subito. Le liste di generi salvate da scansioni precedenti tengono la vecchia forma finché non premi Riscansiona nell'intestazione Cartelle
 settings-library-merge-case = Unisci le varianti di maiuscole
-    .description = Tratta come uno solo i valori che differiscono solo per maiuscole, Rock e rock diventano lo stesso genere, artista e album, mostrati con la grafia che porta la maggior parte delle tracce. I file tengono i tag come sono scritti
+    .description = Tratta come uno solo i valori che differiscono solo per maiuscole: Rock e rock diventano lo stesso genere, artista e album, mostrati con la grafia usata dalla maggior parte delle tracce. I file tengono i tag come sono scritti
 settings-library-no-folders = Ancora nessuna cartella
 settings-library-repair-tags = Ripara i tag...
 settings-library-section-folders = Cartelle
@@ -727,17 +742,20 @@ settings-library-section-tempo = Analisi del tempo
 settings-library-split-genres = Dividi i generi su virgole e barre
     .description = "Dubstep, Trap" e "Drum & Bass / Neurofunk" contano ogni valore come genere a sé; i punti e virgola dividono sempre. Off tiene interi i nomi con barra per i tag dove significano un genere solo. I file tengono i tag come sono scritti
 settings-library-tempo-auto = Cronometra i nuovi file
-    .description = Conta i battiti in ciò che la sorveglianza porta dentro appena arriva, una volta che la sincronizzazione si è assestata, così una libreria che cresce tiene i suoi tempi senza tornare qui. Off, i nuovi file aspettano il pulsante Analizza i mancanti. Attivarlo propone di cronometrare prima ciò che già manca; dopo vede solo i file appena arrivati
+    .description = Conta i battiti nei file nuovi appena la sorveglianza li rileva, una volta che la sincronizzazione si è assestata, così una libreria che cresce tiene i suoi tempi senza dover tornare qui. Off, i nuovi file aspettano il pulsante Analizza i mancanti. Attivarlo propone di cronometrare prima ciò che già manca; dopo vede solo i file appena arrivati
 settings-library-tempo-enable = Ricava quanto vanno veloci le tracce
     .description = Conta i battiti nelle tracce i cui tag non lo dicono, così la libreria può mostrare e ordinare per tempo. Tutto gira su questa macchina, i numeri vanno nel database della libreria, e i tuoi file restano intatti
 settings-library-tempo-progress = Cronometraggio di { $done } su { $total }
 settings-library-tempo-progress-start = Calcolo cosa manca...
-settings-library-tempo-status-measured = Tutte le { $total } tracce scansionate hanno un tempo, { $measured } ricavate da rox
+settings-library-tempo-status-measured = { $measured ->
+    [one] Tutte le { $total } tracce scansionate hanno un tempo, { $measured } ricavata da rox
+   *[other] Tutte le { $total } tracce scansionate hanno un tempo, { $measured } ricavate da rox
+}
 settings-library-tempo-status-tagged = Tutte le { $total } tracce scansionate hanno un tag di tempo
 settings-library-watch-folders = Sorveglia le cartelle
     .description = Fai entrare nella libreria i file aggiunti, modificati ed eliminati mentre succede, senza una riscansione manuale
 settings-library-write-stored = Scrivi nei file ciò che è salvato
-    .description = Le tre impostazioni di salvataggio valgono solo per la prossima scrittura, quindi tutto ciò che è stato salvato prima che una passasse a Tag è ancora solo in rox. Questo scrive nei file stessi i testi, i guadagni e le descrizioni che rox ha già, così una cartella passata a un altro lettore se li porta dietro. Niente viene ricalcolato
+    .description = Le tre impostazioni di salvataggio valgono solo per la prossima scrittura, quindi tutto ciò che è stato salvato prima che una passasse a Tag è ancora solo in rox. Questo scrive nei file stessi i testi, i guadagni e le descrizioni che rox ha già, così un altro lettore che legge la cartella li vede. Niente viene ricalcolato
 
 ## Settings: MCP
 settings-mcp-client-config = Configurazione client
@@ -748,7 +766,7 @@ settings-mcp-enable = Attiva il server MCP
 ## Settings: ML models
 settings-mlmodels-checking = Controllo in corso...
 settings-mlmodels-choose-file = Scegli un file
-settings-mlmodels-custom-description-empty = Indica a rox un checkpoint PANNs CNN10 tuo, in safetensors. Viene letto dov'è e prende il nome dal suo hash, così un secondo checkpoint descrive la libreria a parte invece di finire nelle coordinate del primo
+settings-mlmodels-custom-description-empty = Indica a rox un checkpoint PANNs CNN10 tuo, in safetensors. Viene letto dov'è e prende il nome dal suo hash, così un secondo checkpoint descrive la libreria a parte invece di riusare le coordinate del primo
 settings-mlmodels-download-failed = Non è stato possibile scaricare { $label }: { $reason }
 settings-mlmodels-downloading = Scaricamento di { $label }: { $done } di { $total }
 settings-mlmodels-stopping = Interruzione del download di { $label }...
@@ -802,7 +820,7 @@ settings-providers-lyrics-intro = Le ricerche online partono solo quando un'azio
 settings-providers-musicbrainz = MusicBrainz
     .description = Cerca i tag su musicbrainz.org; la ricerca del pannello metadati mostra i risultati da confermare campo per campo prima di scrivere
 settings-providers-save-lyrics = Salva i testi recuperati
-    .description = Dove finisce un foglio recuperato: la cartella dati di rox che tiene pulita la libreria, un .lrc accanto alla traccia, o il tag incorporato
+    .description = Dove viene salvato un foglio recuperato: la cartella dati di rox che tiene pulita la libreria, un .lrc accanto alla traccia, o il tag incorporato
 settings-providers-save-lyrics-data-folder = Cartella dati
 settings-providers-save-lyrics-sidecar = Sidecar
 settings-providers-save-lyrics-tag = Tag
@@ -820,7 +838,7 @@ settings-shader-backdrop-fallback-name = Sfondo
 settings-shader-backdrop-run-idle = Continua da fermo
     .description = Continua a disegnare senza niente in riproduzione. L'animazione resta ferma in ogni caso
 settings-shader-compile-error-title = Questo shader non compila
-settings-shader-legacy-note = Senza niente instradato il pool alimenta gli slot nel suo ordine: il primo segnale nello slot 0, il secondo nello slot 1, e così via. La prima route che aggiungi si prende tutta l'alimentazione.
+settings-shader-legacy-note = Senza niente instradato il pool riempie gli slot nel suo ordine: il primo segnale nello slot 0, il secondo nello slot 1, e così via. La prima route che aggiungi prende il controllo di tutta la mappatura.
 settings-shader-overlay-enabled = Shader di overlay
     .description = Fa girare uno shader WGSL reattivo alla musica su tutta la finestra. Vengono offerti solo gli shader che lasciano usabile l'app sotto
 settings-shader-scene-covers-window = Questo shader è una scena, quindi copre la finestra invece di disegnarci sopra. Viene da un bundle o da una configurazione più vecchia; la lista qui sopra offre solo shader che lasciano usabile l'app.
@@ -834,7 +852,7 @@ settings-shader-section-overlay = Shader di overlay
 settings-shader-signals-block = Segnali
     .description = Quale segnale condiviso riceve ognuno dei sedici slot dello shader
 settings-shader-slots-block = Slot
-    .description = Ogni slot come arriva allo shader; gli slot senza route sono manopole impostate a mano
+    .description = Ogni slot così come lo riceve lo shader; gli slot senza route sono manopole impostate a mano
 
 ## Settings: storage
 settings-storage-artist-images = Immagini degli artisti
@@ -846,17 +864,17 @@ settings-storage-cover-thumbnails = Miniature delle copertine
 settings-storage-logs = Log
     .description = Cosa scrive ogni esecuzione per le segnalazioni di bug (logs/rox.log), ruotato a un tetto di dimensione così non cresce mai troppo
 settings-storage-looks-layouts = Look e layout
-    .description = Il look che l'app indossa (workspace.json) con i tuoi spazi di lavoro salvati, i file shader estratti e i pacchetti di icone accanto. Piccolo, e ogni suo byte è qualcosa che hai impostato tu
+    .description = Il look che l'app sta usando (workspace.json) con i tuoi spazi di lavoro salvati, i file shader estratti e i pacchetti di icone accanto. Piccolo, e ogni suo byte è qualcosa che hai impostato tu
 settings-storage-lyrics = Testi
     .description = Fogli recuperati e modificati tenuti nell'archivio dell'app (lyrics/), così le cartelle della libreria restano pulite
 settings-storage-measured-tempos = Tempi misurati
-    .description = I tempi che rox ha contato dall'audio, per le tracce i cui tag non ne portano; i numeri dei tag non vengono toccati. Cancellarli rimette quelle tracce nella lista di Analizza i mancanti nella pagina Libreria, ed è così che un conteggio dei battiti migliorato raggiunge i numeri scritti da una passata più vecchia
+    .description = I tempi che rox ha contato dall'audio, per le tracce i cui tag non ne hanno; i numeri dei tag non vengono toccati. Cancellarli rimette quelle tracce nella lista di Analizza i mancanti nella pagina Libreria, così un conteggio dei battiti migliorato può sostituire i numeri scritti da una passata più vecchia
 settings-storage-model-fallback-this = Questo modello
 settings-storage-music-summary = { $tracks }, { $albums }, { $size }
 settings-storage-model-weights = Pesi dei modelli
     .description = I modelli scaricati per l'analisi acustica (models/). La pagina Modelli ML è dove si recuperano e si eliminano, una riga un modello
 settings-storage-models-empty = Modelli
-    .description = Niente ha ancora descritto la libreria. Attivare l'analisi acustica nella pagina Libreria è ciò che riempie questa voce, e ogni modello che ha girato prende una riga qui
+    .description = Niente ha ancora descritto la libreria. Attivare l'analisi acustica nella pagina Libreria riempie questa voce, e ogni modello che ha girato prende una riga qui
 settings-storage-music-files = File musicali
     .description = Cosa contengono le cartelle scansionate; i file restano dove sono
 settings-storage-none = Nessuno
@@ -894,12 +912,12 @@ settings-workspace-card-version-placeholder = La tua versione, comunque tu la co
 settings-workspace-card-website = Sito web
 settings-workspace-card-website-placeholder = Dove vive
 settings-workspace-composition-closed = La finestra dello spazio di lavoro è chiusa
-settings-workspace-composition-hint = I pannelli della finestra come stanno in divisioni e gruppi di schede; le frecce riordinano una riga tra i suoi pari, il lucchetto fissa un pannello al suo posto, e l'ingranaggio apre le sue impostazioni
+settings-workspace-composition-hint = I pannelli della finestra come sono disposti in divisioni e gruppi di schede; le frecce riordinano una riga tra i suoi pari, il lucchetto fissa un pannello al suo posto, e l'ingranaggio apre le sue impostazioni
 settings-workspace-empty = Ancora nessuno spazio di lavoro
-settings-workspace-hint = Uno spazio di lavoro è un look intero: layout, palette, aspetto; applicarne uno sostituisce tutti e tre
+settings-workspace-hint = Uno spazio di lavoro è un look intero: layout, palette, aspetto. Applicarne uno sostituisce tutti e tre
 settings-workspace-layout-name-placeholder = Nome del layout
 settings-workspace-layouts-empty = Ancora nessun layout
-settings-workspace-layouts-hint = Primario e mini sono i due tra cui passa il pulsante mini player della barra dei menu
+settings-workspace-layouts-hint = Primario e mini sono i due tra cui alterna il pulsante mini player della barra dei menu
 settings-workspace-name-placeholder = Nome dello spazio di lavoro
 settings-workspace-panel-preset-unknown-kind = Pannello sconosciuto
 settings-workspace-panel-presets-empty = Ancora nessuna preimpostazione di pannello
@@ -937,14 +955,17 @@ settings-common-reveal = Mostra
 settings-common-stop = Ferma
 settings-common-stopping = In arresto...
 settings-common-tags = Tag
-settings-common-tracks-count = { $count } tracce
+settings-common-tracks-count = { $count ->
+    [one] { $count } traccia
+   *[other] { $count } tracce
+}
 settings-common-use = Usa
 settings-confirm-apply-body = Questo sostituisce i tuoi layout, la palette e l'aspetto con quelli dello spazio di lavoro.
 settings-confirm-apply-imported-body = È salvato nei tuoi spazi di lavoro. Applicarlo ora sostituisce i tuoi layout, la palette e l'aspetto con quelli dello spazio di lavoro.
 settings-confirm-clear = Cancella
-settings-confirm-clear-embeddings-body = Le descrizioni se ne vanno e lo spazio torna. Per riaverle la passata di analisi dovrà riascoltare da capo ogni traccia della libreria.
+settings-confirm-clear-embeddings-body = Le descrizioni se ne vanno e lo spazio torna. Per riaverle bisogna rieseguire la passata di analisi su ogni traccia della libreria.
 settings-confirm-clear-embeddings-title = Cancellare ciò che "{ $model }" ha descritto?
-settings-confirm-clear-measured-bpm-body = Ogni tempo ricavato da rox torna non misurato; i numeri dei tag dei tuoi file restano. Per riaverli la passata del tempo dovrà ridecodificare da capo ognuna di quelle tracce.
+settings-confirm-clear-measured-bpm-body = Ogni tempo ricavato da rox torna non misurato; i numeri dei tag dei tuoi file restano. Per riaverli bisogna rieseguire la passata del tempo su ognuna di quelle tracce.
 settings-confirm-clear-measured-bpm-title = Cancellare i tempi misurati?
 settings-confirm-overwrite-workspace-body = Questo sostituisce lo spazio di lavoro salvato con lo stato attuale.
 settings-confirm-overwrite-workspace-title = Sovrascrivere lo spazio di lavoro "{ $name }"?
@@ -1044,7 +1065,7 @@ workspace-drop-play-now = Riproduci ora
 workspace-hint-or = o
 workspace-hint-then = poi
 workspace-import = Importa
-workspace-launcher-hint = Aggiungi il tuo primo pannello per iniziare a costruire; o scegli una preimpostazione sotto Spazio di lavoro > Applica spazio di lavoro
+workspace-launcher-hint = Aggiungi il tuo primo pannello per iniziare a costruire, oppure scegli una preimpostazione sotto Spazio di lavoro > Applica spazio di lavoro
 workspace-launcher-need-help = Serve aiuto?
 workspace-launcher-open-welcome = Apri la finestra di benvenuto
 workspace-launcher-title = Una finestra vuota
@@ -1083,7 +1104,10 @@ tasks-job-replaygain = ReplayGain
 tasks-job-scan = Scansione della libreria
 tasks-job-tempo = Analisi del tempo
 tasks-last-pass-stopped = L'ultima passata si è fermata: { $reason }
-tasks-last-run-finished = Ultima esecuzione finita, { $count } fatte
+tasks-last-run-finished = { $count ->
+    [one] Ultima esecuzione finita, { $count } fatta
+   *[other] Ultima esecuzione finita, { $count } fatte
+}
 tasks-last-run-stopped = Ultima esecuzione fermata dopo { $count }
 tasks-library-busy = La libreria è occupata
 tasks-library-scanning = La libreria è in scansione
@@ -1092,22 +1116,28 @@ tasks-model-downloading = Un modello si sta ancora scaricando
 tasks-no-library-window = Non c'è nessuna finestra della libreria aperta, quindi non si possono avviare da qui
 tasks-nothing-to-measure = Ancora niente di scansionato da misurare
 tasks-rg-all-gain = Tutte le { $count } tracce hanno un guadagno a cui suonare
-tasks-rg-partial = { $missing } di { $total } tracce non hanno guadagno
+tasks-rg-partial = { $missing ->
+    [one] { $missing } di { $total } tracce non ha guadagno
+   *[other] { $missing } di { $total } tracce non hanno guadagno
+}
 tasks-scan-folder-count = { $count ->
     [one] { $count } cartella
    *[other] { $count } cartelle
 }
 tasks-scan-last-scanned = { $folders }, ultima scansione { $ago } fa
 tasks-scan-never-scanned = { $folders }, mai scansionate
-tasks-scan-no-folders = Nessuna cartella aggiunta. Aprine una dal menu File
+tasks-scan-no-folders = Ancora nessuna cartella aggiunta. Aggiungine una nelle Impostazioni, sotto Libreria
 tasks-start-analyze-missing = Analizza i mancanti
 tasks-start-measure-missing = Misura i mancanti
 tasks-start-rescan = Riscansiona
 tasks-stop = Ferma
 tasks-stopping = Arresto...
 tasks-tempo-all = Tutte le { $count } tracce hanno un tempo
-tasks-tempo-off = Il calcolo della velocità delle tracce è disattivato in Impostazioni, sotto Libreria
-tasks-tempo-partial = { $missing } di { $total } tracce non hanno un tempo
+tasks-tempo-off = Il calcolo della velocità delle tracce è disattivato nelle Impostazioni, sotto Libreria
+tasks-tempo-partial = { $missing ->
+    [one] { $missing } di { $total } tracce non ha un tempo
+   *[other] { $missing } di { $total } tracce non hanno un tempo
+}
 tasks-timing = Cronometraggio di { $progress }
 tasks-tip = Apri le attività della libreria
 tasks-window-title = rox - Attività
@@ -1125,7 +1155,7 @@ stats-chart-start-year = Un anno fa
 stats-click-opens = Il clic apre le statistiche
 stats-click-section = Clic
 stats-count-menu = Conteggio
-    .description = Su quale periodo recente il numero conta gli ascolti; l'elenco al passaggio del mouse li porta sempre tutti
+    .description = Su quale periodo recente il numero conta gli ascolti; l'elenco al passaggio del mouse li mostra sempre tutti
 stats-empty-all = Ancora nessun ascolto
 stats-empty-range = Nessun ascolto in questo intervallo
 stats-now = Adesso
@@ -1157,7 +1187,7 @@ stats-section-top-albums = Album principali
 stats-section-top-artists = Artisti principali
 stats-section-top-genres = Generi principali
 stats-show-change = Mostra la variazione
-    .description = Aggiunge un chip con come va il periodo rispetto a quello precedente, in su o in giù; Sempre non ha un prima con cui confrontarsi
+    .description = Aggiunge un chip che confronta il periodo con quello precedente, in su o in giù; Sempre non ha niente prima con cui confrontarsi
 stats-show-number = Mostra il numero
     .description = Disegna il conteggio accanto all'icona; disattivato lascia un'icona nuda con i conteggi al passaggio del mouse
 stats-title = Widget statistiche
@@ -1198,7 +1228,7 @@ welcome-done = Fatto
 welcome-drop-note = Rilascialo sul bordo di un pannello per dividere lì, al centro per condividere un gruppo di schede, o fuori dalla finestra per farne una finestra a sé.
 welcome-key-left-click = Clic sinistro
 welcome-key-middle-mouse = Tasto centrale
-welcome-layout-note = Salva una disposizione come layout; uno spazio di lavoro raccoglie layout e palette in un unico aspetto condivisibile.
+welcome-layout-note = Salva una disposizione come layout; uno spazio di lavoro raccoglie layout e palette in un unico look condivisibile.
 welcome-menubar-after = due volte per lasciarla su.
 welcome-menubar-before = Con la barra dei menu nascosta, tieni premuto
 welcome-menubar-mid = per farla tornare sopra il dock, o premi
@@ -1213,15 +1243,15 @@ welcome-quickplay-before = apre la riproduzione rapida: scrivi una traccia, prem
 welcome-rearrange-after = ovunque su un pannello per spostarlo.
 welcome-rearrange-before = Trascina una scheda, o tieni premuto
 welcome-settings-hint-after = apre le impostazioni: la palette, la trasparenza e il comportamento.
-welcome-shelf-caption = Sceglierne uno sostituisce l'aspetto della finestra principale e chiude il tour. Questa finestra è qui in ogni momento sotto Applicazione > Benvenuto.
-welcome-stage-lead-quick-start = Scegli uno spazio di lavoro e la finestra principale lo indossa: layout, palette, tutto l'aspetto.
+welcome-shelf-caption = Sceglierne uno sostituisce il look della finestra principale e chiude il tour. Questa finestra è qui in ogni momento sotto Applicazione > Benvenuto.
+welcome-stage-lead-quick-start = Scegli uno spazio di lavoro e la finestra principale passa a quello: layout, palette, tutto il look.
 welcome-stage-lead-welcome = Foobar se fosse fatto nel 20XX.
 welcome-stage-title-quick-start = Avvio rapido
 welcome-stage-title-welcome = Benvenuto in rox
 welcome-step-hint-after = , o con i pulsanti qui sotto.
 welcome-step-hint-before = Scorri le tappe con
 welcome-tile-by = di { $author }
-welcome-tour-intro = Un giro rapido su dove entra la musica e dove sta l'aspetto. Finisce allo scaffale degli spazi di lavoro inclusi, un clic ciascuno.
+welcome-tour-intro = Un giro rapido su dove entra la musica e dove si imposta il look. Finisce allo scaffale degli spazi di lavoro inclusi, un clic ciascuno.
 welcome-window-title = rox - Benvenuto
 
 ## Console window
@@ -1244,7 +1274,7 @@ console-window-title = rox - Console
 ## Signals window
 signals-about-toggle = Informazioni sui segnali
 signals-blurb-marked = I pannelli contrassegnati così nei menu possono avere quasi tutti i parametri collegati: fai clic destro su un parametro nelle impostazioni del pannello e scegli un segnale, o aggiungine uno da lì.
-signals-blurb-shared = Quello che si regola qui è condiviso: una modifica arriva su ogni parametro instradato su quel segnale, in ogni pannello e finestra.
+signals-blurb-shared = Quello che si regola qui è condiviso: una modifica vale per ogni parametro instradato su quel segnale, in ogni pannello e finestra.
 signals-blurb-total = Un Totale è il quarto tipo: somma un altro segnale nel tempo e arrivato a 1 riparte da 0, quindi sale finché la musica è forte e si ferma quando non lo è. Usalo quando uno shader ha bisogno di una fase che si muove col brano invece che con l'orologio.
 signals-blurb-what = Un segnale trasforma ciò che sta suonando in un numero tra 0 e 1: l'energia in una banda di frequenza, il livello dell'intero mix, o un impulso a ogni colpo dentro una banda. Risposta imposta quanto in fretta segue, Soglia lo zittisce sotto un livello che scegli tu.
 signals-no-library = Non c'è nessuna finestra della libreria aperta, quindi questi non mostrano audio. Le modifiche si salvano lo stesso.
@@ -1255,18 +1285,18 @@ eq-analyzer-bars = Barre
 eq-analyzer-off = Nessun analizzatore
 eq-analyzer-wave = Onda
 eq-band-badge = Badge delle bande
-    .description = Mostra su un badge sopra l'icona quante bande non sono piatte
+    .description = Mostra quante bande non sono piatte, su un badge sopra l'icona
 eq-band-label = Banda { $number }
 eq-click-nothing = Niente
 eq-click-open = Apri
 eq-click-section = Clic
-    .description = Cosa fa un clic: aprire la finestra dell'equalizzatore, o accendere e spegnere l'intera curva così com'è
+    .description = Cosa fa un clic: aprire la finestra dell'equalizzatore, o accendere e spegnere l'intera curva sul posto
 eq-click-toggle = Commuta
 eq-flatten = Appiattisci
 eq-freq-label = Freq
 eq-gain-label = Guadagno
 eq-heading = Equalizzatore
-eq-help-text = Trascina una banda per spostarla, scorri sopra una per allargarla o stringerla. L'elaborazione sta prima del buffer che alimenta la scheda audio, quindi uno spostamento impiega fino a mezzo secondo per arrivare agli altoparlanti.
+eq-help-text = Trascina una banda per spostarla, scorri sopra una per allargarla o stringerla. L'elaborazione avviene prima del buffer che passa l'audio alla scheda, quindi uno spostamento impiega fino a mezzo secondo per arrivare agli altoparlanti.
 eq-hint-off = Clicca per spegnerlo
 eq-hint-on = Clicca per accenderlo
 eq-hint-open = Clicca per aprire l'equalizzatore
@@ -1324,15 +1354,15 @@ keymap-mod-shift = Maiusc
 keymap-mod-super = Super
 keymap-mod-win = Win
 keymap-open-quick-play = Riproduzione rapida
-    .description = Alza sopra la finestra il prompt cerca-e-riproduci
+    .description = Apre il prompt cerca-e-riproduci sopra la finestra
 keymap-open-settings = Apri le impostazioni
     .description = Apre questa finestra
 keymap-open-stats = Apri le statistiche
     .description = Apre la finestra delle statistiche di ascolto
 keymap-quit = Esci
-    .description = Lascia rox. Assegnata ovunque, visto che non c'è finestra da cui non debba funzionare
+    .description = Esce da rox. Assegnata ovunque, visto che non c'è finestra da cui non debba funzionare
 keymap-reset-font-size = Reimposta la dimensione del testo
-    .description = Riporta di scatto la dimensione del testo a quella di serie
+    .description = Riporta la dimensione del testo a quella di serie
 keymap-seek-backward = Sposta indietro
     .description = Torna indietro nella traccia in riproduzione
 keymap-seek-forward = Sposta avanti
@@ -1341,8 +1371,8 @@ keymap-stamp-line = Marca la riga del testo
     .description = Scrive la posizione di riproduzione sulla riga di testo in modifica
 keymap-toggle-playback = Riproduci / Pausa
     .description = Avvia la traccia corrente, o la mette in pausa dov'è
-keymap-toggle-post-shader = Attiva o disattiva lo shader overlay
-    .description = Spegne e accende lo shader dello schermo. Assegnata ovunque di proposito: uno shader può seppellire ogni controllo da cui altrimenti si raggiungerebbe questa combinazione
+keymap-toggle-post-shader = Attiva o disattiva lo shader di overlay
+    .description = Spegne e accende lo shader dello schermo. Assegnata ovunque, visto che uno shader può coprire i controlli con cui altrimenti lo si disattiverebbe
 keymap-toggle-zoom = Ingrandisci il gruppo di pannelli
     .description = Riempie il dock con l'ultimo gruppo di pannelli cliccato, o ne esce
 
@@ -1366,7 +1396,7 @@ panel-catalog-group-visualizers = Visualizzatori
 panel-catalog-history = Cronologia
 panel-catalog-menu = Menu
 panel-catalog-metadata = Metadati
-panel-catalog-mini-toggle = Mini interruttore
+panel-catalog-mini-toggle = Interruttore mini
 panel-catalog-oscilloscope = Oscilloscopio
 panel-catalog-overlay = Overlay
 panel-catalog-particles = Particelle
@@ -1375,6 +1405,7 @@ panel-catalog-queue = Coda
 panel-catalog-queue-widget = Widget coda
 panel-catalog-seek = Avanzamento
 panel-catalog-slide = Diapositiva
+panel-catalog-spectrogram = Spettrogramma
 panel-catalog-spectrum = Spettro
 panel-catalog-stats-widget = Widget statistiche
 panel-catalog-status = Stato
@@ -1387,9 +1418,9 @@ panel-catalog-window-controls = Controlli finestra
 ## Updater
 updater-already-latest = già all'ultima versione
 updater-checksum-mismatch = il checksum del download è { $digest }, non il { $expected } dichiarato dalla release
-updater-checksum-missing-entry = { $sums } non ha una voce per { $name }; rifiuto un download non verificabile
+updater-checksum-missing-entry = { $sums } non ha una voce per { $name }; un download non verificabile viene rifiutato
 updater-no-asset = la release non ha { $name }
-updater-no-checksums = la release non ha { $sums }; rifiuto un download non verificabile
+updater-no-checksums = la release non ha { $sums }; un download non verificabile viene rifiutato
 updater-no-release-build = nessuna build di release per questa piattaforma
 updater-overran = il download ha superato la dimensione dichiarata dalla release
 updater-short = il download si è fermato a { $done } di { $bytes } byte
@@ -1397,8 +1428,19 @@ updater-size-mismatch = il server ha offerto { $claimed } byte, la release ne di
 
 ## Last.fm
 lastfm-import-matching = Confronto con la libreria
-lastfm-import-read = Lette { $count } tracce preferite
-lastfm-import-stopped = Fermato dopo { $count } tracce preferite
+lastfm-import-read = { $count ->
+    [one] Letta { $count } traccia preferita
+   *[other] Lette { $count } tracce preferite
+}
+lastfm-import-stopped = { $count ->
+    [one] Fermato dopo { $count } traccia preferita
+   *[other] Fermato dopo { $count } tracce preferite
+}
+lastfm-import-matched = , { $count } con corrispondenza
+lastfm-import-added = { $count ->
+    [one] , { $count } aggiunta ai preferiti
+   *[other] , { $count } aggiunte ai preferiti
+}
 
 ## Tag tools
 tags-editor-clear-all = pulisci tutto
@@ -1406,17 +1448,28 @@ tags-editor-form-view = Modulo
 tags-editor-format-unsupported-all = I tag di questo formato non si possono ancora leggere o scrivere.
 tags-editor-format-unsupported-some = Alcuni di questi file sono in un formato i cui tag non si possono ancora leggere o scrivere.
 tags-editor-guess-button = Indovina
-tags-editor-guess-folded = { $status }, altri { $count } non mostrati
+tags-editor-guess-folded = { $count ->
+    [one] { $status }, { $count } altro non mostrato
+   *[other] { $status }, altri { $count } non mostrati
+}
 tags-editor-guess-help = { $placeholders }; / corrisponde alla cartella sopra, %skip% scarta
-tags-editor-guess-match-count = { $hits } di { $total } corrispondono
+tags-editor-guess-match-count = { $hits ->
+    [one] { $hits } di { $total } corrisponde
+   *[other] { $hits } di { $total } corrispondono
+}
 tags-editor-guess-no-match = nessuna corrispondenza
 tags-editor-guess-pattern-label = schema
 tags-editor-loading = Caricamento dei tag...
 tags-editor-look-up = Cerca
 tags-editor-multiple-values = Valori multipli
+tags-editor-clear-on-save = Pulizia al salvataggio
 tags-editor-other-tags = Altri tag ({ $count })
 tags-editor-remove = rimuovi
 tags-editor-reveal = Mostra
+tags-editor-save-errors = { $count ->
+    [one] { $count } file fallito; { $error }
+   *[other] { $count } file falliti; { $error }
+}
 tags-editor-saving-progress = Salvataggio { $done }/{ $total }...
 tags-editor-table-view = Tabella
 tags-editor-tags-section = Tag
@@ -1450,16 +1503,23 @@ tags-rename-blocked-occupied = c'è già un file
 tags-rename-blocked-outside-roots = fuori da ogni radice della libreria
 tags-rename-blocked-unresolved = non ancora nel catalogo
 tags-rename-move-error = { $name }: { $error }
-tags-rename-move-errors = { $count } file falliti; { $error }
+tags-rename-move-errors = { $count ->
+    [one] { $count } file fallito; { $error }
+   *[other] { $count } file falliti; { $error }
+}
 tags-rename-moving = Spostamento { $done }/{ $total }...
 tags-rename-nothing-to-move = Niente da spostare
 tags-rename-pattern-help = { $placeholders }; / crea una cartella, l'estensione segue il file
 tags-rename-pattern-section = Schema
 tags-rename-preview-section = Anteprima
 tags-rename-unchanged = invariato
-tags-rename-will-move = { $count } di { $total } verranno spostati
+tags-rename-will-move = { $count ->
+    [one] { $count } di { $total } verrà spostato
+   *[other] { $count } di { $total } verranno spostati
+}
 tags-rename-window-title = rox - Rinomina file
 tags-repair-affected-files = File interessati
+tags-repair-section = Riparazione
 tags-repair-check-to-repair = Spunta un file per ripararlo
 tags-repair-count = { $count ->
     [one] 1 file
@@ -1479,7 +1539,16 @@ tags-repair-result = { $count ->
     [one] Riparato 1 file
    *[other] Riparati { $count } file
 }
-tags-repair-result-failed = Riparati { $count }, { $failed } falliti
+tags-repair-result-failed = { $count ->
+    [one] Riparato { $count }, { $failed ->
+        [one] { $failed } fallito
+       *[other] { $failed } falliti
+    }
+   *[other] Riparati { $count }, { $failed ->
+        [one] { $failed } fallito
+       *[other] { $failed } falliti
+    }
+}
 tags-repair-scan-first = Prima scansiona
 tags-repair-scan-hint = Scansiona per trovare file con tag danneggiati che una riscrittura ripara.
 tags-repair-select-all = Seleziona tutto
@@ -1489,19 +1558,21 @@ tags-repair-window-title = rox - Riparazione tag
 
 ## Convert
 convert-arg-names-file = "{ $token }" nomina un file; la destinazione viene dalla cartella e dallo schema
+convert-section-output = Output
+convert-section-preview = Anteprima
 convert-arg-not-flag-or-value = "{ $token }" non è un flag né un valore per uno
 convert-check-wrote-nothing = ffmpeg è uscito senza errori ma non ha scritto niente
-convert-custom-ext-empty = È l'estensione a scegliere il contenitore, quindi ne serve una
+convert-custom-ext-empty = L'estensione sceglie il contenitore, quindi ne serve una
 convert-custom-ext-invalid = "{ $ext }" non è un nome di contenitore; lettere e cifre, senza punto
 convert-dialog-browse = Sfoglia...
 convert-dialog-check-passed = ffmpeg ha codificato un attimo di silenzio con questi, quindi funzionano
 convert-dialog-check-waiting = La verifica con ffmpeg parte quando smetti di scrivere
-convert-dialog-checking = Chiedo a ffmpeg...
+convert-dialog-checking = Verifica con ffmpeg in corso...
 convert-dialog-choose-folder = Scegli una cartella in cui scrivere
 convert-dialog-convert-button = Converti
 convert-dialog-custom-label = Personalizzato
 convert-dialog-custom-menu-item = Personalizzato...
-convert-dialog-custom-note = Gli argomenti si dividono sugli spazi, quindi niente virgolette; la copertina incorporata non passa nei formati personalizzati
+convert-dialog-custom-note = Gli argomenti si dividono sugli spazi, quindi niente virgolette; la copertina incorporata non viene copiata nei formati personalizzati
 convert-dialog-format-not-ready = Il formato digitato non ha ancora passato la verifica di ffmpeg
 convert-dialog-label-extension = estensione
 convert-dialog-label-format = formato
@@ -1511,8 +1582,14 @@ convert-dialog-mirror = Rispecchia le cartelle della libreria
 convert-dialog-nothing-to-convert = Niente da convertire: ogni riga è saltata
 convert-dialog-pattern-help = { $placeholders }; / crea una cartella, il formato imposta l'estensione
 convert-dialog-pick-folder = Seleziona una cartella in cui scrivere
-convert-dialog-span-note = { $count } ritagliati da un'immagine cue e taggati dalla libreria
-convert-dialog-will-convert = { $count } di { $total } verranno convertiti
+convert-dialog-span-note = { $count ->
+    [one] { $count } ritagliato da un'immagine cue e taggato dalla libreria
+   *[other] { $count } ritagliati da un'immagine cue e taggati dalla libreria
+}
+convert-dialog-will-convert = { $count ->
+    [one] { $count } di { $total } verrà convertito
+   *[other] { $count } di { $total } verranno convertiti
+}
 convert-dialog-window-title = rox - Converti
 convert-ffmpeg-silent-failure = ffmpeg ha fallito senza dire perché
 convert-flag-attach = -attach legge un file suo, cosa che qui non è permessa
@@ -1527,15 +1604,21 @@ convert-preset-opus-192 = Opus 192 kbps
 convert-preset-wav = WAV
 convert-skip-duplicate = due tracce puntano a questo nome
 convert-skip-exists = già presente
-convert-summary-failed = , { $count } falliti
+convert-summary-failed = { $count ->
+    [one] , { $count } fallito
+   *[other] , { $count } falliti
+}
 convert-summary-files = { $count ->
     [one] 1 file
    *[other] { $count } file
 }
 convert-summary-line = { $files } in { $dest }
-convert-summary-skipped = , { $count } saltati
+convert-summary-skipped = { $count ->
+    [one] , { $count } saltato
+   *[other] , { $count } saltati
+}
 convert-summary-stopped = Fermato dopo { $files } in { $dest }
-convert-version-answered = { $binary } ha risposto
+convert-version-answered = { $binary } è partito, ma non ha riportato una versione
 
 ## Duplicates
 duplicates-auto-select = Selezione automatica
@@ -1547,8 +1630,14 @@ duplicates-copy-count = { $count ->
 duplicates-different-albums = album diversi
 duplicates-filter-placeholder = Filtra per titolo, artista o cartella
 duplicates-groups-summary = { $groups ->
-    [one] 1 gruppo, { $extras } copie in più
-   *[other] { $groups } gruppi, { $extras } copie in più
+    [one] 1 gruppo, { $extras ->
+        [one] { $extras } copia in più
+       *[other] { $extras } copie in più
+    }
+   *[other] { $groups } gruppi, { $extras ->
+        [one] { $extras } copia in più
+       *[other] { $extras } copie in più
+    }
 }
 duplicates-library-loading = La libreria si sta ancora caricando; riprova tra poco.
 duplicates-no-duplicates = Nessun duplicato trovato.
@@ -1558,7 +1647,10 @@ duplicates-policy-oldest = Tieni il più vecchio
 duplicates-policy-quality = Tieni la qualità migliore
 duplicates-scan-hint = Scansiona la libreria per trovare tracce che compaiono più di una volta.
 duplicates-select-none = Deseleziona tutto
-duplicates-selected-count = { $count } selezionati
+duplicates-selected-count = { $count ->
+    [one] { $count } selezionato
+   *[other] { $count } selezionati
+}
 duplicates-trash-button = { $count ->
     [0] Cestina
    *[other] Cestina ({ $count })
@@ -1568,7 +1660,16 @@ duplicates-trash-result = { $count ->
     [one] Spostato 1 file nel cestino
    *[other] Spostati { $count } file nel cestino
 }
-duplicates-trash-result-failed = Spostati { $count } nel cestino, { $failed } falliti
+duplicates-trash-result-failed = { $count ->
+    [one] Spostato { $count } nel cestino, { $failed ->
+        [one] { $failed } fallito
+       *[other] { $failed } falliti
+    }
+   *[other] Spostati { $count } nel cestino, { $failed ->
+        [one] { $failed } fallito
+       *[other] { $failed } falliti
+    }
+}
 duplicates-trashing = Spostamento nel cestino { $done }/{ $total }...
 duplicates-window-title = rox - Duplicati
 
@@ -1585,6 +1686,8 @@ smart-playlist-matched-tracks = Tracce corrispondenti
 smart-playlist-new-title = Nuova playlist intelligente
 smart-playlist-no-matches = Nessuna traccia corrisponde
 smart-playlist-query-label = Query
+smart-playlist-sort-default = Ordine predefinito
+smart-playlist-sort-added = Data di aggiunta
 smart-playlist-sort-label = Ordinamento
 smart-playlist-unknown-field = "{ $field }:" non è un campo, quindi il termine corrisponde come testo semplice
 smart-playlist-window-title = rox - { $verb }
@@ -1603,7 +1706,10 @@ cover-art-front = Fronte
 cover-artwork = Immagine
     .description = Quale immagine mostrare; uno slot che il file non ha ricade sulla copertina frontale
 cover-disc-style = Stile del disco
-    .description = Veste l'immagine come un CD o come l'etichetta di un disco in vinile
+    .description = Rende l'immagine come un CD o come l'etichetta di un disco in vinile
+cover-disc-off = Off
+cover-disc-cd = CD
+cover-disc-vinyl = Vinile
 cover-editor-choose-image = Scegli un'immagine
 cover-editor-multiple = Multiple
 cover-editor-none = Nessuna
@@ -1613,7 +1719,10 @@ cover-editor-reading = Lettura della copertina attuale...
 cover-editor-remove = Rimuovi
 cover-editor-replace = Sostituisci
 cover-editor-revert = Ripristina
-cover-editor-save-errors = { $count } file falliti; { $error }
+cover-editor-save-errors = { $count ->
+    [one] { $count } file fallito; { $error }
+   *[other] { $count } file falliti; { $error }
+}
 cover-editor-saving-progress = Salvataggio { $done }/{ $total }...
 cover-editor-search-online = Cerca online
 cover-editor-section = Copertina
@@ -1656,7 +1765,7 @@ lyrics-auto-search = Ricerca automatica
     .description = Cerca online su una traccia senza testo e salva una corrispondenza sicura, senza selettore
 lyrics-bold = Grassetto
 lyrics-build-word-by-word = Costruisci parola per parola
-    .description = Rivela le parole man mano che vengono cantate, stile karaoke; le righe non ancora cantate aspettano nascoste
+    .description = Rivela le parole man mano che vengono cantate, stile karaoke; le righe non ancora cantate restano nascoste
 lyrics-edge-bottom = Basso
 lyrics-edge-top = Alto
 lyrics-edit-hint-after-stamp = per marcare
@@ -1675,12 +1784,12 @@ lyrics-falloff-edge = Lato di attenuazione
 lyrics-find-online = Trova il testo online...
 lyrics-follow-playback = Segui la riproduzione
     .description = Fa scivolare la riga attiva al centro mentre scorre un testo sincronizzato
-lyrics-font = Il carattere del testo; il predefinito segue quello dell'app
+lyrics-font = Carattere
     .description = Il carattere dei testi; il predefinito segue quello dell'app
 lyrics-gap-threshold = Soglia dello stacco
     .description = Quanto deve durare un'intro o uno stacco prima di ricevere una pausa
 lyrics-lead-in-rest = Pausa d'ingresso
-    .description = Resta su una pausa vuota prima di un'intro lunga, così la prima riga appare in dissolvenza quando arriva
+    .description = Mostra una pausa vuota prima di un'intro lunga, così la prima riga appare in dissolvenza quando arriva
 lyrics-line-falloff = Attenuazione delle righe
     .description = Quanto si smorza ogni riga per ogni passo di distanza da quella attiva
 lyrics-line-spacing = Spaziatura righe
@@ -1718,9 +1827,9 @@ lyrics-title-unsynced = Titolo sui non sincronizzati
 lyrics-wipe-lyrics = Cancella i testi
 
 ## Analysis passes
-pass-acoustic-body = { $model } capisce come suona ognuna, così la libreria può trovare musica che assomiglia a ciò che sta suonando. Tutto gira su questa macchina, e ciò che è già descritto viene saltato. { $lands }
+pass-acoustic-body = { $model } ricava come suona ognuna, così la libreria può trovare musica che assomiglia a ciò che è in riproduzione. Tutto gira su questa macchina, e ciò che è già descritto viene saltato. { $lands }
 pass-acoustic-lands-database = I risultati vanno nel database della libreria e i tuoi file restano intatti.
-pass-acoustic-lands-tags = I risultati vanno nel database della libreria e, per MP3 e FLAC, anche nei tag di ogni file, così sopravvivono a una ricostruzione del database. Gli altri formati tengono solo la copia nel database.
+pass-acoustic-lands-tags = I risultati vanno nel database della libreria e, per MP3 e FLAC, anche nei tag di ogni file, così restano anche se il database viene ricostruito. Gli altri formati tengono solo la copia nel database.
 pass-acoustic-title = { $count ->
     [one] Analizzare 1 traccia?
    *[other] Analizzare { $count } tracce?
@@ -1958,6 +2067,40 @@ vu-style = Stile
 vu-style-continuous = Continuo
 vu-style-segments = Segmenti
 
+## Spectrogram panel
+spectrogram-ceiling = Tetto
+    .description = Livello che corrisponde all'estremità chiara della mappa colori, così tutto ciò che è più forte resta lì
+spectrogram-colormap = Mappa colori
+    .description = Come il volume si traduce in colore
+spectrogram-colormap-cover = Copertina
+spectrogram-colormap-grayscale = Scala di grigi
+spectrogram-colormap-ice = Ghiaccio
+spectrogram-colormap-magma = Magma
+spectrogram-colormap-theme = Tema
+spectrogram-colormap-viridis = Viridis
+spectrogram-direction = Direzione
+    .description = Il lato da cui entrano le nuove colonne, che decide anche se l'asse delle frequenze sale lungo il pannello o lo attraversa
+spectrogram-fft-size = Dimensione FFT
+    .description = Dimensione della finestra di analisi, un compromesso tra la rapidità con cui una colonna segue un transiente e quanto bene separa due note basse
+spectrogram-floor = Base
+    .description = Livello che corrisponde all'estremità scura della mappa colori, così tutto ciò che è più debole si legge come sfondo
+spectrogram-grid = Griglia
+    .description = Linee di frequenza sopra l'immagine
+spectrogram-high-bound = Limite superiore
+    .description = Cima dell'asse delle frequenze, limitata sotto Nyquist per scartare le ottave più alte, quasi silenziose
+spectrogram-history = Cronologia
+    .description = Quante colonne il pannello conserva prima che la più vecchia esca scorrendo
+spectrogram-hold-on-pause = Blocca in pausa
+    .description = Tenere ferma l'immagine durante la pausa invece di farci scorrere silenzio
+spectrogram-labels = Etichette
+    .description = I numeri di frequenza lungo il righello, dove il pannello ha spazio per loro
+spectrogram-log-scale = Scala log
+    .description = Dare a ogni ottava lo stesso spazio, la lettura musicale, invece della spaziatura uniforme in Hz di uno strumento da laboratorio
+spectrogram-low-bound = Limite inferiore
+    .description = Fondo dell'asse delle frequenze
+spectrogram-speed = Velocità
+    .description = Quanto velocemente scorre l'immagine, in colonne al secondo
+
 ## Oscilloscope panel
 
 oscilloscope-channels = Canali
@@ -1982,12 +2125,12 @@ oscilloscope-persistence = Persistenza
 oscilloscope-trigger = Trigger
     .description = Inizia ogni fotogramma dove il segnale attraversa il livello di trigger, così il materiale periodico resta fermo
 oscilloscope-trigger-falling = Discesa
-oscilloscope-trigger-level = Livello di Trigger
+oscilloscope-trigger-level = Livello di trigger
     .description = Il livello a cui si cerca l'attraversamento
 oscilloscope-trigger-off = Off
 oscilloscope-trigger-rising = Salita
 oscilloscope-window = Finestra
-    .description = Quanto tempo la traccia copre nel pannello
+    .description = Quanto tempo copre la traccia da un lato all'altro del pannello
 
 ## Shader panel
 shader-panel-compile-error = Questo shader non compila:
@@ -1998,10 +2141,19 @@ shader-panel-note-empty-body = Scegli un esempio, o indica al pannello un file .
 shader-panel-note-empty-title = Nessuno shader caricato.
 shader-panel-note-missing-body = Questo pannello fa riferimento a uno shader che lo spazio di lavoro non ha, quindi non c'è niente da eseguire.
 shader-panel-note-missing-title = { $name } non è tra gli shader di questo spazio di lavoro.
-shader-panel-note-off-body = La sorgente e i suoi collegamenti sono ancora qui, parcheggiati.
+shader-panel-note-off-body = La sorgente e i suoi collegamenti sono ancora qui, solo che non sono in esecuzione.
 shader-panel-note-off-title = Questo shader è spento.
-shader-panel-note-pending-body = È arrivato con un layout o uno spazio di lavoro invece che da questa macchina, quindi resta parcheggiato finché non l'hai controllato.
+shader-panel-note-pending-body = È arrivato con un layout o uno spazio di lavoro invece che da questa macchina, quindi resta spento finché non l'hai controllato.
 shader-panel-note-pending-title = Questo shader non è ancora stato letto.
+shader-pending-origin-file = Dice di venire da { $path }
+shader-pending-origin-inline = Nessun file dietro; la sorgente è arrivata con il layout
+shader-pending-more-lines = { $count ->
+    [one] ... { $count } altra riga
+   *[other] ... altre { $count } righe
+}
+shader-eject-name-taken = { $name } ha già { $count } copie numerate tra gli shader di questo spazio di lavoro
+shader-eject-not-in-pool = { $name } non è tra gli shader di questo spazio di lavoro
+shader-eject-failed = estrazione: { $error }
 shader-panel-pick = Scegli uno shader
 shader-panel-run-shader = Esegui shader
     .description = Off tiene al loro posto la sorgente, il segnalibro e i collegamenti e non dipinge niente
@@ -2023,8 +2175,8 @@ genre-grid-resume-description = Torna al genere in riproduzione quando smetti di
 genre-grid-show-names = Mostra i nomi
     .description = Stampa il genere sotto ogni tessera invece che solo al passaggio del mouse
 genre-grid-smooth-description = Scivola fino al genere invece di saltarci
-genre-grid-tally = { $albums ->
-    [one] { $albums } album, { $tracks } tracce
+genre-grid-tally = { $tracks ->
+    [one] { $albums } album, { $tracks } traccia
    *[other] { $albums } album, { $tracks } tracce
 }
 genre-grid-tile-face = Immagine della tessera
@@ -2053,8 +2205,8 @@ artist-grid-section-grouping = Raggruppamento
 artist-grid-show-names = Mostra i nomi
     .description = Stampa l'artista sotto ogni tessera invece che solo al passaggio del mouse
 artist-grid-smooth-description = Scivola fino all'artista invece di saltarci
-artist-grid-tally = { $albums ->
-    [one] { $albums } album, { $tracks } tracce
+artist-grid-tally = { $tracks ->
+    [one] { $albums } album, { $tracks } traccia
    *[other] { $albums } album, { $tracks } tracce
 }
 artist-grid-track-artist = Artista della traccia
@@ -2093,7 +2245,7 @@ metadata-field-file = File
 metadata-field-sample-rate = Frequenza di campionamento
 metadata-field-track = Traccia
 metadata-fields = Campi
-    .description = Quali campi elenca la scheda; un campo che la traccia non porta resta nascosto
+    .description = Quali campi elenca la scheda; un campo che la traccia non ha resta nascosto
 metadata-find-online = Cerca metadati online...
 metadata-no-library = Nessuna libreria
 metadata-row-borders-description = Il filetto sotto ogni riga della tabella
@@ -2147,10 +2299,11 @@ folder-tree-title = Albero
 art-always = Tieni le copertine in secondo piano anche quando non suona niente; solo la copertina sotto il puntatore si vede intera
 art-convert = Converti...
 art-covers-section = Copertine
+matcher-section-matches = Corrispondenze
 art-desaturate = Porta ogni copertina in scala di grigi tranne quella dell'album in riproduzione; passandoci sopra torna il colore della copertina
 art-dim-while-playing = Sfuma ogni copertina tranne quella dell'album in riproduzione; passandoci sopra la copertina si riaccende
 art-disc-style = Stile disco
-    .description = Veste ogni copertina da CD o da etichetta di un vinile
+    .description = Rende ogni copertina come un CD o come l'etichetta di un disco in vinile
 art-edit-tags = Modifica i tag...
 art-fill-panel = Riempi il pannello
     .description = Dimensiona la copertina centrale solo sull'altezza del pannello (la larghezza quando è verticale); le copertine laterali escono dal bordo invece di rimpicciolirla
@@ -2203,7 +2356,10 @@ queue-title = Coda
 queue-widget-always-modal = Apri sempre come modale
     .description = Apri la coda in una finestra modale ogni volta, invece di saltare a un pannello coda già aperto
 queue-widget-clear-queue = Svuota la coda
-queue-widget-more = +{ $count } altre
+queue-widget-more = { $count ->
+    [one] +{ $count } altra
+   *[other] +{ $count } altre
+}
 queue-widget-open-on-click = Apri la coda al clic
     .description = Clicca il widget per saltare a un pannello coda aperto, o apri la coda in una finestra quando non ce n'è nessuno
 queue-widget-section-click = Clic
@@ -2214,21 +2370,21 @@ queue-widget-up-next = Prossime
 biography-background = Sfondo
     .description = La fanart dell'artista dietro il testo, attenuata e sfumata verso il basso
 biography-fill-width = Riempi la larghezza
-    .description = Lascia che un'intestazione alta occupi tutta la larghezza invece di stare limitata e centrata
+    .description = Lascia che un'intestazione alta occupi tutta la larghezza invece di restare limitata e centrata
 biography-from-lastfm = Da Last.fm
 biography-header-image = Immagine di intestazione
     .description = Il banner largo dell'artista in cima, o il ritratto quando non c'è un banner
 biography-keep-aspect = Mantieni le proporzioni
     .description = Mostra l'intestazione nelle sue proporzioni invece di ritagliarla per riempire una fascia
-biography-listeners-count = { $count } ascoltatori
+biography-listeners-count = ascoltatori: { $count }
 biography-looking-up = Ricerca di { $name }
 biography-no-artist-tag = Nessun tag artista
 biography-no-text = Nessuna biografia in archivio
 biography-not-found = Niente trovato per { $name }
-biography-plays-count = { $count } ascolti
+biography-plays-count = ascolti: { $count }
 biography-refresh = Aggiorna
 biography-similar-artists = Artisti simili
-    .description = I nomi verso cui tende chi ascolta cose simili, in fondo
+    .description = Artisti correlati secondo i dati di ascolto, in fondo
 biography-similar-heading = Artisti simili
 biography-stats = Statistiche
     .description = Ascoltatori e ascolti su Last.fm, sotto il nome
@@ -2249,7 +2405,10 @@ status-count-plays = { $count ->
     [one] 1 ascolto
    *[other] { $count } ascolti
 }
-status-count-selected = { $count } selezionati
+status-count-selected = { $count ->
+    [one] { $count } selezionata
+   *[other] { $count } selezionate
+}
 status-count-tracks = { $count ->
     [one] 1 traccia
    *[other] { $count } tracce
@@ -2268,7 +2427,7 @@ output-detail-label = Dettaglio
 output-device-name = Nome del dispositivo
     .description = Nomina il dispositivo in funzione nel titolo; off lascia nella riga solo modalità, frequenza e formato
 output-file-rate = Frequenza del file
-    .description = Conferma la frequenza del file in riproduzione quando niente lo sta convertendo. Una conversione lo dice comunque, visto che è di questo che avvisa
+    .description = Conferma la frequenza del file in riproduzione quando niente lo sta convertendo. Una conversione viene segnalata comunque, visto che è di questo che avvisa
 output-mode-exclusive = Esclusiva
 output-mode-shared = Condivisa
 output-no-output = Nessuna uscita
@@ -2435,6 +2594,7 @@ panel-title-particles = Particelle
 panel-title-playback = Riproduzione
 panel-title-seek = Avanzamento
 panel-title-shader = Shader
+panel-title-spectrogram = Spettrogramma
 panel-title-spectrum = Spettro
 panel-title-theme-toggle = Interruttore tema
 panel-title-track-info = Info traccia
@@ -2444,6 +2604,8 @@ panel-title-waveform = Forma d'onda
 
 ## Everything else
 choice-both = Entrambi
+choice-dim = Attenuare
+choice-hide = Nascondere
 composite-add-panel = Aggiungi pannello
 composite-host-settings = Impostazioni { $host }
 composite-move-left = Sposta a sinistra
@@ -2524,8 +2686,11 @@ pace-workers = { $count ->
 tasks-rest-takes = , il resto richiede { $estimate }
 tasks-measuring-takes = , misurarli richiede { $estimate }
 tasks-working-out-takes = , calcolarli richiede { $estimate }
-tasks-time-left = , { $left } rimanenti
-tasks-skipped-suffix = ({ $count } saltati)
+tasks-time-left = , ancora { $left }
+tasks-failed-suffix = { $count ->
+    [one] ({ $count } fallito)
+   *[other] ({ $count } falliti)
+}
 tasks-file-suffix = - { $file }
 tasks-no-beat-suffix = ({ $count } senza battito chiaro)
 tasks-estimate-at-workers = ({ tasks-estimate-at })
@@ -2541,7 +2706,7 @@ panel-title-drag-anchor = Ancora di trascinamento
 panel-title-drawer = Cassetto
 panel-title-eq-widget = Widget EQ
 panel-title-filter = Filtro
-panel-title-folder-tree = Albero cartelle
+panel-title-folder-tree = Albero delle cartelle
 panel-title-group = Gruppo
 panel-title-history = Cronologia
 panel-title-lyrics = Testo
@@ -2557,7 +2722,7 @@ panel-title-search = Ricerca
 panel-title-slide = Diapositiva
 panel-title-spacer = Spaziatore
 panel-title-stats-widget = Widget statistiche
-panel-title-vu-meter = Misuratore VU
+panel-title-vu-meter = VU meter
 panel-title-window-controls = Controlli finestra
 
 ## Relative time and the output headline
@@ -2613,7 +2778,7 @@ workspace-shipped-default = (Predefinito)
 workspace-shipped-default-blurb = Com'è rox appena installato: superfici traslucide sopra il desktop, nessuna cornice di finestra, tinta dalla copertina disattivata. Il punto di partenza da cui ogni altro look qui si allontana.
 workspace-shipped-catrox-blurb = La skin di foobar2000 che ha dato il via a tutto, ricostruita: una resa circolare della copertina come CD, i campi dei metadati lungo la sinistra, e tracce raggruppate per album con i pallini di valutazione.
 workspace-shipped-critters-blurb = Tutta l'app come una stampa a 1 bit: un dithering ordinato su ogni superficie, toni che si schiacciano con i bassi profondi, e un muro di rumore che si contorce con il brano. Ispirato a Critters for Sale.
-workspace-shipped-diffuse-blurb = Solo l'album in riproduzione: la copertina e la scheda di riproduzione come un unico gruppo che riempie la finestra, superfici trasparenti sullo sfondo, senza giunture. Libreria, coda e testo aspettano in un cassetto sul bordo destro e scivolano sopra la musica quando si passa sulla maniglia. Monocromatico di proposito: sono le copertine a portare il colore.
+workspace-shipped-diffuse-blurb = Solo l'album in riproduzione: la copertina e la scheda di riproduzione come un unico gruppo che riempie la finestra, superfici trasparenti sullo sfondo, senza giunture. Libreria, coda e testo aspettano in un cassetto sul bordo destro e scivolano sopra la musica quando si passa sulla maniglia. Monocromatico, così il colore arriva dalle copertine.
 workspace-shipped-foobar-blurb = Il layout con cui questo intero progetto discute. Pannelli opachi, colonne di filtro per artista e album, una tabella di tracce densa, e la barra dei menu esattamente dov'è sempre stata.
 workspace-shipped-llama-winamp-blurb = Winamp come te lo ricordi piuttosto che com'era davvero. Tahoma, scuro, senza cornice, uno spettro punteggiato in cima, e una modalità ridotta sul layout mini.
 workspace-shipped-metro-blurb = Pannelli piatti e righe comode in Segoe UI, con la tinta dalla copertina attiva così l'intera palette segue la copertina in riproduzione.

@@ -6,8 +6,8 @@
 //! No state of its own, because the curve hasn't got any either: it's a set of
 //! process-global atomics (see [`crate::player::eq_gain`] and ADR 19). The
 //! setters touch a marker global on their way past, so this reads the curve
-//! fresh on every paint and leans on [`crate::player::observe_eq`] to know
-//! when a paint is due.
+//! fresh on every paint and uses [`crate::player::observe_eq`] to tell when
+//! a paint is due.
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, svg, AnyElement, App, Bounds, Context, Div,
@@ -28,7 +28,7 @@ use crate::panel_settings;
 use crate::player;
 use crate::settings::ui as settings_ui;
 
-/// How far off flat a band has to sit to count as doing something. Under this
+/// How far off flat a band has to be to count as doing something. Under this
 /// it's neither audible nor visible in a 16 pixel sparkline.
 const ACTIVE_DB: f32 = 0.05;
 
@@ -98,9 +98,9 @@ impl Default for EqWidgetConfig {
 }
 
 /// The parts of the curve the widget reads off the parameters directly: the
-/// switch, and how far each band sits from flat. The centers and widths aren't
+/// switch, and how far each band is from flat. The centers and widths aren't
 /// here because nothing draws off them; the sparkline's shape comes from the
-/// player's response, which knows the rate the running filters were built for.
+/// player's response, which accounts for the rate the filters were built for.
 #[derive(Clone, Copy)]
 struct EqShape {
     enabled: bool,
@@ -123,7 +123,7 @@ impl EqShape {
             .count()
     }
 
-    /// The furthest a band sits from flat, keeping its sign, so the readout
+    /// The furthest a band is from flat, keeping its sign, so the readout
     /// says which way the biggest move goes.
     fn peak(&self) -> f32 {
         self.gains.iter().copied().fold(0.0, |worst, gain| {
@@ -167,8 +167,8 @@ impl EqWidgetPanel {
     }
 
     /// The cascade's response across the sparkline, in dB. Off the player
-    /// because that's what knows the device rate the running filters were
-    /// built against, the EQ window's plot does the same.
+    /// because the player has the device rate the running filters were built
+    /// against; the EQ window's plot does the same.
     fn curve(&self, cx: &App) -> Vec<f32> {
         let player = self.state.player.read(cx);
         let (lo, hi) = (FREQ_MIN.log10(), FREQ_MAX.log10());
@@ -192,7 +192,7 @@ impl EqWidgetPanel {
         };
         // A shaped curve with the switch off still earns its badge, dimmed:
         // it's the state most worth catching, since the sound is flat while
-        // the settings say otherwise.
+        // the settings show otherwise.
         let badge_bg = if enabled {
             palette::accent()
         } else {
@@ -215,7 +215,7 @@ impl EqWidgetPanel {
                         .left(px(10.))
                         .px(px(4.))
                         // The parent is the 16px icon, so the count has to
-                        // refuse that width or a two-digit badge stacks.
+                        // ignore that width or a two-digit badge wraps.
                         .whitespace_nowrap()
                         .rounded_full()
                         .bg(badge_bg)
@@ -261,7 +261,7 @@ impl EqWidgetPanel {
                     let (d0, d1) = (fy(curve[i]), fy(curve[i + 1]));
                     area.push_triangle((at(fx0, d0), at(fx1, d1), at(fx1, flat)), solid);
                     area.push_triangle((at(fx0, d0), at(fx1, flat), at(fx0, flat)), solid);
-                    // A path carries no pen width, so the stroke is the
+                    // A path has no pen width, so the stroke is the
                     // ribbon between the curve and itself nudged down.
                     let thick = 1.25 / h;
                     stroke.push_triangle((at(fx0, d0), at(fx1, d1), at(fx1, d1 + thick)), solid);
@@ -485,8 +485,8 @@ impl Panel for EqWidgetPanel {
 
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         // What the readout in force actually needs across, raised by any
-        // floor the user set. The sparkline has a real width to defend; the
-        // icon on its own is happy at the dock's minimum.
+        // floor the user set. The sparkline needs a real width; the icon on
+        // its own fits the dock's minimum.
         let width = match self.config.readout {
             EqReadout::Icon => f32::from(rox_dock::resizable::PANEL_MIN_SIZE),
             EqReadout::Curve => SPARK_W + 16.,

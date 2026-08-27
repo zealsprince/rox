@@ -1,13 +1,13 @@
 //! Spectrum analysis shared by the audio views: Hann window, radix-2 FFT,
 //! normalized magnitudes, and the log-spaced band mapping the spectrum bars
-//! use. The window size is picked per analyzer - short windows react fast,
-//! long ones resolve fine - between [`MIN_FFT_SIZE`] and [`MAX_FFT_SIZE`],
+//! use. The window size is picked per analyzer (short windows react fast,
+//! long ones resolve fine), between [`MIN_FFT_SIZE`] and [`MAX_FFT_SIZE`],
 //! with [`FFT_SIZE`] the default. Hand-rolled for the same reason it always
 //! was: an FFT at these sizes at 60 Hz is nothing, and it keeps the crate
 //! dependency-free until a real DSP need justifies one.
 
 /// The default window size, and the bounds a caller may size an analyzer
-/// between. The ceiling is what [`crate::AudioFeed`] keeps buffered.
+/// between. The ceiling matches what [`crate::AudioFeed`] keeps buffered.
 pub const FFT_SIZE: usize = 4096;
 pub const MIN_FFT_SIZE: usize = 512;
 pub const MAX_FFT_SIZE: usize = 16384;
@@ -51,7 +51,7 @@ impl Analyzer {
 
     /// Window one frame of mono samples ([`Self::size`] of them), transform
     /// it, and return the magnitudes of the lower half-spectrum, normalized
-    /// so a full-scale sine lands near 1.0.
+    /// so a full-scale sine comes out near 1.0.
     pub fn magnitudes(&mut self, mono: &[f32]) -> &[f32] {
         debug_assert_eq!(mono.len(), self.size());
         for ((re, &s), &w) in self.re.iter_mut().zip(mono).zip(&self.window) {
@@ -98,8 +98,8 @@ pub fn log_bands(
 }
 
 /// The 1-2-5 ladder a frequency axis is ruled on, over `lo_hz..hi_hz`. Each
-/// mark carries its frequency, where it falls across a log axis spanning the
-/// range, and whether it's one of the labelled steps - the 1, 2 and 5 of a
+/// mark has its frequency, where it falls across a log axis spanning the
+/// range, and whether it's one of the labelled steps: the 1, 2 and 5 of a
 /// decade, the ones every analyzer prints. The rest of each decade comes
 /// back as minor marks, for a grid that can be counted between its numbers.
 pub fn hz_ladder(lo_hz: f32, hi_hz: f32) -> Vec<(f32, f32, bool)> {
@@ -170,7 +170,7 @@ mod tests {
     use super::*;
     use std::f32::consts::TAU;
 
-    // The bin a real frequency lands in for a given window and rate.
+    // The bin a real frequency falls in for a given window and rate.
     fn bin_of(freq: f32, size: usize, rate: u32) -> usize {
         (freq * size as f32 / rate as f32).round() as usize
     }
@@ -188,7 +188,7 @@ mod tests {
         // Hann starts and ends at zero.
         assert!(a.window[0].abs() < 1e-6);
         assert!(a.window[a.window.len() - 1].abs() < 1e-6);
-        // Peak sits at the middle and reaches ~1.0.
+        // Peak is at the middle and rises to ~1.0.
         let mid = a.window[a.window.len() / 2];
         assert!(mid > 0.999, "hann midpoint should be ~1.0, got {mid}");
         // Symmetric about the center.
@@ -242,7 +242,7 @@ mod tests {
         let mut a = Analyzer::new(1024);
         let input = vec![1.0f32; 1024];
         let mags = a.magnitudes(&input);
-        // A constant is all DC: bin 0 carries the energy, the rest is noise.
+        // A constant is all DC: bin 0 has the energy, the rest is noise.
         let max_ix = mags
             .iter()
             .enumerate()
@@ -256,7 +256,7 @@ mod tests {
     fn sine_peaks_in_its_own_bin() {
         let rate = 48_000;
         let size = 4096;
-        // Pick a frequency that lands exactly on a bin so windowing leakage
+        // Pick a frequency that falls exactly on a bin so windowing leakage
         // stays in the neighbours, not smeared across the spectrum.
         let target_bin = 100;
         let freq = target_bin as f32 * rate as f32 / size as f32;
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn hz_ladder_stays_inside_the_range_it_was_given() {
         // A range whose ends aren't ladder steps: the marks are the round
-        // numbers within it, so the top one sits short of the edge.
+        // numbers within it, so the top one falls short of the edge.
         let marks = hz_ladder(40.0, 16_000.0);
         let (first, last) = (marks[0], marks[marks.len() - 1]);
         assert_eq!(first.0, 40.0);

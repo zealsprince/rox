@@ -1,9 +1,9 @@
 //! The wire shape: one JSON-RPC 2.0 object per line, LF-terminated, UTF-8.
 //! Requests carry `id`, `method`, and optional `params`; every request gets
 //! exactly one response frame, `result` or `error`, echoing the id. Pushed
-//! events ride id-less frames between responses on a connection that called
-//! `subscribe`, and the missing `id` is the whole discriminator, which is
-//! why responses always carry one even when the request forgot theirs.
+//! events are sent as id-less frames between responses on a connection that
+//! called `subscribe`, and the missing `id` is the whole discriminator, which
+//! is why responses always carry one even when the request forgot theirs.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,7 +66,7 @@ pub(crate) struct EventFrame<'a> {
 }
 
 /// A method's failure, on the wire as JSON-RPC's error object. The reserved
-/// codes keep their standard meanings; the -32000 range carries ours.
+/// codes keep their standard meanings; the -32000 range is ours.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RpcError {
     pub code: i64,

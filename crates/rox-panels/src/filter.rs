@@ -1,5 +1,5 @@
 //! The filter panel: the library's field values as cascading columns,
-//! each one filter field - artist, album artist, album, genre, or year -
+//! each one filter field (artist, album artist, album, genre, or year)
 //! listing every distinct value with its track count. Picking values
 //! writes the shared query's structured filter, so every global-following
 //! panel narrows with it, and each column here narrows by the picks in
@@ -30,8 +30,8 @@ use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::query::shared_query::SharedQueryEvent;
 
-/// One value row's height; the lists are uniform_lists, so every row
-/// agrees.
+/// One value row's height; the lists are uniform_lists, so every row is
+/// the same.
 const ROW_H: f32 = 26.;
 
 /// How long a type-ahead phrase keeps growing before the next keystroke
@@ -39,7 +39,7 @@ const ROW_H: f32 = 26.;
 const TYPE_AHEAD: Duration = Duration::from_millis(1000);
 
 /// A column's filter field, the per-panel half of the story; the picks
-/// themselves live on the shared query.
+/// themselves are stored on the shared query.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ColumnKind {
@@ -105,7 +105,7 @@ impl Default for FilterConfig {
 }
 
 /// One value row: the display label, the exact value the filter matches,
-/// how many context tracks carry it, and whether it is picked.
+/// how many context tracks have it, and whether it's picked.
 struct Value {
     label: SharedString,
     value: String,
@@ -114,7 +114,7 @@ struct Value {
 }
 
 /// A header drag in flight: the column it started from, so a drop on
-/// another header knows what to move. The label rides along for the
+/// another header can tell what to move. The label comes along for the
 /// preview.
 #[derive(Clone)]
 struct ColumnDrag {
@@ -143,22 +143,22 @@ pub struct FilterPanel {
     state: AppState,
     config: FilterConfig,
     /// Per column: its value rows, rebuilt when the library, the shared
-    /// query, or the picks change - never per frame.
+    /// query, or the picks change, never per frame.
     columns: Vec<Vec<Value>>,
     scrolls: Vec<UniformListScrollHandle>,
     /// The column the keyboard drives: type-ahead and arrows move within
-    /// it, and the cursor highlight lives in it. Set by clicking a value or
+    /// it, and the cursor highlight is in it. Set by clicking a value or
     /// stepping left and right.
     active_col: usize,
     /// The keyboard cursor, a row index in the active column: where arrows
-    /// move from and enter toggles. None until a key or click lands one.
+    /// move from and enter toggles. None until a key or click sets one.
     cursor: Option<usize>,
-    /// The type-ahead phrase and when its last keystroke landed, so a quick
+    /// The type-ahead phrase and when its last keystroke arrived, so a quick
     /// run of letters jumps to a value by prefix.
     type_ahead: String,
     type_ahead_at: Option<Instant>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _query_changed: Subscription,
@@ -179,7 +179,7 @@ impl FilterPanel {
                 }
             },
         );
-        // The picks land here too: a toggle writes the shared filter, the
+        // The picks arrive here too: a toggle writes the shared filter, the
         // Changed comes back around, and the cascade rebuilds once.
         let _query_changed = cx.subscribe(
             &state.query,
@@ -267,7 +267,7 @@ impl FilterPanel {
         };
         let needle = self.type_ahead.to_lowercase();
         // A grown phrase re-tests the current row; a fresh one starts past
-        // it, so the same first letter walks to the next match.
+        // it, so the same first letter steps to the next match.
         let start = match self.cursor {
             Some(ix) if grown => ix,
             Some(ix) => ix + 1,
@@ -293,7 +293,7 @@ impl FilterPanel {
     }
 
     /// Step the cursor within the active column; the first press with no
-    /// cursor lands on the edge it heads toward.
+    /// cursor starts at the edge it heads toward.
     fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
         let len = self.active_len();
         if len == 0 {
@@ -322,7 +322,7 @@ impl FilterPanel {
     /// Rebuild every column's values. The context starts as the shared
     /// text query's hits and narrows left to right: each column lists the
     /// values in its context, then its own picks cut the context for the
-    /// columns after it - so a picked artist leaves the artist list whole
+    /// columns after it, so a picked artist leaves the artist list whole
     /// but narrows the albums.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (text, filter) = {
@@ -457,7 +457,7 @@ impl FilterPanel {
         self.refresh(cx);
     }
 
-    /// Move a column to another slot, the header drag's landing. Picks ride
+    /// Move a column to another slot, what a header drop does. Picks come
     /// along untouched since every field keeps its column.
     fn move_column(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         let len = self.config.columns.len();
@@ -466,7 +466,7 @@ impl FilterPanel {
         }
         let kind = self.config.columns.remove(from);
         // `to` is the target header's index. After removing `from`, a target
-        // that sat ahead of it slid back one, so inserting at `to` lands the
+        // that was ahead of it slid back one, so inserting at `to` puts the
         // column past the target on a rightward drag and before it on a
         // leftward one, which is what dropping onto that header should do.
         // The removal also caps `to` at the new length, so the last slot stays
@@ -496,7 +496,7 @@ impl FilterPanel {
     /// One column's header: the field as a plain left-aligned label that
     /// drops the kind pick, clear, and remove, then a grip to reorder by.
     /// The whole header is a drop target, so a column dragged by its grip
-    /// lands here.
+    /// can be dropped anywhere on it.
     fn header(&self, col: usize, kind: ColumnKind, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
         let picked = !self
@@ -699,7 +699,7 @@ impl FilterPanel {
                             d.bg(palette::alpha(palette::accent(), 0x26))
                         })
                         // The keyboard cursor: a faint outline so it reads as
-                        // "where typing landed" without stealing the picked
+                        // "where typing went" without stealing the picked
                         // rows' fill.
                         .when(cursor == Some(ix), |d| {
                             d.border_1().border_color(palette::accent())
@@ -741,7 +741,7 @@ impl FilterPanel {
     /// top-level rows under a label, not a flyout: a submenu built from a
     /// panel's `dropdown_menu` runs in the panel's context, so it can't
     /// wire the parent link the `PopupMenu::submenu` builder sets, and a
-    /// leaf click would dead-end there - the tab-owned root never hears
+    /// leaf click would dead-end there: the tab-owned root never gets
     /// the dismiss and the menu hangs open with its checks frozen. Flat
     /// rows dismiss the root cleanly, so the next open reads the change. A
     /// twin column made through a header's kind pick still counts as
@@ -816,7 +816,7 @@ impl Panel for FilterPanel {
         false
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
@@ -1021,8 +1021,8 @@ fn column_values(
         // values: counts aggregate per symbol first (cheap over rows),
         // then fan out onto each symbol's values. A symbol with no
         // values at all is the untagged bucket, the "" row. A folded
-        // library merges case variants here too - the symbols only
-        // folded whole lists - showing the casing most rows carry.
+        // library merges case variants here too (the symbols only
+        // folded whole lists), showing the casing most rows use.
         ColumnKind::Genre => {
             let fold = crate::settings::fold_case();
             let (column, table) = sym_source(projection, kind);

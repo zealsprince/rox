@@ -4,10 +4,10 @@ If Foobar2000 was made this year.
 
 ## The problem
 
-Foobar2000's real magic was never playback. It was two things stacked on top of each
+Foobar2000's real magic wasn't playback. It was two things stacked on top of each
 other: a panel-composition UI where you build your own interface out of parts, and a
 theme community (CaTRoX, NekoRoX, Georgia, Eole) that turned that system into things
-that looked genuinely beautiful. Underneath both sat fast, deep tag and library
+that looked genuinely beautiful. Underneath both was fast, deep tag and library
 management that held up on libraries with tens of thousands of tracks.
 
 That whole stack is stranded. Foobar is Windows in practice. The macOS build is a thin
@@ -29,7 +29,7 @@ Nothing on Linux or Mac fills the gap. The alternatives each drop one of the thr
   [Pawse](https://github.com/popovpsk/pawse), and
   [vleer](https://github.com/vleerapp/vleer). Hummingbird is the closest: active,
   cross-platform, themeable with hot reload, scrobbling. But its themes re-skin a fixed
-  layout rather than compose one, and nothing in it speaks to visualizers, deep tagging,
+  layout rather than compose one, and nothing in it addresses visualizers, deep tagging,
   or libraries at scale. Pawse chases bit-perfect audiophile playback with built-in
   themes, and vleer is streaming-first. Modern and fast, none of the three touch the
   panel-composition or library-obsessive legs.
@@ -55,8 +55,9 @@ green NekoRoX-style build, a live visualizer on a second monitor, a layout tuned
 they actually listen. For this person the look and the composability are the product,
 not decoration on top of it.
 
-These overlap heavily. The same person often is all three. First and most concrete is
-Andrew, and building the thing he'd switch to is the sharpest test of whether it works.
+These overlap heavily. The same person often is all three. Andrew is the first and most
+concrete of them, and building the thing he'd switch to is the sharpest test of whether
+it works.
 
 ## What success looks like
 
@@ -65,8 +66,8 @@ fast and browses without lag, the tagging is good enough to trust with a real co
 and the window looks like something worth keeping open. If it clears that bar for him,
 it's ready to share. Building it in that order keeps the scope honest.
 
-Past that bar sits a longer life: sources as extensions. The same panels, visualizers,
+Past that bar is a longer life: sources as extensions. The same panels, visualizers,
 and playback surface working against a Spotify, YouTube Music, or Tidal library view,
-each maintained by the community rather than by rox itself. That's what keeps rox from
-being only a tool for people with large local collections, and none of it displaces the
-local core that earns the switch. [Scope](03-scope.md) carries the detail.
+each maintained by the community rather than by rox itself. That keeps rox from being
+only a tool for people with large local collections, and none of it displaces the local
+core that earns the switch. [Scope](03-scope.md) has the detail.

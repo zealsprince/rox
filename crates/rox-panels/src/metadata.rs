@@ -1,10 +1,10 @@
-//! The metadata panel: the current track's tags laid out as a sheet -
-//! title and artist up top, then the labeled fields the library carries
+//! The metadata panel: the current track's tags laid out as a sheet, with
+//! title and artist up top, then the labeled fields the library has
 //! (album, genre, year, duration, codec, bitrate). What it describes is
 //! per-view config through [`MetadataSource`]: the playing track, the
 //! selected one, or the library as a whole, where the sheet zooms out to
 //! the catalog's counts, so a duplicate can watch each. The background
-//! can carry the track's cover art, cropped to fill and dimmed under a
+//! can show the track's cover art, cropped to fill and dimmed under a
 //! scrim so the fields keep reading; art comes off the file on a
 //! background thread like the cover panel's and is retired the same way
 //! when the track moves on.
@@ -12,17 +12,17 @@
 //! The sheet has an edit face, the pencil in the title row: the tag
 //! fields become inputs over a baseline read off the file itself, and a
 //! save commits only the fields that moved against it, through the
-//! writer's atomic layer. A successful commit lands in the catalog too,
+//! writer's atomic layer. A successful commit is written to the catalog too,
 //! so the library shows the edit without a rescan.
 //!
 //! The tag values click through to the app-wide search, so the sheet
 //! doubles as a way into the rest of the library. Artist, album artist,
 //! album, genre, and year go through the shared filter, the filter
-//! panel's path: the pick lands as a chip beside the search box, whatever
+//! panel's path: the pick shows as a chip beside the search box, whatever
 //! is typed there keeps narrowing alongside it, and a second click drops
-//! it again. The title has no filter column, so it rides the query text
+//! it again. The title has no filter column, so it goes into the query text
 //! as a `title:"value"` term instead, appended and removed the same way.
-//! A genre list splits, so a click takes the one value it landed on. The
+//! A genre list splits, so a click takes the one value it hit. The
 //! hit areas only show while a search panel is up somewhere to display
 //! what a click writes.
 
@@ -73,7 +73,7 @@ pub struct MetadataConfig {
     pub chrome: PanelChrome,
     pub source: MetadataSource,
     pub align: Align,
-    /// Where the content sits down the panel when there's height to
+    /// Where the content goes down the panel when there's height to
     /// spare. The sheet has always centered, so that stays the default;
     /// the table face follows the knob too, and pins to the top with it.
     pub valign: VAlign,
@@ -145,7 +145,7 @@ impl MetadataSource {
 
 /// The sheet's toggleable fields in display order, the library-column
 /// registry shape so the shared checklist and Fields submenu drive them.
-/// The file facts sit off by default; the tag sheet is the stock face.
+/// The file facts are off by default; the tag sheet is the stock face.
 ///
 /// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
 /// this rebuilds and leaks once per active locale rather than on every
@@ -226,9 +226,9 @@ fn fields() -> Vec<Column> {
 }
 
 /// What a click on a value does to the shared query: pin the exact value
-/// on the structured filter, the filter panel's own path, or - for the
-/// title, which the filter keeps no column for - add the `title:"value"`
-/// term to the text. Either way it adds to what's already narrowed
+/// on the structured filter, the filter panel's own path, or add the
+/// `title:"value"` term to the text for the title, which the filter keeps
+/// no column for. Either way it adds to what's already narrowed
 /// instead of replacing it, and clicking the same value again takes it
 /// back off.
 #[derive(Clone, Copy)]
@@ -240,7 +240,7 @@ enum Search {
 /// How a shown value searches when it's clicked, keyed by [`fields`] plus
 /// the sheet's two head rows. The rest of the sheet describes the file
 /// rather than tagging it, and neither the filter nor the query syntax
-/// reaches those, so duration, codec, bitrate, plays, rating, and the file
+/// covers those, so duration, codec, bitrate, plays, rating, and the file
 /// name stay inert text.
 fn query_field(key: &str) -> Option<Search> {
     match key {
@@ -288,7 +288,7 @@ struct Details {
 }
 
 /// The editable fields in sheet order, each with its input row's label:
-/// the tags the panel shows plus the comment, which only lives in the
+/// the tags the panel shows plus the comment, which is only stored in the
 /// file. Duration, codec, and bitrate stay display-only, they describe
 /// the stream. A plain function rather than a `const`: `t_static` isn't
 /// const-evaluable, and nothing outside this file needs the slice itself
@@ -317,13 +317,13 @@ fn edit_fields() -> Vec<(Field, gpui::SharedString)> {
 struct EditState {
     key: TrackKey,
     /// The named fields as the writer read them, what save diffs
-    /// against; None until the read lands (or never, on a file the
-    /// writer cannot parse), and save stays inert without it.
+    /// against; None until the read finishes (or never, on a file the
+    /// writer can't parse), and save stays inert without it.
     baseline: Option<Vec<(Field, String)>>,
     inputs: Vec<Entity<InputState>>,
     /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
-    /// A commit is in flight; the buttons hold still until it lands.
+    /// A commit is in flight; the buttons hold still until it finishes.
     saving: bool,
     _input_events: Vec<Subscription>,
 }
@@ -342,13 +342,13 @@ pub struct MetadataPanel {
     totals: Option<LibraryTotals>,
     /// The loaded background art keyed by the track it belongs to, with the
     /// pending marker, generation guard, and swap/drop retires the shared
-    /// loader carries.
+    /// loader provides.
     art: panel::TrackedImage,
     /// The cached source resolve, so the pump's per-frame notifies never
     /// turn into selection lookups.
     resolved: ResolvedTrack,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
     _selection_changed: Subscription,
@@ -377,7 +377,7 @@ impl MetadataPanel {
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
-                // A rating click or a landed listen moves two of the sheet's
+                // A rating click or a new listen moves two of the sheet's
                 // fields, and the listen moves the library scope's play
                 // total too; re-resolve those, nothing else changed.
                 if matches!(event, LibraryEvent::Rated | LibraryEvent::Played) {
@@ -415,8 +415,8 @@ impl MetadataPanel {
     }
 
     /// The track the panel describes, through the source's track side;
-    /// the library scope names no track, which is what folds the pencil
-    /// and the online lookup away there.
+    /// the library scope names no track, which folds the pencil and the
+    /// online lookup away there.
     fn resolved_track(&mut self, cx: &App) -> Option<TrackKey> {
         let source = self.config.source.track()?;
         self.resolved.get(source, &self.state, cx)
@@ -480,7 +480,7 @@ impl MetadataPanel {
                 genre_syms.insert(projection.genre[ix]);
             }
             // The distinct syms first, then the strings split once each:
-            // a compound tag names every genre it carries, the grid's read.
+            // a compound tag names every genre in it, the grid's read.
             let mut genres: HashSet<String> = HashSet::new();
             for sym in genre_syms {
                 for genre in rox_library::genre::split(&projection.genres.strings[sym as usize]) {
@@ -531,7 +531,7 @@ impl MetadataPanel {
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             // The flyout follows the panel so the picked row's tick swaps
-            // live instead of sitting stale until the menu is reopened.
+            // live instead of going stale until the menu is reopened.
             panel::follow_panel(&panel, cx);
             submenu = submenu.check_side(Side::Right);
             for (label, icon, source) in [
@@ -597,8 +597,8 @@ impl MetadataPanel {
     }
 
     /// Open edit mode on the shown track: one input per field, filled
-    /// once the writer's read lands off the UI thread. The path pins
-    /// here, so a Playing source that moves on mid-edit does not steal
+    /// once the writer's read finishes off the UI thread. The path pins
+    /// here, so a Playing source that moves on mid-edit doesn't steal
     /// the form.
     fn start_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit.is_some() {
@@ -611,7 +611,7 @@ impl MetadataPanel {
             .iter()
             .map(|_| cx.new(|cx| InputState::new(window, cx)))
             .collect();
-        // Enter in any input saves; Escape lands on the sheet's wrapper.
+        // Enter in any input saves; Escape is handled by the sheet's wrapper.
         let _input_events = inputs
             .iter()
             .map(|input| {
@@ -857,7 +857,7 @@ impl PanelSettings for MetadataPanel {
                 ),
             ))
             // The horizontal knob only places the sheet; the table always
-            // runs full width, so the row sits out while that face shows.
+            // runs full width, so the row is hidden while that face shows.
             .when(self.config.display == MetadataDisplay::Sheet, |d| {
                 d.child(align_row(
                     self.config.align,
@@ -987,7 +987,7 @@ impl Panel for MetadataPanel {
         false
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
@@ -1084,15 +1084,15 @@ impl Panel for MetadataPanel {
 }
 
 /// The value side of a row: plain truncating text, or the same text as
-/// hit areas that narrow the app-wide search. `query` carries the shared
+/// hit areas that narrow the app-wide search. `query` holds the shared
 /// query only while a search panel is up to show what a click writes;
 /// without one every follower would narrow with nothing on screen saying
 /// why, so the values render inert. `search` is [`query_field`]'s verdict,
-/// and `next_id` walks the sheet so each hit area gets an element id of
-/// its own.
+/// and `next_id` counts up through the sheet so each hit area gets an
+/// element id of its own.
 ///
 /// The genre column is a "; " list, so it splits: a click picks the value
-/// it landed on rather than filtering on the whole list at once.
+/// it hit rather than filtering on the whole list at once.
 fn value_cell(
     value: &str,
     search: Option<Search>,
@@ -1188,12 +1188,13 @@ fn table_row(
         .child(value)
 }
 
-/// The scrolling frame every face sits in: as tall as its content, capped
-/// at the panel. Short content leaves slack the body's column hands to the
-/// vertical knob; tall content fills the panel and scrolls from the top.
-/// The placement can't live inside the scroll box, a percentage height
-/// resolves to nothing in there and the column collapses onto its content,
-/// which is why the sheet always sat at the top no matter the knob.
+/// The scrolling frame every face is drawn in: as tall as its content,
+/// capped at the panel. Short content leaves slack the body's column hands
+/// to the vertical knob; tall content fills the panel and scrolls from the
+/// top. The placement can't go inside the scroll box, since a percentage
+/// height resolves to nothing in there and the column collapses onto its
+/// content, which is why the sheet always stayed at the top no matter the
+/// knob.
 fn scroll_frame(id: &'static str, align: Align, content: impl IntoElement) -> Stateful<Div> {
     div()
         .id(id)
@@ -1224,8 +1225,8 @@ impl Render for MetadataPanel {
 
 impl MetadataPanel {
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
-        // The edit toggle lives in the tab bar via title_suffix while the
-        // panel shares a group; solo or popped out there is no header at
+        // The edit toggle goes in the tab bar via title_suffix while the
+        // panel shares a group; solo or popped out there's no header at
         // all, so it renders as a toolbar in the body instead, the
         // library's move.
         let headerless = self
@@ -1281,7 +1282,7 @@ impl MetadataPanel {
         let align = self.config.align;
         // The faces are normal-flow children of this column, so the
         // vertical knob places them the way flexbox places any child that
-        // leaves slack. The background art layers sit absolute inside it,
+        // leaves slack. The background art layers are absolute inside it,
         // out of the flow.
         let root = justify_v(div().relative().flex().flex_col(), self.config.valign);
 
@@ -1300,8 +1301,8 @@ impl MetadataPanel {
             .map(|edit| edit.key.clone())
             .or_else(|| self.resolved_track(cx))
         else {
-            // The source points at no track: a quiet line where the sheet
-            // would sit.
+            // The source points at no track: a quiet line in place of the
+            // sheet.
             return root.child(
                 justify(div().w_full().flex_none().flex(), align)
                     .p(tokens::SPACE_MD)
@@ -1315,7 +1316,7 @@ impl MetadataPanel {
 
         // The background layer: the track's art cropped to fill, a scrim
         // over it so the fields keep reading over busy covers. Until the
-        // load lands the plain background stands in; no fade, the sheet's
+        // load finishes the plain background stands in; no fade, the sheet's
         // text swaps in the same frame anyway.
         // Art hangs off the file, which cue tracks of one image share, so
         // the cache stays keyed on the path.
@@ -1358,22 +1359,23 @@ impl MetadataPanel {
             });
 
         // A click on a taggable value narrows the app-wide search, but only
-        // while a search panel is up somewhere to show the pick it writes -
-        // the chips ride beside that box. With none in the tree the followers
-        // would narrow with nothing on screen saying why, or how to undo it,
-        // so the values stay inert text instead.
+        // while a search panel is up somewhere to show the pick it writes,
+        // since the chips appear beside that box. With none in the tree the
+        // followers would narrow with nothing on screen saying why, or how
+        // to undo it, so the values stay inert text instead.
         let query = self
             .state
             .query
             .read(cx)
             .has_box()
             .then(|| self.state.query.clone());
-        // Walks the rendered values so each hit area gets its own element id.
+        // Counts up through the rendered values so each hit area gets its own
+        // element id.
         let mut hit_id = 0usize;
 
         // The shown fields in registry order, each skipped when its value
         // is empty: absence reads cleaner than a labeled blank. The key
-        // rides along for [`query_field`], which decides whether the value
+        // comes along for [`query_field`], which decides whether the value
         // is clickable.
         let mut fields: Vec<(gpui::SharedString, String, Option<Search>)> = Vec::new();
         for col in self::fields() {
@@ -1420,11 +1422,11 @@ impl MetadataPanel {
             .as_ref()
             .map(|d| d.artist.clone())
             .filter(|a| !a.is_empty());
-        // The title only searches when the library knows the track; for one
+        // The title only searches when the library has the track; for one
         // it doesn't the line is the file name, which no tag holds.
         let title_field = details.as_ref().and_then(|_| query_field("title"));
 
-        // The table face: title and artist fold in as rows, the list sits
+        // The table face: title and artist fold in as rows, the list goes
         // where the vertical knob puts it, and it scrolls when the panel
         // runs short.
         if self.config.display == MetadataDisplay::Table {

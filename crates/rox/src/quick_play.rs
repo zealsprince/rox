@@ -50,7 +50,7 @@ const MAX_ALBUM_HITS: usize = 8;
 const PAGE_ROWS: isize = 10;
 
 /// A group entry the search surfaces above the track hits: a whole artist
-/// or album, carrying the interned symbols to gather its tracks and a
+/// or album, holding the interned symbols to gather its tracks and a
 /// representative projection row for the cover. Playing one queues every
 /// track it holds instead of a single file.
 #[derive(Clone, Copy)]
@@ -107,7 +107,7 @@ impl Head {
 
 pub struct QuickPlay {
     state: AppState,
-    /// The query editor, the shared search box; `query` mirrors its value
+    /// The query editor, the shared search box; `query` copies its value
     /// via change events.
     search: Entity<SearchBox>,
     query: String,
@@ -129,7 +129,7 @@ pub struct QuickPlay {
     scroll: UniformListScrollHandle,
     /// A failed play, shown until the next query change.
     error: Option<SharedString>,
-    /// The result list's appearance knobs, mirrored from settings and
+    /// The result list's appearance knobs, copied from settings and
     /// written back on every edit.
     config: QuickPlayConfig,
     /// Whether the inline config panel is open, beside the search box.
@@ -171,7 +171,7 @@ impl QuickPlay {
                 this.refresh(cx);
             },
         );
-        // A landing cover repaints the result rows.
+        // A cover that finishes loading repaints the result rows.
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut QuickPlay, _, cx| cx.notify());
         let mut this = QuickPlay {
             state,
@@ -195,7 +195,7 @@ impl QuickPlay {
     }
 
     /// Point the search box's suggestion menu at the current projection;
-    /// at open and again whenever a scan lands a new one.
+    /// at open and again whenever a scan produces a new one.
     fn attach_suggestions(&self, cx: &mut Context<Self>) {
         let provider = {
             let library = self.state.library.read(cx);
@@ -208,7 +208,7 @@ impl QuickPlay {
     /// Each result row's height, taller when comfortable rows are on and
     /// again when the subtitle line shows. Scaled by the app font like the
     /// track-list panels, so the modal's rows track the text and the list
-    /// height that feeds off this stays in step.
+    /// height derived from this stays in step.
     fn row_h(&self) -> f32 {
         let base = if self.config.comfortable {
             ROW_H_COMFORTABLE
@@ -360,7 +360,7 @@ impl QuickPlay {
             };
             let ids: Vec<i64> = if ix < self.heads.len() {
                 // A head plays its whole album or artist, gathered from the
-                // canonical browse order so discs and tracks land in order.
+                // canonical browse order so discs and tracks come out in order.
                 let head = self.heads[ix];
                 library
                     .order()
@@ -538,7 +538,7 @@ impl QuickPlay {
                             // An empty subtitle drops out entirely rather
                             // than reserving a blank line, so the column is
                             // just the title and the row's items_center
-                            // lands it on the row's midline.
+                            // centers it on the row's midline.
                             .when(self.config.show_subtitle && !sub.is_empty(), |d| {
                                 d.child(
                                     div()
@@ -606,7 +606,7 @@ impl QuickPlay {
     }
 
     /// The settings button beside the search box: a sliders glyph that
-    /// opens the config panel, tinted while it is open.
+    /// opens the config panel, tinted while it's open.
     fn config_button(&self, cx: &mut Context<Self>) -> Div {
         let on = self.show_config;
         div()
@@ -733,7 +733,7 @@ impl Render for QuickPlay {
             // The input binds up/down (and page keys) to its own cursor
             // actions and swallows them without propagating on a single
             // line, so the list takes them in the capture phase before
-            // they reach it - unless the suggestion menu is open, which
+            // they reach it, unless the suggestion menu is open, which
             // gets them first so it stays navigable.
             .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
                 if !this.menu_action(Box::new(MoveUp), window, cx) {

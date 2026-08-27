@@ -1,6 +1,6 @@
 //! The status strip: one quiet line with what the current scope holds,
 //! the classic status bar readout. A standing selection scopes it to the
-//! picked tracks; otherwise the whole catalog answers. The readouts are
+//! picked tracks; otherwise the numbers cover the whole catalog. The readouts are
 //! an ordered items list like the transport strips', recomputed only when
 //! the selection or the catalog moves, so the strip costs nothing per
 //! frame.
@@ -26,7 +26,7 @@ use crate::selection::SelectionEvent;
 use crate::transport::transport_panel;
 
 /// One readout of the status strip, the arrange editor's unit. The
-/// config's list carries the shown ones in display order.
+/// config's list holds the shown ones in display order.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusItem {
@@ -44,7 +44,7 @@ pub enum StatusItem {
     /// The scope's summed play count.
     Plays,
     /// A flexible gap that pushes the readouts around it apart; the
-    /// strip holds as many as the layout wants.
+    /// strip holds as many as the layout needs.
     Spacer,
 }
 
@@ -151,7 +151,7 @@ struct Totals {
     albums: usize,
     artists: usize,
     /// Distinct genres, split the way the genre grid splits compound
-    /// tags. Not a readout of its own; the count tooltip carries it so
+    /// tags. Not a readout of its own; the count tooltip includes it so
     /// the hover matches the metadata panel's library sheet.
     genres: usize,
     plays: u64,
@@ -170,12 +170,12 @@ pub struct StatusPanel {
     /// moves; renders in between just redraw the cached one.
     totals: Option<Totals>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// The row as it stood when a menu toggle last hid a readout, so
     /// showing it again puts it back where it was rather than at its
     /// catalog rank. The undo for one toggle, not a layout anybody saves,
-    /// so it rides the panel and not the config.
+    /// so it's stored on the panel and not the config.
     items_stash: Option<Vec<StatusItem>>,
     _selection_changed: Subscription,
     _library_changed: Subscription,
@@ -213,8 +213,8 @@ impl StatusPanel {
     }
 
     /// The panel's own dropdown entries: quick show/hide per readout. A
-    /// re-shown one goes back where it sat; the settings window's arrange
-    /// editor is where the order changes.
+    /// re-shown one goes back where it was; the order changes in the
+    /// settings window's arrange editor.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
@@ -247,7 +247,7 @@ impl StatusPanel {
 
     /// The readouts, computed on a miss: one pass over the projection,
     /// filtered to the selection while one stands. A selected id the
-    /// catalog no longer knows just drops out of the sums. Albums key on
+    /// catalog no longer has just drops out of the sums. Albums key on
     /// the (album artist, album) pair the library groups by, so two
     /// artists' "Greatest Hits" count apart; artists are the distinct
     /// album artists, matching the artist grid.
@@ -291,10 +291,10 @@ impl StatusPanel {
         let genres = genre_count(genre_syms, &projection.genres.strings);
         let selection = !selected.is_empty();
         // Name the selection where one name covers it: any picked row
-        // answers for the whole set once the counts say it's one track or
-        // one album. The album only claims the label when the selection
-        // holds all of it - a partial pick reads "N selected" instead of
-        // wearing the full album's name.
+        // stands in for the whole set once the counts say it's one track
+        // or one album. The album only takes the label when the selection
+        // holds all of it: a partial pick reads "N selected" instead of
+        // showing the full album's name.
         let selection_label = first_ix.filter(|_| selection).and_then(|ix| {
             let row = projection.resolve(ix);
             if tracks == 1 {
@@ -314,8 +314,8 @@ impl StatusPanel {
             if album_total != tracks || row.album.is_empty() {
                 return None;
             }
-            // The artist rides along, the header rows' fallback rule:
-            // an empty album artist borrows the first track's artist.
+            // The artist is included too, the header rows' fallback rule:
+            // an empty album artist falls back to the first track's artist.
             let artist = if row.album_artist.is_empty() {
                 row.artist
             } else {
@@ -413,7 +413,7 @@ fn genre_count(syms: HashSet<u32>, strings: &[String]) -> usize {
 }
 
 /// The whole catalog's totals as a hover card, computed on open. The
-/// menubar's track count wears this one: no panel stands behind it, so
+/// menubar's track count uses this one: no panel stands behind it, so
 /// there's nowhere to cache and one projection scan per hover is fine.
 pub fn library_tooltip(library: &Entity<Library>, cx: &mut App) -> AnyView {
     let rows = library
@@ -574,7 +574,7 @@ impl StatusPanel {
         let Some(totals) = self.totals.as_ref().filter(|t| t.tracks > 0) else {
             return root;
         };
-        // The count leads in the text color; every other readout sits
+        // The count leads in the text color; every other readout is
         // muted behind it, the classic status bar weighting.
         let stat = |text: SharedString| {
             div()
@@ -610,8 +610,8 @@ impl StatusPanel {
                     } else {
                         rox_i18n::t!("panel-title-library")
                     };
-                    // The hover carries the whole readout set, so the
-                    // count answers for the readouts the strip hides.
+                    // The hover shows the whole readout set, so the count
+                    // covers the readouts the strip hides.
                     let weak = weak.clone();
                     div()
                         .id("status-count")
@@ -668,7 +668,7 @@ mod tests {
         assert!(config.items == vec![StatusItem::Count, StatusItem::Time]);
     }
 
-    /// A layout that carries the list uses it as-is, duplicates dropped,
+    /// A layout with the list uses it as-is, duplicates dropped,
     /// and round-trips through a save.
     #[test]
     fn item_lists_read_ordered_and_deduped() {

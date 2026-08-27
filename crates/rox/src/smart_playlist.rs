@@ -1,19 +1,19 @@
 //! The smart playlist editor: a window over one saved query. The
-//! definition sits in the left column - a name, the query itself in a
-//! search box that speaks the same syntax and offers the same completions
-//! as the library's, an optional sort and cap - and what that definition
+//! definition is in the left column (a name, the query itself in a search
+//! box that uses the same syntax and offers the same completions as the
+//! library's, an optional sort and cap), and what that definition
 //! currently takes fills the right.
 //!
 //! The preview is the point of the window. A saved query is a promise
 //! about rows nobody can see yet, so the editor evaluates on every change
 //! and shows the tracks before anything is saved. Evaluation is one
-//! projection pass, the same one the panel runs on refresh, and what it
-//! keeps is the rows rather than the tracks: row text resolves through
+//! projection pass, the same one the panel runs on refresh, and it keeps
+//! the rows rather than the tracks: row text resolves through
 //! the projection per visible row, so a query that takes the whole
 //! library costs one pass and nothing per row after it. Nothing here runs
 //! a pass per frame.
 //!
-//! The structured filter rides through untouched: it has no controls here
+//! The structured filter is passed through untouched: it has no controls here
 //! (the filter panel builds those), and an edit that dropped it silently
 //! would lose work the query text can't express.
 
@@ -51,29 +51,38 @@ const LABEL_W: Pixels = px(64.);
 const ROW_H: Pixels = px(22.);
 
 /// The sorts a smart playlist can ask for, in the order the dropdown lists
-/// them. Its own list rather than the library table's columns: what a
-/// saved query wants to order by is the handful of fields people build
-/// lists around, not every column a table can show.
-const SORTS: &[(&str, Option<SortKey>)] = &[
-    ("Default order", None),
-    ("Title", Some(SortKey::Title)),
-    ("Artist", Some(SortKey::Artist)),
-    ("Album", Some(SortKey::Album)),
-    ("Genre", Some(SortKey::Genre)),
-    ("Year", Some(SortKey::Year)),
-    ("Duration", Some(SortKey::Duration)),
-    ("Rating", Some(SortKey::Rating)),
-    ("Plays", Some(SortKey::Plays)),
-    ("Added", Some(SortKey::Added)),
-];
+/// them. Its own list rather than the library table's columns: a saved
+/// query orders by the handful of fields people build lists around, not
+/// every column a table can show.
+///
+/// A function rather than a `const`: the labels resolve through `t!`,
+/// which isn't const-evaluable, so the list gets rebuilt each call rather
+/// than baked in for one locale.
+fn sorts() -> Vec<(SharedString, Option<SortKey>)> {
+    vec![
+        (rox_i18n::t!("smart-playlist-sort-default"), None),
+        (rox_i18n::t!("info-item-title"), Some(SortKey::Title)),
+        (rox_i18n::t!("head-piece-artist"), Some(SortKey::Artist)),
+        (rox_i18n::t!("head-piece-album"), Some(SortKey::Album)),
+        (rox_i18n::t!("head-piece-genre"), Some(SortKey::Genre)),
+        (rox_i18n::t!("head-piece-year"), Some(SortKey::Year)),
+        (rox_i18n::t!("info-item-duration"), Some(SortKey::Duration)),
+        (rox_i18n::t!("info-item-rating"), Some(SortKey::Rating)),
+        (rox_i18n::t!("status-item-plays"), Some(SortKey::Plays)),
+        (
+            rox_i18n::t!("smart-playlist-sort-added"),
+            Some(SortKey::Added),
+        ),
+    ]
+}
 
 /// The label a sort key reads as in the dropdown.
-fn sort_label(sort: Option<SortKey>) -> &'static str {
-    SORTS
-        .iter()
+fn sort_label(sort: Option<SortKey>) -> SharedString {
+    sorts()
+        .into_iter()
         .find(|(_, key)| *key == sort)
-        .map(|(label, _)| *label)
-        .unwrap_or("Default order")
+        .map(|(label, _)| label)
+        .unwrap_or_else(|| rox_i18n::t!("smart-playlist-sort-default"))
 }
 
 actions!(smart_playlist, [Save]);
@@ -81,13 +90,13 @@ actions!(smart_playlist, [Save]);
 /// The key context the window's own bindings scope to.
 const CONTEXT: &str = "SmartPlaylist";
 
-/// The editor's save binding; call once at startup. It sits on the window
-/// root, so enter saves wherever focus is - a dropdown, the checkbox, the
-/// preview - and not only in the field that happens to hold it. The
-/// inputs still see the key first, since their own binding is deeper
-/// along the focus path: a single-line input propagates it up to here,
-/// and an open suggestion menu swallows it, so enter takes the suggestion
-/// first and saves on the next press.
+/// The editor's save binding; call once at startup. It's bound on the
+/// window root, so Enter saves wherever focus is (a dropdown, the
+/// checkbox, the preview) and not only in the field that happens to hold
+/// it. The inputs still see the key first, since their own binding is
+/// deeper along the focus path: a single-line input propagates it up to
+/// here, and an open suggestion menu swallows it, so Enter takes the
+/// suggestion first and saves on the next press.
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("enter", Save, Some(CONTEXT))]);
 }
@@ -147,16 +156,16 @@ struct SmartPlaylistWindow {
     limit: Entity<InputState>,
     sort: Option<SortKey>,
     descending: bool,
-    /// The filter the loaded definition carried, passed straight back
+    /// The filter the loaded definition held, passed straight back
     /// through on save. Nothing here edits it.
     filter: rox_library::projection::FilterSet,
     /// The projection rows the current definition takes, re-evaluated on
     /// every change and never on a frame. Rows rather than tracks: the
     /// preview resolves the few it draws off these.
     matched: Vec<u32>,
-    /// The save already ran. One enter press can reach [`Self::commit`]
-    /// twice - the focused input's binding and the window's, which the
-    /// input propagates to - and a second save would file a second
+    /// The save already ran. One Enter press can reach [`Self::commit`]
+    /// twice (the focused input's binding and the window's, which the
+    /// input propagates to), and a second save would file a second
     /// playlist.
     saved: bool,
     scroll: UniformListScrollHandle,
@@ -191,7 +200,15 @@ impl SmartPlaylistWindow {
                 .placeholder(rox_i18n::t!("smart-playlist-name-placeholder"))
                 .default_value(current_name)
         });
-        let query = cx.new(|cx| SearchBox::new("Query", &def.query, window, cx).small());
+        let query = cx.new(|cx| {
+            SearchBox::new(
+                rox_i18n::t!("smart-playlist-query-label"),
+                &def.query,
+                window,
+                cx,
+            )
+            .small()
+        });
         // The same completions the library's box gets, so the syntax is
         // learnable in the one place it's saved for good.
         let provider = suggest::query_provider(state.library.read(cx).projection());
@@ -217,8 +234,8 @@ impl SmartPlaylistWindow {
             &name,
             window,
             |this: &mut Self, _, event: &InputEvent, window, cx| match event {
-                // The name is what gates the save, so the button follows
-                // it keystroke by keystroke.
+                // The name gates the save, so the button follows it
+                // keystroke by keystroke.
                 InputEvent::Change => cx.notify(),
                 InputEvent::PressEnter { .. } => this.commit(window, cx),
                 _ => {}
@@ -289,14 +306,14 @@ impl SmartPlaylistWindow {
     }
 
     /// Whether the definition can be saved as it stands. A blank name is
-    /// the only refusal there is: the query syntax has no invalid state,
-    /// and a query that takes nothing is a real thing to save.
+    /// the only thing that blocks it: the query syntax has no invalid
+    /// state, and a query that takes nothing is a real thing to save.
     fn savable(&self, cx: &App) -> bool {
         !self.name.read(cx).value().trim().is_empty()
     }
 
-    /// Save and close. A blank name does nothing, which the footer says
-    /// in place of the shortcut so the refusal isn't silent.
+    /// Save and close. A blank name does nothing, which the footer shows
+    /// in place of the shortcut so the block isn't silent.
     fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.name.read(cx).value().trim().to_string();
         if self.saved || name.is_empty() {
@@ -350,7 +367,10 @@ impl SmartPlaylistWindow {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
-            .child(Self::field("Name", Input::new(&self.name).w_full()))
+            .child(Self::field(
+                rox_i18n::t!("panel-rename-name"),
+                Input::new(&self.name).w_full(),
+            ))
             .child(Self::field(
                 rox_i18n::t!("smart-playlist-query-label"),
                 self.query
@@ -360,7 +380,7 @@ impl SmartPlaylistWindow {
             .when_some(note, |d, note| {
                 d.child(
                     div()
-                        // Indented past the label column, so the note sits
+                        // Indented past the label column, so the note is
                         // under the box it's about.
                         .pl(LABEL_W + tokens::SPACE_SM)
                         .text_xs()
@@ -384,11 +404,10 @@ impl SmartPlaylistWindow {
                             .small()
                             .outline()
                             .dropdown_menu(move |mut menu, _, _| {
-                                for (label, key) in SORTS {
+                                for (label, key) in sorts() {
                                     let this = weak.clone();
-                                    let key = *key;
                                     menu = menu.item(
-                                        PopupMenuItem::new(*label).checked(sort == key).on_click(
+                                        PopupMenuItem::new(label).checked(sort == key).on_click(
                                             move |_, _, cx| {
                                                 if let Some(this) = this.upgrade() {
                                                     this.update(cx, |this, cx| {
@@ -575,7 +594,7 @@ impl SmartPlaylistWindow {
     }
 }
 
-/// One preview row: what the query took, the title beside who made it.
+/// One preview row: a track the query took, the title beside who made it.
 fn preview_row(title: &str, artist: &str) -> Div {
     div()
         .h(ROW_H)
@@ -621,8 +640,8 @@ impl Render for SmartPlaylistWindow {
                     .flex()
                     .flex_row()
                     // The body's own surface, a second elevated layer over the
-                    // window's, the same as the settings page. Two layers is
-                    // what the backdrop reads through everywhere.
+                    // window's, the same as the settings page. The backdrop
+                    // reads through two layers everywhere.
                     .bg(palette::bg_elevated())
                     .child(self.controls(cx))
                     .child(self.preview(cx)),

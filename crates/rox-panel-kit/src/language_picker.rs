@@ -1,5 +1,5 @@
 //! The language picker: the searchable field over rox-i18n's registry,
-//! System at the head. It lives here rather than beside its hosts so the
+//! System at the head. It's here rather than beside its hosts so the
 //! settings window and the welcome tour drop the same list; what differs
 //! per host, persisting the pick, stays in each host's apply.
 
@@ -11,8 +11,8 @@ use crate::search_picker::{search_picker, PickRow};
 
 /// A searchable dropdown over the shipped locales. `current` is the
 /// stored preference (a registry id, None following the OS); an id the
-/// registry no longer carries reads as System, which is what negotiation
-/// makes of it too. The apply hands back the picked id the same way.
+/// registry no longer has reads as System, the same thing negotiation
+/// makes of it. The apply hands back the picked id the same way.
 pub fn language_picker<P: 'static>(
     id: &'static str,
     current: Option<String>,
@@ -44,13 +44,13 @@ pub fn language_picker<P: 'static>(
 }
 
 /// The rows: System first, then the registry in its own order, each
-/// locale wearing its flag and native name. Native names stay
-/// untranslated on purpose, a reader lost in the wrong language finds
-/// their own by its own name; only the System head speaks the active
-/// locale, so the set is cached per locale. The stable Arc doubles as
-/// the picker state's cheap changed-or-not check.
+/// locale shown with its flag and native name. Native names stay
+/// untranslated: a reader lost in the wrong language finds their own by
+/// its own name. Only the System head is in the active locale, so the
+/// set is cached per locale. The stable Arc doubles as the picker
+/// state's cheap changed-or-not check.
 fn rows() -> Arc<Vec<PickRow>> {
-    /// The cache slot: which locale the rows speak, and the rows.
+    /// The cache slot: which locale the rows are in, and the rows.
     type Cached = Option<(&'static str, Arc<Vec<PickRow>>)>;
     static ROWS: Mutex<Cached> = Mutex::new(None);
     let locale = rox_i18n::locale();

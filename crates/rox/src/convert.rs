@@ -16,15 +16,15 @@
 //!
 //! The interesting case is a cue track. It has no file of its own, only a
 //! span inside an image the whole disc shares, so converting one means
-//! trimming: `-ss`/`-to` as input options, which is what makes the seek land
-//! on the frame rather than near it. The image's tags describe the album
+//! trimming: `-ss`/`-to` as input options, which makes the seek hit the
+//! exact frame rather than near it. The image's tags describe the album
 //! rather than that track, so a span drops them and writes title, artist,
 //! album and track number from the library row instead. That's what turns a
 //! rip into a standalone file, and it's the one thing this does that a
 //! shell loop over ffmpeg doesn't.
 //!
 //! Nothing here ever overwrites. A destination that exists is reported as
-//! skipped and left exactly as it was; there is no flag anywhere that turns
+//! skipped and left exactly as it was; there's no flag anywhere that turns
 //! that off, because the alternative is a typo in a pattern eating a
 //! library.
 //!
@@ -63,8 +63,8 @@ pub const DEFAULT_PATTERN: &str = "%artist% - %title%";
 pub const MIRROR_PATTERN: &str = "%albumartist%/%album%/%track% - %title%";
 
 /// The most ffmpeg processes a run keeps going at once. Each one is a
-/// whole encoder, so this is deliberately below the worker counts the
-/// analysis passes use: past four the machine is the job.
+/// whole encoder, so this is below the worker counts the analysis passes
+/// use: past four the machine is the job.
 const MAX_WORKERS: usize = 4;
 
 /// How often a worker looks up from a running ffmpeg to see whether the run
@@ -73,7 +73,7 @@ const MAX_WORKERS: usize = 4;
 const POLL: Duration = Duration::from_millis(100);
 
 /// How much of a failed ffmpeg's stderr is worth keeping. The last few
-/// lines carry the reason; everything before them is banner and progress.
+/// lines have the reason; everything before them is banner and progress.
 const STDERR_TAIL: usize = 400;
 
 /// Windows' flag for a child that gets no console. Without it every
@@ -111,14 +111,14 @@ pub fn binary() -> String {
     }
 }
 
-/// What each binary answered when it was asked its version, so the probe
+/// What each binary reported when it was asked its version, so the probe
 /// costs one spawn per session rather than one per menu that opens. Keyed
 /// by the binary, so pointing the setting at another one re-probes instead
 /// of trusting the first answer forever.
 static PROBED: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
 
 /// Whether this machine can convert at all. Every surface that offers a
-/// conversion asks first: with no ffmpeg there is no menu item, no dialog
+/// conversion asks first: with no ffmpeg there's no menu item, no dialog
 /// and nothing in settings search, which is a better answer than a button
 /// that explains itself only after it's pressed.
 pub fn available() -> bool {
@@ -140,9 +140,9 @@ fn probe(binary: &str) -> bool {
     version(binary).is_ok()
 }
 
-/// The version a binary answers with, or why there wasn't one. The boolean
+/// The version a binary reports, or why there wasn't one. The boolean
 /// probe folds every failure into "not there"; the settings test button
-/// wants the distinction back, so this keeps what the spawn said.
+/// needs the distinction back, so this keeps what the spawn said.
 fn version(binary: &str) -> Result<String, String> {
     let mut ask = command(binary);
     ask.stdout(Stdio::piped());
@@ -175,7 +175,7 @@ fn version(binary: &str) -> Result<String, String> {
 
 /// The settings test button's probe: fresh every press rather than served
 /// from the session cache, because the point of pressing it is that the
-/// world may have changed. The answer lands in the cache too, so a pass
+/// world may have changed. The answer goes into the cache too, so a pass
 /// flips every Convert surface on without a restart.
 pub fn test() -> Result<String, String> {
     let binary = binary();
@@ -242,8 +242,8 @@ impl Preset {
         }
     }
 
-    /// The extension the output takes, which is also what tells ffmpeg
-    /// which container to write.
+    /// The extension the output takes, which also tells ffmpeg which
+    /// container to write.
     pub fn ext(self) -> &'static str {
         match self {
             Preset::Flac => "flac",
@@ -264,7 +264,7 @@ impl Preset {
         }
     }
 
-    /// Whether the container can carry the source's embedded cover art.
+    /// Whether the container can take the source's embedded cover art.
     /// FLAC and MP3 hold a picture block; Opus in an Ogg stream and WAV
     /// have nowhere to put one, so those drop it rather than failing the
     /// encode over it.
@@ -319,8 +319,8 @@ fn owned_flags() -> [(&'static str, gpui::SharedString); 5] {
 
 /// Whether a token reads as a file name rather than a value. Slashes and a
 /// short alphabetic tail after a dot are what a path looks like; a value
-/// with an `=` in it is a setting however many dots it carries, which is
-/// what keeps `-af volume=0.5` out of this.
+/// with an `=` in it is a setting however many dots it has, which keeps
+/// `-af volume=0.5` out of this.
 fn looks_like_a_file(token: &str) -> bool {
     if token.contains('=') {
         return false;
@@ -342,7 +342,7 @@ fn looks_like_a_file(token: &str) -> bool {
 /// Split a line of ffmpeg arguments into the vector that gets spawned, or
 /// say why it can't be one.
 ///
-/// The split is plain whitespace and there is no quoting: a value with a
+/// The split is plain whitespace and there's no quoting: a value with a
 /// space in it can't be written here, which is a real limit and a cheap
 /// one next to parsing shell syntax nobody is running.
 ///
@@ -406,8 +406,8 @@ impl Format {
         }
     }
 
-    /// The extension the output takes, which is also what tells ffmpeg
-    /// which container to write.
+    /// The extension the output takes, which also tells ffmpeg which
+    /// container to write.
     pub fn ext(&self) -> &str {
         match self {
             Format::Preset(preset) => preset.ext(),
@@ -415,7 +415,7 @@ impl Format {
         }
     }
 
-    /// The encoder arguments, which sit between what this module owns and
+    /// The encoder arguments, which go between what this module owns and
     /// the destination.
     fn encoder(&self) -> Vec<String> {
         match self {
@@ -424,7 +424,7 @@ impl Format {
         }
     }
 
-    /// Whether an embedded cover rides along. Known per preset, and no for
+    /// Whether an embedded cover is copied through. Known per preset, and no for
     /// a custom: nothing here knows what an arbitrary container does with
     /// an attached picture, and mapping one into a muxer that won't take it
     /// fails the whole encode rather than just losing the picture.
@@ -450,7 +450,7 @@ fn checks() -> &'static Mutex<HashMap<Custom, Result<(), String>>> {
     CHECKED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// What this session already knows about a custom format, if anything. The
+/// What this session has already found out about a custom format, if any. The
 /// dialog asks before it spawns, and shows the answer without a wait.
 pub fn checked(custom: &Custom) -> Option<Result<(), String>> {
     checks().lock().unwrap().get(custom).cloned()
@@ -461,7 +461,7 @@ pub fn checked(custom: &Custom) -> Option<Result<(), String>> {
 /// file that is removed either way. Blocking, so callers run it off the UI
 /// thread; the answer is cached against the pair.
 ///
-/// This is the only honest check available. Arguments are ffmpeg's own
+/// This is the only real check available. Arguments are ffmpeg's own
 /// vocabulary, they change between builds, and whether a container takes an
 /// encoder is a question only the binary on this machine can answer.
 pub fn check(custom: &Custom) -> Result<(), String> {
@@ -530,7 +530,7 @@ pub struct Span {
     pub end_ms: Option<u32>,
 }
 
-/// One conversion: a source file, where it lands, and what it is. `span`
+/// One conversion: a source file, where it goes, and what it is. `span`
 /// makes it a trim out of an image rather than a whole file, and `tags` is
 /// what a trim writes in place of the image's own metadata.
 #[derive(Clone, PartialEq, Debug)]
@@ -541,9 +541,9 @@ pub struct Item {
     pub tags: Vec<(Field, String)>,
 }
 
-/// A duration in ffmpeg's seconds form. Milliseconds are what the sheet
-/// carries and three decimals is what they are, so no rounding happens
-/// anywhere between the row and the trim.
+/// A duration in ffmpeg's seconds form. The sheet stores milliseconds and
+/// three decimals is exactly that, so no rounding happens anywhere between
+/// the row and the trim.
 fn secs(ms: u32) -> String {
     format!("{}.{:03}", ms / 1000, ms % 1000)
 }
@@ -562,20 +562,20 @@ fn value<'a>(tags: &'a [(Field, String)], field: &Field) -> Option<&'a str> {
 /// what gets spawned is a thing the tests can read.
 ///
 /// `-n` on every invocation, never `-y`: it makes ffmpeg exit rather than
-/// touch a file that already exists. Leaving it to the absent `-y` is not
-/// enough - with stdin closed, ffmpeg 8 answers its own overwrite prompt and
-/// answers yes - and the planner's skip is then the second lock on the same
+/// touch a file that already exists. Leaving it to the absent `-y` isn't
+/// enough (with stdin closed, ffmpeg 8 answers its own overwrite prompt and
+/// answers yes), and the planner's skip is then the second lock on the same
 /// door rather than the only one.
 pub fn args(item: &Item, format: &Format) -> Vec<String> {
     let mut args: Vec<String> = ["-nostdin", "-n", "-hide_banner", "-loglevel", "error"]
         .iter()
         .map(|a| (*a).to_owned())
         .collect();
-    // Input options, before -i on purpose: seeking the input is what
-    // decodes from the nearest keyframe up to the mark, so the cut lands
-    // where the sheet says rather than at the frame ffmpeg happened to be
-    // holding. -to reads as an input timestamp in this position, so the
-    // pair is exactly the sheet's window.
+    // Input options, before -i: seeking the input decodes from the nearest
+    // keyframe up to the mark, so the cut lands where the sheet says rather
+    // than at the frame ffmpeg happened to be holding. -to reads as an
+    // input timestamp in this position, so the pair is exactly the sheet's
+    // window.
     if let Some(span) = item.span {
         args.push("-ss".into());
         args.push(secs(span.start_ms));
@@ -608,8 +608,8 @@ pub fn args(item: &Item, format: &Format) -> Vec<String> {
             }
         }
         // A whole file keeps what it says about itself, and its cover with
-        // it where the output container can hold one. The picture rides as
-        // a video stream, so keeping it means mapping it through rather
+        // it where the output container can hold one. The picture is stored
+        // as a video stream, so keeping it means mapping it through rather
         // than -vn, and copying it rather than re-encoding.
         None => {
             if format.keeps_art() {
@@ -689,7 +689,7 @@ fn with_extension(path: PathBuf, ext: &str) -> PathBuf {
 }
 
 /// Render every row into an output under `dest` and sort out what can
-/// actually run. `exists` answers whether a path is taken, injected so the
+/// actually run. `exists` reports whether a path is taken, injected so the
 /// plan can be tested without a filesystem.
 pub fn plan(
     rows: &[Row],
@@ -716,7 +716,7 @@ pub fn plan(
             skip,
         });
     }
-    // Two rows onto one name: neither runs. Whichever landed second would
+    // Two rows onto one name: neither runs. Whichever ran second would
     // either fail on the existing file or, with a different name for the
     // same track, leave nobody able to say which is which.
     let mut wanted: HashMap<PathBuf, usize> = HashMap::new();
@@ -886,7 +886,7 @@ pub fn dismiss(cx: &mut App) {
 }
 
 /// Ask the running conversion to stop. Unlike the analysis passes this
-/// doesn't wait for the current file: a half-written encode is not a file
+/// doesn't wait for the current file: a half-written encode isn't a file
 /// anyone wants, so the children are killed and their outputs removed.
 pub fn stop(cx: &mut App) {
     if let Some(progress) = progress(cx) {
@@ -896,7 +896,7 @@ pub fn stop(cx: &mut App) {
 
 /// Convert `items`, writing into whatever folders their destinations name.
 /// A no-op while a run is already going: one at a time keeps the machine
-/// answerable and the tasks window honest.
+/// responsive and the tasks window's count accurate.
 pub fn start(items: Vec<Item>, format: Format, dest: PathBuf, skipped: usize, cx: &mut App) {
     if progress(cx).is_some() || items.is_empty() {
         return;
@@ -910,11 +910,11 @@ pub fn start(items: Vec<Item>, format: Format, dest: PathBuf, skipped: usize, cx
     // it, so the row never shows an old count beside a live bar.
     cx.set_global(Last(None));
     cx.set_global(LastFailure(None));
-    // Nothing observes an app-global job on its own; this is what keeps the
-    // tasks window and the menubar chip ticking while it runs.
+    // Nothing observes an app-global job on its own; this keeps the tasks
+    // window and the menubar chip ticking while it runs.
     crate::tasks_window::repaint_while_running(cx);
     // The run outlives the dialog, which closes on the press, so hand over
-    // something that carries the count and the stop button.
+    // something with the count and the stop button.
     crate::tasks_window::open(cx);
     // Quitting kills the children the same way Stop does. An encode that
     // outlived the app would keep writing into a file nothing is watching.
@@ -955,8 +955,8 @@ pub fn start(items: Vec<Item>, format: Format, dest: PathBuf, skipped: usize, cx
 }
 
 /// The blocking half: a bounded pool over a cursor, the measuring pass's
-/// shape. Returns the first failure's stderr tail, since one reason is what
-/// a row can show and they're nearly always the same reason.
+/// shape. Returns the first failure's stderr tail, since a row can only
+/// show one reason and they're nearly always the same reason.
 fn run(items: &[Item], format: &Format, binary: &str, progress: &Progress) -> Option<String> {
     progress.pace.begin();
     let cursor = AtomicUsize::new(0);
@@ -1013,9 +1013,9 @@ enum Outcome {
 }
 
 /// One file through ffmpeg. The output is removed on anything short of a
-/// clean exit, cancellation included: what a killed encoder leaves behind
-/// is a file that plays for as long as it got, which is worse than no file
-/// at all because it looks like one.
+/// clean exit, cancellation included: a killed encoder leaves a file that
+/// plays for as long as it got, which is worse than no file at all because
+/// it looks like one.
 fn convert(
     item: &Item,
     format: &Format,
@@ -1081,7 +1081,7 @@ fn wait(child: &mut Child, progress: &Progress) -> Option<std::process::ExitStat
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
             // Treat a child we can't ask about as gone rather than looping
-            // on it forever; the missing output is what fails the file.
+            // on it forever; the missing output fails the file.
             Err(_) => return None,
             Ok(None) => {}
         }
@@ -1112,7 +1112,7 @@ fn tail(stderr: &str) -> String {
 }
 
 /// One of the five as the format the builders take. Test-only sugar, and
-/// it sits out here because both tiers below want it.
+/// it's out here because both tiers below need it.
 #[cfg(test)]
 fn fixed(preset: Preset) -> Format {
     Format::Preset(preset)
@@ -1278,9 +1278,9 @@ mod tests {
         assert!(!args.contains(&"-to".to_string()));
     }
 
-    /// Every invocation refuses to overwrite, and none of them ever carries
+    /// Every invocation refuses to overwrite, and none of them ever has
     /// the flag that would let it. Custom included: a typed argument list
-    /// lands in the encoder slot and nowhere near this.
+    /// goes in the encoder slot and nowhere near this.
     #[test]
     fn no_invocation_ever_says_yes_to_overwriting() {
         let mut formats: Vec<Format> = Preset::ALL.into_iter().map(fixed).collect();
@@ -1332,7 +1332,7 @@ mod tests {
     }
 
     /// The span case with a custom on it: the trim and the row's own tags
-    /// are still convert.rs's, and the typed arguments still land after
+    /// are still convert.rs's, and the typed arguments still come after
     /// them.
     #[test]
     fn a_custom_span_keeps_the_trim_and_the_row_tags() {
@@ -1414,7 +1414,7 @@ mod tests {
     }
 
     /// The tokens are whitespace and nothing cleverer, and values that
-    /// happen to carry dots or negative numbers survive it.
+    /// happen to have dots or negative numbers come through intact.
     #[test]
     fn the_argument_split_is_plain_whitespace() {
         assert_eq!(
@@ -1491,7 +1491,7 @@ mod tests {
         );
     }
 
-    /// A destination that exists is left alone. There is no overwrite
+    /// A destination that exists is left alone. There's no overwrite
     /// anywhere in this feature, so the only thing to decide is whether to
     /// say so, and the row does.
     #[test]
@@ -1557,7 +1557,7 @@ mod tests {
         assert_eq!(got[0].item.dest, PathBuf::from("/out/R.E.M - Vol. 2.mp3"));
     }
 
-    /// A preset survives a round trip through the settings file, and a key
+    /// A preset round-trips through the settings file, and a key
     /// from a build this one doesn't know reads as nothing rather than as
     /// the wrong format.
     #[test]
@@ -1573,14 +1573,14 @@ mod tests {
         assert_eq!(Preset::from_key(Format::CUSTOM_KEY), None);
     }
 
-    /// The probe answers false for a binary that isn't there, which is what
-    /// hides every surface of the feature.
+    /// The probe returns false for a binary that isn't there, which hides
+    /// every surface of the feature.
     #[test]
     fn a_missing_binary_probes_false() {
         assert!(!probe("rox-ffmpeg-that-does-not-exist"));
     }
 
-    /// The failure line carries ffmpeg's own words, on one line, and never
+    /// The failure line has ffmpeg's own words, on one line, and never
     /// comes back empty.
     #[test]
     fn the_stderr_tail_is_one_readable_line() {
@@ -1596,10 +1596,10 @@ mod tests {
 }
 
 /// The tier that actually spawns ffmpeg. Every test here no-ops on a machine
-/// without it rather than failing, since the feature no-ops there too: what
-/// they're checking is that the command lines above mean what they say when
-/// something real reads them, and a build machine with no encoder has
-/// nothing to say about that either way.
+/// without it rather than failing, since the feature no-ops there too: they
+/// check that the command lines above mean what they say when something
+/// real reads them, and a build machine with no encoder has nothing to say
+/// about that either way.
 #[cfg(test)]
 mod runtime {
     use super::*;
@@ -1670,7 +1670,7 @@ mod runtime {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// The kinds of stream a file carries, for the art checks.
+    /// The kinds of stream a file has, for the art checks.
     fn streams(path: &Path) -> String {
         let out = Command::new("ffprobe")
             .args([
@@ -1770,9 +1770,9 @@ mod runtime {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A cover survives into the containers that can hold one, and its
-    /// absence doesn't break the ones that can't. The optional video map is
-    /// what does both, and it's worth pinning: get it wrong one way and
+    /// A cover comes through into the containers that can hold one, and its
+    /// absence doesn't break the ones that can't. The optional video map
+    /// does both, and it's worth pinning: get it wrong one way and
     /// every conversion loses its art, wrong the other and a source without
     /// art fails to encode at all.
     #[test]
@@ -1856,7 +1856,7 @@ mod runtime {
 
     /// The cue case, which is the whole point of the feature: a span of an
     /// image comes out as a standalone file, trimmed to the sheet's window
-    /// and wearing the library row's tags rather than the album's.
+    /// and with the library row's tags rather than the album's.
     #[test]
     fn a_cue_span_converts_to_its_own_trimmed_file() {
         if !ffmpeg_here("the cue span conversion") {

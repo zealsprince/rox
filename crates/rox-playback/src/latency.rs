@@ -1,5 +1,5 @@
 //! The low-latency hold (ADR 19): while a parameter editor is open, the
-//! decode thread keeps the sample ring shallow so a knob lands sooner.
+//! decode thread keeps the sample ring shallow so a knob takes effect sooner.
 //!
 //! The chain runs pre-ring, so a parameter change is only audible once the
 //! samples ahead of it drain, up to the ring's full 500 ms. The ring itself
@@ -9,8 +9,9 @@
 //! the whole cushion.
 //!
 //! Process-global, like the EQ's parameter atomics: the editor windows are
-//! global too (one curve for every workspace), and the decode thread wants
-//! one relaxed load per pass, not a route through the command channel.
+//! global too (one curve for every workspace), and the decode thread needs
+//! only one relaxed load per pass instead of a route through the command
+//! channel.
 //! Refcounted rather than a flag so a second editor surface can hold it
 //! alongside the first without either one's close cutting the other short.
 
@@ -19,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// How much audio the ring may hold while a hold is out, in milliseconds.
 /// The floor is the device: a shared-mode period runs 10-40 ms on a typical
 /// desktop (PipeWire's 1024-frame quantum is 21 ms at 48 kHz), and the
-/// decode loop naps 3 ms between refills, so 120 ms is still several periods
+/// decode loop sleeps 3 ms between refills, so 120 ms is still several periods
 /// of cushion against a scheduling hiccup. The ceiling is the ear: past
 /// roughly 150 ms a slider stops feeling attached to what it's moving.
 pub const LOW_LATENCY_MS: usize = 120;
@@ -67,8 +68,8 @@ pub fn fill_limit(capacity: usize, device_rate: u32) -> usize {
 /// How many samples the decode thread may push right now, from the ring's
 /// capacity and its free slots. Every free slot with no hold out, the room
 /// left under the target otherwise, and zero once the ring already holds
-/// more than the target, which is what makes taking a hold mid-playback
-/// drain the excess instead of dropping it.
+/// more than the target, so taking a hold mid-playback drains the excess
+/// instead of dropping it.
 pub fn push_room(capacity: usize, free: usize, device_rate: u32) -> usize {
     fill_limit(capacity, device_rate).saturating_sub(capacity - free)
 }
@@ -79,9 +80,9 @@ mod tests {
     use std::sync::Mutex;
 
     /// The refcount is process-global and the harness runs tests on parallel
-    /// threads, so without this one test's guards would answer another's
-    /// `held`. Poison is ignored on purpose: a failed assertion in one
-    /// shouldn't turn the rest into unrelated failures.
+    /// threads, so without this one test's guards would show up in another's
+    /// `held`. Poison is ignored: a failed assertion in one shouldn't turn
+    /// the rest into unrelated failures.
     static HOLDS_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]

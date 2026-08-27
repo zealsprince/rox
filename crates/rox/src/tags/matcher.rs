@@ -44,7 +44,7 @@ enum Sink {
     /// handle is the editor's own, needed to set its inputs from this
     /// window; both weak, so a closed editor drops the fill. `track`
     /// names which of its tracks this ran on, so a fill from one of the
-    /// table's rows lands in that row rather than over the batch.
+    /// table's rows goes into that row rather than over the batch.
     Fill {
         editor: WeakEntity<TagEditor>,
         window: AnyWindowHandle,
@@ -54,7 +54,7 @@ enum Sink {
 
 /// The fields the compare shows, in tag-sheet order: the writer field, its
 /// label, and how to pull the value off a candidate. Rating and lyrics stay
-/// out - they are not what a release lookup carries.
+/// out, since a release lookup doesn't return them.
 type Pull = fn(&MetadataCandidate) -> String;
 const FIELDS: &[(Field, &str, Pull)] = &[
     (Field::Title, "Title", |c| c.title.clone()),
@@ -78,7 +78,7 @@ const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(35
 
 /// The registry key: the track, plus the opening editor for fills. A fill's
 /// window binds its Apply to the editor that opened it, so two editors on the
-/// same track need their own windows; the panel's commit lookup carries no
+/// same track need their own windows; the panel's commit lookup has no
 /// editor and shares one window per track. Keyed on the whole track, so two
 /// tracks of one cue image get a window each.
 type MatchKey = (TrackKey, Option<EntityId>);
@@ -105,8 +105,8 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, key: Track
 
 /// Open a metadata compare that fills a tag editor on apply rather than
 /// writing, so the editor stays the one writer. The editor and its window
-/// are what the fill sets; both weak, so a closed editor no-ops. `track`
-/// is the editor's index for the track this ran on.
+/// are both what the fill sets, and both weak, so a closed editor no-ops.
+/// `track` is the editor's index for the track this ran on.
 pub fn open_fill(
     library: Entity<Library>,
     now_art: Entity<NowPlayingArt>,
@@ -184,7 +184,7 @@ struct TagMatch {
     /// Which fields to write, one per [`FIELDS`], reset when the selection
     /// changes: on where the fetched value is non-empty and differs.
     armed: Vec<bool>,
-    /// A commit is in flight; the buttons hold still until it lands.
+    /// A commit is in flight; the buttons hold still until it finishes.
     saving: bool,
     /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
@@ -314,7 +314,7 @@ impl TagMatch {
     }
 
     /// Search the providers for the current query and fill the list when
-    /// it lands. With `debounce`, wait out a beat of quiet first so a burst
+    /// it returns. With `debounce`, wait out a beat of quiet first so a burst
     /// of typing fires one request; storing the task cancels the previous
     /// timer and any request still in flight. Enter skips the wait.
     fn search_soon(&mut self, debounce: bool, cx: &mut Context<Self>) {
@@ -447,8 +447,9 @@ impl TagMatch {
                     let (edit, result) = cx
                         .background_executor()
                         .spawn(async move {
-                            // Through the key, so a cue track's pick lands in
-                            // the library instead of stamping the shared image.
+                            // Through the key, so a cue track's pick is
+                            // written to the library instead of stamping
+                            // the shared image.
                             let result =
                                 writer::commit_key(&edit.path, sub, &edit.changes, &edit.pictures);
                             (edit, result)
@@ -555,9 +556,9 @@ impl TagMatch {
     }
 
     /// The compare: one row per field, the current tag beside the fetched
-    /// value with a toggle to arm it. A field the candidate does not carry,
-    /// or already matches, shows dimmed and inert - there is nothing to
-    /// take.
+    /// value with a toggle to arm it. A field the candidate doesn't have,
+    /// or already matches, shows dimmed and inert, since there's nothing
+    /// to take.
     fn compare(&self, candidate: &MetadataCandidate, cx: &mut Context<Self>) -> Div {
         let mut rows = div().flex().flex_col().gap(tokens::SPACE_XS);
         for (i, (_, label, pull)) in FIELDS.iter().enumerate() {
@@ -631,7 +632,7 @@ impl TagMatch {
 }
 
 /// The track's duration in seconds off the projection, resolved from its
-/// id, so the score does not depend on the track being the one playing.
+/// id, so the score doesn't depend on the track being the one playing.
 fn duration_secs_for(library: &Entity<Library>, id: i64, cx: &App) -> Option<f64> {
     let library = library.read(cx);
     let projection = library.projection()?;
@@ -640,7 +641,7 @@ fn duration_secs_for(library: &Entity<Library>, id: i64, cx: &App) -> Option<f64
     (ms > 0).then(|| ms as f64 / 1000.0)
 }
 
-/// A tag value, or a dash where it is empty, so an empty cell reads as
+/// A tag value, or a dash where it's empty, so an empty cell reads as
 /// "nothing here" rather than a gap.
 fn value_or_dash(value: &str) -> SharedString {
     if value.is_empty() {
@@ -731,17 +732,21 @@ impl Render for TagMatch {
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
                     // The body's own surface, a second elevated layer over
-                    // the window's, the same as the settings page. Two
-                    // layers is what the backdrop reads through everywhere.
+                    // the window's, the same as the settings page. The
+                    // backdrop reads through two layers everywhere.
                     .bg(palette::bg_elevated())
-                    .child(section("Search", None, self.search_fields()))
+                    .child(section(rox_i18n::t!("query-search"), None, self.search_fields()))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
                     })
                     .child(
-                        section("Matches", count, div().flex_1().min_h_0().child(content))
-                            .flex_1()
-                            .min_h_0(),
+                        section(
+                            rox_i18n::t!("matcher-section-matches"),
+                            count,
+                            div().flex_1().min_h_0().child(content),
+                        )
+                        .flex_1()
+                        .min_h_0(),
                     ),
             )
             .child(self.footer(can_apply, cx))
@@ -751,7 +756,7 @@ impl Render for TagMatch {
 impl TagMatch {
     /// What stands between the window and a write, when something does.
     /// The clauses run in the order a lookup clears them, so the footer
-    /// names the one step that is actually next, and Apply is live exactly
+    /// names the one step that's actually next, and Apply is live exactly
     /// when nothing is left.
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
@@ -774,7 +779,7 @@ impl TagMatch {
 
     /// The window's actions, and what's in their way. No enter shortcut
     /// here: the query boxes own the key as "search now", and a window
-    /// binding would ride along on the same press and apply against
+    /// binding would fire on the same press and apply against
     /// results the search is about to replace.
     fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
         let blocker = self.blocker();
@@ -821,7 +826,7 @@ impl TagMatch {
     /// editable artist and title that drive the lookup. Editing either
     /// re-searches after a beat; Enter searches at once.
     fn search_fields(&self) -> Div {
-        let field = |label: &'static str, input: &Entity<InputState>| {
+        let field = |label: SharedString, input: &Entity<InputState>| {
             div()
                 .flex_1()
                 .min_w_0()
@@ -855,8 +860,8 @@ impl TagMatch {
                     .flex()
                     .flex_row()
                     .gap(tokens::SPACE_SM)
-                    .child(field("Artist", &self.artist_input))
-                    .child(field("Title", &self.title_input)),
+                    .child(field(rox_i18n::t!("head-piece-artist"), &self.artist_input))
+                    .child(field(rox_i18n::t!("info-item-title"), &self.title_input)),
             )
     }
 }

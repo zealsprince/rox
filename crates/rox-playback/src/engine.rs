@@ -3,7 +3,7 @@
 //! lock, and block; the RT line is the ring in output.rs.
 //!
 //! Gapless (ADR 3): one long-lived stream, the decoder swaps at EOF and the
-//! next track's first frame lands in the ring right behind the last. Encoder
+//! next track's first frame goes into the ring right behind the last. Encoder
 //! delay/padding comes from the LAME/iTunes headers: symphonia 0.6 exposes it
 //! as packet trim metadata and the mp3 decoder applies it, so the samples we
 //! see are already the playable range. The spike verifies that claim against
@@ -52,7 +52,7 @@ pub enum Cmd {
     /// nothing else.
     OrderTail(Vec<u64>),
     /// Arm or clear stop-after-current: armed, the track playing now ends
-    /// the session's motion - the engine lets the ring drain so the last
+    /// the session's motion. The engine lets the ring drain so the last
     /// samples play out, then pauses with the next track cued at 0:00.
     /// Sticky until cleared, so every track end stops while armed.
     SetStopAfter(bool),
@@ -70,7 +70,7 @@ pub enum Cmd {
         groups: Vec<Option<u64>>,
         /// ReplayGain tags per path, parallel the same way and resolved
         /// from the library beside the groups. Shorter pads with the
-        /// untagged default, which the rule's fallback then answers for.
+        /// untagged default, which the rule's fallback then handles.
         gains: Vec<gain::ReplayGain>,
         /// The slice of the file each path plays, parallel the same way. A
         /// cue track is a span inside one image file, so two entries can
@@ -113,9 +113,9 @@ pub enum Cmd {
     ChainPush(Box<dyn Node>),
     /// How long a crossfade runs at a boundary that takes one, in seconds,
     /// and whether tracks of the same album count as one. Zero seconds
-    /// disables it: every boundary is the gapless splice again. Rides the
-    /// command channel rather than an atomic because the engine reads it
-    /// while deciding to open a track, not per sample.
+    /// disables it: every boundary is the gapless splice again. Sent over
+    /// the command channel rather than an atomic because the engine reads
+    /// it while deciding to open a track, not per sample.
     SetCrossfade {
         secs: f32,
         /// Fade at album-contiguous boundaries too, overriding the rule
@@ -143,7 +143,7 @@ pub const CROSSFADE_MAX_SECS: f32 = 12.0;
 /// [`Source::inside_track`]: the last frame is not a place a reader can go.
 const SEEK_END_MARGIN_SECS: f64 = 0.1;
 
-/// What happens when a track or the queue runs out. Lives on the decode
+/// What happens when a track or the queue runs out. Held on the decode
 /// thread only; the RT callback never looks at it.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoopMode {
@@ -167,7 +167,7 @@ struct Source {
     /// Scratch for one decoded packet, interleaved in the file's channel
     /// count, reused across packets.
     scratch: Vec<f32>,
-    /// What this file's ReplayGain tags said, carried so the gain can be
+    /// What this file's ReplayGain tags said, kept so the gain can be
     /// recomputed in place when the rule changes under a live stream.
     rg: gain::ReplayGain,
     /// This source's constant gain, the source-gain stage (ADR 19): the
@@ -199,7 +199,7 @@ struct Source {
 /// A [`Span`] resolved onto the file's own frame clock, which is where the
 /// boundary has to be honored: milliseconds are how a cue sheet writes a
 /// timestamp, frames are what a decoder hands over. Integer math both ways,
-/// so the end of one track and the start of the next land on the same frame
+/// so the end of one track and the start of the next fall on the same frame
 /// and two consecutive spans splice with nothing missing or doubled.
 #[derive(Clone, Copy)]
 struct SpanFrames {
@@ -211,7 +211,7 @@ struct SpanFrames {
 }
 
 /// Milliseconds on a stream of `rate` as a count of its frames. Truncating
-/// integer math on purpose: every caller that asks about the same timestamp
+/// integer math: every caller that asks about the same timestamp
 /// gets the same frame back, so a boundary shared by two spans is one frame
 /// rather than two that differ by a rounding step.
 fn ms_frames(ms: u32, rate: u32) -> u64 {
@@ -244,18 +244,18 @@ pub struct Engine {
     gains: Vec<gain::ReplayGain>,
     /// The slice of the file each pool entry plays, parallel the same way.
     /// None is the whole file, which is every plain track; a cue track
-    /// carries the span its sheet gave it, and several pool entries then
+    /// has the span its sheet gave it, and several pool entries then
     /// point at one image file with different spans.
     spans: Vec<Option<Span>>,
     idx: usize,
-    /// The play order. All navigation walks this, so `order[pos]` is the
+    /// The play order. All navigation steps through this, so `order[pos]` is the
     /// playing entry and Prev retraces the path. Editable in place: insert,
     /// remove, move, reshuffle.
     order: Vec<OrderEntry>,
     /// Position within `order`; kept in sync with `idx` on every open.
     pos: usize,
-    /// Where the first open lands, so playback can start partway into a
-    /// seeded context with history sitting behind the cursor.
+    /// Where the first open goes, so playback can start partway into a
+    /// seeded context with history behind the cursor.
     start: usize,
     /// Next stable id to hand out to a new order entry.
     next_id: u64,
@@ -268,7 +268,7 @@ pub struct Engine {
     /// stays armed until cleared, so every boundary stops.
     stop_after: bool,
     /// An armed stop cut the gapless open at EOF; consumed once the ring
-    /// drains, where the pause lands and the next track cues up.
+    /// drains, where the pause happens and the next track cues up.
     stop_pending: bool,
     /// Frames pushed on the frames_consumed clock; resynced after each flush.
     pushed_playable: u64,
@@ -277,7 +277,7 @@ pub struct Engine {
     pending_pos: usize,
     /// The processing chain (ADR 19): runs over each decoded chunk after the
     /// fold and resample, immediately before the ring, at the device rate.
-    /// Empty is the bypass rule: samples reach the ring untouched.
+    /// Empty is the bypass rule: samples go into the ring untouched.
     chain: Chain,
     /// How tagged loudness becomes each source's constant gain (ADR 19).
     /// Off by default, which is unity everywhere and the bypass rule
@@ -302,7 +302,7 @@ pub struct Engine {
 /// A crossfade in flight (ADR 19). The engine holds two open sources for
 /// the length of the window: the new one is `source` and drives the loop,
 /// this is the old one, decoded alongside and mixed underneath. One summed
-/// stream reaches the ring, so the ring keeps its single producer.
+/// stream goes into the ring, so the ring keeps its single producer.
 struct Fade {
     /// The outgoing track, still decoding its own tail.
     src: Source,
@@ -319,13 +319,13 @@ struct Fade {
     done: u64,
     /// The window's length in device-rate frames.
     len: u64,
-    /// The outgoing track ran out. Past this the mix reads silence, which
-    /// is what a track shorter than its own fade window leaves.
+    /// The outgoing track ran out. Past this the mix reads silence, the
+    /// case for a track shorter than its own fade window.
     ended: bool,
 }
 
 /// A track a skip has wound back, on its way into a fade. Held between the
-/// wind-back and the install, which sit either side of the flush.
+/// wind-back and the install, which are either side of the flush.
 struct Wound {
     src: Source,
     /// The output frame the clock stood at when the wind-back was aimed.
@@ -421,7 +421,7 @@ impl Engine {
     pub fn run(mut self) {
         // Stream open: the chain learns the device rate before any sample
         // passes through it. It resets again on every flush, never at the
-        // gapless boundary, so filter history carries across a track splice.
+        // gapless boundary, so filter history persists across a track splice.
         self.chain.reset(self.device_rate);
         self.publish_queue();
         let mut source = self.open_at(self.start);
@@ -446,12 +446,12 @@ impl Engine {
             while let Ok(cmd) = self.rx.try_recv() {
                 match cmd {
                     Cmd::TogglePause => {
-                        // At the ended state there is nothing coming out to
+                        // At the ended state there's nothing coming out to
                         // pause, so the button can only mean play again: the
                         // finished track comes back from its start through the
                         // nav path, which clears ended on the way. Without this
                         // the flag flips under a source that isn't there and
-                        // the transport sits dead once the queue plays out.
+                        // the transport stays dead once the queue plays out.
                         if source.is_none() && self.shared.ended.load(Ordering::Relaxed) {
                             self.shared.playing.store(true, Ordering::Relaxed);
                             nav_pos = Some(self.audible_pos());
@@ -523,12 +523,12 @@ impl Engine {
                     } => {
                         let at = self.insert(after, paths, groups, gains, spans, explicit);
                         // From the ended state the source is None, so the new
-                        // entries land in order but nothing opens them and we
-                        // stay silent. Route the first of the batch through the
-                        // nav path so it reopens and resumes, clearing ended on
-                        // the way. Play now jumps the same way from a live
-                        // session; Play Next and Add to Queue leave the current
-                        // track playing.
+                        // entries are added in order but nothing opens them
+                        // and we stay silent. Route the first of the batch
+                        // through the nav path so it reopens and resumes,
+                        // clearing ended on the way. Play now jumps the same
+                        // way from a live session; Play Next and Add to Queue
+                        // leave the current track playing.
                         if and_play || source.is_none() {
                             nav_pos = at;
                         }
@@ -560,7 +560,7 @@ impl Engine {
                         // Both sources in hand, so a switch made during a
                         // fade takes on the track going out as well as the
                         // one coming in. Each keeps its own tags, so they
-                        // land on different factors.
+                        // resolve to different factors.
                         if let Some(src) = source.as_mut() {
                             src.relevel(&rule);
                         }
@@ -595,14 +595,14 @@ impl Engine {
             }
 
             // The pre-decoded next track was removed with its source open.
-            // Drop that stale source and reopen the track now sitting in its
+            // Drop that stale source and reopen the track now in its
             // slot, right after the audible one. The audible track already
             // filled the ring, so this reopen is silent, no flush needed. Any
             // half-decoded pending samples belong to the removed track, so
             // clear them too. Skipped when a flush already reopened above.
             //
             // Residual risk: if the decode cursor got far enough ahead that
-            // some of the removed track's samples already reached the ring
+            // some of the removed track's samples already went into the ring
             // (bounded by RING_SECS), that fraction still plays before the
             // reopened next track takes over. Flushing the ring would drop it
             // but would also cut the untouched audible track mid-note, a worse
@@ -622,12 +622,12 @@ impl Engine {
             }
 
             // Move pending samples into the ring. Ring full means we're
-            // comfortably ahead; nap and go back to command handling.
+            // comfortably ahead; sleep and go back to command handling.
             //
             // Full is whatever the latency hold says it is (ADR 19). With an
             // EQ editor open the gate closes early, so the ring keeps its
-            // 500 ms of capacity as the underrun cushion but only carries a
-            // fraction of it, and a knob is heard that much sooner. The nap
+            // 500 ms of capacity as the underrun cushion but only holds a
+            // fraction of it, and a knob is heard that much sooner. The sleep
             // below already covers "couldn't push it all".
             let capacity = self.producer.buffer().capacity();
             let room = latency::push_room(capacity, self.producer.slots(), self.device_rate);
@@ -666,7 +666,7 @@ impl Engine {
                     // chain shapes the mix and the ring gets one stream.
                     self.mix_fade();
                     // The last step before the ring (ADR 19): chain output
-                    // rides through flush, seek, and the gapless boundary
+                    // goes through flush, seek, and the gapless boundary
                     // like any other sample data, and the tap downstream
                     // sees what the chain produced.
                     self.chain.process(&mut self.pending);
@@ -685,8 +685,8 @@ impl Engine {
                         // flush, no stream teardown; this IS the gapless
                         // boundary. Loop modes pick the next open: One
                         // reopens the same track, All wraps the queue. An
-                        // armed stop-after skips the open instead - the
-                        // drain below is where the pause lands, so the
+                        // armed stop-after skips the open instead: the
+                        // drain below is where the pause happens, so the
                         // track's tail still plays out of the ring.
                         source = if self.stop_after {
                             self.stop_pending = true;
@@ -697,21 +697,21 @@ impl Engine {
                     }
                 }
                 None => {
-                    // Nothing to mix a fade under: the incoming track is
-                    // what drives the mix, and there isn't one. Whatever was
-                    // fading out is done, and its publish goes with it -
-                    // unmixed, nothing would ever run past it to clear it.
+                    // Nothing to mix a fade under: the incoming track drives
+                    // the mix, and there isn't one. Whatever was fading out
+                    // is done, and its publish goes with it: unmixed,
+                    // nothing would ever run past it to clear it.
                     self.drop_fade();
                     // Queue exhausted, or an armed stop-after cut the
                     // gapless open: either way the ring drains first so the
                     // last samples play out.
                     if self.ring_drained() {
                         if self.stop_pending {
-                            // The stop landed: pause, then cue what EOF
+                            // The stop took effect: pause, then cue what EOF
                             // would have opened so Play resumes right
                             // there. With nothing to cue (last track, loop
                             // off) fall through to the ended state, the
-                            // pause having landed all the same.
+                            // pause having gone in all the same.
                             if let Some(p) = self.land_stop() {
                                 source = self.open_at(p);
                                 if source.is_some() {
@@ -735,12 +735,12 @@ impl Engine {
     }
 
     /// [`open_at`](Self::open_at) with the new track's position segment
-    /// registered `after` frames later than its first sample reaches the
+    /// registered `after` frames later than its first sample goes into the
     /// ring, and starting `after` frames into the track to match. Zero
     /// everywhere except a crossfade, where the boundary the listener hears
     /// is the middle of the window rather than its start: the clock, the
     /// track-change notification, and MPRIS all flip there, so nothing
-    /// announces a track before it is audible (ADR 19).
+    /// announces a track before it's audible (ADR 19).
     fn open_at_from(&mut self, p: usize, after: u64) -> Option<Source> {
         let (src, at, info) = self.open_file_at(p)?;
         self.adopt(at, info, after);
@@ -749,18 +749,18 @@ impl Engine {
 
     /// Open the file at play-order position `p`, falling forward through
     /// unreadable ones, and hand back the source with the position it
-    /// actually landed on. Changes nothing: no cursor move, no segment, no
+    /// actually opened at. Changes nothing: no cursor move, no segment, no
     /// track info published.
     ///
-    /// Split out so a skip can pay for the open - the file, the probe, the
-    /// decoder - while the old track is still coming out of the ring, and
+    /// Split out so a skip can pay for the open (the file, the probe, the
+    /// decoder) while the old track is still coming out of the ring, and
     /// leave the flush with nothing to hold the silence open for.
     fn open_file_at(&mut self, mut p: usize) -> Option<(Source, usize, TrackInfo)> {
         while p < self.order.len() {
             let i = self.order[p].idx;
             match Source::open(&self.queue[i], self.device_rate, self.spans[i]) {
                 Ok((mut src, info)) => {
-                    // The gain rides with the track open (ADR 19), so it
+                    // The gain is set at the track open (ADR 19), so it
                     // changes exactly where the source does.
                     src.level(self.gains[i], &self.rule);
                     return Some((src, p, info));
@@ -802,7 +802,7 @@ impl Engine {
         prune_segments(&mut segments, consumed);
     }
 
-    /// Where the next open lands when the playing track ends: the same
+    /// Which position the next open uses when the playing track ends: the same
     /// track under repeat-one, the next one in the order, the top under
     /// repeat-all. None when the queue is played out.
     fn next_pos(&self) -> Option<usize> {
@@ -817,14 +817,14 @@ impl Engine {
         }
     }
 
-    /// Land an armed stop-after once the ring has drained: the session goes
+    /// Apply an armed stop-after once the ring has drained: the session goes
     /// quiet, and what EOF would have opened comes back so the caller can cue
-    /// it for the next Play. None when there is nothing to cue.
+    /// it for the next Play. None when there's nothing to cue.
     ///
-    /// The pause is stored whether or not there is a next position, or the
+    /// The pause is stored whether or not there's a next position, or the
     /// last track of a queue with looping off would end with the session
     /// still reading as playing. Anything that wakes it later, a queue edit
-    /// or a continuation batch landing behind it, would then start audio
+    /// or a continuation batch arriving behind it, would then start audio
     /// against a stop the listener asked for. A stop disarmed during the
     /// drain rolls on instead, which is the whole point of asking here rather
     /// than when the flag was set.
@@ -870,7 +870,7 @@ impl Engine {
     }
 
     /// The fade window for a track of `total` device-rate frames. Never
-    /// more than half the track: a fade longer than what it is leaving
+    /// more than half the track: a fade longer than what it's leaving
     /// would open before the track had got going.
     fn fade_window(&self, total: Option<u64>) -> u64 {
         let len = (self.fade_secs.max(0.0) as f64 * self.device_rate as f64) as u64;
@@ -895,8 +895,8 @@ impl Engine {
     /// The window test over the numbers alone: how long the playing track
     /// is and how much of it is left.
     fn window_open(&self, total: Option<u64>, remaining: Option<u64>) -> bool {
-        // An armed stop-after ends the session at this boundary, so there
-        // is nothing to fade into.
+        // An armed stop-after ends the session at this boundary, so there's
+        // nothing to fade into.
         if self.fade_armed || self.fade.is_some() || self.stop_after {
             return false;
         }
@@ -904,8 +904,8 @@ impl Engine {
         if len == 0 {
             return false;
         }
-        // A track of unknown length never opens a window: there is no
-        // honest answer to how far from the end it is.
+        // A track of unknown length never opens a window: there's no honest
+        // answer to how far from the end it is.
         if remaining.is_none_or(|left| left > len) {
             return false;
         }
@@ -915,7 +915,7 @@ impl Engine {
 
     /// Open the next track early and hand it back as the one driving the
     /// loop, with the track it overlaps moved into the fade. Returns the
-    /// old source untouched when there is nothing to open, so the boundary
+    /// old source untouched when there's nothing to open, so the boundary
     /// falls back to the gapless splice.
     fn start_boundary_fade(&mut self, old: Option<Source>) -> Option<Source> {
         let old = old?;
@@ -969,11 +969,11 @@ impl Engine {
         // Nothing decoding, nothing mixing, and the ring still holding
         // samples: this is the half second between the last track's EOF and
         // the ended state. There's no music to hurry along, only an ending to
-        // let play out, and a batch landing here (ADR 17) or a queue edit
+        // let play out, and a batch arriving here (ADR 17) or a queue edit
         // would otherwise chop it with no fade. The new track goes in behind
         // what's left the way it would at any gapless boundary, and
         // `pushed_playable` already points past the tail, so the segment
-        // lands where the new track really becomes audible.
+        // goes where the new track really becomes audible.
         let draining = old.is_none() && self.fade.is_none() && !self.ring_drained();
         let leaving = self.prepare_skip_fade(old);
         let cut = if draining {
@@ -993,7 +993,7 @@ impl Engine {
     }
 
     /// Scrub the audible track to `secs` and cut the ring so the listener
-    /// lands there. A seek cuts rather than fades: scrubbing is meant to be
+    /// ends up there. A seek cuts rather than fades: scrubbing is meant to be
     /// heard as a jump.
     ///
     /// The decode cursor leads the audible track by up to a ring during the
@@ -1001,10 +1001,10 @@ impl Engine {
     /// seeking it would scrub inside the following track. Reopen the audible
     /// track first, the same anchor Next and Prev use.
     ///
-    /// No source at all is the ended state (or the drain ahead of a landing
-    /// stop-after), and that same reopen is what brings the played-out track
-    /// back under the strip. Without it the seek has nothing to seek and a
-    /// click on a finished queue does nothing at all.
+    /// No source at all is the ended state (or the drain ahead of a
+    /// stop-after about to take effect), and that same reopen brings the
+    /// played-out track back under the strip. Without it the seek has
+    /// nothing to seek and a click on a finished queue does nothing at all.
     fn seek_to(&mut self, mut source: Option<Source>, secs: f64) -> Option<Source> {
         let ap = self.audible_pos();
         let mut reopened = None;
@@ -1037,11 +1037,11 @@ impl Engine {
 
     /// Wind the track a skip is leaving back to the spot the listener has
     /// actually reached, ready to carry the fade under the new one, and
-    /// report the output frame that spot sits at.
+    /// report the output frame that spot is at.
     ///
     /// The decode cursor runs up to a ring ahead of the speakers, so the
-    /// open source is well past what was heard; the wind-back is what makes
-    /// the fade start under the last sample that got out. It happens before
+    /// open source is well past what was heard; the wind-back makes the fade
+    /// start under the last sample that got out. It happens before
     /// the flush, since a seek is the expensive part and paying for it
     /// during the cut would hold the silence open;
     /// [`install_skip_fade`](Self::install_skip_fade) takes the drift back
@@ -1066,7 +1066,7 @@ impl Engine {
         let (_, secs) = self.shared.position_at(at, self.device_rate)?;
         // Where the seek asked to go and where it actually landed are the
         // same number for anything with an index, and seconds apart for a
-        // CBR MP3 without one. Carry the difference so the install can
+        // CBR MP3 without one. Keep the difference so the install can
         // discard it instead of replaying music that already played.
         let landed = old.seek(secs)?;
         let short = ((secs - landed) * self.device_rate as f64).round() as i64;
@@ -1087,10 +1087,10 @@ impl Engine {
         // The wind-back aimed at where the clock stood before the flush, and
         // the frames that went out during the flush itself are still ahead
         // of it. Hand those to nobody, so the fade starts on the sample the
-        // cut landed on rather than replaying the last few milliseconds.
+        // cut ended at rather than replaying the last few milliseconds.
         let owed = cut.saturating_sub(at);
         // Past a quarter second the flush didn't take a period, it stalled
-        // (a dead backend riding the deadline out). Skipping that much of a
+        // (a dead backend running the deadline out). Skipping that much of a
         // track to line up with it isn't worth doing; cut instead.
         if owed > self.device_rate as u64 / 4 {
             return 0;
@@ -1102,7 +1102,7 @@ impl Engine {
         if discard > 0 {
             fade.pull(self.device_rate, discard as usize * 2);
         }
-        // No longer than what is left of the track being left: past its
+        // No longer than what's left of the track being left: past its
         // end the mix is silence, and the new track would be rising out of
         // nothing rather than out of music.
         let len = self
@@ -1120,7 +1120,7 @@ impl Engine {
     /// Drop the fade in flight and take back what was published for it.
     /// For the cases where a window is abandoned before the mix ever runs:
     /// nothing downstream would close it, and the transport reads the fade
-    /// off the output clock, so a stale publish sits there forever.
+    /// off the output clock, so a stale publish stays there forever.
     fn drop_fade(&mut self) {
         if self.fade.take().is_some() {
             self.shared.fade_len.store(0, Ordering::Release);
@@ -1135,7 +1135,7 @@ impl Engine {
     /// Shrinking the window is the whole of it: the curve reads its progress
     /// off `len`, so the tail runs out its ramp over the next chunk or two
     /// and the mix closes itself. What was published stands, same as a
-    /// window that closed on time - the ear is still inside it.
+    /// window that closed on time: the ear is still inside it.
     fn close_fade_fast(&mut self) {
         let ramp = (self.device_rate as u64 / 50).max(1);
         if let Some(fade) = self.fade.as_mut() {
@@ -1145,7 +1145,7 @@ impl Engine {
 
     /// Mix the outgoing track under the chunk just decoded, and close the
     /// window once it has run its length. The two sources sum here, in the
-    /// engine, so what reaches the chain and the ring is one stream.
+    /// engine, so the chain and the ring get one stream.
     fn mix_fade(&mut self) {
         let device_rate = self.device_rate;
         let closed = {
@@ -1222,10 +1222,10 @@ impl Engine {
 
     /// Splice paths into the pool and order right after entry `after` (or at
     /// the end). Never flushes: the current track keeps playing, only the
-    /// future changes. If the splice lands before the cursor the cursor rides
-    /// along so the playing entry stays put. Returns the order position of the
-    /// first appended entry, or None when nothing was inserted, so a revive
-    /// from the ended state can navigate to it.
+    /// future changes. If the splice goes in before the cursor the cursor
+    /// moves with it so the playing entry stays put. Returns the order
+    /// position of the first appended entry, or None when nothing was
+    /// inserted, so a revive from the ended state can navigate to it.
     fn insert(
         &mut self,
         after: Option<u64>,
@@ -1295,7 +1295,7 @@ impl Engine {
         // Removing at or before the decode cursor shifts it down one. When p
         // equals the cursor it's the pre-decoded next track (p can't be the
         // audible entry, that's refused above), and the still-open source
-        // hands off to pos+1 at EOF, so pos must land on the audible entry or
+        // hands off to pos+1 at EOF, so pos must end up on the audible entry or
         // that handoff skips a track.
         if p <= self.pos {
             self.pos = self.pos.saturating_sub(1);
@@ -1388,7 +1388,7 @@ impl Engine {
     /// upcoming portion into the sequence `ids` names. Same guarantees, so
     /// history and the playing entry stay put and nothing flushes.
     ///
-    /// The sort is stable and unnamed entries rank last, which is what lets a
+    /// The sort is stable and unnamed entries rank last, which lets a
     /// partial list work: tracks the caller had no opinion about keep the
     /// order they were already in, behind the ones it ranked.
     fn order_tail(&mut self, ids: &[u64]) {
@@ -1409,12 +1409,12 @@ impl Engine {
 
     /// Have the backend discard everything queued and tell us it has, then
     /// resync our clock to what actually played. Returns the output frame
-    /// the cut landed on, which is where the next sample pushed will play.
+    /// the cut ended at, which is where the next sample pushed will play.
     ///
     /// The wait is the whole gap a skip costs: the ring is clear the moment
-    /// the ack lands, so the sooner this returns the sooner audio comes
-    /// back. Everything the caller can do beforehand - opening the next
-    /// file, winding a source back - belongs before the call, while the ring
+    /// the ack arrives, so the sooner this returns the sooner audio comes
+    /// back. Everything the caller can do beforehand (opening the next
+    /// file, winding a source back) belongs before the call, while the ring
     /// is still playing.
     fn flush_ring(&mut self) -> u64 {
         self.pending.clear();
@@ -1428,7 +1428,7 @@ impl Engine {
         // smear filter history across the jump.
         self.chain.reset(self.device_rate);
         let seq = self.shared.flush_seq.fetch_add(1, Ordering::Release) + 1;
-        // A live backend answers within one period; bound the wait so a dead
+        // A live backend acks within one period; bound the wait so a dead
         // output stream (unplugged device, callback stopped) can't spin here
         // forever. Past the deadline we resync anyway, at worst a few stale ms.
         let deadline = Instant::now() + StdDuration::from_millis(500);
@@ -1482,7 +1482,7 @@ fn prune_segments(segments: &mut Vec<Segment>, consumed: u64) {
 
 /// The fade length a `SetCrossfade` really means, in seconds. NaN sails
 /// straight through a clamp, and every test downstream of it is a
-/// comparison NaN answers false to, so the fade would read as on while
+/// comparison NaN returns false for, so the fade would read as on while
 /// never rendering: each skip pays for a wind-back seek and then cuts.
 /// Normalized here, at the one place a length arrives.
 fn crossfade_secs(secs: f32) -> f32 {
@@ -1518,7 +1518,7 @@ enum FlushAction {
     Track {
         pos: usize,
         /// The jump came from a Previous. Only the transport's fade
-        /// readout cares; the engine treats both directions the same.
+        /// readout uses it; the engine treats both directions the same.
         back: bool,
     },
 }
@@ -1565,9 +1565,9 @@ impl Fade {
 }
 
 /// Fisher-Yates over a slice in place, xorshift64 off the std hasher's
-/// per-process random keys; a play order does not need a rand dependency.
+/// per-process random keys; a play order doesn't need a rand dependency.
 ///
-/// Public because the play order isn't the only thing that wants an unbiased
+/// Public because the play order isn't the only thing that needs an unbiased
 /// shuffle without a dependency: a continuation provider (ADR 17) shuffles
 /// its candidate pool before it picks, and a second copy of this would be a
 /// second thing to get wrong.
@@ -1591,7 +1591,7 @@ pub fn shuffle_slice<T>(slice: &mut [T]) {
 /// `width` entries, and everything behind them keeps its ranking.
 ///
 /// Off the std hasher's per-process keys, the same trick the Random button
-/// uses. Picking a track does not need a rand dependency.
+/// uses. Picking a track doesn't need a rand dependency.
 ///
 /// Shared between the player's skip band and the radio continuation
 /// provider (ADR 17), which draws its batch the same way: rank the whole
@@ -1643,8 +1643,8 @@ pub fn count_frames(path: &PathBuf) -> Result<(u64, Option<u64>), String> {
 /// the data behind a waveform strip. Lane 0 is the mono mix; a source with
 /// more channels adds a left and a right lane after it (the decode path
 /// folds wider layouts to front left/right, so two is as many as come out).
-/// Pairs are normalized so the loudest bin hits 1 - the channel lanes
-/// against a shared loudest, so the balance between them stays honest -
+/// Pairs are normalized so the loudest bin hits 1 (the channel lanes
+/// against a shared loudest, so the balance between them stays honest)
 /// with a gentle perceptual curve so quiet passages stay visible. No audio
 /// device involved; run it on a background thread, a long track is a full
 /// decode.
@@ -1657,7 +1657,7 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>,
 
     // Coarse pass: one pair per lane per fixed block of frames, so memory
     // stays a few thousand pairs whatever the track length, then fold down
-    // to `bins`. The lanes ride the loop in mono, left, right order.
+    // to `bins`. The lanes run through the loop in mono, left, right order.
     const BLOCK_FRAMES: usize = 2048;
     let mut coarse: [Vec<(f32, f32)>; 3] = Default::default();
     let mut lo = [f32::MAX; 3];
@@ -1699,7 +1699,7 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>,
     }
 
     // A mono source's channel lanes would duplicate the mix; drop them at
-    // the door so the strip knows there's nothing to split.
+    // the door so the strip has no lanes to split.
     let keep = if info.channels >= 2 { 3 } else { 1 };
     let mut lanes: Vec<Vec<(f32, f32)>> = coarse
         .into_iter()
@@ -1713,7 +1713,7 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>,
 }
 
 /// Fold coarse pairs into the requested resolution, keeping each bucket's
-/// extremes so transients survive the downsample.
+/// extremes so transients come through the downsample.
 fn fold_bins(coarse: Vec<(f32, f32)>, bins: usize) -> Vec<(f32, f32)> {
     if coarse.len() <= bins.max(1) {
         return coarse;
@@ -1829,7 +1829,7 @@ impl Source {
 
         // num_frames already excludes encoder delay and padding in 0.6. A
         // zero out of either of these is the reader saying it doesn't know
-        // rather than the file being empty, so it reads as no answer and
+        // rather than the file being empty, so it reads as no value and
         // falls through to the next one.
         let stated_frames = track.num_frames.filter(|n| *n > 0);
         let stated_secs = track
@@ -1843,7 +1843,7 @@ impl Source {
         // A fragmented MP4 states its length in the movie header and
         // nowhere symphonia looks, so without this the whole file reads as
         // zero seconds long: no seek bar range, and a fade window that
-        // thinks the track ended before it started.
+        // treats the track as ended before it started.
         let file_secs = stated_secs.or_else(|| rox_library::mp4::fragment_duration_secs(path));
         let file_frames =
             stated_frames.or_else(|| file_secs.map(|s| (s * sample_rate as f64).round() as u64));
@@ -1854,7 +1854,7 @@ impl Source {
 
         // The span on the file's own frame clock, which is the only clock
         // its end can be honored on: everything downstream of the resampler
-        // counts device-rate frames, and a boundary cut there would land a
+        // counts device-rate frames, and a boundary cut there would fall a
         // sample or two either side of where the sheet put it.
         let span_frames = span.map(|s| SpanFrames {
             start: ms_frames(s.start_ms, sample_rate),
@@ -1924,7 +1924,7 @@ impl Source {
             src_frame: 0,
         };
 
-        // Walk to the span's first frame before the caller ever asks for a
+        // Seek to the span's first frame before the caller ever asks for a
         // packet, so the source hands back the track from its very first
         // chunk. Same accurate seek a scrub uses, decoder and resampler
         // reset with it, and the decode drops whatever the packet-granular
@@ -1983,8 +1983,8 @@ impl Source {
 
     /// The decode itself: packets in, device-rate stereo appended to `out`.
     fn decode_chunk(&mut self, device_rate: u32, out: &mut Vec<f32>) -> bool {
-        // A span already at its end is a track already over, and it answers
-        // exactly what the file's own end answers: drain the resampler's
+        // A span already at its end is a track already over, and it does
+        // exactly what the file's own end does: drain the resampler's
         // carried frame and stop. Everything upstream of here then takes the
         // gapless boundary it would have taken at EOF.
         if self.span_left() == Some(0) {
@@ -2069,7 +2069,7 @@ impl Source {
                 }
             };
 
-            // The span's first frame. A format answers an accurate seek with
+            // The span's first frame. A format resolves an accurate seek to
             // the packet holding the timestamp, which is near enough for a
             // scrub and nowhere near enough for a cue seam: the frames
             // between where the seek landed and where the track starts
@@ -2121,10 +2121,10 @@ impl Source {
     /// so the caller doesn't register a segment that jumps the position
     /// display to a spot playback never reached.
     ///
-    /// Both the request and the answer are track-relative, so a span's 0:00
-    /// is its own first frame rather than the image file's. That's what
-    /// keeps the seek strip and the position clock reading a cue track the
-    /// way they read a plain file, with no arithmetic of their own.
+    /// Both the request and the result are track-relative, so a span's 0:00
+    /// is its own first frame rather than the image file's. That keeps the
+    /// seek strip and the position clock reading a cue track the way they
+    /// read a plain file, with no arithmetic of their own.
     fn seek(&mut self, secs: f64) -> Option<f64> {
         let secs = self.inside_track(secs);
         let Some(span) = self.span else {
@@ -2150,14 +2150,14 @@ impl Source {
         Some(rel)
     }
 
-    /// Pull a seek target back inside the track. The last frame is not
+    /// Pull a seek target back inside the track. The last frame isn't
     /// somewhere a reader can land: the seek comes back "unexpected end of
     /// file" and the attempt leaves the reader parked at the end, so the next
     /// chunk reads as the track finishing. Dragging the seek strip to its
     /// right edge asks for exactly the duration, so that scrub would end the
     /// track, and the whole queue with it on the last entry.
     ///
-    /// The margin lands inside the final packet either way, which is where a
+    /// The margin falls inside the final packet either way, which is where a
     /// drag to the edge means to go. A track that never claimed a length has
     /// no ceiling to clamp against and goes through as asked.
     fn inside_track(&self, secs: f64) -> f64 {
@@ -2190,9 +2190,9 @@ impl Source {
                     .and_then(|tb| tb.calc_time(seeked.actual_ts))
                     .map(|t| t.as_secs_f64().max(0.0))
                     .unwrap_or(secs);
-                // The span's end is an absolute spot in the file, so what
-                // counts toward it is where the reader really is, not where
-                // the seek was aimed. A coarse landing shortens or lengthens
+                // The span's end is an absolute spot in the file, so where
+                // the reader really is counts toward it, not where the seek
+                // was aimed. A coarse landing shortens or lengthens
                 // the decode rather than moving the boundary.
                 self.src_frame = (landed * self.resampler.src_rate() as f64).round() as u64;
                 Some(landed)
@@ -2243,7 +2243,7 @@ mod tests {
     /// The similarity mode's reorder: the named entries lead in the order
     /// given, the playing track and everything behind it never move, and
     /// entries nobody ranked keep their own order behind the ranked ones.
-    /// That last part is what lets a partly analyzed library work at all.
+    /// That last part lets a partly analyzed library work at all.
     #[test]
     fn order_tail_ranks_what_it_knows_and_leaves_the_rest() {
         let mut engine = test_engine(6);
@@ -2263,8 +2263,8 @@ mod tests {
         assert_eq!(engine.pos, 1);
     }
 
-    /// An empty ranking, which is what an unanalyzed library produces,
-    /// leaves the queue exactly as it found it rather than scrambling it.
+    /// An empty ranking, what an unanalyzed library produces, leaves the
+    /// queue exactly as it found it rather than scrambling it.
     #[test]
     fn order_tail_with_nothing_ranked_changes_nothing() {
         let mut engine = test_engine(4);
@@ -2353,7 +2353,7 @@ mod tests {
 
     /// Put the engine where a skip starts from: a second into the first
     /// track, playing, with no backend to ack the flush so the cut doesn't
-    /// sit out its deadline.
+    /// wait out its deadline.
     fn ready_to_skip(e: &mut Engine, consumed: u64) -> Option<Source> {
         let source = e.open_at(0);
         assert!(source.is_some(), "the fixture opens");
@@ -2426,7 +2426,7 @@ mod tests {
                 track_frame: 0,
             },
         ];
-        // Consumed sits between segment 1 and 2: drop segment 0, keep 1 (the
+        // Consumed is between segment 1 and 2: drop segment 0, keep 1 (the
         // newest already reached) plus the two future ones.
         prune_segments(&mut segments, 150);
         let ats: Vec<u64> = segments.iter().map(|s| s.at_frame).collect();
@@ -2488,7 +2488,7 @@ mod tests {
             "the pre-decoded next track is the runahead"
         );
         // Cursor re-anchors down onto the audible entry so the caller's reopen
-        // lands on the right next track.
+        // goes to the right next track.
         assert_eq!(e.pos, 2);
         assert_eq!(e.order.len(), 4);
     }
@@ -2538,7 +2538,7 @@ mod tests {
     }
 
     /// A continuation batch (ADR 17) is an append into the running session:
-    /// no `after`, not explicit, landing behind everything already queued
+    /// no `after`, not explicit, added behind everything already queued
     /// while the cursor and the history in front of it stay exactly put.
     #[test]
     fn a_continuation_batch_appends_behind_the_cursor() {
@@ -2565,18 +2565,18 @@ mod tests {
             snap.entries[4..].iter().all(|en| !en.explicit),
             "an appended batch is context"
         );
-        // The pool grew alongside the order, which is what keeps the
-        // position mapping and the shared track list resolving.
+        // The pool grew alongside the order, which keeps the position
+        // mapping and the shared track list resolving.
         assert_eq!(e.queue.len(), 6);
         assert_eq!(e.groups[4..], [Some(9), Some(9)]);
         assert_eq!(e.shared.tracks.lock().unwrap().len(), 6);
     }
 
-    /// Shuffle folds a landed batch into the upcoming permutation instead of
-    /// leaving it in provider order at the tail. Under the similarity mode
+    /// Shuffle folds an appended batch into the upcoming permutation instead
+    /// of leaving it in provider order at the tail. Under the similarity mode
     /// the player sends the reorder straight after the insert on this same
-    /// channel, so the pair is what the engine sees, and the appended
-    /// entries have to be reachable by it.
+    /// channel, so the engine sees the pair, and the appended entries have to
+    /// be reachable by it.
     #[test]
     fn a_batch_landing_under_shuffle_joins_the_upcoming_order() {
         let mut e = test_engine(4);
@@ -2608,12 +2608,12 @@ mod tests {
 
     /// The last acceptance of #36, at the queue-math level: a session that
     /// played out to the end and got a batch appended has somewhere to go.
-    /// `insert` hands back that position, which is what the run loop routes
-    /// through the nav path to wake the session (see the Insert arm).
+    /// `insert` hands back that position, which the run loop routes through
+    /// the nav path to wake the session (see the Insert arm).
     #[test]
     fn appending_to_a_played_out_queue_names_the_track_to_wake_into() {
         let mut e = test_engine(2);
-        // Played through: the cursor sits on the last entry and the source
+        // Played through: the cursor is on the last entry and the source
         // is gone, which is the ended state.
         e.pos = 1;
         let at = e.insert(
@@ -2651,7 +2651,7 @@ mod tests {
         assert_eq!(snap.entries[2].group, None);
         assert_eq!(e.gains[1].track_db, Some(-6.0));
         assert_eq!(e.gains[2], gain::ReplayGain::default());
-        // A cue track's span rides in beside its gain, and the entry the
+        // A cue track's span goes in beside its gain, and the entry the
         // caller said nothing about plays its whole file.
         assert_eq!(e.spans[1].map(|s| s.start_ms), Some(1_000));
         assert_eq!(e.spans[2], None);
@@ -2735,8 +2735,8 @@ mod tests {
         let mut e = test_engine(2);
         set_groups(&mut e, &[None, None]);
         e.fade_secs = 0.0;
-        // Sitting right on the end of the track, which is where a window
-        // would open if there were one.
+        // Right on the end of the track, which is where a window would open
+        // if there were one.
         assert!(!e.window_open(Some(100), Some(0)));
     }
 
@@ -2805,7 +2805,7 @@ mod tests {
         assert!(after.is_none());
         assert!(e.fade.is_none());
         // The clock is frozen at the cut with no source to move it, so a
-        // fade published here would sit on the transport for good.
+        // fade published here would stay on the transport for good.
         assert_eq!(e.shared.fade_len.load(Ordering::Acquire), 0);
         assert!(e.shared.crossfade().is_none());
     }
@@ -2893,7 +2893,7 @@ mod tests {
         assert!(!e.window_open(Some(100), Some(0)));
     }
 
-    /// The stop lands on the last track of a queue with looping off, so
+    /// The stop falls on the last track of a queue with looping off, so
     /// there's nothing to cue. The pause still has to go in: a session left
     /// reading as playing gets started again by the next thing that wakes it,
     /// a queue edit or a continuation batch, against a stop the listener
@@ -2909,7 +2909,7 @@ mod tests {
         assert!(!e.stop_pending, "and it only lands once");
     }
 
-    /// The ordinary landing, mid-queue: paused, with the track EOF would have
+    /// The ordinary case, mid-queue: paused, with the track EOF would have
     /// opened handed back for Play to resume into.
     #[test]
     fn a_stop_mid_queue_pauses_and_names_what_play_resumes() {
@@ -2933,7 +2933,7 @@ mod tests {
         assert!(e.shared.playing.load(Ordering::Relaxed), "no pause landed");
     }
 
-    /// A batch landing (ADR 17) between the last track's EOF and the ended
+    /// A batch arriving (ADR 17) between the last track's EOF and the ended
     /// state finds no source open, and the nav route it takes must not cut
     /// the ring: the ending is still coming out of it, and there's nothing
     /// playing over it that a cut would hurry along.
@@ -2942,7 +2942,7 @@ mod tests {
         let fx = Fixtures::new("skip-draining");
         let mut e = engine_over(vec![fx.wav("a.wav", 1.0), fx.wav("b.wav", 1.0)]);
         // Four frames of the last track still queued and unheard, with no
-        // source decoding: what the run loop sits in while the ring drains.
+        // source decoding: the state the run loop is in while the ring drains.
         for _ in 0..8 {
             e.producer.push(0.25).expect("room in the test ring");
         }
@@ -2960,7 +2960,7 @@ mod tests {
             "no cut, so the backend keeps what it's holding"
         );
         assert_eq!(e.pushed_playable, 1_000, "the tail still counts as pushed");
-        // The new track's segment sits where its first sample will actually
+        // The new track's segment is where its first sample will actually
         // be heard, behind the tail rather than on top of it.
         let segments = e.shared.segments.lock().unwrap();
         assert_eq!(segments.last().map(|s| s.at_frame), Some(1_000));
@@ -2968,7 +2968,7 @@ mod tests {
 
     /// The ring already empty is the ordinary ended state, and a skip out of
     /// it cuts as it always did: there's nothing left to protect, and the
-    /// flush is what resyncs the clock onto the new track.
+    /// flush resyncs the clock onto the new track.
     #[test]
     fn a_skip_out_of_a_drained_ring_still_cuts() {
         let fx = Fixtures::new("skip-drained");
@@ -3067,7 +3067,7 @@ mod tests {
     }
 
     /// A spanned source is the slice, not the file: it reports the slice's
-    /// length, sits at its own 0:00 before anything decodes, and the first
+    /// length, starts at its own 0:00 before anything decodes, and the first
     /// sample out of it is the one a second into the image.
     #[test]
     fn a_span_opens_at_its_start_and_reports_its_own_length() {
@@ -3095,7 +3095,7 @@ mod tests {
     fn a_span_ends_on_its_boundary_frame() {
         let fx = Fixtures::new("span-boundary");
         let path = fx.wav("image.wav", 4.0);
-        // A boundary that lands mid-packet whatever the block size: 1234 ms
+        // A boundary that falls mid-packet whatever the block size: 1234 ms
         // is 59_232 frames, which is no round number of anything.
         let spanned = decode_all(&path, Some(span(0, Some(1_234))));
         assert_eq!(spanned.len() / 2, 59_232, "cut on the exact frame");
@@ -3136,8 +3136,8 @@ mod tests {
         let (mut src, _) =
             Source::open(&path, 48_000, Some(span(1_000, Some(3_000)))).expect("the image opens");
 
-        // A container answers a seek with the packet holding the timestamp,
-        // so the landing is a few milliseconds coarse. What matters is which
+        // A container resolves a seek to the packet holding the timestamp,
+        // so the landing is a few milliseconds coarse. The point is which
         // clock it's on: half a second, not the second and a half into the
         // image that spot really is.
         let landed = src.seek(0.5).expect("the wav seeks");
@@ -3150,9 +3150,8 @@ mod tests {
 
         // Well past the span's end: it clamps into this track rather than
         // scrubbing on into the next one, which is the same file a few
-        // seconds along. Short of the end by the seek margin, so what it
-        // lands on is a spot with music left rather than the track's own
-        // finish line.
+        // seconds along. Short of the end by the seek margin, so it lands on
+        // a spot with music left rather than the track's own finish line.
         let landed = src.seek(30.0).expect("the wav seeks");
         assert!(landed <= 2.0, "landed at {landed}, past the span's end");
         assert!(
@@ -3195,7 +3194,7 @@ mod tests {
         assert_eq!(tail, whole[144_000 * 2..]);
     }
 
-    /// The pool carries the span the same way it carries the group and the
+    /// The pool holds the span the same way it holds the group and the
     /// gain, so the source the engine opens for an entry is that entry's
     /// slice. One image, two entries, two different tracks.
     #[test]
@@ -3222,8 +3221,8 @@ mod tests {
         drop(first);
         let second = e.open_at(1).expect("the image opens again");
         assert_eq!(second.total_frames, Some(144_000));
-        // Each entry publishes its own length, which is what the transport
-        // and the fade window read off.
+        // Each entry publishes its own length, which the transport and the
+        // fade window read off.
         let tracks = e.shared.tracks.lock().unwrap();
         assert_eq!(tracks[0].as_ref().and_then(|t| t.duration_secs), Some(1.0));
         assert_eq!(tracks[1].as_ref().and_then(|t| t.duration_secs), Some(3.0));
@@ -3234,7 +3233,7 @@ mod tests {
         let mut e = test_engine(5);
         set_audible(&e, 1);
         e.pos = 1;
-        // Name the audible entry in the drop set; it must survive.
+        // Name the audible entry in the drop set; it must be kept.
         let _ = e.remove_many(&[0, 1, 2]);
         assert!(
             e.order.iter().any(|entry| entry.id == 1),

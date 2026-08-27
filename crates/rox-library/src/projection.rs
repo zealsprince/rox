@@ -1,11 +1,11 @@
 //! The read path of ADR 5 at scale. Columnar: artist, album, and genre are
-//! interned to u32 symbols, titles live in one contiguous byte arena with an
-//! offset table (never ten million heap Strings), and every browse order is a
-//! precomputed Vec<u32> of row indices over integer ranks. Search per ADR 6 is
-//! substring: the interned tables are scanned whole (they are a hundredth the
-//! row count), only titles need the full-row scan, and that scan splits across
-//! cores in fixed chunks. A query is terms ANDed per [`parse_query`], each
-//! free or pinned to one field with `field:value` syntax.
+//! interned to u32 symbols, titles are stored in one contiguous byte arena
+//! with an offset table (never ten million heap Strings), and every browse
+//! order is a precomputed Vec<u32> of row indices over integer ranks. Search
+//! per ADR 6 is substring: the interned tables are scanned whole (they're a
+//! hundredth the row count), only titles need the full-row scan, and that scan
+//! splits across cores in fixed chunks. A query is terms ANDed per
+//! [`parse_query`], each free or pinned to one field with `field:value` syntax.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -78,7 +78,7 @@ struct Interner {
     fold: bool,
     map: HashMap<Box<str>, u32>,
     table: Vec<String>,
-    /// Per symbol, every casing seen and how many rows carry it, so the
+    /// Per symbol, every casing seen and how many rows use it, so the
     /// most common spelling wins the display. Only filled when folding,
     /// so the exact path pays nothing.
     variants: Vec<HashMap<String, u32>>,
@@ -152,7 +152,7 @@ pub struct SymTable {
 
 impl From<Interner> for SymTable {
     fn from(interner: Interner) -> Self {
-        // Folded symbols display as the casing the most rows carry, ties
+        // Folded symbols display as the casing the most rows use, ties
         // to the lexicographically smaller so reloads stay stable.
         let strings: Vec<String> = if interner.fold {
             interner
@@ -185,13 +185,13 @@ impl SymTable {
     }
 }
 
-/// What a ReplayGain column holds for a row whose file carries no gain of
+/// What a ReplayGain column holds for a row whose file has no gain of
 /// that kind. Sorts ahead of every real value the way an unrated row or a
 /// missing year does, and decodes back to None.
 pub const NO_GAIN: i16 = i16::MIN;
 
 /// A tagged gain packed for the projection: hundredths of a dB in an i16.
-/// Every real gain lands well inside the +-40 dB the engine will act on, so
+/// Every real gain falls well inside the +-40 dB the engine will act on, so
 /// the integer holds the tag exactly, sorts without a float comparator, and
 /// costs a row two bytes instead of four plus a present flag. Nothing, and
 /// anything too wild to be a gain, packs to [`NO_GAIN`].
@@ -326,7 +326,7 @@ pub struct Projection {
     /// Whether the name symbols interned case-folded, the library's
     /// case-insensitive setting at load time. Matching against symbol
     /// strings folds the same way when set, so a stale pick made under
-    /// the other casing still lands.
+    /// the other casing still matches.
     pub fold: bool,
     pub db_id: Vec<i64>,
     pub title: Arena,
@@ -356,11 +356,11 @@ pub struct Projection {
     /// place, so rating a track never pays a projection reload.
     pub rating: Vec<AtomicU8>,
     /// Play counts derived from the listens table at load. Atomics for
-    /// the ratings' reason: a landing listen bumps its track in place,
+    /// the ratings' reason: a new listen bumps its track in place,
     /// so a play never pays a projection reload. Per ADR 11 the events
     /// stay the source; this column only caches their per-track count.
     pub plays: Vec<AtomicU32>,
-    /// The two ReplayGain figures a row carries (ADR 19), packed to
+    /// The two ReplayGain figures a row has (ADR 19), packed to
     /// centi-dB per [`pack_gain`] with [`NO_GAIN`] for an untagged file.
     /// Only the gains: the peaks bound playback, and nothing browsing the
     /// library sorts or reads by them, so they stay in the database.
@@ -377,11 +377,11 @@ pub struct Projection {
     /// sheet's 1-based track number for a span of an image. Dense because
     /// it's two bytes a track and every TrackKey the UI builds needs it.
     pub sub: Vec<u16>,
-    /// The cue tracks' spans, keyed by row index. Sparse on purpose per the
-    /// ADR 5 memory discipline: a library with no cue sheets holds an empty
-    /// map instead of a dense column of None, and even a library full of
-    /// them only pays per cue row. Nothing reads this to show a duration -
-    /// duration_ms is already on the row - it's for the player.
+    /// The cue tracks' spans, keyed by row index. Sparse per the ADR 5
+    /// memory discipline: a library with no cue sheets holds an empty map
+    /// instead of a dense column of None, and even a library full of them
+    /// only pays per cue row. Nothing reads this to show a duration, since
+    /// duration_ms is already on the row; it's for the player.
     pub spans: HashMap<u32, crate::cue::Span>,
     /// Each track's parent directory, interned. Folders repeat once per
     /// album directory, so interning keeps this a handful of symbols even
@@ -435,7 +435,7 @@ pub struct RowView<'a> {
     pub rating: u8,
     pub plays: u32,
     pub added: i64,
-    /// The file's own ReplayGain figures in dB, None where it carries none.
+    /// The file's own ReplayGain figures in dB, None where it has none.
     pub track_gain_db: Option<f32>,
     pub album_gain_db: Option<f32>,
     /// What the row runs at in beats a minute, None where nothing has
@@ -479,7 +479,7 @@ pub enum QueryField {
     Codec,
     /// The three numeric pins, which take a comparison rather than a
     /// substring: `rating:>=4`, `plays:0`, `added:<90d`. Pin-only, like
-    /// folder and codec - a bare number is a plausible title or year, and
+    /// folder and codec: a bare number is a plausible title or year, and
     /// matching it here would bury the real hit.
     Rating,
     Plays,
@@ -534,7 +534,7 @@ pub struct NumTerm {
 
 /// A comparison nothing satisfies, the fallback for a numeric pin that
 /// somehow reached a matcher without its number. [`parse_query`] never
-/// builds one - it drops back to a free term instead - so this only keeps
+/// builds one (it drops back to a free term instead), so this only keeps
 /// the matchers total.
 const NUM_NEVER: NumTerm = NumTerm {
     op: NumOp::Lt,
@@ -603,7 +603,7 @@ fn now_secs() -> i64 {
 }
 
 /// One parsed query term: a lowercased needle, maybe pinned to one field.
-/// A term pinned to a numeric field carries its comparison in `num` and
+/// A term pinned to a numeric field holds its comparison in `num` and
 /// leaves the needle as the raw value text.
 pub struct Term {
     pub field: Option<QueryField>,
@@ -679,7 +679,7 @@ pub fn parse_query(query: &str) -> Vec<Term> {
 }
 
 /// A field the structured filter can pin exact values to: the interned
-/// columns plus the year. Titles stay out; a text term already reaches
+/// columns plus the year. Titles stay out; a text term already covers
 /// them, and a filter over ten million distinct titles filters nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterField {
@@ -694,19 +694,19 @@ pub enum FilterField {
 /// A structured filter over exact field values, the filter panel's state:
 /// values OR within a field, fields AND across. Unlike [`parse_query`]'s
 /// terms these match whole values, never substrings, so picking "Air"
-/// leaves "Airborne" out. Years ride as their decimal strings ("0" for
+/// leaves "Airborne" out. Years appear as their decimal strings ("0" for
 /// untagged) to keep the value lists one shape. Folder picks are the one
 /// exception to whole-value matching: a picked folder covers its whole
 /// subtree, so the folder tree scopes to a branch with a single value
 /// instead of enumerating every descendant.
 ///
 /// A set can also pin an explicit list of track db ids, which is how a view
-/// following the app-wide selection narrows to it. That rides here rather
-/// than beside the filter because every searching panel already threads a
-/// `FilterSet` down to its row scan, so honoring it in the two matchers
-/// below reaches all of them at once. `None` is no id restriction at all;
-/// `Some` of an empty list matches nothing, which is what an emptied
-/// selection should show.
+/// following the app-wide selection narrows to it. It's part of the set
+/// rather than a field beside the filter because every searching panel
+/// already threads a `FilterSet` down to its row scan, so honoring it in the
+/// two matchers below covers all of them at once. `None` is no id
+/// restriction at all; `Some` of an empty list matches nothing, which is
+/// what an emptied selection should show.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilterSet {
@@ -779,7 +779,7 @@ impl FilterSet {
     /// filtering its own row list (the queue, history, playlists) instead of
     /// the projection. Values match whole, never as substrings, the same as
     /// the mask over the catalog. `fold` is the library's case rule: these
-    /// rows carry raw strings while picks carry the folded tables' display
+    /// rows hold raw strings while picks hold the folded tables' display
     /// casing, so a case-insensitive library must compare folded here.
     pub fn matches(&self, fields: &TrackFields, fold: bool) -> bool {
         if !self.id_ok(fields.db_id) {
@@ -815,7 +815,7 @@ impl FilterSet {
 }
 
 /// The plain-string fields a query term or filter matches against, for a
-/// track list that isn't the projection - the queue, history, and playlists
+/// track list that isn't the projection. The queue, history, and playlists
 /// filter their own rows through [`track_matches`] and [`FilterSet::matches`]
 /// rather than the column-optimized [`Projection::search`] and
 /// [`Projection::filter_mask`] over the whole catalog.
@@ -840,7 +840,7 @@ pub struct TrackFields<'a> {
     pub path: &'a str,
 }
 
-/// Whether a folder sits at or under a picked one: the pick itself, or a
+/// Whether a folder is at or under a picked one: the pick itself, or a
 /// descendant by path prefix with a separator boundary, so "Music/Air"
 /// never pulls in "Music/Airborne".
 fn folder_in_subtree(folder: &str, pick: &str) -> bool {
@@ -917,8 +917,8 @@ pub trait Filterable {
 /// field, the same rule [`Projection::search`] applies over the catalog.
 /// Terms AND together; needles come lowercased from [`parse_query`].
 ///
-/// The numeric pins read columns a plain row list doesn't carry - rating,
-/// play count, and added date live on the projection - so they match
+/// The numeric pins read columns a plain row list doesn't have (rating,
+/// play count, and added date are on the projection), so they match
 /// nothing here. A `rating:>=4` typed into the queue or playlists box
 /// comes back empty rather than quietly ignoring the term; the catalog's
 /// own views (and smart playlists) run through [`Projection::search`],
@@ -963,7 +963,7 @@ pub enum SortKey {
     Plays,
     Added,
     /// The gain the Track leveling mode would read: the track figure, the
-    /// album one where a file only carries that, matching what the engine
+    /// album one where a file only has that, matching what the engine
     /// falls back to and what the Gain column draws.
     TrackGain,
     /// The same the other way round, for the Album mode.
@@ -1030,7 +1030,7 @@ impl Projection {
     }
 
     /// Fill the plays column from the listens table: one aggregate query,
-    /// then a walk mapping counts onto rows by track id.
+    /// then one pass mapping counts onto rows by track id.
     fn fill_plays(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         let counts = crate::listens::counts(conn)?;
         if counts.is_empty() {
@@ -1442,7 +1442,7 @@ impl Projection {
     }
 
     /// Row mask for a structured filter: a row passes when, for every
-    /// filtered field, its value is one of that field's picks - values OR
+    /// filtered field, its value is one of that field's picks: values OR
     /// within a field, fields AND across. Exact matches against the symbol
     /// tables, never substrings. None when the filter is empty, so callers
     /// skip the scan and the intersection.
@@ -1484,7 +1484,7 @@ impl Projection {
                     ok: sym_ok(&self.albums, values),
                 },
                 // Genre symbols are "; " lists; a pick passes any symbol
-                // carrying it as one of its values, the same per-symbol
+                // holding it as one of its values, the same per-symbol
                 // trick the folder subtree check plays below.
                 FilterField::Genre => Check::Sym {
                     column: &self.genre,
@@ -1541,7 +1541,7 @@ impl Projection {
         )
     }
 
-    /// The rows carrying one genre value, "; " lists included: asking for
+    /// The rows with one genre value, "; " lists included: asking for
     /// "Shoegaze" takes a "Rock; Shoegaze" track along with the plain ones.
     pub fn filter_genre(&self, genre: &str) -> Vec<u32> {
         let ok: Vec<bool> = self
@@ -1599,7 +1599,7 @@ impl Projection {
     }
 
     // The cached lowered-order ranks per symbol table: ranked once on the first
-    // sort that reaches for them, reused after. Every sort's tie-break wants the
+    // sort that needs them, reused after. Every sort's tie-break needs the
     // album artist and album ranks, so this saves re-sorting those tables per
     // sort; the keyed sorts save their own table's rank too.
     fn album_artist_ranks(&self) -> &[u32] {
@@ -1642,9 +1642,9 @@ impl Projection {
     /// The distinct genre values across the library, "; " lists split
     /// into their parts, each once in first-seen order with the lowered
     /// copy suggestion filtering wants. A folded library merges case
-    /// variants here too, the display going to the casing the most rows
-    /// carry - the symbols only folded whole strings, so parts shared
-    /// across different lists still need their own pass.
+    /// variants here too, the display going to the casing the most rows use.
+    /// The symbols only folded whole strings, so parts shared across
+    /// different lists still need their own pass.
     pub fn genre_terms(&self) -> &SymTable {
         self.genre_terms.get_or_init(|| {
             if !self.fold {
@@ -1755,7 +1755,7 @@ impl Projection {
         idx
     }
 
-    /// Sort a view - any subset of rows, in any order - by one key. Ties
+    /// Sort a view (any subset of rows, in any order) by one key. Ties
     /// fall back to the canonical artist, album, track order so equal keys
     /// stay browsable; descending reverses the key alone, not the
     /// tie-break.
@@ -1799,18 +1799,18 @@ impl Projection {
             SortKey::Added => self.order_view(view, descending, |i| self.added[i]),
             // Packed centi-dB sorts as-is, and NO_GAIN being the floor puts
             // the untagged rows first ascending, where a zero year or an
-            // unrated track sits too.
+            // unrated track goes too.
             SortKey::TrackGain => self.order_view(view, descending, |i| self.gain_key(i, false)),
             SortKey::AlbumGain => self.order_view(view, descending, |i| self.gain_key(i, true)),
             // Packed centi-bpm sorts as-is, and NO_BPM being zero puts the
             // tracks with no tempo first ascending, where the untagged
-            // gains and the unrated tracks sit too.
+            // gains and the unrated tracks go too.
             SortKey::Bpm => self.order_view(view, descending, |i| self.bpm[i]),
         }
     }
 
     /// One row's leveling gain in dB: the mode's own figure, the other as
-    /// the fallback, None for a file carrying neither. `album_first` is the
+    /// the fallback, None for a file with neither. `album_first` is the
     /// Album mode. Same pick [`crate::replaygain`] hands the engine, so the
     /// number in the column is the one playback would act on, before the
     /// preamp and the peak clamp.
@@ -1834,7 +1834,7 @@ impl Projection {
 
     /// The shared sort skeleton behind [`Self::sort_view`]: primary key,
     /// direction, canonical tie-break, all on precomputed integer ranks
-    /// except titles, which compare their lowered strings directly - a
+    /// except titles, which compare their lowered strings directly, since a
     /// subset comparison stays cheaper than ranking every title.
     fn order_view<K, F>(&self, view: &[u32], descending: bool, primary: F) -> Vec<u32>
     where
@@ -1986,8 +1986,8 @@ mod tests {
             ("plays:0", QueryField::Plays, NumOp::Eq, 0),
             ("plays:>10", QueryField::Plays, NumOp::Gt, 10),
             ("added:<90d", QueryField::Added, NumOp::Lt, 90),
-            // The day suffix is optional, and a quoted value survives the
-            // tokenizer the same way a quoted artist does.
+            // The day suffix is optional, and a quoted value comes through
+            // the tokenizer the same way a quoted artist does.
             ("added:>7", QueryField::Added, NumOp::Gt, 7),
             (r#"rating:">= 4""#, QueryField::Rating, NumOp::Ge, 4),
         ];
@@ -2021,7 +2021,7 @@ mod tests {
         );
     }
 
-    /// The numeric columns the projection carries, compared the way the
+    /// The numeric columns the projection holds, compared the way the
     /// query spells them: whole stars for a rating, the raw count for
     /// plays, and an age in days for added, resolved against a timestamp
     /// the caller passes so the test has no clock in it.
@@ -2111,8 +2111,8 @@ mod tests {
     }
 
     /// A row that names its own fields runs both matchers off one impl,
-    /// which is what the queue and the playlists tree share. An off-catalog
-    /// row carries no db id, so an id pin leaves it out rather than folding
+    /// which the queue and the playlists tree share. An off-catalog row
+    /// has no db id, so an id pin leaves it out rather than folding
     /// every such row onto a shared phantom id.
     #[test]
     fn a_filterable_row_runs_both_matchers() {
@@ -2219,7 +2219,7 @@ mod tests {
 
     /// `folder:` pins a term to the track's parent directory, case-folded
     /// substring like the other pinned fields, so it isolates one album's
-    /// files. A bare word never reaches the folder, so the path text stays
+    /// files. A bare word never matches the folder, so the path text stays
     /// out of free-term matches.
     #[test]
     fn search_pins_folder() {
@@ -2243,12 +2243,12 @@ mod tests {
         assert_eq!(titles_for(&p, "folder:music").len(), 3);
         // A folder pin ANDs with a free term like any other field.
         assert_eq!(titles_for(&p, r#"one folder:"wrong album""#).len(), 1);
-        // A bare word never reaches the folder path.
+        // A bare word never matches the folder path.
         assert!(titles_for(&p, "other").is_empty());
     }
 
-    /// The stream numbers survive the store round trip and sort as
-    /// numbers, which is what the kHz and Bits columns browse on. The
+    /// The stream numbers come through the store round trip intact and sort
+    /// as numbers, which is what the kHz and Bits columns browse on. The
     /// parallel load merges shards, so it has to agree with the serial
     /// one row for row.
     #[test]
@@ -2310,9 +2310,9 @@ mod tests {
     }
 
     /// The ReplayGain figures load into the projection, come back as the
-    /// dB the file carries, and sort by whichever one the leveling mode
+    /// dB the file holds, and sort by whichever one the leveling mode
     /// reads. A file tagged only one way is read by the other mode too,
-    /// the same fallback the engine levels by, and one carrying neither
+    /// the same fallback the engine levels by, and one with neither
     /// stays None instead of a zero that would read as levelled.
     #[test]
     fn replay_gain_loads_and_sorts_by_the_mode() {
@@ -2383,7 +2383,7 @@ mod tests {
     }
 
     /// The tempo loads into the projection, comes back as the beats a
-    /// minute the row holds, and carries which source filled it so a display
+    /// minute the row holds, along with which source filled it so a display
     /// can mark an estimate. A row with no tempo stays None rather than
     /// reading as a track that stands still.
     #[test]
@@ -2437,8 +2437,8 @@ mod tests {
     }
 
     /// The BPM column sorts slowest first, with the tracks nothing has a
-    /// tempo for ahead of them: the packed zero is the floor, which is where
-    /// an untagged gain and an unrated track sit too.
+    /// tempo for ahead of them: the packed zero is the floor, where an
+    /// untagged gain and an unrated track go too.
     #[test]
     fn tempo_sorts_slowest_first_with_the_untimed_ahead() {
         let dir = std::env::temp_dir().join("rox-projection-tempo-sort");
@@ -2508,14 +2508,14 @@ mod tests {
         assert_eq!(titles_for(&p, "codec:MP3").len(), 2);
         // A codec pin ANDs with a free term like any other field.
         assert_eq!(titles_for(&p, "tribute codec:mp3"), ["Flac Tribute"]);
-        // A bare word only reaches the text fields.
+        // A bare word only matches the text fields.
         assert_eq!(titles_for(&p, "flac"), ["Flac Tribute"]);
     }
 
     /// A folder pick covers its subtree: the folder itself and every
     /// descendant, bounded at a separator so a sibling sharing the prefix
-    /// stays out. One value scopes a whole branch, which is what keeps the
-    /// folder tree's click cheap.
+    /// stays out. One value scopes a whole branch, which keeps the folder
+    /// tree's click cheap.
     #[test]
     fn folder_filter_scopes_subtree() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -2622,7 +2622,7 @@ mod tests {
     }
 
     /// A folded load merges values differing only by case into one
-    /// symbol whose display is the casing most rows carry, picks match
+    /// symbol whose display is the casing most rows use, picks match
     /// across casings, and the genre terms fold their parts the same
     /// way. An exact load keeps the variants apart.
     #[test]
@@ -2763,8 +2763,8 @@ mod tests {
         assert!(p.search_artists("title:montezuma").is_empty());
     }
 
-    /// The structured filter matches whole values only - "Air" leaves
-    /// "Airborne" out where the text search would take both - values OR
+    /// The structured filter matches whole values only, so "Air" leaves
+    /// "Airborne" out where the text search would take both. Values OR
     /// within a field, and fields AND across.
     #[test]
     fn filter_mask_matches_exact_values() {
@@ -2813,7 +2813,7 @@ mod tests {
     }
 
     /// The id pin narrows to an explicit track set, the channel a
-    /// selection-following view rides. It ANDs with the field picks, and an
+    /// selection-following view uses. It ANDs with the field picks, and an
     /// empty pin matches nothing rather than everything.
     #[test]
     fn filter_mask_pins_explicit_ids() {
@@ -2863,8 +2863,8 @@ mod tests {
     }
 
     /// A queue entry the catalog never saw (a file dropped straight on the
-    /// queue) carries no db id, so an id pin leaves it out - and leaves it
-    /// out on its own, not lumped in with every other id-less row. Field
+    /// queue) has no db id, so an id pin leaves it out, and leaves it out
+    /// on its own rather than lumped in with every other id-less row. Field
     /// picks still judge it on its tags.
     #[test]
     fn an_id_less_row_never_passes_an_id_pin() {
@@ -3105,7 +3105,7 @@ mod tests {
     }
 
     /// The distinct caches are built from immutable projection data, so a
-    /// second call returns the same thing - the OnceLock doesn't corrupt
+    /// second call returns the same thing: the OnceLock doesn't corrupt
     /// state between calls.
     #[test]
     fn search_cache_is_stable_across_calls() {

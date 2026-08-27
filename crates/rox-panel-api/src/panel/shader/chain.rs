@@ -1,11 +1,11 @@
 //! The `// @pass` and `// @asset` splitter, and the one call every shader
 //! surface registers through.
 //!
-//! A rox shader is one WGSL text (ADR 23), so the chain it describes lives
-//! in comment directives rather than in the config: the pool entry, the
-//! eject file, the hot reload watch, the approval fingerprint and the
+//! A rox shader is one WGSL text (ADR 23), so the chain it describes is
+//! expressed in comment directives rather than in the config: the pool entry,
+//! the eject file, the hot reload watch, the approval fingerprint and the
 //! bundle all assume one shader is one text, and a pass array would fork
-//! every one of them. This is the reader for that, sat next to
+//! every one of them. This is the reader for that, next to
 //! [`slot_labels`](super::slot_labels), which established the convention.
 //!
 //! Everything a text declares resolves here too: an `// @asset` line names
@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use gpui::{UserShaderChain, UserShaderId, UserShaderPass, Window};
 
 /// How many passes and images one program may declare, the same caps the
-/// window API enforces. Past this the design being expressed wants a render
-/// graph, which ADR 23 refuses.
+/// window API enforces. Past this the design being expressed needs a render
+/// graph, which ADR 23 rules out.
 const MAX_PASSES: usize = 8;
 const MAX_ASSETS: usize = 8;
 
@@ -54,7 +54,7 @@ pub struct PassSpec {
 pub struct AssetRef {
     pub name: String,
     /// A flat file name, no separators. It's the key into a pool entry's
-    /// carried assets as much as it is a file beside the source. The one
+    /// bundled assets as much as it is a file beside the source. The one
     /// value that isn't a file is [`COVER_SOURCE`].
     pub file: String,
 }
@@ -84,8 +84,8 @@ impl ChainSpec {
         self.assets.is_empty() && self.passes.len() == 1 && self.passes[0].name == "main"
     }
 
-    /// Whether any binding is the playing track's art, which is what makes
-    /// a program's identity move with the track.
+    /// Whether any binding is the playing track's art, which makes a
+    /// program's identity move with the track.
     pub fn wants_cover(&self) -> bool {
         self.assets.iter().any(AssetRef::is_cover)
     }
@@ -94,7 +94,7 @@ impl ChainSpec {
 /// Whether a text mentions [`COVER_SOURCE`] at all: the cheap per-frame
 /// check the surfaces gate their cover polling on, so a shader that never
 /// asked for art costs nothing on a track change. A mention in prose reads
-/// as true too, which only re-keys that program when the track turns over -
+/// as true too, which only re-keys that program when the track turns over:
 /// a spurious registration there, never a missing one.
 pub fn uses_cover(source: &str) -> bool {
     source.contains(COVER_SOURCE)
@@ -117,8 +117,8 @@ pub fn uses_mask(source: &str) -> bool {
 /// written once. A text with no `// @pass` in it is one pass called `main`
 /// holding the whole thing, which is why nothing migrates.
 ///
-/// Errors carry the line they came from and read like the naga messages
-/// they land beside in the same three readouts.
+/// Errors name the line they came from and read like the naga messages
+/// they appear beside in the same three readouts.
 pub fn parse_chain(source: &str) -> Result<ChainSpec, String> {
     let mut passes: Vec<PassSpec> = Vec::new();
     let mut assets: Vec<AssetRef> = Vec::new();
@@ -176,7 +176,7 @@ pub fn parse_chain(source: &str) -> Result<ChainSpec, String> {
                 name: name.to_string(),
                 file: file.to_string(),
             });
-            // An `@asset` line is a comment wherever it sits, so it stays in
+            // An `@asset` line is a comment wherever it appears, so it stays in
             // the text rather than being cut out of it.
         }
         match passes.last_mut() {
@@ -252,7 +252,7 @@ fn split_tail(rest: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Take a name for this program, or say why it can't be had. Passes and
+/// Take a name for this program, or report why it can't be. Passes and
 /// images share one namespace because they end up as bindings in the same
 /// module.
 fn claim(declared: &mut HashSet<String>, name: &str, number: usize) -> Result<(), String> {
@@ -272,8 +272,7 @@ fn claim(declared: &mut HashSet<String>, name: &str, number: usize) -> Result<()
     Ok(())
 }
 
-/// A WGSL identifier, which is what a name has to be to survive composition
-/// into the module.
+/// A WGSL identifier, which a name has to be to compose into the module.
 fn binding_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -301,14 +300,14 @@ fn parse_scale(text: &str, name: &str, number: usize) -> Result<f32, String> {
 /// gets to name.
 ///
 /// A text that declares an image and has neither of these is detached, and
-/// registration says so rather than guessing: an inline source that arrived
-/// in a layout has nothing on this machine to carry its plates.
+/// registration reports that rather than guessing: an inline source that
+/// arrived in a layout has nothing on this machine to hold its plates.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProgramCtx {
-    /// The pool entry the source came from, whose carried assets win.
+    /// The pool entry the source came from, whose bundled assets win.
     pub name: Option<String>,
     /// The file the source was read from; its siblings are the fallback,
-    /// which is what makes the eject-and-edit loop work for images too.
+    /// which makes the eject-and-edit loop work for images too.
     pub path: Option<PathBuf>,
 }
 
@@ -355,9 +354,9 @@ pub struct AssetImage {
 
 /// Find and decode every image a chain declares, in declaration order.
 ///
-/// The pool entry's carried bytes win, since those are what travelled with
+/// The pool entry's bundled bytes win, since those are what travelled with
 /// the look; a file beside the source is the fallback, which is how an edit
-/// made in an image editor lands. Errors name the image the way naga names
+/// made in an image editor gets picked up. Errors name the image the way naga names
 /// the pass, so a broken plate reads like a broken shader in the same
 /// readout.
 ///
@@ -378,7 +377,7 @@ pub fn resolve_assets(
         .as_deref()
         .and_then(rox_core::settings::shader_pool_get);
     // The cover comes from the player, not from a folder, so a program
-    // binding nothing but art runs fine detached - inline in a layout,
+    // binding nothing but art runs fine detached: inline in a layout,
     // pasted into the editor, anywhere.
     let file_backed = spec.assets.iter().find(|asset| !asset.is_cover());
     if let Some(first) = file_backed.filter(|_| entry.is_none() && ctx.path.is_none()) {
@@ -413,7 +412,7 @@ pub fn resolve_assets(
     Ok(images)
 }
 
-/// The bytes a pool entry carries for a file name, if it carries that one.
+/// The bytes a pool entry holds for a file name, if it holds that one.
 fn carried(
     entry: Option<&rox_core::settings::NamedShader>,
     file: &str,
@@ -425,7 +424,7 @@ fn carried(
         .map(|asset| asset.decode())
 }
 
-/// The bytes of a file sitting next to a source file.
+/// The bytes of a file next to a source file.
 fn beside(source: Option<&Path>, file: &str) -> Option<Result<Vec<u8>, String>> {
     let path = source?.parent()?.join(file);
     if !path.exists() {
@@ -435,10 +434,10 @@ fn beside(source: Option<&Path>, file: &str) -> Option<Result<Vec<u8>, String>> 
 }
 
 /// What a [`COVER_SOURCE`] binding samples when nothing plays or the track
-/// carries no art: a flat dark plate, so the shader's math runs over
-/// something instead of the registration failing. Opaque and near-black on
-/// purpose - the common uses (sorting, quantizing, dissolving the art)
-/// degrade to a quiet nothing rather than a white flash.
+/// has no art: a flat dark plate, so the shader's math runs over
+/// something instead of the registration failing. Opaque and near-black, so
+/// the common uses (sorting, quantizing, dissolving the art) degrade to a
+/// quiet nothing rather than a white flash.
 pub fn fallback_cover() -> AssetImage {
     const EDGE: usize = 8;
     AssetImage {
@@ -448,8 +447,8 @@ pub fn fallback_cover() -> AssetImage {
     }
 }
 
-/// An encoded image file as pixels. Straight alpha, which is what the
-/// window API takes.
+/// An encoded image file as pixels. Straight alpha, which the window API
+/// takes.
 pub(crate) fn decode(bytes: &[u8]) -> Result<AssetImage, String> {
     let image = image::load_from_memory(bytes)
         .map_err(|err| err.to_string())?
@@ -462,8 +461,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<AssetImage, String> {
 }
 
 /// Register a whole shader program with a window: split the text, find its
-/// images, upload them, and hand the chain over. This is what every shader
-/// surface calls, so all three of them grew chains and assets at once.
+/// images, upload them, and hand the chain over. Every shader surface calls
+/// this, so all three of them grew chains and assets at once.
 ///
 /// A text with no directives in it takes the old single-source path
 /// verbatim, so the shaders that already run keep compiling to exactly what
@@ -478,7 +477,7 @@ pub fn register_program(
         return window.register_user_shader(source);
     }
     // The window's cover feed, kept current by the surface drivers' polls;
-    // fetched only when a binding asked, so most programs never touch it.
+    // fetched only when a binding declared one, so most programs never touch it.
     let cover = spec
         .wants_cover()
         .then(|| super::window_cover(window.window_handle().window_id().as_u64()))
@@ -562,8 +561,8 @@ fn fs_user(uv: vec2<f32>) -> vec4<f32> { return textureSample(down, samp, uv); }
         assert!(!spec.passes[1].body.contains("vec4<f32>(K)"));
     }
 
-    /// What the grammar refuses, since these all land in a readout somebody
-    /// has to act on.
+    /// What the grammar rejects, since these all end up in a readout
+    /// somebody has to act on.
     #[test]
     fn the_grammar_says_why_it_said_no() {
         let err = |source: &str| parse_chain(source).expect_err("should refuse");
@@ -595,12 +594,12 @@ fn fs_user(uv: vec2<f32>) -> vec4<f32> { return textureSample(down, samp, uv); }
         assert!(err(&images).contains("capped at 8 images"));
 
         // An image is read from the shader's own folder, so its name can't
-        // walk out of it.
+        // escape it.
         assert!(err("// @asset plate: ../../secrets.png\n").contains("plain file name"));
         assert!(err("// @asset plate:\n").contains("needs a name and a file"));
     }
 
-    /// A 2x2 PNG, small enough to sit in a test and real enough to decode.
+    /// A 2x2 PNG, small enough to inline in a test and real enough to decode.
     fn plate() -> Vec<u8> {
         let mut image = image::RgbaImage::new(2, 2);
         image.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
@@ -630,13 +629,13 @@ fn fs_user(uv: vec2<f32>) -> vec4<f32> { return textureSample(down, samp, uv); }
         assert_eq!(spec.assets[0].name, "plate");
         assert_eq!(spec.assets[0].file, "plate.png");
 
-        // Nothing behind the text: the bytes have nowhere to live, and
+        // Nothing behind the text: the bytes have nowhere to come from, and
         // saying so beats registering a shader that samples a hole.
         let detached = resolve_assets(&spec, &ProgramCtx::detached(), None).expect_err("detached");
         assert!(detached.contains("asset 'plate'"), "{detached}");
         assert!(detached.contains("from a file"), "{detached}");
 
-        // The pool entry's own bytes, which are what travelled with a look.
+        // The pool entry's own bytes, which travelled with a look.
         let _pool = crate::panel::shader::POOL_GUARD
             .lock()
             .unwrap_or_else(|held| held.into_inner());

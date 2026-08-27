@@ -1,5 +1,5 @@
 //! The console window: one OS window opened from the Application menu that
-//! shows the app's log live - the same lines the backend writes to stderr
+//! shows the app's log live, the same lines the backend writes to stderr
 //! and the rolling file on disk (see [`rox_core::logging`]). Standalone rather
 //! than a dock panel so it's one click from the menu whatever the layout,
 //! and reachable from a panel or a match window that hit an error without
@@ -85,7 +85,7 @@ fn open_now(cx: &mut App) {
     cx.set_global(OpenConsole(handle));
 }
 
-/// A small button that opens the console, for a panel or window to sit
+/// A small button that opens the console, for a panel or window to place
 /// beside a failure message so the log is one click away. The mark matches
 /// the menu entry's.
 pub fn open_button() -> impl IntoElement {
@@ -98,9 +98,9 @@ pub fn open_button() -> impl IntoElement {
 }
 
 /// A failed-lookup state every online surface shares: the plain reason (no
-/// URL, no key - the provider sanitizes those, see
+/// URL, no key; the provider sanitizes those, see
 /// [`rox_net::providers::net_reason`]) centered over a button into the console,
-/// where the same line and the rest of the session's log sit for a report.
+/// where the same line and the rest of the session's log are ready for a report.
 pub fn notice(message: impl Into<SharedString>) -> Div {
     div()
         .size_full()
@@ -127,7 +127,7 @@ struct ConsoleWindow {
     /// The ring sequence the shown lines were read at, so the poll repaints
     /// only when it moved.
     seen: u64,
-    /// Pin to the newest line as it lands. On while reading live; flip it off
+    /// Pin to the newest line as it arrives. On while reading live; flip it off
     /// to scroll back through history without the tail yanking the view down.
     follow: bool,
     /// The level filter: each toggle hides its level from the pane. All on by
@@ -181,7 +181,7 @@ impl ConsoleWindow {
     }
 
     /// Whether a line's level passes the filter. Debug and trace are never
-    /// emitted (the backend caps at info), so they ride through if they ever
+    /// emitted (the backend caps at info), so they pass through if they ever
     /// appear rather than vanishing behind a toggle that isn't shown.
     fn shows(&self, level: Level) -> bool {
         match level {
@@ -211,8 +211,8 @@ impl ConsoleWindow {
     }
 
     /// One toolbar toggle: the kit's tick box with its label beside it, the
-    /// checkbox row the settings windows use. The press lands on the pair,
-    /// so the label is part of the target.
+    /// checkbox row the settings windows use. The handler is on the pair, so
+    /// the label is part of the target.
     fn toggle(
         &self,
         id: &'static str,
@@ -354,7 +354,7 @@ impl ConsoleWindow {
             .p(tokens::SPACE_MD)
             .text_xs()
             .children(shown.into_iter().map(line_row));
-        // A huge negative offset lands at the bottom: the scroll container
+        // A huge negative offset scrolls to the bottom: the scroll container
         // clamps it to the real maximum at paint, so Follow pins the tail
         // without measuring the content height here.
         if self.follow {
@@ -373,7 +373,7 @@ impl ConsoleWindow {
 impl Render for ConsoleWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // With no workspace player to theme to, tint to the window's own id,
-        // which the palette map doesn't know, so it reads the base palette.
+        // which isn't in the palette map, so it reads the base palette.
         let player = self.player.unwrap_or_else(|| cx.entity().entity_id());
         palette::note_focus(player, window.is_window_active(), cx);
         panel::window_body(player, || {

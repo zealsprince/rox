@@ -53,8 +53,8 @@ pub fn confidence_bar(confidence: f32) -> Div {
         )
 }
 
-/// A quiet centered line where a search window's list or grid would sit -
-/// its empty, searching, and failed states share this.
+/// A quiet centered line placed where a search window's list or grid would
+/// go. The empty, searching, and failed states all use it.
 pub fn note(text: impl Into<SharedString>) -> Div {
     div()
         .size_full()
@@ -69,7 +69,7 @@ pub fn note(text: impl Into<SharedString>) -> Div {
 /// keyed so a second request for the same subject focuses the open window
 /// instead of stacking a twin. Each kind keeps its own newtype (so the six
 /// registries never cross-talk); the key is whatever tells one window from
-/// another - sorted track ids, a path, or a path plus the opening editor's
+/// another: sorted track ids, a path, or a path plus the opening editor's
 /// id where the window binds to a specific editor.
 pub trait WindowRegistry: Global + Default {
     type Key: PartialEq;

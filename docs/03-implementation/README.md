@@ -3,7 +3,7 @@
 Real and runnable: schemas, serialization formats, exact sequences, thread and channel
 wiring, config. These docs consume the contracts in [architecture](../02-architecture/)
 and make them concrete. Nothing here gets to move a boundary; when a contract doesn't
-survive implementation, that goes back up to architecture, it doesn't get quietly
+hold up in implementation, that goes back up to architecture rather than getting quietly
 redesigned here.
 
 An implementation doc gets written when its detail is real, prototyped or built, not
@@ -12,7 +12,7 @@ speculated ahead of the code. The set, one per domain:
 - [01-playback.md](01-playback.md) - decode thread and RT callback wiring, ring buffer
   sizing, the gapless boundary swap and LAME delay/padding trimming, the flush protocol,
   the position clock, the shared and exclusive output backends, crossfade, and where
-  ReplayGain and the processing chain sit in the sample path
+  ReplayGain and the processing chain go in the sample path
 - [02-library.md](02-library.md) - the SQLite schema and its migration ladder, the
   in-memory projection layout and interning, the scanner pipeline, the sharded cold-open
   load, and the rebuild-and-swap sequence that keeps store and projection consistent

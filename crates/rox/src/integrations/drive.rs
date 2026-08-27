@@ -1,8 +1,8 @@
 //! The debug scope's drive half (ADR 22): synthetic input and action
 //! dispatch over the control socket, so a script or an agent can work the
-//! UI of a live rox without OS input tools. Everything lands in gpui's own
-//! event pipeline - `dispatch_event`, `dispatch_keystroke`, and the action
-//! registry - which is what makes it work the same on every platform and on
+//! UI of a live rox without OS input tools. Everything goes through gpui's
+//! own event pipeline (`dispatch_event`, `dispatch_keystroke`, and the
+//! action registry), which is why it works the same on every platform and on
 //! any compositor, including ones with no injection surface at all.
 //!
 //! Methods: `debug.windows` lists what's open with the ids the rest take,
@@ -60,7 +60,7 @@ fn windows(cx: &mut App) -> Result<Value, RpcError> {
     Ok(json!({ "windows": rows }))
 }
 
-/// The window a drive method lands in: the one named by `window`, else the
+/// The window a drive method acts on: the one named by `window`, else the
 /// active window, else the first open one, so the plain case needs no id.
 fn target(params: &Value, cx: &mut App) -> Result<gpui::AnyWindowHandle, RpcError> {
     if let Some(id) = params.get("window").and_then(Value::as_u64) {
@@ -95,8 +95,8 @@ fn actions(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
 }
 
 /// Build an action by name and dispatch it down the target window's focus
-/// chain, exactly as a keybinding would. `data` feeds actions that carry
-/// payload the way a keymap entry does.
+/// chain, exactly as a keybinding would. `data` supplies the payload for
+/// actions that take one, the way a keymap entry does.
 fn action(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
         RpcError::invalid_params("action takes {\"name\", \"data\"?, \"window\"?}")
@@ -113,7 +113,7 @@ fn action(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
 }
 
 /// Send keystrokes, gpui keymap syntax, space separated: "ctrl-comma",
-/// "escape", "cmd-shift-p enter". Answers per stroke with whether anything
+/// "escape", "cmd-shift-p enter". Returns per stroke whether anything
 /// handled it, so a probe can tell a live binding from a dead one.
 fn key(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let keys = params
@@ -140,9 +140,9 @@ fn key(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(json!({ "handled": handled }))
 }
 
-/// Type text into whatever holds focus, one keystroke per character riding
+/// Type text into whatever holds focus, one keystroke per character over
 /// the same simulated-IME path a test window uses: a binding may eat a
-/// character, and the rest land through the input handler. Newlines go as
+/// character, and the rest go through the input handler. Newlines go as
 /// enter so multi-line fields and confirm-on-enter both behave.
 fn type_text(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let text = params
@@ -284,7 +284,7 @@ fn scroll(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     Ok(Value::Null)
 }
 
-/// The `x`/`y` a mouse method lands on, in the window-local logical pixels
+/// The `x`/`y` a mouse method targets, in the window-local logical pixels
 /// `debug.windows` reports sizes in.
 fn position(params: &Value) -> Result<Point<Pixels>, RpcError> {
     let x = params.get("x").and_then(Value::as_f64);

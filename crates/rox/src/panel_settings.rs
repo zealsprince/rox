@@ -1,8 +1,8 @@
 //! The settings window itself moved to rox-panel-api, where it's generic
-//! over [`PanelSettings`] and knows no concrete panel. What stays here is
-//! the part that can't: the downcast table naming every settings-capable
-//! panel type, and the two type-erased routes in (the layout tree's gear
-//! and lock) that walk it.
+//! over [`PanelSettings`] and references no concrete panel type. This
+//! module holds the part that can't be generic: the downcast table naming
+//! every settings-capable panel type, and the two type-erased routes in
+//! (the layout tree's gear and lock) that use it.
 
 use std::sync::Arc;
 
@@ -42,6 +42,7 @@ use rox_panels::queue::QueuePanel;
 use rox_panels::search::SearchPanel;
 use rox_panels::shader::ShaderPanel;
 use rox_panels::spacer::SpacerPanel;
+use rox_panels::spectrogram::SpectrogramPanel;
 use rox_panels::spectrum::SpectrumPanel;
 use rox_panels::stats_widget::StatsWidgetPanel;
 use rox_panels::status::StatusPanel;
@@ -51,8 +52,8 @@ use rox_panels::vu::VuPanel;
 use rox_panels::waveform::WaveformPanel;
 
 /// Dispatch a type-erased panel view to its concrete settings-capable
-/// type: try each downcast until one lands and run the body with the
-/// typed entity bound. The type list mirrors the workspace's panel
+/// type: try each downcast until one succeeds and run the body with the
+/// typed entity bound. The type list matches the workspace's panel
 /// registry; a type missing here just no-ops on the type-erased routes
 /// (the layout tree's gear and lock).
 macro_rules! with_settings_panel {
@@ -82,6 +83,7 @@ macro_rules! with_settings_panel {
             StatsWidgetPanel,
             OutputPanel,
             SpectrumPanel,
+            SpectrogramPanel,
             OscilloscopePanel,
             WaveformPanel,
             ParticlesPanel,

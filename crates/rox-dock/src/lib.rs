@@ -33,7 +33,7 @@ mod state;
 mod tab_panel;
 mod tiles;
 
-// Also vendored: the dock reaches pub(crate) internals of these three
+// Also vendored: the dock uses pub(crate) internals of these three
 // upstream modules (panel-group mutation, tab offsets, history flags), so
 // they come along rather than being reimplemented.
 pub mod history;
@@ -65,8 +65,8 @@ pub fn init(cx: &mut App) {
 actions!(rox_dock, [ToggleZoom, ClosePanel]);
 
 /// rox addition: whether the app is in design mode, the state where the
-/// layout can be rearranged. Off, every tab group reads as locked - no
-/// drag, no drop, no close - so a finished workspace stops offering the
+/// layout can be rearranged. Off, every tab group reads as locked (no
+/// drag, no drop, no close), so a finished workspace stops offering the
 /// builder's handles. A static like the seams flag, since the dock has no
 /// path to app settings; the host seeds it and repaints. On by default, so
 /// nothing is hidden until it's turned off.
@@ -149,8 +149,8 @@ pub struct DockArea {
     /// The panel style, default is [`PanelStyle::Default`](PanelStyle::Default).
     pub(crate) panel_style: PanelStyle,
 
-    /// A panel move riding the middle mouse button or Alt+Left, see
-    /// [`MiddleDrag`](tab_panel::MiddleDrag). Lives here because it spans
+    /// A panel move driven by the middle mouse button or Alt+Left, see
+    /// [`MiddleDrag`](tab_panel::MiddleDrag). Stored here because it spans
     /// tab panels: the source starts it, any panel can receive it.
     pub(crate) middle_drag: Option<MiddleDrag>,
 
@@ -664,7 +664,7 @@ impl DockArea {
     }
 
     /// The root dock placement for a middle-drag release near the dock
-    /// area's top or bottom edge, or past it (the menu bar sits above).
+    /// area's top or bottom edge, or past it (the menu bar is above).
     /// Only the vertical edges: the root stack is vertical, so only they
     /// insert cleanly at the root.
     pub(crate) fn edge_placement(&self, position: Point<Pixels>) -> Option<Placement> {
@@ -1123,9 +1123,9 @@ impl DockArea {
     }
 
     /// Rox addition: focus the first panel with the given name, in tree
-    /// order - center first, then the left, bottom, and right docks. Its tab
+    /// order: center first, then the left, bottom, and right docks. Its tab
     /// is activated so it becomes the visible one, then it takes the keyboard.
-    /// Returns whether a panel was found. Walks the live view tree, so it
+    /// Returns whether a panel was found. Searches the live view tree, so it
     /// reflects drags the DockItem tree hasn't been rebuilt for.
     pub fn focus_panel_named(
         &self,
@@ -1419,12 +1419,12 @@ impl Render for DockArea {
             // The middle-drag layer: a window-sized overlay tracks the
             // pointer everywhere (menu bar included), claims releases in
             // the root edge bands, hands releases outside the window to
-            // the pop-out hook, and carries the chip. Painted last, so its
+            // the pop-out hook, and draws the chip. Painted last, so its
             // handlers run first in the bubble; releases it doesn't claim
             // fall through to the tab panels beneath.
             .when_some(self.middle_drag.as_ref(), |this, drag| {
                 // The viewport, not window.bounds(): the latter includes
-                // window chrome, and the overlay carries the pop-out border,
+                // window chrome, and the overlay draws the pop-out border,
                 // which has to hug the drawable area exactly.
                 let win_size = window.viewport_size();
                 let outside = drag.position.x < px(0.)
@@ -1442,7 +1442,7 @@ impl Render for DockArea {
                 this.child(
                     deferred(
                         // Anchored at the window origin: without an explicit
-                        // position it would sit at the dock area's origin,
+                        // position it would anchor at the dock area's origin,
                         // below the menu bar, shifting every window-coord
                         // child down by that much.
                         anchored().position(point(px(0.), px(0.))).child(

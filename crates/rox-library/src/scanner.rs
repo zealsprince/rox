@@ -6,9 +6,9 @@
 //!
 //! On a big library the cost is filesystem stats, not tag reads: adding one
 //! file still means confirming the other tens of thousands are unchanged. So
-//! the walk leans on the directory entry's kind instead of a stat per file,
+//! the walk uses the directory entry's kind instead of a stat per file,
 //! and each batch stats and reads its files in parallel across cores. exfat
-//! and network mounts pay per-stat latency, and that is exactly what the
+//! and network mounts pay per-stat latency, and that's exactly what the
 //! parallelism hides.
 
 use std::collections::{HashMap, HashSet};
@@ -37,7 +37,7 @@ pub const EXTENSIONS: &[&str] = &[
 ];
 
 /// Cue sheets are deliberately not in [`EXTENSIONS`]: a sheet is not audio,
-/// and an external open handed one must not try to play it. The walk notices
+/// and an external open handed one must not try to play it. The walk collects
 /// them separately, and only to split the image files they point at.
 pub const CUE_EXTENSION: &str = "cue";
 const BATCH: usize = 512;
@@ -61,8 +61,8 @@ pub struct ScanSummary {
 /// `progress` is called once per file with (scanned, total, path), from the
 /// worker threads and out of walk order, so a UI can report the scan live;
 /// returning false stops the scan after flushing what it has. Cancellation
-/// lands at batch boundaries, which a parallel batch reaches in a fraction
-/// of a serial one.
+/// takes effect at batch boundaries, which a parallel batch gets to far
+/// sooner than a serial one.
 pub fn scan(
     conn: &mut Connection,
     root: &Path,
@@ -75,8 +75,8 @@ pub fn scan(
     let mut walk = Walk::default();
     collect(root, &mut walk);
     walk.audio.sort();
-    // The walk is the ground truth for what lives under the root this pass:
-    // an unreadable file (permissions, transient IO) still lands here from
+    // The walk is the ground truth for what's under the root this pass:
+    // an unreadable file (permissions, transient IO) still shows up here from
     // its parent's directory entry, so it never counts as gone. Built before
     // the batch loop consumes the list, keyed the same way process_file keys
     // a stored row so the two sets compare byte for byte. Claimed images are
@@ -92,7 +92,7 @@ pub fn scan(
     // An image a sheet no longer claims has to be re-read even if its own
     // (mtime, size) never moved: its cue rows are about to go, and dropping
     // them without emitting the plain row would lose the file. Forgetting it
-    // here is what makes process_file read it again.
+    // here makes process_file read it again.
     for path in stored_cues.keys() {
         if !claimed.contains_key(Path::new(path)) {
             known.remove(path);
@@ -210,7 +210,7 @@ pub fn scan(
     // Diff the stored rows under root against what the walk found and drop
     // the rows whose files are gone. Skipped on two counts, both to keep a
     // bad pass from wiping the library: an aborted scan never finished the
-    // walk, and a root that will not even list its entries (unplugged drive,
+    // walk, and a root that won't even list its entries (unplugged drive,
     // dropped network mount) reads as empty when the files are really still
     // there. A genuinely emptied but readable root still prunes.
     if !summary.aborted && std::fs::read_dir(root).is_ok() {
@@ -234,8 +234,8 @@ pub fn scan(
 pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usize> {
     let known = HashMap::new();
     // A cue sheet in the list is not a file to index, it's an instruction to
-    // re-cut the images it names. Sheets sitting beside a named audio file
-    // count too: without them a touched image would land as one plain row and
+    // re-cut the images it names. Sheets next to a named audio file count
+    // too: without them a touched image would come back as one plain row and
     // wipe the cue rows it should have kept.
     let mut dirs: Vec<&Path> = paths.iter().filter_map(|p| p.parent()).collect();
     dirs.sort();
@@ -287,10 +287,10 @@ pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usi
     if !rows.is_empty() {
         store::insert_batch(conn, &rows)?;
         // Square the stored subsongs with what the sheets say now, the same
-        // bookkeeping a full scan runs and in the same order: rows land
-        // first, then the ones they replaced go. A claimed image loses the
-        // plain row it used to have, an image whose sheet went away loses its
-        // cue rows.
+        // bookkeeping a full scan runs and in the same order: rows are
+        // written first, then the ones they replaced go. A claimed image
+        // loses the plain row it used to have, an image whose sheet went
+        // away loses its cue rows.
         for (image, claim) in &claimed {
             let keep: Vec<u16> = claim.tracks.iter().map(|t| t.number).collect();
             store::retain_subs(conn, &image.to_string_lossy(), &keep)?;
@@ -298,7 +298,7 @@ pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usi
         for path in targets.iter().filter(|p| !claimed.contains_key(*p)) {
             store::retain_subs(conn, &path.to_string_lossy(), &[0])?;
         }
-        // A watched file coming back lands here as a fresh row; give any
+        // A watched file coming back shows up here as a fresh row; give any
         // playlist members and listens still pointing at its old id the
         // same reattach a full scan runs.
         crate::playlists::reattach(conn)?;
@@ -310,7 +310,7 @@ pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usi
 /// What one file's stat-and-read produced, kept separate from the store write
 /// so the read can run in parallel and the write stays a single transaction.
 enum Outcome {
-    /// The file vanished or would not stat between the walk and the read.
+    /// The file vanished or wouldn't stat between the walk and the read.
     Missing,
     /// Stored (mtime, size) matched, so the row was left untouched.
     Unchanged,
@@ -352,9 +352,9 @@ fn process_file(path: &Path, known: &HashMap<String, (i64, u64)>) -> Outcome {
     }
 }
 
-/// Read one file that need not live in any scanned root - a drag-drop, a
+/// Read one file that needn't be under any scanned root: a drag-drop, a
 /// file association, a CLI open. Stats and reads it the same way the scan
-/// does, so the row carries real title/artist/album. None only when the
+/// does, so the row gets real title/artist/album. None only when the
 /// file cannot be stat'd; a file with no readable tags still returns a
 /// fallback row (filename as title), matching how the scan degrades.
 pub fn read_one(path: &Path) -> Option<TrackRow> {
@@ -385,7 +385,7 @@ pub fn audio_files(root: &Path) -> Vec<PathBuf> {
     walk.audio
 }
 
-/// Whether a path carries one of the audio extensions the scan indexes, the
+/// Whether a path has one of the audio extensions the scan indexes, the
 /// one filter that decides what becomes a track. Same test the walk runs, so
 /// a watched change and a full scan agree on what counts.
 pub fn is_audio(path: &Path) -> bool {
@@ -435,8 +435,8 @@ fn collect_into(dir: &Path, out: &mut Walk, seen: &mut HashSet<PathBuf>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        // The directory read already carries each entry's kind on most
-        // filesystems, so file_type() answers dir-or-file without a stat per
+        // The directory read already includes each entry's kind on most
+        // filesystems, so file_type() tells dir from file without a stat per
         // file. Symlinks and the rare filesystem that omits the kind fall back
         // to a stat, which still follows linked folders like the old walk did.
         let is_dir = match entry.file_type() {
@@ -481,7 +481,7 @@ struct Claim {
 }
 
 /// Read the cue sheets a walk found and work out which images they claim,
-/// keyed by the resolved image path. A sheet that will not parse, or whose
+/// keyed by the resolved image path. A sheet that won't parse, or whose
 /// FILE lines point at nothing indexable, claims nothing and leaves those
 /// files to be indexed plain. Two sheets naming one image is a broken
 /// library either way; the last one read wins.
@@ -548,7 +548,7 @@ fn resolve_image(
     by_dir: &HashMap<&Path, Vec<&Path>>,
 ) -> Option<PathBuf> {
     // Sheets written on Windows use backslashes even for a bare name, and a
-    // multi-disc sheet may reach into a subdirectory.
+    // multi-disc sheet may point into a subdirectory.
     let arg = arg.replace('\\', "/");
     let rel = Path::new(&arg);
     let name = rel.file_name()?.to_str()?;
@@ -582,10 +582,10 @@ fn resolve_image(
 
 /// What one claimed image's pass produced.
 enum CueOutcome {
-    /// The image vanished or would not stat between the walk and the read.
+    /// The image vanished or wouldn't stat between the walk and the read.
     Missing,
     /// The image and its sheet are both unchanged and the store already
-    /// holds exactly these subsongs, so nothing was read. Carries how many
+    /// holds exactly these subsongs, so nothing was read. Holds how many
     /// tracks were skipped, for the summary.
     Unchanged(usize),
     /// The rows to upsert, one per track of the sheet.
@@ -704,10 +704,10 @@ fn cue_rows(
                     album_db: image_tags.replay_gain.album_db,
                     album_peak: image_tags.replay_gain.album_peak,
                 },
-                // No tempo, even where the image's tag carries one: that
-                // number describes a whole disc, and handing it to every
-                // track would claim they all run at it. Each subsong lands
-                // on the analysis pass's list instead, which takes them.
+                // No tempo, even where the image's tag has one: that number
+                // describes a whole disc, and handing it to every track
+                // would claim they all run at it. Each subsong goes onto
+                // the analysis pass's list instead, which takes them.
                 bpm: None,
                 cue: Some(crate::CueSlice {
                     cue_path: cue_path.clone(),
@@ -725,10 +725,10 @@ fn cue_rows(
 ///
 /// MPEG and FLAC parse to their native file type first, so the rating (in
 /// TXXX/POPM frames and unmapped Vorbis keys the generic tag drops) reads
-/// off the same parse that fills the row - one open per file, not two. The
+/// off the same parse that fills the row: one open per file, not two. The
 /// native file converts to a `TaggedFile` exactly as `Probe::read` does, so
 /// the generic tags below match the old probe path byte for byte. Any other
-/// format keeps the plain probe; those carry no rating rox reads anyway.
+/// format keeps the plain probe; those have no rating rox reads anyway.
 fn read_tags(path: &Path) -> Option<TrackRow> {
     let source = crate::tag_source::open(path).ok()?;
     let (file, rating) = catch_unwind(AssertUnwindSafe(move || {
@@ -776,7 +776,7 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         lofty::file::FileType::Vorbis => Some("vorbis"),
         lofty::file::FileType::Aiff => Some("aiff"),
         lofty::file::FileType::Aac => Some("aac"),
-        // Mp4 (m4a/m4b) carries AAC or ALAC and lofty does not split them, so
+        // Mp4 (m4a/m4b) holds AAC or ALAC and lofty doesn't split them, so
         // it keeps the extension guess rather than mislabel one as the other.
         _ => None,
     } {
@@ -799,15 +799,15 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         }
         row.artist = text(tag.artist());
         // The credited album artist falls back to the track artist at scan
-        // time, so a plain album groups the same whether or not it carries
-        // the tag, and only compilations split the two.
+        // time, so a plain album groups the same whether or not it has the
+        // tag, and only compilations split the two.
         row.album_artist = tag
             .get_string(lofty::tag::ItemKey::AlbumArtist)
             .filter(|s| !s.is_empty())
             .unwrap_or(&row.artist)
             .to_string();
         row.album = text(tag.album());
-        // Every genre item, joined to the "; " list form: Vorbis carries
+        // Every genre item, joined to the "; " list form: Vorbis stores
         // multiples as repeated GENRE comments, ID3v2.4 as one
         // null-separated TCON, and lofty hands both over as separate items.
         row.genre = crate::genre::join(tag.get_strings(lofty::tag::ItemKey::Genre));
@@ -815,26 +815,25 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
         // What the file says it runs at, off the primary tag like everything
-        // else here. A file carrying nothing believable lands on the
-        // analysis pass's list instead (see [`crate::tempo`]).
+        // else here. A file with nothing believable goes onto the analysis
+        // pass's list instead (see [`crate::tempo`]).
         row.bpm = crate::tempo::read(tag);
     }
     // What an analysis pass measured, whoever ran it. Read across every tag
     // on the file rather than off the primary one: mp3gain writes its four
-    // values into an APEv2 tag that sits beside an ID3v2 tag carrying none,
-    // and lofty calls ID3v2 the primary on MPEG, so a primary-only read
-    // misses them.
+    // values into an APEv2 tag next to an ID3v2 tag that has none, and lofty
+    // calls ID3v2 the primary on MPEG, so a primary-only read misses them.
     row.replay_gain = replay_gain_across_tags(&file);
-    // The rating read off the same native parse above - FMPS lives in TXXX
-    // frames and unmapped Vorbis keys, which this generic tag never carries.
+    // The rating read off the same native parse above: FMPS is stored in TXXX
+    // frames and unmapped Vorbis keys, which this generic tag never holds.
     row.rating = rating.unwrap_or(0);
     Some(row)
 }
 
-/// ReplayGain gathered from every tag the file carries, primary first, the
+/// ReplayGain gathered from every tag the file holds, primary first, the
 /// rest in the order lofty parsed them. First tag holding a given key wins,
-/// per key: a file can carry the track pair in one tag and the album pair in
-/// another, and taking whichever tag answers first per field beats picking
+/// per key: a file can hold the track pair in one tag and the album pair in
+/// another, and taking whichever tag has the field first beats picking
 /// one tag and ignoring the other three values.
 ///
 /// Only ReplayGain reads this wide. Everything else on the row comes off the
@@ -905,7 +904,7 @@ mod tests {
 
     /// The write-back loop the metadata writer's contract names: commit,
     /// reindex the written path, and the store row converges without a
-    /// rescan - even when the row already exists.
+    /// rescan, even when the row already exists.
     #[test]
     fn reindex_rereads_named_files() {
         let dir = std::env::temp_dir().join("rox-scanner-reindex");
@@ -972,7 +971,7 @@ mod tests {
     /// The combined read_tags path and the standalone rating::read agree on
     /// a file's rating: the scanner now pulls the rating out of the same
     /// parse it reads the tags from, so the two must not drift. Half points
-    /// survive both ways.
+    /// come through both ways.
     #[test]
     fn rating_matches_across_read_paths() {
         let dir = std::env::temp_dir().join("rox-scanner-rating-parity");
@@ -995,7 +994,7 @@ mod tests {
         .unwrap();
 
         // read_one runs read_tags, the combined parse; rating::read_path is
-        // the standalone reader. Both must land on the same half-point value.
+        // the standalone reader. Both must give the same half-point value.
         let combined = read_one(&path).unwrap().rating;
         let standalone = crate::rating::read_path(&path).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1004,9 +1003,9 @@ mod tests {
         assert_eq!(combined, standalone);
     }
 
-    /// A file carrying multiple genre values - the writer lays them down
-    /// as native multiples - scans as the one "; " list, not just the
-    /// first value.
+    /// A file with multiple genre values (the writer lays them down as
+    /// native multiples) scans as the one "; " list, not just the first
+    /// value.
     #[test]
     fn multi_genre_scans_joined() {
         let dir = std::env::temp_dir().join("rox-scanner-multi-genre");
@@ -1064,12 +1063,12 @@ mod tests {
         assert_eq!(row.replay_gain.track_db, Some(-7.35));
         assert_eq!(row.replay_gain.track_peak, Some(0.987654));
         assert_eq!(row.replay_gain.album_db, Some(-8.10));
-        // Nothing invented for the value the file doesn't carry.
+        // Nothing invented for the value the file doesn't have.
         assert_eq!(row.replay_gain.album_peak, None);
     }
 
-    /// mp3gain's habit: the numbers land in an APEv2 tag while the ID3v2 tag
-    /// beside it carries only the usual fields. The scan has to read both or
+    /// mp3gain's habit: the numbers go into an APEv2 tag while the ID3v2 tag
+    /// next to it holds only the usual fields. The scan has to read both or
     /// every mp3gain'd file scans as unlevelled.
     #[test]
     fn replaygain_reads_out_of_an_ape_tag_beside_id3v2() {
@@ -1114,8 +1113,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::create_dir_all(dir.join("b")).unwrap();
-        // Dummy bytes: the tags will not read, so each indexes under its
-        // filename. That is enough to exercise the walk-versus-store diff.
+        // Dummy bytes: the tags won't read, so each indexes under its
+        // filename. That's enough to exercise the walk-versus-store diff.
         let files = ["a/1.mp3", "a/2.mp3", "b/1.mp3"];
         for name in files {
             std::fs::write(dir.join(name), b"not audio").unwrap();
@@ -1155,8 +1154,8 @@ mod tests {
     }
 
     /// read_one on a loose file returns a row with path/size/mtime filled,
-    /// even when the file carries no readable tags - the filename stands in
-    /// as the title.
+    /// even when the file has no readable tags: the filename stands in as
+    /// the title.
     #[test]
     fn read_one_fills_path_on_loose_file() {
         let dir = std::env::temp_dir().join("rox-scanner-read-one");
@@ -1264,7 +1263,7 @@ FILE "disc.wav" WAVE
     }
 
     /// The core of it: a sheet beside an image turns one file into a row per
-    /// track, the image gets no plain row of its own, and every row carries
+    /// track, the image gets no plain row of its own, and every row takes
     /// the sheet's tags over the image's own.
     #[test]
     fn a_cue_sheet_splits_its_image_into_tracks() {

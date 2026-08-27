@@ -1,4 +1,4 @@
-//! An acoustic vector as a tag a file can carry, so a description survives
+//! An acoustic vector as a tag a file can hold, so a description outlives
 //! the database it was computed into.
 //!
 //! [`crate::embeddings`] is the query engine and stays that way: every read
@@ -12,9 +12,9 @@
 //! `ROX_ACOUSTIC:<model-id>` works untranslated as both an ID3v2 TXXX
 //! description and a Vorbis comment key, which is the whole reason for the
 //! spelling: one string, two formats, no per-format table to keep in step.
-//! The model id rides the key rather than the value, so two models' vectors
-//! sit in one file the same way they sit in two database rows, and a reader
-//! asking for one never has to parse the other's.
+//! The model id is part of the key rather than the value, so two models'
+//! vectors coexist in one file the same way they occupy two database rows,
+//! and a reader asking for one never has to parse the other's.
 //!
 //! ## The value
 //!
@@ -24,7 +24,7 @@
 //!
 //! Half floats, and deliberately not integers. The vectors go in raw and
 //! unnormalized (see [`crate::embeddings`]'s header) and their dimensions
-//! live on wildly different scales, so an int8 quantization would need a
+//! span wildly different scales, so an int8 quantization would need a
 //! per-dimension scale factor to mean anything, and getting one wrong turns
 //! a neighbour list into noise. f16 has no such knob: it keeps three decimal
 //! digits at every magnitude, and the query z-scores each dimension against
@@ -43,14 +43,14 @@ use lofty::mpeg::MpegFile;
 use lofty::probe::Probe;
 
 /// What every acoustic key starts with. The tag editor and the metadata
-/// panel skip anything carrying it: these are numbers a machine wrote for
+/// panel skip anything with it: these are numbers a machine wrote for
 /// another machine, and a row of base64 in a field list is noise.
 pub const PREFIX: &str = "ROX_ACOUSTIC:";
 
 /// The one version this module writes and the only one it reads.
 const VERSION: &str = "v1";
 
-/// The tag key one model's vectors live under.
+/// The tag key one model's vectors are stored under.
 pub fn key(model: &str) -> String {
     format!("{PREFIX}{model}")
 }
@@ -126,7 +126,7 @@ pub fn decode(value: &str, dim: usize) -> Option<Vec<f32>> {
     vec.iter().all(|v| v.is_finite()).then_some(vec)
 }
 
-/// One model's vector out of a file's tags, or None when the file carries
+/// One model's vector out of a file's tags, or None when the file has
 /// none, isn't a format that can hold one, or holds one this build can't
 /// read.
 ///
@@ -198,7 +198,7 @@ mod tests {
         let back = decode(&value, vec.len()).unwrap();
         assert_eq!(back.len(), vec.len());
         for (a, b) in vec.iter().zip(&back) {
-            // Half floats carry about three decimal digits, so the error is
+            // Half floats hold about three decimal digits, so the error is
             // relative rather than absolute: a band energy in the thousands
             // is allowed to move by a few, a rate near one is not.
             let tolerance = (a.abs() * 1e-3).max(1e-6);
@@ -236,7 +236,7 @@ mod tests {
         assert!(decode("v1;dim=4;f16", 4).is_none());
         assert!(decode("", 4).is_none());
 
-        // A value carrying a NaN reads as nothing. It's finite-checked here
+        // A value with a NaN in it reads as nothing. It's finite-checked here
         // as well as at the store, because a tag is a text field anyone can
         // type into and one NaN makes every score in the library NaN.
         let poisoned = encode(&[1.0, f32::NAN, 3.0, 4.0]);

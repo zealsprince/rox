@@ -1,4 +1,4 @@
-//! The tag repair window: find and rewrite the files carrying tag shapes
+//! The tag repair window: find and rewrite the files with tag shapes
 //! lofty (through 0.24) reads mangled or refuses to write: the ID3v2.4
 //! double-unsync shape, the stray null on a UTF-16 text frame, and zero
 //! padding left outside the declared tag size. Reads already tolerate
@@ -13,11 +13,11 @@
 //! rewrite would repair (the `tag_source::needs_repair` gate), and lists
 //! the hits with a checkbox each. A file whose tags fail to parse even
 //! through the sanitiser is listed too, unchecked, with its error in
-//! place of its folder: the rewrite cannot mend it yet, but it should
-//! not pass a repair scan silently. Repair commits a no-op edit to every
+//! place of its folder: the rewrite can't mend it yet, but it shouldn't
+//! pass a repair scan silently. Repair commits a no-op edit to every
 //! checked file through the writer's atomic layer, so the
-//! copy-verify-rename safety guards every rewrite. Repaired files that
-//! live under a library root reindex so their stored mtime and size
+//! copy-verify-rename safety guards every rewrite. Repaired files under
+//! a library root reindex so their stored mtime and size
 //! match the rewrite and the next scan leaves them alone.
 
 use std::collections::HashSet;
@@ -41,7 +41,7 @@ use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 
 /// How many files each detection hop reads before the count moves. Big
-/// enough that the UI thread is not woken per file on a large library,
+/// enough that the UI thread isn't woken per file on a large library,
 /// small enough that the "Scanning n/m" count still tracks a slow disk.
 const CHUNK: usize = 256;
 
@@ -55,8 +55,8 @@ actions!(tag_repair, [Repair]);
 const CONTEXT: &str = "TagRepair";
 
 /// The window's repair binding; call once at startup. Nothing here takes
-/// typing, so the binding sits on the window root and the root holds the
-/// focus, which is what puts it on the dispatch path.
+/// typing, so the binding is on the window root and the root holds the
+/// focus, which puts it on the dispatch path.
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("enter", Repair, Some(CONTEXT))]);
 }
@@ -68,9 +68,9 @@ enum Scope {
     Folder(PathBuf),
 }
 
-/// One affected file: the path to repair, its file name, and the folder it
-/// sits in, so the list disambiguates the many "01. ....mp3" that share a
-/// name across albums. A file the rewrite cannot repair carries its parse
+/// One affected file: the path to repair, its file name, and the folder
+/// it's in, so the list disambiguates the many "01. ....mp3" that share a
+/// name across albums. A file the rewrite can't repair has its parse
 /// error instead, shown in the folder's place.
 struct RepairRow {
     path: PathBuf,
@@ -107,7 +107,7 @@ impl RepairRow {
 }
 
 /// The open repair window, if any. Only one makes sense at a time, and a
-/// scan or repair in flight is not worth losing to a second one, so asking
+/// scan or repair in flight isn't worth losing to a second one, so asking
 /// again just brings this one forward.
 #[derive(Default)]
 struct OpenTagRepair(Option<WindowHandle<Root>>);
@@ -141,7 +141,7 @@ pub struct TagRepair {
     library: Entity<Library>,
     scope: Scope,
     /// A scan is walking and reading; the controls lock and the count moves
-    /// as each chunk lands.
+    /// as each chunk comes in.
     scanning: bool,
     scan_done: usize,
     scan_total: usize,
@@ -156,13 +156,13 @@ pub struct TagRepair {
     repairing: bool,
     repair_done: usize,
     repair_total: usize,
-    /// The last repair's summary, held over the list after it lands.
+    /// The last repair's summary, held over the list after it finishes.
     result: Option<SharedString>,
     /// A scan or repair failure, shown inline.
     error: Option<SharedString>,
     scroll: UniformListScrollHandle,
     /// The window root's own focus. No field here takes typing, so without
-    /// it the enter binding would have nothing to hang off.
+    /// it the enter binding would have nothing to attach to.
     focus: FocusHandle,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
@@ -245,7 +245,7 @@ impl TagRepair {
         self.error = None;
     }
 
-    /// Walk the scope and flag every file carrying the broken tag shape.
+    /// Walk the scope and flag every file with the broken tag shape.
     /// The walk and the per-file reads run off the UI thread; the count
     /// advances a chunk at a time so a slow disk still shows progress.
     fn scan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -299,7 +299,7 @@ impl TagRepair {
                             .filter_map(|path| {
                                 // The repairable shapes first, then the
                                 // files whose tags fail to parse even
-                                // sanitised: those cannot be rewritten yet,
+                                // sanitised: those can't be rewritten yet,
                                 // but a repair scan must not pass them
                                 // silently.
                                 if rox_library::tag_source::needs_repair(&path) {
@@ -313,7 +313,7 @@ impl TagRepair {
                             .collect::<Vec<_>>()
                     })
                     .await;
-                // Land the chunk's hits into the list as it goes, so the
+                // Add the chunk's hits to the list as it goes, so the
                 // first affected files show while the rest of the scan runs
                 // instead of only at the end. A closed window (the user gave
                 // up) drops the handle; stop rather than keep reading into
@@ -364,8 +364,8 @@ impl TagRepair {
 
     /// Repair every checked file: a no-op commit through the writer rewrites
     /// its tag clean, one file per background hop so the count moves and a
-    /// slow file is visibly the one holding things up. A repaired file that
-    /// lives under a library root reindexes so its stored mtime and size
+    /// slow file is visibly the one holding things up. A repaired file
+    /// under a library root reindexes so its stored mtime and size
     /// match the rewrite; the repaired rows drop off the list, and any that
     /// failed stay so the user sees which.
     fn repair(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -394,7 +394,7 @@ impl TagRepair {
             let mut failures = 0usize;
             let mut first_error: Option<String> = None;
             for path in targets {
-                // Note the write before it lands so the watch batch it
+                // Note the write before it happens so the watch batch it
                 // triggers is suppressed, not reindexed. The apply_edits at
                 // the end notes too, but by then the suppression window has
                 // long passed for all but the last few files of a big run.
@@ -409,7 +409,7 @@ impl TagRepair {
                     .spawn(async move {
                         // The no-op edit that repairs: the writer re-reads
                         // through the sanitiser and writes the header flag
-                        // cleared, so the saved file no longer carries the
+                        // cleared, so the saved file no longer has the
                         // shape at all, all behind copy-verify-rename.
                         let r = writer::commit_with(&path, &[], &[]);
                         (path, r)
@@ -453,8 +453,8 @@ impl TagRepair {
                     })
                     .collect();
                 if !edits.is_empty() {
-                    // The repair rewrites a file's header and names no columns, so
-                    // there is no per-row sub for it to land on.
+                    // The repair rewrites a file's header and names no
+                    // columns, so there's no per-row sub for it to apply to.
                     library.update(cx, |library, cx| library.apply_edits(&edits, &[], cx));
                 }
                 let done: HashSet<PathBuf> = repaired.into_iter().collect();
@@ -525,9 +525,10 @@ impl TagRepair {
 
     /// The results region under the scope row, filling the rest of the
     /// window: a centered hint before the first scan, a "none found" line
-    /// when a scan came up clean, or the count and select-all riding the
-    /// heading over the virtualized list. Rows stream in during a scan, so the list
-    /// shows as soon as `found` has anything, before the scan finishes.
+    /// when a scan came up clean, or the count and select-all in the
+    /// heading over the virtualized list. Rows stream in during a scan, so
+    /// the list shows as soon as `found` has anything, before the scan
+    /// finishes.
     fn results(&self, cx: &mut Context<Self>) -> Div {
         if self.found.is_empty() {
             let message = if !self.scanned {
@@ -551,8 +552,8 @@ impl TagRepair {
         }
         let all = self.checked.iter().all(|&c| c);
         let count = self.found.len();
-        // The count reads "so far" while rows are still streaming, so it is
-        // honest about a scan that is not done yet.
+        // The count reads "so far" while rows are still streaming, so it's
+        // honest about a scan that isn't done yet.
         let count_label = if self.scanning {
             rox_i18n::t!("tags-repair-count-so-far", count = count as u64)
         } else {
@@ -642,7 +643,7 @@ impl TagRepair {
                         .child({
                             // The parse error outranks the folder on the
                             // second line: an unrepairable file's row has
-                            // to say why it sits here unchecked.
+                            // to say why it's here unchecked.
                             let detail = row.issue.clone().unwrap_or_else(|| row.folder.clone());
                             div()
                                 .flex_1()
@@ -665,8 +666,8 @@ impl TagRepair {
             .collect()
     }
 
-    /// The scope pills under a heading that carries Scan, and the count a
-    /// running scan moves.
+    /// The scope pills under a heading with the Scan button, and the count
+    /// a running scan moves.
     fn header(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.scanning || self.repairing;
         let controls = div()
@@ -699,10 +700,10 @@ impl TagRepair {
                 cx.listener(|this, _, window, cx| this.scan(window, cx)),
             ))
             .into_any_element();
-        section("Repair", Some(controls), self.scope_row(cx))
+        section(rox_i18n::t!("tags-repair-section"), Some(controls), self.scope_row(cx))
     }
 
-    /// The window's actions, and what the shortcut is doing or why it is
+    /// The window's actions, and what the shortcut is doing or why it's
     /// off, over what the last repair left behind.
     fn footer(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.scanning || self.repairing;
@@ -852,8 +853,8 @@ impl Render for TagRepair {
             .gap(tokens::SPACE_MD)
             .p(tokens::SPACE_MD)
             // The page's own surface, a second elevated layer over the
-            // window's, the same as the settings page. Two layers is what
-            // the backdrop reads through everywhere.
+            // window's, the same as the settings page. The backdrop reads
+            // through two layers everywhere.
             .bg(palette::bg_elevated())
             .child(self.header(cx))
             .child(self.results(cx));

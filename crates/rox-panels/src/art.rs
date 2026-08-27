@@ -79,7 +79,7 @@ const MIN_OP: f32 = 0.2;
 /// the covers sit above it.
 const LABEL_H: f32 = 40.;
 
-/// The reflection floor: how far a cover's mirror reaches past its lower
+/// The reflection floor: how far a cover's mirror extends past its lower
 /// edge, as a fraction of the cover, and how bright the mirror starts
 /// before it fades to nothing.
 const REFL: f32 = 0.32;
@@ -131,7 +131,7 @@ pub struct ArtConfig {
     /// Bring the playing album to the center when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
-    /// After the shelf sits untouched for a spell, glide the playing album
+    /// After the shelf goes untouched for a spell, glide the playing album
     /// back to the center on its own. Off by default; a browse surface only
     /// chases the player once you ask it to.
     #[serde(default)]
@@ -224,7 +224,7 @@ struct Cell {
     len: u32,
     art: Option<Option<PathBuf>>,
     /// The cover's current opacity under the dim mode, easing toward its
-    /// target every frame. None until the cover's first paint, which lands
+    /// target every frame. None until the cover's first paint, which starts
     /// at the target directly: only changes fade.
     dim: Option<f32>,
 }
@@ -298,7 +298,7 @@ pub struct ArtPanel {
     /// The baked disc faces while a disc style is on, keyed by art path
     /// and filled off-thread as covers come into view.
     discs: DiscCache,
-    /// The query editor, the shared search box; `config.query` mirrors its
+    /// The query editor, the shared search box; `config.query` tracks its
     /// value via change events.
     search: Entity<SearchBox>,
     /// The centered album published on the shared selection. A set of one:
@@ -317,7 +317,7 @@ pub struct ArtPanel {
     coasting: bool,
     /// A pending selection publish from a user move: set by a drag, wheel,
     /// or click, spent on the next settle so a scrub only publishes the
-    /// album it lands on, not every one it passes.
+    /// album it settles on, not every one it passes.
     publish_pending: bool,
     /// Wheel travel banked toward the next [`WHEEL_STEP`].
     wheel: f32,
@@ -351,7 +351,7 @@ pub struct ArtPanel {
     dim_scrub: ScrubState,
     /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
-    /// A failed play, shown in a strip until the next one lands.
+    /// A failed play, shown in a strip until the next play succeeds.
     error: Option<SharedString>,
     /// A pending box reset from a source toggle or a shared-query change;
     /// applied on the next render, where a window exists to set the input.
@@ -360,7 +360,7 @@ pub struct ArtPanel {
     /// Runtime only: a restore re-pins from whatever is picked then.
     selection_ids: Vec<i64>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _thumbs_changed: Subscription,
@@ -394,7 +394,7 @@ impl ArtPanel {
                 }
             },
         );
-        // Landing thumbnails notify the service; repaint so covers fill in.
+        // Arriving thumbnails notify the service; repaint so covers fill in.
         let _thumbs_changed = cx.observe(&state.thumbs, |_, _, cx| cx.notify());
         // A shelf restored as global opens showing the shared query; an
         // own-query one shows its own.
@@ -402,7 +402,8 @@ impl ArtPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let search =
+            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // Follow the shared query while global: rebuild the shelf and reset
         // the box to it on the next render.
@@ -455,7 +456,7 @@ impl ArtPanel {
             playing_ix: None,
             playing: false,
             // Suppress the launch settle's publish: a restore reopens a
-            // position, it does not reach out and reselect.
+            // position, it doesn't reach out and reselect.
             centered: Some(start as usize),
             rounding_scrub: ScrubState::default(),
             dim_scrub: ScrubState::default(),
@@ -479,8 +480,8 @@ impl ArtPanel {
         this
     }
 
-    /// Follow the player: on a track change, center the album it lives in,
-    /// and keep the dim mode's facts fresh. The compares keep the per-tick
+    /// Follow the player: on a track change, center the album it belongs
+    /// to, and keep the dim mode's facts fresh. The compares keep the per-tick
     /// observer cheap, the player notifies every pump.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let (playing, path) = {
@@ -559,9 +560,9 @@ impl ArtPanel {
         }
     }
 
-    /// The idle wake's landing: glide the playing album back to the center,
+    /// What the idle wake does: glide the playing album back to the center,
     /// so long as the resume is still on. The clock only fires this once the
-    /// shelf has sat untouched a full window, a gesture in between having
+    /// shelf has gone untouched a full window, a gesture in between having
     /// pushed it out, so no extra idle check is needed here.
     fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
         if self.config.resume_playing {
@@ -580,7 +581,7 @@ impl ArtPanel {
     }
 
     /// Aim the carousel at a cell with the ease, from a user move. Marks the
-    /// settle to publish so the album it lands on reaches the selection.
+    /// settle to publish, so the album it settles on goes to the selection.
     fn navigate(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.goal = ix as f32;
         self.coasting = false;
@@ -603,7 +604,7 @@ impl ArtPanel {
     /// Recompute the view and its album runs: the canonical order, cut to
     /// the query's hits when one is set. Search hits come back in
     /// projection row order, so they filter the canonical order rather than
-    /// getting walked directly - otherwise an album's scattered rows would
+    /// being iterated directly. Otherwise an album's scattered rows would
     /// split into duplicate covers. Breaks on the album artist, not the
     /// track artist, so a compilation stays one cover.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
@@ -611,7 +612,7 @@ impl ArtPanel {
         self.dimming.clear();
         self.selected.clear();
         // The settle dedupe keys on a cell index, and the rebuild may have
-        // just reordered or refiltered the cells under it - the same index
+        // just reordered or refiltered the cells under it: the same index
         // can now be a different album, and a settle there must publish.
         self.centered = None;
         self.hovered = None;
@@ -671,7 +672,7 @@ impl ArtPanel {
         }
         // A shorter view (a query) can leave the center past the end. Only
         // re-clamp once the projection is loaded, though: on a cold start it
-        // has not arrived, so there are no cells yet and clamping here would
+        // hasn't arrived, so there are no cells yet and clamping here would
         // pin the restored center to 0 before the shelf ever builds.
         if has_projection {
             let max = self.max_index();
@@ -760,7 +761,7 @@ impl ArtPanel {
                 let row = *self.view.get(cell.start)?;
                 // No album tag means this is the unknown bucket, not a real
                 // album: keep the placeholder instead of whichever loose
-                // track's art lands first.
+                // track's art comes back first.
                 if projection.resolve(row).album.is_empty() {
                     return None;
                 }
@@ -879,7 +880,7 @@ impl ArtPanel {
         (self.hero_side() * STEP).max(1.)
     }
 
-    /// Whether cover `ix` sits in the receded set: the covers the focus
+    /// Whether cover `ix` is in the receded set: the covers the focus
     /// effects push back. The hovered cover and the playing album are always
     /// exempt. Always mode pushes back every other cover; otherwise only the
     /// rest while audio moves.
@@ -907,7 +908,7 @@ impl ArtPanel {
 
     /// The disc face for a cover, baked from its thumb off-thread: a hit
     /// comes back at once, a miss claims one bake and comes back None
-    /// until it lands. The bytes are the thumb's own, so the face is as
+    /// until it finishes. The bytes are the thumb's own, so the face is as
     /// sharp as the flat cover it replaces and the bake stays a few
     /// milliseconds.
     fn disc_of(
@@ -950,7 +951,7 @@ impl ArtPanel {
     /// through the img element's own asset cache and center-crops square,
     /// the crop `ObjectFit::Cover` would take. The quad arrives relative
     /// to the canvas' top-left; the paint hook re-anchors it to wherever
-    /// the div actually lands.
+    /// the div actually ends up.
     fn quad_canvas(
         quad: [[f32; 2]; 4],
         image: Arc<gpui::Image>,
@@ -1018,8 +1019,8 @@ impl ArtPanel {
     /// A cover's box at distance `d` from the center: position, size, the
     /// distance fade before the dim mode multiplies in, and how far the
     /// cover has turned away. The cover and its reflection read the same
-    /// numbers, which is what keeps the mirror under its cover through
-    /// every scrub frame.
+    /// numbers, which keeps the mirror under its cover through every
+    /// scrub frame.
     fn placement(&self, d: f32, hero: f32, cx_px: f32, cy_px: f32) -> Placement {
         let a = d.abs();
         let scale = SHRINK.powf(a).max(MIN_SCALE);
@@ -1050,7 +1051,7 @@ impl ArtPanel {
     /// A cover's projected quad at distance `d`: corners clockwise from
     /// the texture's top-left, in shelf coordinates. The cover rotates
     /// about its cross axis through its center, inner edge toward the
-    /// viewer, and projects with a focal length a few covers deep - the
+    /// viewer, and projects with a focal length a few covers deep: the
     /// keystone the squash was faking. The shrink keeps the near edge
     /// under the hero's height, so the flanks never outgrow the band.
     fn quad(&self, d: f32, hero: f32, cx_px: f32, cy_px: f32) -> [[f32; 2]; 4] {
@@ -1061,7 +1062,7 @@ impl ArtPanel {
         let (sin, cos) = theta.sin_cos();
         let focal = hero * FOCAL;
         let off = Self::offset_units(d) * hero;
-        // An edge at offset `u` along the scroll axis sits at depth
+        // An edge at offset `u` along the scroll axis is at depth
         // u * sin, so the inner edge swings toward the viewer and grows
         // while the outer one recedes.
         let edge = |u: f32| {
@@ -1111,7 +1112,7 @@ impl ArtPanel {
 
     /// One cover in the carousel: placed absolutely by its distance `d` from
     /// the center, scaled and turned and dimmed by it. Pending and missing
-    /// art wear the same quiet placeholder, so a landing cover fills in
+    /// art use the same quiet placeholder, so an arriving cover fills in
     /// without a flash.
     fn cover(
         &mut self,
@@ -1122,7 +1123,7 @@ impl ArtPanel {
         cy_px: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // The first paint lands at the dim target directly; from then on the
+        // The first paint starts at the dim target directly; from then on the
         // stepping in `body` owns the value.
         let dim = match self.cells.get(ix).and_then(|cell| cell.dim) {
             Some(dim) => dim,
@@ -1173,7 +1174,7 @@ impl ArtPanel {
                 .update(cx, |thumbs, cx| thumbs.get(path, cx)),
             None => Thumb::Missing,
         };
-        // The disc face once its bake lands; until then the flat thumb
+        // The disc face once its bake finishes; until then the flat thumb
         // stands in behind the pill crop, so scrubbing never flashes.
         let baked = match (&thumb, &path, disc_on) {
             (Thumb::Ready(image), Some(path), true) => {
@@ -1193,7 +1194,7 @@ impl ArtPanel {
         let disc_shown = baked.is_some();
         let quad_painted = quad.is_some() && matches!(thumb, Thumb::Ready(_));
         let content: AnyElement = match (&quad, thumb, baked) {
-            // The keystone: the face rides the canvas onto the projected
+            // The keystone: the canvas paints the face onto the projected
             // quad, and the wash bakes the turn scrim into the sprite,
             // shaped to the quad the way an overlay div can't be.
             (Some(quad), Thumb::Ready(image), bake) => {
@@ -1202,8 +1203,8 @@ impl ArtPanel {
                 Self::quad_canvas(rel, image, bake, desaturated, [1.; 4], wash, None)
             }
             // The bake is square with the disc touching its edges and
-            // carrying its own alpha, so the fill stretch is what turns it
-            // with the box and nothing needs clipping into shape.
+            // holding its own alpha, so the fill stretch turns it with the
+            // box and nothing needs clipping into shape.
             (None, Thumb::Ready(_), Some(disc)) => img(disc)
                 .size_full()
                 .object_fit(ObjectFit::Fill)
@@ -1241,7 +1242,7 @@ impl ArtPanel {
             .h(px(h))
             .overflow_hidden()
             .rounded(radius)
-            // A landed disc face carries its own alpha, and a keystone
+            // A finished disc face has its own alpha, and a keystone
             // leaves its box's corners bare; backdrop behind either would
             // show where it shouldn't.
             .when(!disc_shown && !quad_painted, |el| {
@@ -1267,7 +1268,7 @@ impl ArtPanel {
                 }
             }))
             // A press might start a scrub; the click acts on release, and a
-            // scrub that traveled is not a click.
+            // scrub that traveled isn't a click.
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseUpEvent, window, cx| {
@@ -1288,7 +1289,7 @@ impl ArtPanel {
             )
             .child(content)
             // A dark scrim deepens with the turn, so an angled cover reads as
-            // lit from the front like the hero. Perspective covers carry the
+            // lit from the front like the hero. Perspective covers have the
             // same shading in their wash instead.
             .when(!quad_painted && turn > 0.02, |d| {
                 d.child(
@@ -1314,13 +1315,13 @@ impl ArtPanel {
 
     /// A cover's mirrors: the same face painted through the quad
     /// pipeline, flipped past the cover's edge and fading to nothing by
-    /// [`REFL`] of the way out - a true alpha fade, so the glow and
+    /// [`REFL`] of the way out: a true alpha fade, so the glow and
     /// whatever else lies underneath shows through. A row gets the one
     /// floor below; a column has no floor to stand on, so it mirrors both
     /// side edges and stays symmetric. With perspective on the mirrors
     /// keystone with their cover, each column reflected past its own
     /// edge, which is exactly the 3D mirror. Only real art reflects; a
-    /// placeholder's floor stays bare so a landing cover's mirror fills
+    /// placeholder's floor stays bare so an arriving cover's mirror fills
     /// in with it.
     fn reflection(
         &mut self,
@@ -1355,7 +1356,7 @@ impl ArtPanel {
             .and_then(|cell| cell.dim)
             .unwrap_or_else(|| self.dim_target(ix));
         // The mirror shows what its cover shows: the disc face once that
-        // bake has landed (read-only here, the cover above claims the
+        // bake has finished (read-only here, the cover above claims the
         // bakes), the flat thumb until then.
         let disc_on = self.config.disc_style != DiscStyle::Off;
         let baked = if disc_on {
@@ -1363,7 +1364,7 @@ impl ArtPanel {
         } else {
             None
         };
-        // The cover's quad, or its flat rect worn as one: either way the
+        // The cover's quad, or its flat rect used as one: either way the
         // mirror is the same paint call, corners and fade doing the work
         // the strip-and-scrim used to.
         let quad = if self.config.perspective {
@@ -1377,14 +1378,14 @@ impl ArtPanel {
             ]
         };
         // The fade runs 1 at the seam to 0 at REFL of the way out; the
-        // far corners sit past zero so the ramp lands there, and the
+        // far corners are past zero so the ramp ends there, and the
         // shader clamps the rest of the face to nothing.
         let spent = 1.0 - 1.0 / REFL;
         let desaturated = self.desaturated(ix);
         // Mirrors are see-through, so overlapping ones double-expose
         // instead of occluding. The floor has to tile the way the shelf
         // does: each mirror clips to the slice of its cover the nearer
-        // neighbor toward the center leaves visible, and the seams land
+        // neighbor toward the center leaves visible, and the seams fall
         // exactly on the shelf's own occlusion edges.
         let axis = self.axis();
         let (clip_lo, clip_hi) = if d.abs() > 0.5 {
@@ -1401,7 +1402,7 @@ impl ArtPanel {
         };
         // One positioned mirror: a masked div over the visible slice, the
         // full quad canvas inside. The quads keep their natural screen
-        // orientation - the flip happens in the canvas' texture sampling -
+        // orientation (the flip happens in the canvas' texture sampling),
         // so a mirror sprite is the same orientation-true map as any
         // cover, and the mask clips it without touching the mapping.
         let mirror_el = |mirror: [[f32; 2]; 4], fade_corners: [f32; 4]| {
@@ -1537,7 +1538,7 @@ impl ArtPanel {
                     .get(cell.start)
                     .map(|&row| {
                         let v = projection.resolve(row);
-                        // Rows from before the album artist column carry an
+                        // Rows from before the album artist column have an
                         // empty one; the first track's artist stands in.
                         let artist = if v.album_artist.is_empty() {
                             v.artist
@@ -1598,7 +1599,7 @@ impl ArtPanel {
             })
     }
 
-    /// Solo or popped out there is no title bar to host the search, so it
+    /// Solo or popped out there's no title bar to host the search, so it
     /// renders as a toolbar row above the shelf instead, the library's move.
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -1786,7 +1787,7 @@ impl PanelSettings for ArtPanel {
     }
 
     /// The shelf's own appearance row on the shared page: the covers'
-    /// rounding, a look knob that lives on the config rather than the theme
+    /// rounding, a look knob stored on the config rather than the theme
     /// because it shapes the covers, not the panel frame.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let rounding = self.config.rounding;
@@ -1810,16 +1811,25 @@ impl PanelSettings for ArtPanel {
                             cx,
                         ),
                     ))
-                    .child(setting_row(
-                        rox_i18n::t!("art-disc-style"),
-                        Some(rox_i18n::t!("art-disc-style.description")),
-                        panel::choices(
-                            &discs::DISC_STYLES,
-                            self.config.disc_style,
-                            |this: &mut Self, style, cx| this.set_disc_style(style, cx),
-                            cx,
-                        ),
-                    ))
+                    .child({
+                        // DISC_STYLES holds i18n keys, not labels; choices_shared
+                        // wants the resolved text, so translate before handing it
+                        // off rather than through the legacy `choices` adapter.
+                        let styles: Vec<_> = discs::DISC_STYLES
+                            .iter()
+                            .map(|(key, style)| (rox_i18n::t!(*key), *style))
+                            .collect();
+                        setting_row(
+                            rox_i18n::t!("art-disc-style"),
+                            Some(rox_i18n::t!("art-disc-style.description")),
+                            panel::choices_shared(
+                                &styles,
+                                self.config.disc_style,
+                                |this: &mut Self, style, cx| this.set_disc_style(style, cx),
+                                cx,
+                            ),
+                        )
+                    })
                     // A disc is already round and a keystone can't clip
                     // rounded, so the knob only shows while the covers
                     // paint flat and square.
@@ -1979,13 +1989,13 @@ impl Panel for ArtPanel {
     }
 
     /// The shelf serves cover context menus over the whole body, so the tab
-    /// panel's body right-click stays out; the panel dropdown rides along
+    /// panel's body right-click stays out; the panel dropdown is appended
     /// after the play items, the library's arrangement.
     fn content_context_menu(&self, _cx: &App) -> bool {
         true
     }
 
-    /// The layout dump carries the panel's config; the builder registered in
+    /// The layout dump stores the panel's config; the builder registered in
     /// `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
         crate::panel::chrome_min_size(
@@ -2148,7 +2158,7 @@ impl Render for ArtPanel {
 impl ArtPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // A pending box reset (a source toggle or a shared-query change)
-        // lands here, where a window exists to set the input's text.
+        // is applied here, where a window exists to set the input's text.
         if self.resync_box {
             self.resync_box = false;
             self.sync_query_box(window, cx);
@@ -2172,7 +2182,7 @@ impl ArtPanel {
         } else {
             if self.coasting {
                 // A free scrub just settled: pick the nearest cover to rest
-                // on, and publish the album it landed on.
+                // on, and publish the album it settled on.
                 self.goal = self.pos.round().clamp(0., max);
                 self.coasting = false;
             }
@@ -2199,8 +2209,8 @@ impl ArtPanel {
         // The dim fade: each cover's opacity eases toward its target, the
         // same exponential approach. Only the covers with a fade in flight
         // and the visible window (whose targets shift as the shelf moves)
-        // step here; the rest of the shelf sits frozen off-screen, where its
-        // opacity does not show, until it scrolls back on. A big library's
+        // step here; the rest of the shelf stays frozen off-screen, where its
+        // opacity doesn't show, until it scrolls back on. A big library's
         // off-shelf covers cost nothing. Frames only while one is moving.
         let dim_step = 1.0 - (0.08_f32).powf(dt * 10.0);
         let last = self.cells.len().saturating_sub(1) as i64;
@@ -2233,8 +2243,8 @@ impl ArtPanel {
             window.request_animation_frame();
         }
 
-        // The search lives in the tab bar via title_suffix while the panel
-        // shares a group; solo or popped out there is no header at all, so it
+        // The search shows in the tab bar via title_suffix while the panel
+        // shares a group; solo or popped out there's no header at all, so it
         // renders as a toolbar in the body instead.
         let headerless = self
             .tab_panel
@@ -2269,7 +2279,7 @@ impl ArtPanel {
             let (w, h) = self.frame();
             let hero = self.hero_side();
             let axis = self.axis();
-            // The scroll axis carries the stacking offset; the other holds
+            // The scroll axis takes the stacking offset; the other keeps
             // the covers centered. `cover` maps this pair onto x and y. A
             // row's floor shifts the covers up by half its strip so cover
             // and mirror center as one block; a column mirrors both sides
@@ -2330,9 +2340,9 @@ impl ArtPanel {
                     }),
                 )
                 // The wheel steps the carousel a cover at a time, banking the
-                // sub-step travel so a trackpad's small deltas still land. The
-                // scroll axis leads; a plain vertical wheel still drives a row
-                // when that is all the mouse sends.
+                // sub-step travel so a trackpad's small deltas still count.
+                // The scroll axis leads; a plain vertical wheel still drives
+                // a row when that's all the mouse sends.
                 .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
                     this.touch_resume(cx);
                     // A wheel notch arrives as 3 lines, so a line counts a
@@ -2404,7 +2414,7 @@ impl ArtPanel {
                 )
                 // The shelf's right-click menu, keyed off the hovered cover
                 // since the builder gets no position: the hovered cover is
-                // selected first so the menu acts on what is highlighted. Off
+                // selected first so the menu acts on what's highlighted. Off
                 // any cover the panel menu stands alone.
                 .context_menu({
                     let weak = cx.entity().downgrade();
@@ -2469,7 +2479,7 @@ impl ArtPanel {
                         } else {
                             menu
                         };
-                        // Reveal follows the album's first track, landing in
+                        // Reveal follows the album's first track, opening
                         // that album's folder.
                         let menu = panel::reveal_item(menu, this.read(cx).state.clone(), reveal);
                         // Faceted browse: pin the search to the cover's artist,

@@ -18,7 +18,7 @@
 //! would break that (a dropped or renamed column) is a version-gated decision,
 //! not a routine ALTER.
 //!
-//! The one-time transition: every file written before this module existed sits
+//! The one-time transition: every file written before this module existed is
 //! at user_version 0, but in a shape that depends on which release last touched
 //! it. Step 1 (the "baseline") is therefore the old idempotent init, guarded
 //! probes and all, so it converges any such file to the current shape and
@@ -138,7 +138,7 @@ mod tests {
 
     impl Migration {
         // The tests build a longer ladder that reuses an earlier step; a plain
-        // Copy/Clone on a public type carrying a fn pointer is more surface than
+        // Copy/Clone on a public type holding a fn pointer is more surface than
         // this needs, so the helper stays test-only.
         fn clone_for_test(&self) -> Migration {
             Migration {

@@ -2,8 +2,8 @@
 //! library as hearts, the other direction from the mirror in
 //! [`crate::lastfm`].
 //!
-//! It runs as a task rather than a button that blocks: fetching walks
-//! pages of an account's whole loved history, and an account with a
+//! It runs as a task rather than a button that blocks: fetching steps
+//! through pages of an account's whole loved history, and an account with a
 //! decade behind it has thousands. The task is dynamic, unlike the scan
 //! and the two analysis passes, so it only appears in the tasks window
 //! while it's running or has just finished. It's started from Settings,
@@ -40,8 +40,8 @@ use rox_services::lastfm::Scrobbler;
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
 /// Loved tracks asked for per request. The API caps this on its own side;
-/// asking for more than it allows just gets a shorter page, and the walk
-/// reads the page count it answers with rather than assuming this one.
+/// asking for more than it allows just gets a shorter page, and the paging
+/// reads the page count the response gives rather than assuming this one.
 const PAGE: usize = 200;
 
 /// A breath between pages. Last.fm asks callers to stay under a handful of
@@ -49,14 +49,14 @@ const PAGE: usize = 200;
 /// import nothing worth measuring and keeps it a good guest.
 const PAGE_PAUSE: Duration = Duration::from_millis(250);
 
-/// Where the walk gives up whatever the API keeps answering. At [`PAGE`] a
-/// page this is a loved list longer than anyone has, so reaching it means
-/// the pagination is lying rather than that the account is enormous.
+/// Where the paging gives up no matter what the API keeps returning. At
+/// [`PAGE`] a page this is a loved list longer than anyone has, so reaching
+/// it means the pagination is lying rather than that the account is enormous.
 const MAX_PAGES: usize = 500;
 
 /// Live progress of an import, written by the worker and polled by the UI.
 /// Total is what the API says the account has loved, zero until the first
-/// page answers.
+/// page returns.
 #[derive(Default)]
 pub struct Progress {
     done: AtomicUsize,
@@ -77,7 +77,7 @@ impl Progress {
         self.done.load(Ordering::Relaxed)
     }
 
-    /// Loved tracks the account holds. Zero until the first page lands.
+    /// Loved tracks the account holds. Zero until the first page returns.
     pub fn total(&self) -> usize {
         self.total.load(Ordering::Relaxed)
     }
@@ -133,10 +133,16 @@ impl Summary {
         } else {
             rox_i18n::t!("lastfm-import-read", count = self.fetched as u64).to_string()
         };
-        format!(
-            "{head}, matched {}, added {} to favourites",
-            self.matched, self.added
-        )
+        let mut line = head;
+        line.push_str(&rox_i18n::t!(
+            "lastfm-import-matched",
+            count = self.matched as u64
+        ));
+        line.push_str(&rox_i18n::t!(
+            "lastfm-import-added",
+            count = self.added as u64
+        ));
+        line
     }
 }
 
@@ -171,8 +177,8 @@ pub fn dismiss(cx: &mut App) {
 }
 
 /// Ask the running import to stop at the next page. What it already
-/// matched still lands: the hearts it found are no less right for the rest
-/// going unread.
+/// matched is still applied: the hearts it found are no less right for the
+/// rest going unread.
 pub fn stop(cx: &mut App) {
     if let Some(progress) = progress(cx) {
         progress.cancel.store(true, Ordering::Relaxed);
@@ -230,15 +236,15 @@ pub fn start(library: Entity<Library>, scrobbler: Entity<Scrobbler>, cx: &mut Ap
     let db_path = library.read(cx).db_path();
     let progress = Arc::new(Progress::default());
     cx.set_global(Running(Some(progress.clone())));
-    // A fresh run's report replaces the last one rather than sitting under
+    // A fresh run's report replaces the last one rather than stacking under
     // it, so the row never shows an old count beside a live bar.
     cx.set_global(Last(None));
-    // Nothing observes an app-global pass on its own; this is what keeps
+    // Nothing observes an app-global pass on its own; this keeps
     // the tasks window and the menubar chip ticking while it runs.
     crate::tasks_window::repaint_while_running(cx);
     // The import outlives whichever window started it, so hand over
     // something that does too, the same as starting a pass does: the tasks
-    // window carries the count and the stop button.
+    // window holds the count and the stop button.
     crate::tasks_window::open(cx);
     cx.spawn(async move |cx| {
         let found = cx
@@ -274,7 +280,7 @@ struct Found {
 }
 
 /// Turn the matched tracks into hearts, on the UI side where the library
-/// entity lives. Returns what to report.
+/// entity is. Returns what to report.
 fn apply(
     found: Found,
     progress: &Progress,
@@ -291,8 +297,8 @@ fn apply(
     });
     // These hearts came FROM Last.fm, so the mirror absorbs them instead of
     // pushing them straight back as thousands of loves it already knows.
-    // Same update pass as the write, so it lands before the library's event
-    // reaches the mirror's diff.
+    // Same update pass as the write, so it happens before the library's
+    // event reaches the mirror's diff.
     scrobbler.update(cx, |scrobbler, cx| {
         scrobbler.absorb_favourites(cx);
     });
@@ -305,7 +311,7 @@ fn apply(
     }
 }
 
-/// The whole blocking half: walk the loved list, fold the library, and
+/// The whole blocking half: page through the loved list, fold the library, and
 /// match one against the other. Background executor only.
 fn run(
     user: &str,
@@ -367,7 +373,7 @@ fn run(
 }
 
 /// One loved track as Last.fm names it. No album: the loved list doesn't
-/// carry one, which is why matching leans on the artist and the title
+/// include one, which is why matching leans on the artist and the title
 /// alone.
 struct Loved {
     artist: String,
@@ -391,7 +397,7 @@ fn fetch_page(key: &str, user: &str, page: usize) -> Result<(Vec<Loved>, Pages),
         .query("limit", &PAGE.to_string())
         .query("page", &page.to_string())
         .query("format", "json");
-    // An API error still carries a JSON body worth reading, so a status
+    // An API error still has a JSON body worth reading, so a status
     // failure parses like a success, the scrobbler's move.
     let text = match request.call() {
         Ok(response) => response.into_string().map_err(|e| e.to_string())?,
@@ -506,12 +512,12 @@ impl Index {
     /// Every library track a loved entry names, empty when there's nothing
     /// this can be sure of.
     ///
-    /// All of them, deliberately: the same recording sitting on an album, a
-    /// compilation, and a single is three rows and one song, and a heart
-    /// belongs on the song. The second look drops bracketed qualifiers from
-    /// both sides, but only settles when what's left names a single title -
-    /// a studio take and a live one that differ by nothing else are exactly
-    /// the guess this shouldn't make.
+    /// All of them: the same recording on an album, a compilation, and a
+    /// single is three rows and one song, and a heart belongs on the song.
+    /// The second look drops bracketed qualifiers from both sides, but only
+    /// settles when what's left names a single title. A studio take and a
+    /// live one that differ by nothing else are exactly the guess this
+    /// shouldn't make.
     fn resolve(&self, artist: &str, title: &str) -> Vec<i64> {
         let Some(entries) = self.0.get(&normalize(artist)) else {
             return Vec::new();
@@ -603,7 +609,7 @@ mod tests {
 
     #[test]
     fn a_bracketed_qualifier_gets_a_second_look_from_either_side() {
-        // Last.fm carries the remaster, the library doesn't.
+        // Last.fm has the remaster, the library doesn't.
         assert_eq!(
             library().resolve("Boards of Canada", "Olson (2013 Remaster)"),
             [2]

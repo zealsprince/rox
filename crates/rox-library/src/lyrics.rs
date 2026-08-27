@@ -2,12 +2,12 @@
 //! players store, and how to save an edit back. Three homes are checked,
 //! a sidecar file next to the audio file, the app's own lyrics store,
 //! and the embedded tag, and the one a load came from is remembered so
-//! an edit lands back in the same place rather than guessing. The reader
-//! never touches the audio stream and the tag save rides the writer's
+//! an edit is saved back to the same place rather than guessing. The reader
+//! never touches the audio stream and the tag save goes through the writer's
 //! atomic layer; the sidecar and store saves clone and rename the same way.
 //! Blocking IO throughout, run it off the UI thread.
 //!
-//! A fourth state sits over those three: a track can be marked as carrying
+//! A fourth state overrides those three: a track can be marked as having
 //! no lyrics at all. Clearing a sheet only empties whichever home held it,
 //! and an instrumental or a mis-tagged track would just be refilled by the
 //! next automatic lookup, so a save of nothing leaves a marker in the store
@@ -39,7 +39,7 @@ pub enum Source {
     Tag,
     /// A sidecar file beside the audio file.
     Sidecar(PathBuf),
-    /// A sheet in the app's own lyrics store, so library folders carry
+    /// A sheet in the app's own lyrics store, so library folders get
     /// nothing extra.
     Store(PathBuf),
 }
@@ -53,23 +53,23 @@ pub struct Line {
 }
 
 /// A track's loaded lyrics: the raw text an editor round-trips, the
-/// parsed lines a display walks, and where both came from.
+/// parsed lines a display steps through, and where both came from.
 pub struct Lyrics {
     pub source: Source,
     pub text: String,
     pub lines: Vec<Line>,
-    /// At least one line carries a timestamp, so a display can follow
+    /// At least one line has a timestamp, so a display can follow
     /// playback rather than only scroll.
     pub synced: bool,
 }
 
 /// A track's lyrics from the first home that has them: a sidecar file,
 /// then the app's store under `store_dir`, then the embedded tag. None
-/// when none carries any. A sidecar wins over everything: it is where
-/// timed `.lrc` lyrics live, and a file placed next to the track is the
+/// when none of them has any. A sidecar wins over everything: it's where
+/// timed `.lrc` lyrics are kept, and a file placed next to the track is the
 /// stronger signal of intent than the store the app fills on its own.
 ///
-/// A track marked as carrying none reads as none whatever the homes hold,
+/// A track marked as having none reads as none whatever the homes hold,
 /// so the mark is one answer and not three to keep in step.
 pub fn load(path: &Path, store_dir: Option<&Path>) -> Option<Lyrics> {
     if marked_none(path, store_dir) {
@@ -93,7 +93,7 @@ pub fn load(path: &Path, store_dir: Option<&Path>) -> Option<Lyrics> {
     Some(build(tag_lyrics(path)?, Source::Tag))
 }
 
-/// The words the embedded tag carries, or None when the frame is missing
+/// The words the embedded tag holds, or None when the frame is missing
 /// or blank. Blank counts as missing throughout: a file that kept an empty
 /// USLT frame reads as a track with no lyrics, not a track with none of
 /// them.
@@ -112,10 +112,10 @@ pub(crate) fn tag_lyrics(path: &Path) -> Option<String> {
 /// moment the first is gone, so wiping is its own operation rather than a
 /// clear of whichever home happened to win the last load.
 ///
-/// The tag is only rewritten when it actually carries words, so wiping a
+/// The tag is only rewritten when it actually has words, so wiping a
 /// track whose sheet was a sidecar never rewrites the audio file. The mark
-/// is left to the caller: this removes, [`set_marked_none`] is what makes
-/// it stay removed.
+/// is left to the caller: this removes, [`set_marked_none`] makes it stay
+/// removed.
 pub fn wipe(path: &Path, store_dir: Option<&Path>) -> Result<(), String> {
     for side in sidecar_candidates(path) {
         remove_if_present(&side).map_err(|e| format!("remove lyrics file: {e}"))?;
@@ -137,7 +137,7 @@ pub fn wipe(path: &Path, store_dir: Option<&Path>) -> Result<(), String> {
 }
 
 /// Delete a file, counting an absent one as done. Every lyrics home is
-/// optional, so a clear walks over the ones that were never there.
+/// optional, so a clear passes over the ones that were never there.
 fn remove_if_present(file: &Path) -> Result<(), std::io::Error> {
     match fs::remove_file(file) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -151,7 +151,7 @@ fn remove_if_present(file: &Path) -> Result<(), std::io::Error> {
 /// folder is created on the first write.
 ///
 /// Saving nothing is a statement, not just an empty write: it marks the
-/// track as carrying no lyrics under `store_dir`, and saving words again
+/// track as having no lyrics under `store_dir`, and saving words again
 /// takes the mark back off.
 pub fn save(
     path: &Path,
@@ -173,7 +173,7 @@ pub fn save(
         Source::Sidecar(file) => save_file(file, text, false),
         Source::Store(file) => save_file(file, text, true),
     }?;
-    // Only once the write landed, so a failed save leaves the mark where
+    // Only once the write succeeded, so a failed save leaves the mark where
     // it was rather than claiming a clear that never happened.
     match store_dir {
         Some(dir) => set_marked_none(path, dir, text.trim().is_empty()),
@@ -181,15 +181,15 @@ pub fn save(
     }
 }
 
-/// Whether the track is marked as carrying no lyrics, the state a cleared
+/// Whether the track is marked as having no lyrics, the state a cleared
 /// sheet leaves behind so nothing refills it.
 pub fn marked_none(path: &Path, store_dir: Option<&Path>) -> bool {
     store_dir.is_some_and(|dir| none_marker(dir, path).exists())
 }
 
 /// Set or lift the "no lyrics" mark. The mark is an empty file beside the
-/// store's sheets, so it costs a `stat` to read and survives restarts
-/// without a column of its own.
+/// store's sheets, so it costs a `stat` to read and persists across
+/// restarts without a column of its own.
 pub fn set_marked_none(path: &Path, store_dir: &Path, on: bool) -> Result<(), String> {
     let file = none_marker(store_dir, path);
     if !on {
@@ -225,7 +225,7 @@ pub fn store_file(dir: &Path, path: &Path) -> PathBuf {
 }
 
 /// The "no lyrics" mark for a track, the store sheet's name under another
-/// extension so both sit together and neither can be mistaken for the
+/// extension so both stay together and neither can be mistaken for the
 /// other.
 pub fn none_marker(dir: &Path, path: &Path) -> PathBuf {
     store_entry(dir, path, "none")
@@ -284,9 +284,9 @@ fn build(text: String, source: Source) -> Lyrics {
 }
 
 /// The sidecar paths to try for a track, in order. Public because a file
-/// that moves takes its lyrics with it: the rename walks this list for
-/// the old path and the new one and moves what it finds, position by
-/// position, so a `.mp3.lrc` lands as a `.flac.lrc` and not the other
+/// that moves takes its lyrics with it: the rename steps through this list
+/// for the old path and the new one and moves what it finds, position by
+/// position, so a `.mp3.lrc` becomes a `.flac.lrc` and not the other
 /// convention.
 pub fn sidecar_candidates(path: &Path) -> Vec<PathBuf> {
     let mut out = Vec::with_capacity(SIDECAR_EXTS.len() * 2);
@@ -302,7 +302,7 @@ pub fn sidecar_candidates(path: &Path) -> Vec<PathBuf> {
 
 /// Parse LRC-ish text into lines, plus whether any line was timed.
 pub fn parse(text: &str) -> (Vec<Line>, bool) {
-    // The offset tag can sit anywhere; find it first so every timed line
+    // The offset tag can appear anywhere; find it first so every timed line
     // shifts by it. Positive offset means the lyrics run early, so it
     // subtracts from each time.
     let offset = text.lines().find_map(offset_tag).unwrap_or(0.0) / 1000.0;
@@ -323,7 +323,7 @@ pub fn parse(text: &str) -> (Vec<Line>, bool) {
     }
 
     // No timestamps anywhere: a plain sheet, kept in file order with its
-    // blank lines, so verse spacing survives.
+    // blank lines, so verse spacing is kept.
     let plain = text
         .lines()
         .map(|line| Line {
@@ -382,11 +382,11 @@ const REST_HOLD_SECS: f64 = 4.0;
 /// first sung line that opens past `gap_secs`, and a blank line in each
 /// gap between sung lines wider than `gap_secs`, placed a short hold after
 /// the line it follows so the last words linger before the sheet moves to
-/// the rest. The sheet comes back untouched when it carries no timing or
+/// the rest. The sheet comes back untouched when it has no timing or
 /// both rests are off.
 ///
 /// Relies on [`parse`] handing lines back in time order, which it
-/// guarantees: a sorted sheet is what the gap walk measures against.
+/// guarantees: the gap pass measures against a sorted sheet.
 pub fn weave_rests(raw: &Arc<Lyrics>, intro: bool, gap: bool, gap_secs: f64) -> Arc<Lyrics> {
     if !raw.synced || (!intro && !gap) {
         return raw.clone();
@@ -450,10 +450,10 @@ pub fn active_line(lyrics: &Lyrics, position: f64) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// LRC files legally carry their tags in any order, and everything
+    /// LRC files legally hold their tags in any order, and everything
     /// reading the parsed lines (the panel's playhead scan, the rest
-    /// weave) walks them expecting time order. Two lines sharing a stamp
-    /// keep the order the file gave them: a sorted sheet comes back
+    /// weave) steps through them expecting time order. Two lines sharing a
+    /// stamp keep the order the file gave them: a sorted sheet comes back
     /// untouched.
     #[test]
     fn timed_lines_parse_and_sort() {
@@ -561,8 +561,8 @@ mod tests {
         )
         .unwrap();
 
-        // The sidecar is what loads, so it is all a clear of the loaded
-        // source would have taken.
+        // The sidecar is the one that loads, so it's all a clear of the
+        // loaded source would have taken.
         let loaded = load(&track, Some(&store)).unwrap();
         assert!(matches!(loaded.source, Source::Sidecar(_)));
 

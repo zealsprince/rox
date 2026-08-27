@@ -2,7 +2,7 @@
 
 **Status:** Decided
 
-Decision: the play queue is one flat, mutable timeline with a cursor. It is an
+Decision: the play queue is one flat, mutable timeline with a cursor. It's an
 append-only pool of paths plus an `order: Vec<usize>` of indices into that pool and a
 `pos` cursor into `order`. History is `order[0..pos]`, upcoming is `order[pos+1..]`, the
 playing track is `order[pos]`. This is the structure the engine already runs on
@@ -16,10 +16,10 @@ snapshot of the order through a `Shared` mutex, the same way it already publishe
 `segments` and `tracks`, bumping a revision counter so the UI can skip re-reading on the
 ticks nothing changed. The Player is a thin layer over that: it sends the commands and
 reads the snapshot for the UI, holding no copy of the order itself. One writer, the engine,
-so there is no mirror to keep in sync. The engine stays close to what it is: a gapless
+so there's no mirror to keep in sync. The engine stays close to what it is: a gapless
 decoder walking a list. It learns to mutate that list, and nothing more.
 
-The snapshot carries the entries, not the playing position. The engine's `pos` is the
+The snapshot contains the entries, not the playing position. The engine's `pos` is the
 decode cursor and runs up to a ring ahead of the speakers, since the next track opens for
 the gapless boundary before the current one finishes, so anchoring on it would put the
 highlight and a Play Next a track early near every boundary. Instead the playing entry is
@@ -33,7 +33,7 @@ a synced copy. Implementation showed that dual copy needs the Player to replay e
 and regenerate the order on shuffle, and it fights the fact that the engine already owns
 the list for the gapless boundary. The single-owner-plus-snapshot shape is less code and
 matches the existing `segments`/`tracks` pattern, and the "two writers" worry that argued
-against a `Shared` mutex does not apply when the Player keeps no copy.
+against a `Shared` mutex doesn't apply when the Player keeps no copy.
 
 The pool is append-only. Queue edits only ever touch `order`, never remove entries from
 the pool. This is the load-bearing trick: the frame-to-track position mapping keys on the
@@ -45,8 +45,8 @@ Queue semantics for this layer, one flat list:
 
 - Play next inserts right after the cursor, `order.insert(pos + 1, i)`.
 - Add to queue appends, `order.push(i)`.
-- Remove and move edit `order`; played items stay behind the cursor, so Back walks real
-  history for free.
+- Remove and move edit `order`; played items stay behind the cursor, so Back steps through
+  real history for free.
 - Starting a new context (double-clicking an album or a library row) replaces the upcoming
   portion. Explicitly queued items are cleared with it. The two-layer model that keeps an
   explicit queue alive above a "playing next from X" continuation is out of scope here.
@@ -62,7 +62,7 @@ rejects.
 Playlists are two tables in `library.db`: `playlists` (id, name, timestamps) and
 `playlist_tracks` (playlist id, track id, position, and a title/artist/album snapshot).
 Track identity is the stable `tracks.id`; the snapshot is the same deletion hedge listens
-use, so a playlist outlives a track being deleted and survives a rescan on the rowid
+use, so a playlist outlives a track being deleted and persists across a rescan on the rowid
 ([ADR 5](05-adr-library-store.md)). Paths resolve at play time through the store, the same
 `paths_for` the browse panels already call.
 
@@ -78,7 +78,7 @@ durability and goes stale on rescan, where the listen-events pattern already sol
 this in the same database.
 
 Trade: the engine learns to mutate its list, which touches the audio thread and the gapless
-boundary, so the risk is real but localized to the command drain. An edit that lands after
+boundary, so the risk is real but localized to the command drain. An edit that arrives after
 the engine has already opened the next track for a gapless boundary applies to the list but
 may not change what plays across that one boundary; acceptable. Layer one clears the
 explicit queue when a new context starts, which is the simplification that buys most of the
@@ -88,7 +88,7 @@ same timeline.
 Open: whether the queue persists across an app restart, today `restore()` recovers a single
 track and position, not a list. Shuffle semantics on a partially played order, reshuffle
 upcoming only, leaving history and queued items in place. These are decided when layer one
-lands, not before.
+ships, not before.
 
 **Amendment: layer two is built.** The flat model surfaced its own flaw the moment the
 queue panel existed: playing from the library seeded the view into the timeline, and since

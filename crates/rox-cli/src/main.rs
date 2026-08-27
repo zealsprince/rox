@@ -302,8 +302,8 @@ fn run(
         other => return Err(format!("unknown command: {other}\n{USAGE}")),
     };
 
-    // The drive commands all take an optional window target; the flag rides
-    // in from the front so each command doesn't reparse it.
+    // The drive commands all take an optional window target; the flag is
+    // parsed up front so each command doesn't reparse it.
     if let Some(id) = window {
         if method.starts_with("debug.") {
             params["window"] = json!(id);
@@ -422,8 +422,8 @@ fn print_status(status: &Value) {
         (true, true) => "playing",
         (true, false) => "paused",
     };
-    // Indexed as a Value, never as the Map underneath: Value answers a
-    // missing key with null where the Map's Index panics on it.
+    // Indexed as a Value, never as the Map underneath: Value returns null
+    // for a missing key where the Map's Index panics on it.
     let track = &status["track"];
     match track.is_object() {
         true => {

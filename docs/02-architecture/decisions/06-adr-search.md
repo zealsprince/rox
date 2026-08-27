@@ -23,6 +23,6 @@ in-memory scans stop fitting.
 **Amended 2026-07-12:** shipped without the debounce. Search runs per keystroke,
 synchronously on the UI thread, because the measurement above makes a debounce pointless:
 a query costs a fraction of a frame at any realistic library size, so delaying it only
-adds typing-to-results lag. The debounce was insurance written before the numbers landed.
+adds typing-to-results lag. The debounce was insurance written before the measurement.
 It comes back if search escalates to FTS5 or tantivy, where a query stops being
 sub-frame, or if search ever moves off the UI thread.

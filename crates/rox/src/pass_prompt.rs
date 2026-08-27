@@ -9,8 +9,8 @@
 //! wait is visible while the choice is happening rather than described in a
 //! settings row nobody reads first.
 //!
-//! It lives here rather than in the settings window because it is no longer
-//! that window's dialog. The tasks window starts the same passes, and a
+//! It's defined here rather than in the settings window because it's no
+//! longer that window's dialog. The tasks window starts the same passes, and a
 //! second copy would be two dialogs drifting apart: one with the slider and
 //! the estimate, the other with a button that just goes. A host wires itself
 //! in by holding a [`Prompt`] and implementing [`Host`]; the probe, the
@@ -56,7 +56,7 @@ pub trait Host: 'static + Sized {
     /// so only one value is ever being typed into.
     fn value_edit(&self) -> &panel::ValueEdit;
     /// A pass started, or a probe measured something. Whatever the host
-    /// caches about the passes - counts, paces, the running job - has moved,
+    /// caches about the passes (counts, paces, the running job) has moved,
     /// and this is where it re-reads them.
     fn pass_changed(&mut self, _cx: &mut Context<Self>) {}
     /// A prompt raised by [`raise_for_switch`] was cancelled, so the switch
@@ -66,7 +66,7 @@ pub trait Host: 'static + Sized {
 }
 
 /// A raised prompt: which pass, over which library, at what count, and
-/// whatever the estimate has to say so far.
+/// whatever the estimate shows so far.
 pub struct Prompt {
     pass: Pass,
     /// The catalog the pass will run over, held for the prompt's life so the
@@ -84,15 +84,15 @@ pub struct Prompt {
     /// The acoustic model's name, for a line that has to say whose count
     /// it's quoting.
     model: String,
-    /// Where a measured gain lands, worth saying out loud because one of the
-    /// two answers rewrites the audio files.
+    /// Where a measured gain is written, worth saying out loud because one
+    /// of the two options rewrites the audio files.
     save: ReplayGainSave,
     /// The same for an acoustic vector, and worth saying for the same reason.
     acoustic_save: AcousticSave,
     probing: bool,
     error: Option<String>,
     /// Whether a switch the host just flipped is standing behind this. Cancel
-    /// then means the switch was a no as well, and the host hears about it.
+    /// then means the switch was a no as well, and the host is told.
     switched: bool,
     /// Bumped per slider tick so only the last one writes.
     generation: u32,
@@ -116,9 +116,9 @@ impl Prompt {
     }
 }
 
-/// Every worker the machine has. The prompt is a deliberate choice made in
-/// front of an estimate, so the ceiling is the machine's rather than one a
-/// window picked on the user's behalf.
+/// Every worker the machine has. The prompt is a choice made in front of an
+/// estimate, so the ceiling is the machine's rather than one a window picked
+/// on the user's behalf.
 pub fn cores() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -126,8 +126,8 @@ pub fn cores() -> usize {
 }
 
 /// Raise the prompt for a pass: count what it would get through, and read
-/// back what the last one cost here. Clears whatever the last probe had to
-/// say, so a failure from one visit doesn't greet the next.
+/// back what the last one cost here. Clears whatever the last probe
+/// reported, so a failure from one visit doesn't show up on the next.
 pub fn raise<V: Host>(this: &mut V, pass: Pass, library: Entity<Library>, cx: &mut Context<V>) {
     let settings = Settings::load();
     let source = rox_services::acoustic::acoustic_source();
@@ -222,7 +222,7 @@ fn start<V: Host>(this: &mut V, cx: &mut Context<V>) {
     }
     this.pass_changed(cx);
     // The pass outlives whichever window started it, so hand the user
-    // something that does too: the tasks window carries the count, the
+    // something that does too: the tasks window shows the count, the
     // estimate, and the stop button.
     crate::tasks_window::open(cx);
     cx.notify();
@@ -352,8 +352,8 @@ fn copy(prompt: &Prompt) -> Copy {
     match prompt.pass {
         Pass::Acoustic => {
             // Tags mode rewrites the audio files, which is not something to
-            // learn about afterwards, and it can't reach every format, which
-            // is not something to work out from a coverage number.
+            // learn about afterwards, and it can't handle every format,
+            // which is not something to work out from a coverage number.
             let lands = match prompt.acoustic_save {
                 AcousticSave::Database => rox_i18n::t!("pass-acoustic-lands-database"),
                 AcousticSave::Tags => rox_i18n::t!("pass-acoustic-lands-tags"),
@@ -369,7 +369,7 @@ fn copy(prompt: &Prompt) -> Copy {
             }
         }
         Pass::ReplayGain => {
-            // Where the numbers land is worth saying here: tags mode rewrites
+            // Where the numbers get written is worth saying here: tags mode rewrites
             // the audio files, which is not something to learn about
             // afterwards.
             let lands = match prompt.save {
@@ -402,7 +402,7 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
     let estimate = prompt.estimate();
     // The estimate is the reason this dialog exists, so it says something
     // either way: the number, why there isn't one yet, or what went wrong
-    // reaching for it.
+    // measuring it.
     let timing = match (&estimate, prompt.probing, &prompt.error) {
         (_, true, _) => rox_i18n::t!("pass-timing"),
         (Some(estimate), _, _) => rox_i18n::t!(
@@ -413,9 +413,9 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
         (None, _, Some(error)) => rox_i18n::t!("pass-timing-failed", error = error.clone()),
         (None, _, None) => rox_i18n::t!("pass-no-estimate"),
     };
-    // A probe that came back with nothing is the one case the line carries
-    // bad news, so it reads as a warning rather than as the estimate it
-    // stands in for.
+    // A probe that came back with nothing is the one case the line is bad
+    // news, so it reads as a warning rather than as the estimate it stands
+    // in for.
     let failed = estimate.is_none() && !prompt.probing && prompt.error.is_some();
     // Only offered while there's nothing measured: once there's a real
     // number, the pass itself keeps it honest and a second opinion off three
@@ -553,7 +553,7 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
     )
 }
 
-/// The worker slider's landing: the live count moves now, the file catches
+/// The worker slider's handler: the live count moves now, the file catches
 /// up once the drag settles.
 fn set_workers<V: Host>(this: &mut V, value: f32, cx: &mut Context<V>) {
     let Some(prompt) = this.prompt_mut() else {
@@ -566,7 +566,7 @@ fn set_workers<V: Host>(this: &mut V, value: f32, cx: &mut Context<V>) {
         cx.background_executor().timer(SETTLE).await;
         this.update(cx, |this, _| {
             // Re-read at fire time rather than trusting a capture, so the
-            // last tick of a burst writes what the slider actually landed on.
+            // last tick of a burst writes what the slider actually ended on.
             if let Some(prompt) = this.prompt() {
                 if prompt.generation == generation {
                     prompt.persist();

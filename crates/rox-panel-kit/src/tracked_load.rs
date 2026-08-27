@@ -5,7 +5,7 @@
 //! decode when a new one swaps in and again when the panel is dropped, so a
 //! cover never lingers in gpui's process-wide, never-evicting asset cache.
 //!
-//! Covers reach the renderer through `img`, which keeps every distinct
+//! Covers go to the renderer through `img`, which keeps every distinct
 //! decode in that cache and never evicts on its own, so without the retires
 //! a long session pins one full-size bitmap per album viewed and a closed
 //! panel leaks whatever it last showed.
@@ -19,7 +19,7 @@ use gpui::{App, Context, Image};
 /// keep it in step: a pending marker so a render can tell "already fetching"
 /// from "needs a fetch", and a generation counter that discards a stale
 /// result when the track turns over mid-read. The held decode is `None`
-/// inside when the track carries no art.
+/// inside when the track has no art.
 #[derive(Default)]
 pub struct TrackedImage {
     /// The loaded decode keyed by the track it belongs to; None inside means
@@ -37,7 +37,7 @@ pub struct TrackedImage {
 
 impl TrackedImage {
     /// The decode held for `path`, or None while still loading or when the
-    /// track carries none.
+    /// track has none.
     pub fn get(&self, path: &Path) -> Option<Arc<Image>> {
         self.art
             .as_ref()
@@ -46,11 +46,11 @@ impl TrackedImage {
     }
 
     /// Make sure the art for `path` is cached or on its way: run `decode`
-    /// off the UI thread and swap the result in when it lands, discarding it
-    /// if the track moved on. `decode` reads the file and returns the decode,
-    /// or None when the track has no art. `slot` reaches this tracker back
-    /// inside the panel when the load lands, since the tracker is a field of
-    /// the panel it cannot swap itself in.
+    /// off the UI thread and swap the result in when it arrives, discarding
+    /// it if the track moved on. `decode` reads the file and returns the
+    /// decode, or None when the track has no art. `slot` finds this tracker
+    /// back inside the panel when the load returns; the tracker is a field
+    /// of the panel, so it can't swap itself in.
     pub fn ensure<T, S, F>(&mut self, path: &Path, slot: S, decode: F, cx: &mut Context<T>)
     where
         T: 'static,
@@ -93,8 +93,8 @@ impl TrackedImage {
     /// next `ensure` re-read it. A load in flight read the file before the
     /// change, so it's orphaned and the re-read takes its place. `retire`
     /// keys on the decode's content id, so a re-read that comes back with
-    /// the same cover holds onto the bitmap it already has - an update that
-    /// left this track's art alone never blanks the panel.
+    /// the same cover holds onto the bitmap it already has, and an update
+    /// that left this track's art alone never blanks the panel.
     pub fn refresh(&mut self) {
         self.stale = true;
         self.pending = None;
@@ -109,8 +109,8 @@ impl TrackedImage {
         self.retire(old, cx);
     }
 
-    /// Drop a replaced decode from gpui's asset cache, unless the same
-    /// bitmap is what the slot holds now, which a re-read of the same bytes
+    /// Drop a replaced decode from gpui's asset cache, unless the slot
+    /// holds that same bitmap now, which a re-read of the same bytes
     /// reuses.
     fn retire(&self, old: Option<Arc<Image>>, cx: &mut App) {
         let Some(old) = old else { return };

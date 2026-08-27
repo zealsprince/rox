@@ -1,9 +1,9 @@
 //! The rating control: one clickable face over the library's 0-100
 //! value, shared by every surface that sets ratings. Five stars, or a
 //! 0-10 readout over twenty half-point steps when the app-level style
-//! says numeric; clicking the value already held clears it. What a click
-//! does with the value is the caller's - the library writes the catalog,
-//! the tag editor arms a pending field.
+//! says numeric; clicking the value already set clears it. What a click
+//! does with the value is the caller's business: the library writes the
+//! catalog, the tag editor arms a pending field.
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
@@ -16,7 +16,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 
 /// The star the pointer rests on, one pair app-wide: only one control
-/// sits under the mouse at a time, and the key says which, so every
+/// is under the mouse at a time, and the key records which, so every
 /// other control renders untouched. Star 0 is no preview. Statics
 /// because the control is a free function rebuilt per frame with no
 /// entity to hold state.
@@ -62,8 +62,8 @@ pub fn fmt(value: u8) -> SharedString {
     }
 }
 
-/// The control over `current`, calling `set` with the clicked value - or
-/// zero when the click lands on the value already held, the clear. `key`
+/// The control over `current`, calling `set` with the clicked value, or
+/// zero when the click lands on the value already set, which clears it. `key`
 /// names this control for the hover preview; callers pass something
 /// stable and unique to what they rate (the track id, an input's entity
 /// id), so hovering one control never lights another.
@@ -83,10 +83,10 @@ pub fn control(
             let dots = rating_dots();
             // The pointer's preview: every star up to the hovered one
             // draws hollow in the accent, over filled and dotted rows
-            // alike, so the click's landing value reads before it lands.
+            // alike, so the value a click would set reads before the click.
             let hovered = hover_star(key);
-            // The id makes the row stateful, which is what carries the
-            // hover-out that clears the preview.
+            // The id makes the row stateful, which the hover-out that
+            // clears the preview needs.
             let mut stars = div()
                 .id(("rating-stars", key as usize))
                 .flex()

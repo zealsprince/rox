@@ -1,13 +1,6 @@
 ### Deutsch. Spiegelt en-CA/rox.ftl Schlüssel für Schlüssel; der
-### Paritätstest in rox-i18n wacht darüber.
-
-### The source locale. Every key lives here first, the other locales
-
-### mirror this file one for one, and the parity test in rox-i18n is
-
-### what holds them to it. Keys are surface-prefixed kebab-case; a
-
-### row's description rides the label's message as an attribute.
+### Paritätstest in rox-i18n wacht darüber. Die Beschreibung einer
+### Zeile ist ein Attribut der Nachricht ihres Labels.
 
 ## Shared widgets
 tracking-title = Verfolgung
@@ -15,9 +8,9 @@ tracking-follow = Wiedergabe folgen
 tracking-resume = Automatisch zurückkehren
 tracking-smooth = Sanftes Scrollen
 align-row = Ausrichtung
-    .description = Wo der Inhalt sitzt, wenn das Panel Platz übrig hat
+    .description = Wo der Inhalt steht, wenn das Panel Platz übrig hat
 valign-row = Vertikale Ausrichtung
-    .description = Wo der Inhalt sitzt, wenn das Panel Höhe übrig hat
+    .description = Wo der Inhalt steht, wenn das Panel Höhe übrig hat
 valign-top = Oben
 valign-middle = Mitte
 valign-bottom = Unten
@@ -40,7 +33,7 @@ query-source-selection = Auswahl
 
 ## Signals and routes
 signal-source = Quelle
-    .description = Worauf das Signal hört: Band folgt einem Frequenzbereich, Pegel der ganzen Mischung, Onset pulst bei jedem Schlag im Bereich, Trigger löst einen Impuls aus, wenn der Bereich seinen Schwellwert erreicht, Summe zählt ein anderes Signal über die Zeit zusammen
+    .description = Worauf das Signal reagiert: Band folgt einem Frequenzbereich, Pegel der ganzen Mischung, Onset pulst bei jedem Schlag im Bereich, Trigger löst einen Impuls aus, wenn der Bereich seinen Schwellwert erreicht, Summe zählt ein anderes Signal über die Zeit zusammen
 signal-kind-band = Band
 signal-kind-level = Pegel
 signal-kind-onset = Onset
@@ -51,7 +44,7 @@ signal-response-pulse = Wie lange jeder Impuls nachklingt
 signal-response-drift = 0 folgt der Musik sofort, 100 zieht träge hinterher
 signal-threshold = Schwellwert
 signal-threshold-trigger = Der Pegel, den der Bereich erreichen muss, um den Impuls auszulösen; er feuert erst wieder, wenn der Pegel unter die Marke auf der Anzeige darüber fällt
-signal-threshold-gate = Darunter steht das Signal auf null, darüber klettert die Ausgabe wieder von null hoch, damit leise Stellen den Regler nicht bewegen. Die Marke auf der Anzeige darüber zeigt, wo er liegt
+signal-threshold-gate = Darunter steht das Signal auf null, darüber klettert die Ausgabe wieder von null hoch, damit leise Stellen den Regler nicht bewegen. Die Marke auf der Anzeige darüber zeigt, wo der Schwellwert liegt
 signal-low-bound = Untere Grenze
 signal-high-bound = Obere Grenze
 signal-adds-up = Zählt zusammen
@@ -63,7 +56,7 @@ signal-aggregate-unpicked = Nichts gewählt, also bleibt diese Summe bei null. W
 signal-rate = Rate
     .description = Umläufe pro Sekunde bei vollem Eingang; nach 1 springt es zurück auf 0 und klettert weiter, was ein Shader als Phase versteht
 signal-reset-on-track = Bei Titelwechsel zurücksetzen
-    .description = Auf null zurückfahren, wenn ein neuer Titel beginnt, damit eine Phase die Summe des letzten nicht mitnimmt
+    .description = Auf null zurücklaufen, wenn ein neuer Titel beginnt, damit eine Phase nicht bei der Summe des letzten anfängt
 signal-flush = Leeren
 signal-routes-in-panel = { $count ->
     [one] { $count } Route in diesem Panel
@@ -78,9 +71,9 @@ route-shared-note = Gilt für jede Route an diesem Signal
 route-signal-gone = Das Signal dieser Route ist weg; der Regler behält seinen eingestellten Wert, bis oben ein anderes gewählt wird.
 route-range-note = Bereich nur für diesen Parameter
 route-quiet = Leise
-    .description = Was der Regler bei Stille erreicht, als Anteil seiner eigenen Einstellung
+    .description = Worauf der Regler bei Stille steht, als Anteil seiner eigenen Einstellung
 route-loud = Laut
-    .description = Was er bei vollem Signal erreicht; 100% ist der eigene Wert des Schiebers, unter Leise moduliert nach unten
+    .description = Worauf er bei vollem Signal steht; 100 % ist der eigene Wert des Schiebers, unter Leise moduliert nach unten
 route-slot = Slot
     .description = Welchen der sechzehn Signal-Slots des Shaders diese Route füllt
 route-slot-quiet-description = Worauf der Slot bei Stille steht
@@ -123,7 +116,7 @@ panel-section-slots = Slots
 panel-awaiting-approval = Wartet auf Freigabe
 panel-size-off = Aus
 panel-locked = Gesperrt
-    .description = Das Panel an Ort und Stelle festhalten; im Dock lässt es sich dann weder ziehen noch umsortieren
+    .description = Das Panel an Ort und Stelle festheften; im Dock lässt es sich dann weder ziehen noch umsortieren
 panel-drag-anchor = Ziehanker
     .description = Ein Ziehen irgendwo auf dem Panel bewegt das Fenster, während einfache Klicks weiterhin auf seinen Steuerelementen landen; für Layouts ohne Fensterrahmen
 panel-slot-controls = Slot-Steuerung
@@ -154,7 +147,7 @@ panel-font-size = Schriftgröße
 panel-surface-shader = Flächen-Shader
     .description = Einen WGSL-Shader über die Fläche dieses Panels laufen lassen, unter dem Bildschirm-Shader der App
 panel-run-when-idle = Bei Stille weiterlaufen
-    .description = Weiter Bilder zeichnen, solange der Ton still ist. Ausgeschaltet parkt der Shader, wo er steht, und das Panel kostet nichts
+    .description = Weiter Bilder zeichnen, solange der Ton still ist. Ausgeschaltet friert der Shader auf seinem letzten Bild ein, und das Panel kostet nichts
 panel-shader-is-scene = Dieser Shader ist eine Szene, also deckt er die Fläche des Panels ab, statt darüber zu zeichnen. Er stammt aus einem Bundle oder einer älteren Konfiguration; die Liste oben bietet nur Shader an, die das Panel lesbar lassen.
 
 ## Shader picker and saving
@@ -196,6 +189,7 @@ settings-language = Sprache
 settings-language-system = (Systemsprache)
 settings-language-search = Sprachen durchsuchen
 picker-no-matches = Keine Treffer
+settings-search-no-matches = Nichts passt zu "{ $text }"
 
 ## Embed dialog
 bake-window-title = rox - Gespeicherte Metadaten einbetten
@@ -218,7 +212,7 @@ bake-detail-writes-skipped = { $count ->
 bake-error-read = Die Bibliothek konnte nicht gelesen werden: { $error }
 bake-survey-counting = Durchsuche die Bibliothek...
 bake-survey-progress = Lese Tags, { $done } von { $total }
-bake-nothing-to-embed = Nichts einzubetten: die Dateien tragen bereits alles, was rox vorliegt
+bake-nothing-to-embed = Nichts einzubetten: die Dateien enthalten bereits alles, was rox gespeichert hat
 bake-rewrites = { $count ->
     [one] { $count } Datei wird neu geschrieben
    *[other] { $count } Dateien werden neu geschrieben
@@ -228,6 +222,14 @@ bake-hint-key = Enter
 bake-hint-after = drücken
 bake-embed = Einbetten
 bake-cancel = Abbrechen
+bake-summary-files = { $count ->
+    [one] 1 Datei
+   *[other] { $count } Dateien
+}
+bake-summary-updated = { $files } aktualisiert
+bake-summary-stopped = Gestoppt, { $files } aktualisiert
+bake-summary-skipped = , { $count } übersprungen
+bake-summary-failed = , { $count } fehlgeschlagen
 
 ## Arrange editors and header pieces
 arrange-shown = Sichtbar
@@ -281,12 +283,14 @@ panel-reveal-in-browser = Im Dateimanager zeigen
 panel-play-next = Als Nächstes spielen
 panel-add-to-queue = Zur Warteschlange
 panel-add-to-playlist = Zur Playlist hinzufügen
+panel-favourite-add = Zu Favoriten hinzufügen
+panel-favourite-remove = Aus Favoriten entfernen
 shader-pick-missing = { $name } (fehlt)
 shader-pick-custom = Eigen
 
 ## Shipped shader examples
 shader-blurb-plasma = Treibende Farbe allein aus den eigenen Uniforms, also kostet es nur ein einfaches Quad.
-shader-blurb-trails = Verschmiert das eigene letzte Bild, was ihn auf den Bildschirmdurchgang bringt.
+shader-blurb-trails = Verschmiert das eigene letzte Bild, läuft also im Bildschirmdurchgang.
 shader-blurb-sheen = Eine Vignette und ein wanderndes Glänzen, transparentes Overlay für ein Panel, das schon zeichnet.
 shader-blurb-shadow = Ein Schlagschatten, den Text und Steuerelemente des Panels werfen, aus der Maskenaufnahme gewonnen.
 shader-blurb-cover = Das Cover des laufenden Titels, im Letterbox-Format über einer Fläche in seiner eigenen Farbe.
@@ -336,9 +340,9 @@ dock-expand = Ausklappen
 
 ## Shader picker notes
 shader-note-empty = Wähle ein Beispiel zum Anfangen, oder zeige rox eine .wgsl-Datei mit einer Fragment-Stufe, die fs_user(uv) definiert
-shader-note-missing = { $name } ist nicht mehr in den Shadern dieser Arbeitsfläche, also malt nichts. Wähle hier etwas anderes, und dieses Panel bekommt eine eigene Quelle.
+shader-note-missing = { $name } ist nicht mehr in den Shadern dieser Arbeitsfläche, also wird nichts gezeichnet. Wähle hier etwas anderes, und dieses Panel bekommt eine eigene Quelle.
 shader-note-shared = In dieser Arbeitsfläche geteilt. Ein Bearbeiten wirkt auf jede Fläche, die ihn nutzt.
-shader-note-file = { $path }. Gespeicherte Änderungen laden neu, während der Shader zeichnet, und die Quelle steckt in Layouts und Bundles, überlebt also einen Rechner, der die Datei nie hatte.
+shader-note-file = { $path }. Gespeicherte Änderungen laden neu, während der Shader zeichnet, und die Quelle steckt in Layouts und Bundles, funktioniert also auch auf einem Rechner, der die Datei nie hatte.
 shader-note-custom = Diese Quelle reist in ihrem Layout oder Bundle mit, ohne Datei dahinter. Als Datei bearbeiten schreibt sie wieder heraus und übernimmt deine Änderungen.
 
 ## Panel pages and shared sides
@@ -349,6 +353,7 @@ panel-page-source = Quelle
 panel-page-bindings = Bindungen
 panel-page-emitters = Emitter
 panel-page-forces = Kräfte
+panel-page-scene = Szene
 side-left = Links
 side-right = Rechts
 genre-face-mosaic = Mosaik
@@ -375,8 +380,8 @@ library-headers = Kopfzeilen
 library-group-by = Gruppieren nach
     .description = Worauf die Kopfzeilen umbrechen; Genre und Jahr sortieren die Liste neu
 library-header-row = Kopfzeile
-    .description = Was die einzeiligen Kopfzeilen von links nach rechts packen; ein Abstand oder Trenner teilt die Seiten
-library-header-lines = Kopfzeilen-Zeilen
+    .description = Was die einzeilige Kopfzeile von links nach rechts anzeigt; ein Abstand oder Trenner teilt die Seiten
+library-header-lines = Blockzeilen
     .description = Die Zeilen des Blocks von oben nach unten; eine leere Zeile fällt weg
 library-follow-description = Zur laufenden Zeile scrollen, sobald der Titel wechselt
 library-resume-description = Zur laufenden Zeile zurückscrollen, wenn du aufhörst zu stöbern
@@ -392,7 +397,7 @@ library-line-height = Zeilenhöhe
 library-text-size = Textgröße
     .description = Der Text der Kopfzeilen, unabhängig von der Zeilenhöhe, sodass das Cover allein wächst
 library-flush-background = Bündiger Hintergrund
-    .description = Die Kopfzeilen auf den Listenhintergrund setzen statt auf die angehobene Tönung; Songfarben bewegen beide zusammen
+    .description = Die Kopfzeilen auf den Listenhintergrund setzen statt auf die angehobene Tönung; Songfarben färben dann beide gemeinsam
 library-gap-above = Abstand oben
     .description = Vom oberen Rand des Blocks abgeschnitten; die Liste scheint durch, und die Zeilen rücken zusammen
 library-gap-below = Abstand unten
@@ -410,13 +415,13 @@ library-art-description = Die Kachel der ausgeklappten Kopfzeilen: das Cover, da
 library-art-rounding = Cover-Rundung
     .description = Die Ecken des Covers abrunden
 library-art-position = Cover-Position
-    .description = Auf welcher Seite des Blocks die Kachel der ausgeklappten Kopfzeilen sitzt
+    .description = Auf welcher Seite des Blocks die Kachel der ausgeklappten Kopfzeilen steht
 library-art-margin = Cover-Abstand
     .description = Die Kachel im Block einrücken; sie schrumpft, um quadratisch zu bleiben
 library-circular-portraits = Runde Porträts
     .description = Nach Interpret gruppiert, die Kacheln auf den vollen Kreis der Wand runden statt auf den Rundungsregler
 library-genre-face = Genre-Bild
-    .description = Nach Genre gruppiert, was die Kachel trägt: die Cover, die Cover in der Farbe des Genres getönt, oder eine Farbkarte unter ihrer Geometrie
+    .description = Nach Genre gruppiert, was die Kachel zeigt: die Cover, die Cover in der Farbe des Genres getönt, oder eine Farbkarte unter ihrer Geometrie
 
 ## Album grid panel
 panel-title-album-grid = Albumraster
@@ -436,7 +441,7 @@ grid-section-tiles = Kacheln
 grid-dim-while-playing = Bei Wiedergabe abdunkeln
     .description = Jedes Cover außer dem des laufenden Albums verblassen lassen; beim Überfahren leuchtet ein Cover wieder auf
 grid-dim-amount = Stärke
-    .description = Wie weit die anderen Cover verblassen; 100% blendet sie ganz aus
+    .description = Wie weit die anderen Cover verblassen; 100 % blendet sie ganz aus
 grid-desaturate = Bei Wiedergabe entsättigen
     .description = Jedes Cover außer dem des laufenden Albums in Graustufen bringen; beim Überfahren kehrt die Farbe eines Covers zurück
 grid-always = Immer
@@ -449,7 +454,7 @@ grid-tile-size = Kachelgröße
     .description = Die längste Kante der Cover-Kacheln; Spalten teilen die Panelbreite gleichmäßig
 grid-gap = Abstand
     .description = Platz zwischen den Covern; null packt sie Kante an Kante
-grid-art-rounding-description = Die Ecken jedes Covers abrunden; 100% ist ein Kreis
+grid-art-rounding-description = Die Ecken jedes Covers abrunden; 100 % ist ein Kreis
 
 ## Settings: sidebar pages
 settings-page-appearance = Aussehen
@@ -473,10 +478,10 @@ settings-appearance-backdrop-all-windows = Alle Fenster
 settings-appearance-backdrop-strength = Hintergrundstärke
     .description = Wie stark der Cover-Hintergrund dahinter durchscheint
 settings-appearance-border = Rahmen
-    .description = Eine Linie um die Kante jedes Panels, in der Farbe der Rahmenrolle; eine Seite auf null zeichnet keine
+    .description = Eine Linie um die Kante jedes Panels, in der Farbe der Rolle Rahmen; eine Seite auf null zeichnet keine
 settings-appearance-colors-locked-note = Songfarben sind an, also bestimmt der laufende Titel diese Farben, und der Export speichert sie. Schalte sie oben aus, um sie zu bearbeiten
 settings-appearance-design-mode = Entwurfsmodus
-    .description = Das Layout dort bearbeiten, wo es sitzt: die Zeilen zum Hinzufügen, Umbenennen, Duplizieren, Herauslösen und Schließen in den Panel-Menüs, die Steuerelemente, die ein Container über seine Slots legt, und das Ziehen von Reitern. Ausgeschaltet ist all das verborgen; die Seite Arbeitsfläche bearbeitet den Baum weiterhin
+    .description = Das Layout an Ort und Stelle bearbeiten: die Zeilen zum Hinzufügen, Umbenennen, Duplizieren, Herauslösen und Schließen in den Panel-Menüs, die Steuerelemente, die ein Container über seine Slots legt, und das Ziehen von Reitern. Ausgeschaltet ist all das verborgen; die Seite Arbeitsfläche bearbeitet den Baum weiterhin
     .keywords = bearbeiten umbauen anordnen sperren entwurf
 settings-appearance-font = Schrift
     .description = Die appweite Schriftart; Panels können sie in ihren eigenen Einstellungen überschreiben
@@ -553,7 +558,7 @@ settings-application-socket-path = Socket-Pfad
 settings-audio-broadcast-bitrate = Bitrate
     .description = Was der MP3-Encoder pro Sekunde Stream ausgibt
 settings-audio-broadcast-enable = Zu Icecast streamen
-    .description = Was rox spielt, als Quell-Client an einen Icecast-Server schieben, kodiert als MP3. Mount, Hörer und die Seite zum Netz gehören alle Icecast; rox verbindet sich nur nach draußen, und ein unerreichbarer Server rührt die lokale Wiedergabe nie an
+    .description = Was rox spielt, als Quell-Client an einen Icecast-Server schieben, kodiert als MP3. Der Mount, die Hörer und die Seite zum Netz hin gehören alle zu Icecast; rox verbindet sich nur nach draußen, und ein unerreichbarer Server rührt die lokale Wiedergabe nie an
 settings-audio-broadcast-host-placeholder = Icecast-Host
 settings-audio-broadcast-login = Quell-Anmeldung
     .description = Die Quell-Zugangsdaten von Icecast, Benutzer und Passwort, die seine Konfiguration nennt
@@ -582,7 +587,7 @@ settings-audio-output-device = Gerät
     .description-other = Exklusiv nimmt das Gerät für rox allein, also kann nichts anderes auf dem Desktop hindurch klingen, bis der Modus aus ist
 settings-audio-output-device-system-default = Systemstandard
 settings-audio-output-experimental-badge = Experimentell
-settings-audio-output-experimental-tooltip = Das Exklusiv-Backend dieser Plattform ist nach ihrer dokumentierten Audio-Schnittstelle geschrieben, lief aber nie auf echter Hardware der Entwickler. Es sollte das Gerät beanspruchen oder mit einer Begründung auf geteilt zurückfallen, niemals verstummen. Wenn es sich danebenbenimmt, schalte es aus und melde mit der Schaltfläche neben diesem Abzeichen, was passiert ist.
+settings-audio-output-experimental-tooltip = Das Exklusiv-Backend dieser Plattform ist nach ihrer dokumentierten Audio-Schnittstelle geschrieben, lief aber nie auf echter Hardware der Entwickler. Es sollte das Gerät beanspruchen oder mit einer Begründung auf geteilt zurückfallen, niemals verstummen. Wenn es sich danebenbenimmt, schalte es aus und melde mit der Schaltfläche neben dieser Plakette, was passiert ist.
 settings-audio-output-format = Format
     .description = Was rox der Karte übergibt. Eine Karte, die die Wahl nicht annimmt, fährt ihr breitestes Format, und der Status darunter zeigt, welches
 settings-audio-output-format-f32 = 32-Bit-Gleitkomma
@@ -595,7 +600,7 @@ settings-audio-output-mode-shared = Geteilt
 settings-audio-output-not-built = Für diese Plattform noch nicht gebaut
 settings-audio-output-rate-follow = Der Datei folgen
 settings-audio-output-sample-rate = Abtastrate
-    .description = Folgen öffnet das Gerät bei jeder Datei mit deren eigener Rate neu, was an einer Grenze mit Ratenwechsel eine Lücke kostet; eine feste Rate zahlt das nie und rechnet alles um, was nicht passt
+    .description = Folgen öffnet das Gerät bei jeder Datei mit deren eigener Rate neu, was an einer Grenze mit Ratenwechsel eine Lücke kostet; eine feste Rate zahlt das nie und tastet alles neu ab, was nicht passt
 settings-audio-output-status-error-hint = Wähle ein anderes Gerät, oder schalte Exklusiv aus
 settings-audio-output-status-error-title = Keine Ausgabe
 settings-audio-output-status-idle-hint = Starte einen Titel, um das Format zu sehen, das das Gerät angenommen hat
@@ -605,7 +610,7 @@ settings-audio-replaygain-level-by = Pegeln nach
     .keywords = lautstaerke normalisierung pegel angleichen
 settings-audio-replaygain-measure-missing-button = Fehlende messen
 settings-audio-replaygain-measure-new = Neue Dateien messen
-    .description = Messen, was die Überwachung hereinbringt, sobald es ankommt und der Abgleich zur Ruhe gekommen ist; so behält eine wachsende Bibliothek ihre Verstärkungen, ohne dass du hierher zurückmusst. Die Zahlen landen dort, wohin Gemessene Verstärkungen speichern zeigt. Beim Einschalten wird angeboten, zuerst das bereits Fehlende zu messen; danach sieht es nur noch frisch gelandete Dateien
+    .description = Messen, was die Ordnerüberwachung hereinholt, sobald es ankommt und der Abgleich zur Ruhe gekommen ist; so behält eine wachsende Bibliothek ihre Verstärkungen, ohne dass du hierher zurückmusst. Die Zahlen gehen dorthin, wohin Gemessene Verstärkungen speichern zeigt. Beim Einschalten wird angeboten, zuerst das bereits Fehlende zu messen; danach sieht es nur noch gerade erst hinzugekommene Dateien
 settings-audio-replaygain-measuring-progress = Messe { $done } von { $total }
 settings-audio-replaygain-measuring-start = Messung: ermittle, was fehlt...
 settings-audio-replaygain-mode-album = Album
@@ -616,7 +621,7 @@ settings-audio-replaygain-preamp = Vorverstärkung
 settings-audio-replaygain-save = Gemessene Verstärkungen speichern
     .description = Wohin der Messdurchgang seine Zahlen legt. Die Bibliotheksdatenbank lässt deine Dateien unberührt; Tags legen dieselben Werte dorthin, wo jeder andere Player sie liest, um den Preis, die Audiodateien neu zu schreiben
 settings-audio-replaygain-status-measured = Alle { $total } eingelesenen Titel haben eine Verstärkung zum Pegeln, { $measured } davon von rox gemessen
-settings-audio-replaygain-status-tagged = Alle { $total } eingelesenen Titel tragen ReplayGain-Tags
+settings-audio-replaygain-status-tagged = Alle { $total } eingelesenen Titel haben ReplayGain-Tags
 settings-audio-replaygain-untagged = Ungetaggte Dateien
     .description = Mit welcher Verstärkung eine Datei ohne ReplayGain-Tags spielt. Nichts hat sie gemessen, das hier ist also nur eine Schätzung. Lass sie auf null, und ungetaggte Titel spielen wie eh und je
 settings-audio-section-broadcast = Übertragung
@@ -655,8 +660,8 @@ settings-integrations-lastfm-intro-builtin = Verbinde dein Last.fm-Konto: autori
 settings-integrations-lastfm-intro-custom = Dieser Build bringt keine API-Identität mit, also braucht Scrobbeln dein eigenes API-Konto (Last.fm/api/account/create); füge Schlüssel und Shared Secret ein, dann verbinde
 settings-integrations-lastfm-key-placeholder = API-Schlüssel
 settings-integrations-lastfm-love-failed = Der letzte Versuch ist fehlgeschlagen: { $error }
-settings-integrations-lastfm-love-pending = { $hearts } warten auf den Versand
-settings-integrations-lastfm-love-pending-failed = { $hearts } warten auf den Versand, letzter Versuch: { $error }
+settings-integrations-lastfm-love-pending = { $hearts } noch zu senden
+settings-integrations-lastfm-love-pending-failed = { $hearts } noch zu senden, letzter Versuch: { $error }
 settings-integrations-lastfm-reconnect = Neu verbinden
 settings-integrations-lastfm-secret-placeholder = Shared Secret
 settings-integrations-lastfm-secret-row = Shared Secret
@@ -696,7 +701,7 @@ settings-keymap-undo-last = Letztes Zurücksetzen rückgängig machen
 ## Settings: library
 settings-library-acoustic-all-described = Alle { $total } eingelesenen Titel sind von { $label } beschrieben
 settings-library-acoustic-auto = Neue Dateien beschreiben
-    .description = Beschreiben, was die Überwachung hereinbringt, sobald es ankommt und der Abgleich zur Ruhe gekommen ist; so behält eine wachsende Bibliothek ihre Beschreibungen, ohne dass du hierher zurückmusst. Ausgeschaltet warten neue Dateien auf die Schaltfläche Fehlende analysieren. Beim Einschalten wird angeboten, zuerst das bereits Fehlende zu analysieren; danach sieht es nur noch frisch gelandete Dateien
+    .description = Beschreiben, was die Ordnerüberwachung hereinholt, sobald es ankommt und der Abgleich zur Ruhe gekommen ist; so behält eine wachsende Bibliothek ihre Beschreibungen, ohne dass du hierher zurückmusst. Ausgeschaltet warten neue Dateien auf die Schaltfläche Fehlende analysieren. Beim Einschalten wird angeboten, zuerst das bereits Fehlende zu analysieren; danach sieht es nur noch gerade erst hinzugekommene Dateien
 settings-library-acoustic-enable = Beschreiben, wie Titel klingen
     .description = Ermitteln, wie jeder Titel klingt, damit die Bibliothek Musik finden kann, die dem Laufenden ähnelt. Alles läuft auf diesem Rechner, und eine große Bibliothek zu beschreiben dauert eine Weile
     .keywords = aehnlich klang beschreiben analyse
@@ -727,17 +732,17 @@ settings-library-section-tempo = Tempoanalyse
 settings-library-split-genres = Genres an Kommas und Schrägstrichen trennen
     .description = "Dubstep, Trap" und "Drum & Bass / Neurofunk" zählen jeden Wert als eigenes Genre; Semikolons trennen immer. Ausgeschaltet bleiben Namen mit Schrägstrich ganz, für Tags, in denen sie ein Genre meinen. Dateien behalten ihre Tags, wie sie geschrieben sind
 settings-library-tempo-auto = Neue Dateien zählen
-    .description = Die Beats in dem zählen, was die Überwachung hereinbringt, sobald es ankommt und der Abgleich zur Ruhe gekommen ist; so behält eine wachsende Bibliothek ihre Tempi, ohne dass du hierher zurückmusst. Ausgeschaltet warten neue Dateien auf die Schaltfläche Fehlende analysieren. Beim Einschalten wird angeboten, zuerst das bereits Fehlende zu zählen; danach sieht es nur noch frisch gelandete Dateien
+    .description = Die Beats in dem zählen, was die Ordnerüberwachung hereinholt, sobald es ankommt und der Abgleich zur Ruhe gekommen ist; so behält eine wachsende Bibliothek ihre Tempi, ohne dass du hierher zurückmusst. Ausgeschaltet warten neue Dateien auf die Schaltfläche Fehlende analysieren. Beim Einschalten wird angeboten, zuerst das bereits Fehlende zu zählen; danach sieht es nur noch gerade erst hinzugekommene Dateien
 settings-library-tempo-enable = Ermitteln, wie schnell Titel laufen
     .description = Die Beats in Titeln zählen, deren Tags es nicht sagen, damit die Bibliothek nach Tempo zeigen und sortieren kann. Alles läuft auf diesem Rechner, die Zahlen gehen in die Bibliotheksdatenbank, und deine Dateien bleiben unberührt
 settings-library-tempo-progress = Zähle { $done } von { $total }
 settings-library-tempo-progress-start = Ermittle, was fehlt...
 settings-library-tempo-status-measured = Alle { $total } eingelesenen Titel haben ein Tempo, { $measured } davon von rox ermittelt
-settings-library-tempo-status-tagged = Alle { $total } eingelesenen Titel tragen ein Tempo-Tag
+settings-library-tempo-status-tagged = Alle { $total } eingelesenen Titel haben ein Tempo-Tag
 settings-library-watch-folders = Ordner überwachen
     .description = Hinzugefügte, geänderte und gelöschte Dateien laufend in die Bibliothek übernehmen, ohne manuelles Neu-Einlesen
 settings-library-write-stored = Gespeichertes in die Dateien schreiben
-    .description = Die drei Speichereinstellungen gelten nur für den nächsten Schreibvorgang, also steckt alles, was vor einer Umstellung auf Tags gespeichert wurde, weiterhin allein in rox. Das hier schreibt die Songtexte, Verstärkungen und Beschreibungen, die rox bereits vorliegen, in die Dateien selbst, damit ein an einen anderen Player gereichter Ordner sie mitträgt. Nichts wird neu berechnet
+    .description = Die drei Speichereinstellungen gelten nur für den nächsten Schreibvorgang, also steckt alles, was vor einer Umstellung auf Tags gespeichert wurde, weiterhin allein in rox. Das hier schreibt die Songtexte, Verstärkungen und Beschreibungen, die rox bereits gespeichert hat, in die Dateien selbst, damit ein anderer Player, der den Ordner liest, sie sieht. Nichts wird neu berechnet
 
 ## Settings: MCP
 settings-mcp-client-config = Client-Konfiguration
@@ -748,7 +753,7 @@ settings-mcp-enable = MCP-Server aktivieren
 ## Settings: ML models
 settings-mlmodels-checking = Prüfe...
 settings-mlmodels-choose-file = Datei wählen
-settings-mlmodels-custom-description-empty = Zeige rox einen eigenen PANNs-CNN10-Checkpoint, als safetensors. Er wird an Ort und Stelle gelesen und nach seinem Hash benannt, also beschreibt ein zweiter Checkpoint die Bibliothek getrennt, statt in den Koordinaten des ersten zu landen
+settings-mlmodels-custom-description-empty = Zeige rox einen eigenen PANNs-CNN10-Checkpoint, als safetensors. Er wird an Ort und Stelle gelesen und nach seinem Hash benannt, also beschreibt ein zweiter Checkpoint die Bibliothek getrennt, statt die Koordinaten des ersten wiederzuverwenden
 settings-mlmodels-download-failed = { $label } konnte nicht heruntergeladen werden: { $reason }
 settings-mlmodels-downloading = Lade { $label } herunter: { $done } von { $total }
 settings-mlmodels-stopping = Stoppe den Download von { $label }...
@@ -818,9 +823,9 @@ settings-shader-backdrop-enabled = Hintergrund-Shader
     .description = Einen musikreaktiven WGSL-Shader über den Cover-Hintergrund laufen lassen, unter allen Panels. Teil der Arbeitsfläche, reist also mit dem Erscheinungsbild
 settings-shader-backdrop-fallback-name = Hintergrund
 settings-shader-backdrop-run-idle = Bei Stille weiterlaufen
-    .description = Weiter zeichnen, wenn nichts läuft. Die Animation bleibt so oder so geparkt
+    .description = Weiter zeichnen, wenn nichts läuft. Die Animation bleibt so oder so eingefroren
 settings-shader-compile-error-title = Dieser Shader ließ sich nicht kompilieren
-settings-shader-legacy-note = Ohne Routen speist der Pool die Slots in seiner eigenen Reihenfolge: das erste Signal in Slot 0, das zweite in Slot 1 und so weiter. Die erste Route, die du hinzufügst, übernimmt die ganze Zuordnung.
+settings-shader-legacy-note = Ohne Routen füllt der Pool die Slots in seiner eigenen Reihenfolge: das erste Signal in Slot 0, das zweite in Slot 1 und so weiter. Die erste Route, die du hinzufügst, übernimmt die ganze Zuordnung.
 settings-shader-overlay-enabled = Overlay-Shader
     .description = Einen musikreaktiven WGSL-Shader über das ganze Fenster laufen lassen. Angeboten werden nur Shader, die die App darunter benutzbar lassen
 settings-shader-scene-covers-window = Dieser Shader ist eine Szene, also deckt er das Fenster ab, statt darüber zu zeichnen. Er stammt aus einem Bundle oder einer älteren Konfiguration; die Liste oben bietet nur Shader an, die die App benutzbar lassen.
@@ -828,7 +833,7 @@ settings-shader-screen-all-windows = Alle Fenster
     .description = Auch die Unterfenster schattieren: Einstellungen, Statistiken, Equalizer, herausgelöste Panels. Der Countdown zum Zurücknehmen bleibt so oder so unschattiert
 settings-shader-screen-fallback-name = Bildschirm
 settings-shader-screen-run-idle = Bei Stille weiterlaufen
-    .description = Weiter zeichnen, wenn nichts läuft. Die Animation bleibt so oder so geparkt. Ein Shader, der die Maus ausliest, folgt dem Zeiger auch bei gestoppter Musik ohne das hier; er hört nur ein paar Sekunden nach dem Zeiger auf
+    .description = Weiter zeichnen, wenn nichts läuft. Die Animation bleibt so oder so eingefroren. Ein Shader, der die Maus ausliest, folgt dem Zeiger auch bei gestoppter Musik ohne das hier; er hört nur ein paar Sekunden nach dem Zeiger auf
 settings-shader-section-backdrop = Hintergrund-Shader
 settings-shader-section-overlay = Overlay-Shader
 settings-shader-signals-block = Signale
@@ -846,11 +851,11 @@ settings-storage-cover-thumbnails = Cover-Miniaturen
 settings-storage-logs = Protokolle
     .description = Was jeder Lauf für Fehlerberichte schreibt (logs/rox.log), bei einer Größengrenze rotiert, damit es nie groß wird
 settings-storage-looks-layouts = Erscheinungsbilder und Layouts
-    .description = Das Erscheinungsbild, das die App trägt (workspace.json), mit deinen gespeicherten Arbeitsflächen, ausgeworfenen Shader-Dateien und Symbolpaketen daneben. Klein, und jedes Byte davon ist etwas, das du eingerichtet hast
+    .description = Das Erscheinungsbild, das die App gerade verwendet (workspace.json), mit deinen gespeicherten Arbeitsflächen, ausgeworfenen Shader-Dateien und Symbolpaketen daneben. Klein, und jedes Byte davon ist etwas, das du eingerichtet hast
 settings-storage-lyrics = Songtexte
     .description = Geholte und bearbeitete Blätter, im eigenen Speicher der App gehalten (lyrics/), damit die Bibliotheksordner sauber bleiben
 settings-storage-measured-tempos = Gemessene Tempi
-    .description = Die Tempi, die rox aus dem Audio gezählt hat, für Titel, deren Tags keins tragen; die eigenen Zahlen der Tags bleiben unberührt. Leeren setzt diese Titel zurück auf die Liste von Fehlende analysieren auf der Seite Bibliothek, und so erreicht verbessertes Beatzählen Zahlen, die ein älterer Durchgang geschrieben hat
+    .description = Die Tempi, die rox aus dem Audio gezählt hat, für Titel, deren Tags keins tragen; die eigenen Zahlen der Tags bleiben unberührt. Leeren setzt diese Titel zurück auf die Liste von Fehlende analysieren auf der Seite Bibliothek, sodass verbessertes Beatzählen die Zahlen ersetzen kann, die ein älterer Durchgang geschrieben hat
 settings-storage-model-fallback-this = Dieses Modell
 settings-storage-music-summary = { $tracks }, { $albums }, { $size }
 settings-storage-model-weights = Modellgewichte
@@ -894,9 +899,9 @@ settings-workspace-card-version-placeholder = Deine eigene Version, wie auch imm
 settings-workspace-card-website = Website
 settings-workspace-card-website-placeholder = Wo es zu finden ist
 settings-workspace-composition-closed = Das Arbeitsflächenfenster ist geschlossen
-settings-workspace-composition-hint = Die Panels des Fensters, wie sie in Teilern und Reitergruppen sitzen; die Pfeile ordnen eine Zeile unter ihren Geschwistern um, das Schloss heftet ein Panel fest, und das Zahnrad öffnet seine Einstellungen
+settings-workspace-composition-hint = Die Panels des Fensters, wie sie in Teilern und Reitergruppen angeordnet sind; die Pfeile ordnen eine Zeile unter ihren Geschwistern um, das Schloss heftet ein Panel fest, und das Zahnrad öffnet seine Einstellungen
 settings-workspace-empty = Noch keine Arbeitsflächen
-settings-workspace-hint = Eine Arbeitsfläche ist ein ganzes Erscheinungsbild: Layouts, Palette, Aussehen; eine anzuwenden ersetzt alle drei
+settings-workspace-hint = Eine Arbeitsfläche ist ein ganzes Erscheinungsbild: Layouts, Palette, Aussehen. Eine anzuwenden ersetzt alle drei
 settings-workspace-layout-name-placeholder = Layoutname
 settings-workspace-layouts-empty = Noch keine Layouts
 settings-workspace-layouts-hint = Primär und Mini sind die beiden, zwischen denen die Mini-Player-Taste der Menüleiste wechselt
@@ -942,9 +947,9 @@ settings-common-use = Verwenden
 settings-confirm-apply-body = Das ersetzt deine Layouts, Palette und dein Aussehen durch die der Arbeitsfläche.
 settings-confirm-apply-imported-body = Sie ist in deinen Arbeitsflächen gespeichert. Sie jetzt anzuwenden ersetzt deine Layouts, Palette und dein Aussehen durch die der Arbeitsfläche.
 settings-confirm-clear = Leeren
-settings-confirm-clear-embeddings-body = Die Beschreibungen gehen und der Platz kommt zurück. Sie wiederzuhaben heißt, dass der Analysedurchgang jeden Titel der Bibliothek noch einmal abhört.
+settings-confirm-clear-embeddings-body = Die Beschreibungen gehen und der Platz kommt zurück. Sie wiederzuhaben heißt, den Analysedurchgang über jeden Titel der Bibliothek laufen zu lassen.
 settings-confirm-clear-embeddings-title = Leeren, was "{ $model }" beschrieben hat?
-settings-confirm-clear-measured-bpm-body = Jedes von rox ermittelte Tempo geht zurück auf ungemessen; Zahlen aus den eigenen Tags deiner Dateien bleiben. Sie wiederzuhaben heißt, dass der Tempodurchgang jeden dieser Titel noch einmal dekodiert.
+settings-confirm-clear-measured-bpm-body = Jedes von rox ermittelte Tempo geht zurück auf ungemessen; Zahlen aus den eigenen Tags deiner Dateien bleiben. Sie wiederzuhaben heißt, den Tempodurchgang über jeden dieser Titel laufen zu lassen.
 settings-confirm-clear-measured-bpm-title = Die gemessenen Tempi leeren?
 settings-confirm-overwrite-workspace-body = Das ersetzt die gespeicherte Arbeitsfläche durch den aktuellen Zustand.
 settings-confirm-overwrite-workspace-title = Arbeitsfläche "{ $name }" überschreiben?
@@ -1043,7 +1048,7 @@ workspace-drop-play-now = Jetzt abspielen
 workspace-hint-or = oder
 workspace-hint-then = dann
 workspace-import = Importieren
-workspace-launcher-hint = Füge dein erstes Panel hinzu, um loszulegen; oder wähle eine Vorlage unter Arbeitsfläche > Arbeitsfläche anwenden
+workspace-launcher-hint = Füge dein erstes Panel hinzu, um loszulegen, oder wähle eine Vorlage unter Arbeitsfläche > Arbeitsfläche anwenden
 workspace-launcher-need-help = Brauchst du Hilfe?
 workspace-launcher-open-welcome = Das Willkommensfenster öffnen
 workspace-launcher-title = Ein leeres Fenster
@@ -1073,7 +1078,7 @@ tasks-embedding = Bette { $progress } ein
 tasks-estimate-at = { $estimate } bei { $workers }
 tasks-import-failed = Der letzte Import ist fehlgeschlagen: { $error }
 tasks-import-reading = Lese die Liste der geliebten Titel...
-tasks-import-unmatched = { $count } hatten keine Entsprechung in dieser Bibliothek
+tasks-import-unmatched = Für { $count } gab es keine Entsprechung in dieser Bibliothek
 tasks-importing = Importiere { $progress }
 tasks-job-acoustic = Akustische Analyse
 tasks-job-convert = Audio umwandeln
@@ -1085,28 +1090,34 @@ tasks-last-pass-stopped = Der letzte Durchgang hat gestoppt: { $reason }
 tasks-last-run-finished = Letzter Lauf fertig, { $count } erledigt
 tasks-last-run-stopped = Letzter Lauf nach { $count } gestoppt
 tasks-library-busy = Die Bibliothek ist beschäftigt
-tasks-library-scanning = Die Bibliothek liest ein
+tasks-library-scanning = Die Bibliothek wird eingelesen
 tasks-measuring = Messe { $progress }
 tasks-model-downloading = Ein Modell lädt noch herunter
 tasks-no-library-window = Kein Bibliotheksfenster ist offen, also lässt sich das hier nicht starten
 tasks-nothing-to-measure = Noch nichts eingelesen zum Messen
 tasks-rg-all-gain = Alle { $count } Titel haben eine Verstärkung zum Spielen
-tasks-rg-partial = { $missing } von { $total } Titeln haben keine Verstärkung
+tasks-rg-partial = { $missing ->
+    [one] { $missing } von { $total } Titeln hat keine Verstärkung
+   *[other] { $missing } von { $total } Titeln haben keine Verstärkung
+}
 tasks-scan-folder-count = { $count ->
     [one] { $count } Ordner
    *[other] { $count } Ordner
 }
 tasks-scan-last-scanned = { $folders }, zuletzt vor { $ago } gescannt
 tasks-scan-never-scanned = { $folders }, nie gescannt
-tasks-scan-no-folders = Noch keine Ordner hinzugefügt. Öffne einen über das Menü Datei
+tasks-scan-no-folders = Noch keine Ordner hinzugefügt. Füge einen in den Einstellungen unter Bibliothek hinzu
 tasks-start-analyze-missing = Fehlende analysieren
 tasks-start-measure-missing = Fehlende messen
 tasks-start-rescan = Neu einlesen
-tasks-stop = Anhalten
-tasks-stopping = Wird angehalten...
+tasks-stop = Stopp
+tasks-stopping = Stoppe...
 tasks-tempo-all = Alle { $count } Titel haben ein Tempo
-tasks-tempo-off = Das Ermitteln des Tempos ist in den Einstellungen unter Bibliothek abgeschaltet
-tasks-tempo-partial = { $missing } von { $total } Titeln haben kein Tempo
+tasks-tempo-off = Ermitteln, wie schnell Titel laufen, ist in den Einstellungen unter Bibliothek ausgeschaltet
+tasks-tempo-partial = { $missing ->
+    [one] { $missing } von { $total } Titeln hat kein Tempo
+   *[other] { $missing } von { $total } Titeln haben kein Tempo
+}
 tasks-timing = Zähle { $progress }
 tasks-tip = Bibliotheksaufgaben öffnen
 tasks-window-title = rox - Aufgaben
@@ -1124,13 +1135,13 @@ stats-chart-start-year = Vor einem Jahr
 stats-click-opens = Klick öffnet Statistik
 stats-click-section = Klick
 stats-count-menu = Anzahl
-    .description = Über welchen zurückliegenden Zeitraum die Zahl Hörvorgänge zählt; die Liste beim Überfahren trägt immer alle
+    .description = Über welchen zurückliegenden Zeitraum die Zahl Hörvorgänge zählt; die Liste beim Überfahren zeigt immer alle
 stats-empty-all = Noch nichts gehört
 stats-empty-range = In diesem Zeitraum nichts gehört
 stats-now = Jetzt
 stats-open = Statistik öffnen
 stats-open-on-click = Bei Klick Statistik öffnen
-    .description = Auf das Widget klicken, um das Statistikfenster zu öffnen, die vollständige Hörhistorie
+    .description = Auf das Widget klicken, um das Statistikfenster zu öffnen, den vollständigen Hörverlauf
 stats-play-these-tracks = Diese Titel abspielen
 stats-play-this-track = Diesen Titel abspielen
 stats-plays-count = { $count ->
@@ -1156,7 +1167,7 @@ stats-section-top-albums = Top-Alben
 stats-section-top-artists = Top-Interpreten
 stats-section-top-genres = Top-Genres
 stats-show-change = Veränderung anzeigen
-    .description = Ein Schildchen dafür, wie der Zeitraum gegen den davor steht, hoch oder runter; vor Gesamtzeit liegt nichts
+    .description = Ein Chip dafür, wie der Zeitraum gegen den davor steht, hoch oder runter; vor Gesamtzeit liegt nichts
 stats-show-number = Zahl anzeigen
     .description = Die Anzahl neben das Symbol zeichnen; ausgeschaltet bleibt ein nacktes Symbol, die Zahlen kommen beim Überfahren
 stats-title = Statistik-Widget
@@ -1168,7 +1179,7 @@ about-check-failed = GitHub war nicht erreichbar
 about-check-for-updates = Nach Updates suchen
 about-checking = Suche...
 about-download = Herunterladen
-about-downloading = Lade herunter... { $percent }%
+about-downloading = Lade herunter... { $percent } %
 about-get-it = Holen
 about-license-lead = rox ist freie Software unter der GNU AGPLv3. Der Quelltext liegt auf
 about-notice-lead = Diesem Programm sollte eine Kopie der Lizenz beiliegen. Falls nicht, siehe
@@ -1213,14 +1224,14 @@ welcome-rearrange-after = irgendwo im Panel, um es zu bewegen.
 welcome-rearrange-before = Zieh einen Reiter, oder halte
 welcome-settings-hint-after = öffnet die Einstellungen: Palette, Transparenz und Verhalten.
 welcome-shelf-caption = Eines zu wählen ersetzt das Erscheinungsbild des Hauptfensters und schließt die Tour. Dieses Fenster gibt es jederzeit unter Anwendung > Willkommen.
-welcome-stage-lead-quick-start = Wähle eine Arbeitsfläche und das Hauptfenster zieht sie an: Layouts, Palette, das ganze Erscheinungsbild.
+welcome-stage-lead-quick-start = Wähle eine Arbeitsfläche, und das Hauptfenster wechselt zu ihr: Layouts, Palette, das ganze Erscheinungsbild.
 welcome-stage-lead-welcome = Foobar, wenn es in 20XX gebaut worden wäre.
 welcome-stage-title-quick-start = Schnellstart
 welcome-stage-title-welcome = Willkommen bei rox
 welcome-step-hint-after = , oder den Tasten unten.
 welcome-step-hint-before = Blättere durch mit
 welcome-tile-by = von { $author }
-welcome-tour-intro = Eine kurze Tour, wo die Musik hereinkommt und wo das Erscheinungsbild sitzt. Sie endet am Regal der mitgelieferten Arbeitsflächen, je ein Klick.
+welcome-tour-intro = Eine kurze Tour, wo die Musik hereinkommt und wo das Erscheinungsbild eingestellt wird. Sie endet am Regal der mitgelieferten Arbeitsflächen, je ein Klick.
 welcome-window-title = rox - Willkommen
 
 ## Console window
@@ -1243,7 +1254,7 @@ console-window-title = rox - Konsole
 ## Signals window
 signals-about-toggle = Über Signale
 signals-blurb-marked = Panels, die in den Menüs damit markiert sind, lassen die meisten ihrer Parameter binden: Rechtsklick auf einen Parameter in den Panel-Einstellungen und ein Signal wählen, oder dort eines hinzufügen.
-signals-blurb-shared = Was hier eingestellt wird, ist geteilt: eine Änderung landet auf jedem Parameter, der über eine Route an diesem Signal hängt, in jedem Panel und Fenster.
+signals-blurb-shared = Was hier eingestellt wird, ist geteilt: eine Änderung gilt für jeden Parameter, der auf dieses Signal geroutet ist, in jedem Panel und jedem Fenster.
 signals-blurb-total = Eine Summe ist die vierte Art: sie zählt ein anderes Signal über die Zeit zusammen und läuft bei 1 um, also klettert sie, solange die Musik laut ist, und steht still, solange sie es nicht ist. Nimm sie, wenn ein Shader eine Phase braucht, die sich mit dem Song bewegt statt mit der Uhr.
 signals-blurb-what = Ein Signal macht aus dem, was läuft, eine Zahl zwischen 0 und 1: die Energie in einem Frequenzband, den Pegel der ganzen Mischung, oder einen Impuls bei jedem Schlag in einem Band. Ansprechverhalten setzt, wie schnell es folgt, Schwellwert stellt es unter einem Pegel still, den du wählst.
 signals-no-library = Es ist kein Bibliotheksfenster offen, also zeigen diese kein Audio. Änderungen werden trotzdem gespeichert.
@@ -1253,8 +1264,8 @@ signals-window-title = rox - Signale
 eq-analyzer-bars = Balken
 eq-analyzer-off = Keine Analyse
 eq-analyzer-wave = Welle
-eq-band-badge = Band-Schildchen
-    .description = Die Bänder, die nicht flach stehen, auf einem Schildchen über dem Symbol zählen
+eq-band-badge = Band-Plakette
+    .description = Anzeigen, wie viele Bänder nicht flach stehen, auf einer Plakette über dem Symbol
 eq-band-label = Band { $number }
 eq-click-nothing = Nichts
 eq-click-open = Öffnen
@@ -1265,7 +1276,7 @@ eq-flatten = Flach stellen
 eq-freq-label = Freq
 eq-gain-label = Gain
 eq-heading = Equalizer
-eq-help-text = Zieh ein Band, um es zu bewegen, scroll darüber, um es breiter oder schmaler zu machen. Die Verarbeitung sitzt vor dem Puffer, der die Soundkarte speist, also braucht eine Änderung bis zu einer halben Sekunde bis zu den Lautsprechern.
+eq-help-text = Zieh ein Band, um es zu bewegen, scroll darüber, um es breiter oder schmaler zu machen. Die Verarbeitung läuft vor dem Puffer, der die Soundkarte versorgt, also braucht eine Änderung bis zu einer halben Sekunde bis zu den Lautsprechern.
 eq-hint-off = Klick zum Ausschalten
 eq-hint-on = Klick zum Einschalten
 eq-hint-open = Klick, um den Equalizer zu öffnen
@@ -1341,7 +1352,7 @@ keymap-stamp-line = Songtextzeile stempeln
 keymap-toggle-playback = Wiedergabe / Pause
     .description = Den aktuellen Titel starten, oder ihn dort pausieren, wo er ist
 keymap-toggle-post-shader = Overlay-Shader umschalten
-    .description = Den Bildschirm-Shader aus- und einschalten. Absichtlich überall belegt: ein Shader kann jedes Steuerelement verdecken, über das dieses Kürzel sonst erreichbar wäre
+    .description = Den Bildschirm-Shader aus- und einschalten. Überall belegt, denn ein Shader kann genau die Steuerelemente verdecken, mit denen du ihn sonst ausschalten würdest
 keymap-toggle-zoom = Panel-Gruppe zoomen
     .description = Das Dock mit der zuletzt angeklickten Panel-Gruppe füllen, oder wieder heraus
 
@@ -1374,6 +1385,7 @@ panel-catalog-queue = Warteschlange
 panel-catalog-queue-widget = Warteschlangen-Widget
 panel-catalog-seek = Position
 panel-catalog-slide = Folie
+panel-catalog-spectrogram = Spektrogramm
 panel-catalog-spectrum = Spektrum
 panel-catalog-stats-widget = Statistik-Widget
 panel-catalog-status = Status
@@ -1396,8 +1408,16 @@ updater-size-mismatch = der Server bot { $claimed } Bytes an, das Release gibt {
 
 ## Last.fm
 lastfm-import-matching = Abgleich mit der Bibliothek
-lastfm-import-read = { $count } geliebte Titel gelesen
-lastfm-import-stopped = Nach { $count } geliebten Titeln gestoppt
+lastfm-import-read = { $count ->
+    [one] { $count } geliebten Titel gelesen
+   *[other] { $count } geliebte Titel gelesen
+}
+lastfm-import-stopped = { $count ->
+    [one] Nach { $count } geliebtem Titel gestoppt
+   *[other] Nach { $count } geliebten Titeln gestoppt
+}
+lastfm-import-matched = , { $count } zugeordnet
+lastfm-import-added = , { $count } zu den Favoriten hinzugefügt
 
 ## Tag tools
 tags-editor-clear-all = alle leeren
@@ -1405,17 +1425,25 @@ tags-editor-form-view = Formular
 tags-editor-format-unsupported-all = Tags für dieses Format lassen sich noch nicht lesen oder schreiben.
 tags-editor-format-unsupported-some = Einige dieser Dateien haben ein Format, dessen Tags sich noch nicht lesen oder schreiben lassen.
 tags-editor-guess-button = Raten
-tags-editor-guess-folded = { $status }, { $count } weitere nicht gezeigt
+tags-editor-guess-folded = { $status }, { $count } nicht gezeigt
 tags-editor-guess-help = { $placeholders }; / passt auf den Ordner darüber, %skip% verwirft
-tags-editor-guess-match-count = { $hits } von { $total } passen
+tags-editor-guess-match-count = { $hits ->
+    [one] { $hits } von { $total } passt
+   *[other] { $hits } von { $total } passen
+}
 tags-editor-guess-no-match = kein Treffer
 tags-editor-guess-pattern-label = Muster
 tags-editor-loading = Lade Tags...
 tags-editor-look-up = Nachschlagen
 tags-editor-multiple-values = Mehrere Werte
+tags-editor-clear-on-save = Wird beim Speichern geleert
 tags-editor-other-tags = Weitere Tags ({ $count })
 tags-editor-remove = entfernen
 tags-editor-reveal = Zeigen
+tags-editor-save-errors = { $count ->
+    [one] { $count } Datei fehlgeschlagen; { $error }
+   *[other] { $count } Dateien fehlgeschlagen; { $error }
+}
 tags-editor-saving-progress = Speichere { $done }/{ $total }...
 tags-editor-table-view = Tabelle
 tags-editor-tags-section = Tags
@@ -1449,16 +1477,23 @@ tags-rename-blocked-occupied = dort liegt schon eine Datei
 tags-rename-blocked-outside-roots = außerhalb jeder Bibliothekswurzel
 tags-rename-blocked-unresolved = noch nicht im Katalog
 tags-rename-move-error = { $name }: { $error }
-tags-rename-move-errors = { $count } Dateien fehlgeschlagen; { $error }
+tags-rename-move-errors = { $count ->
+    [one] { $count } Datei fehlgeschlagen; { $error }
+   *[other] { $count } Dateien fehlgeschlagen; { $error }
+}
 tags-rename-moving = Verschiebe { $done }/{ $total }...
 tags-rename-nothing-to-move = Nichts zu verschieben
 tags-rename-pattern-help = { $placeholders }; / macht einen Ordner, die Endung folgt der Datei
 tags-rename-pattern-section = Muster
 tags-rename-preview-section = Vorschau
 tags-rename-unchanged = unverändert
-tags-rename-will-move = { $count } von { $total } werden verschoben
+tags-rename-will-move = { $count ->
+    [one] { $count } von { $total } wird verschoben
+   *[other] { $count } von { $total } werden verschoben
+}
 tags-rename-window-title = rox - Dateien umbenennen
 tags-repair-affected-files = Betroffene Dateien
+tags-repair-section = Reparatur
 tags-repair-check-to-repair = Eine Datei ankreuzen, um sie zu reparieren
 tags-repair-count = { $count ->
     [one] 1 Datei
@@ -1488,6 +1523,8 @@ tags-repair-window-title = rox - Tag-Reparatur
 
 ## Convert
 convert-arg-names-file = "{ $token }" nennt eine Datei; das Ziel kommt aus Ordner und Muster
+convert-section-output = Ausgabe
+convert-section-preview = Vorschau
 convert-arg-not-flag-or-value = "{ $token }" ist weder ein Flag noch ein Wert dafür
 convert-check-wrote-nothing = ffmpeg ist sauber beendet, hat aber nichts geschrieben
 convert-custom-ext-empty = Die Endung wählt den Container, also braucht es eine
@@ -1495,12 +1532,12 @@ convert-custom-ext-invalid = "{ $ext }" ist kein Containername; Buchstaben und Z
 convert-dialog-browse = Durchsuchen...
 convert-dialog-check-passed = ffmpeg hat damit einen Moment Stille kodiert, also laufen sie
 convert-dialog-check-waiting = Wird gegen ffmpeg geprüft, sobald du aufhörst zu tippen
-convert-dialog-checking = Frage ffmpeg...
+convert-dialog-checking = Prüfe mit ffmpeg...
 convert-dialog-choose-folder = Ordner zum Hineinschreiben auswählen
 convert-dialog-convert-button = Umwandeln
 convert-dialog-custom-label = Eigen
 convert-dialog-custom-menu-item = Eigen...
-convert-dialog-custom-note = Argumente trennen an Leerzeichen, also keine Anführungszeichen; eingebettetes Cover wird bei eigenen Formaten nicht mitgenommen
+convert-dialog-custom-note = Argumente trennen an Leerzeichen, also keine Anführungszeichen; eingebettetes Cover wird bei eigenen Formaten nicht mitkopiert
 convert-dialog-format-not-ready = Das getippte Format hat ffmpeg noch nicht bestanden
 convert-dialog-label-extension = Endung
 convert-dialog-label-format = Format
@@ -1511,7 +1548,10 @@ convert-dialog-nothing-to-convert = Nichts umzuwandeln: jede Zeile wird überspr
 convert-dialog-pattern-help = { $placeholders }; / macht einen Ordner, das Format setzt die Endung
 convert-dialog-pick-folder = Ordner zum Hineinschreiben wählen
 convert-dialog-span-note = { $count } aus einem CUE-Image herausgeschnitten und aus der Bibliothek getaggt
-convert-dialog-will-convert = { $count } von { $total } werden umgewandelt
+convert-dialog-will-convert = { $count ->
+    [one] { $count } von { $total } wird umgewandelt
+   *[other] { $count } von { $total } werden umgewandelt
+}
 convert-dialog-window-title = rox - Umwandeln
 convert-ffmpeg-silent-failure = ffmpeg ist fehlgeschlagen, ohne zu sagen warum
 convert-flag-attach = -attach liest eine eigene Datei, was hier nicht erlaubt ist
@@ -1533,8 +1573,8 @@ convert-summary-files = { $count ->
 }
 convert-summary-line = { $files } nach { $dest }
 convert-summary-skipped = , { $count } übersprungen
-convert-summary-stopped = Gestoppt nach { $files } nach { $dest }
-convert-version-answered = { $binary } hat geantwortet
+convert-summary-stopped = Gestoppt, { $files } nach { $dest }
+convert-version-answered = { $binary } lief, meldete aber keine Version
 
 ## Duplicates
 duplicates-auto-select = Automatisch auswählen
@@ -1546,8 +1586,14 @@ duplicates-copy-count = { $count ->
 duplicates-different-albums = verschiedene Alben
 duplicates-filter-placeholder = Nach Titel, Interpret oder Ordner filtern
 duplicates-groups-summary = { $groups ->
-    [one] 1 Gruppe, { $extras } zusätzliche Kopien
-   *[other] { $groups } Gruppen, { $extras } zusätzliche Kopien
+    [one] 1 Gruppe, { $extras ->
+        [one] { $extras } zusätzliche Kopie
+       *[other] { $extras } zusätzliche Kopien
+    }
+   *[other] { $groups } Gruppen, { $extras ->
+        [one] { $extras } zusätzliche Kopie
+       *[other] { $extras } zusätzliche Kopien
+    }
 }
 duplicates-library-loading = Die Bibliothek lädt noch; versuch es gleich nochmal.
 duplicates-no-duplicates = Keine Duplikate gefunden.
@@ -1584,6 +1630,8 @@ smart-playlist-matched-tracks = Passende Titel
 smart-playlist-new-title = Neue intelligente Playlist
 smart-playlist-no-matches = Keine Titel passen
 smart-playlist-query-label = Suche
+smart-playlist-sort-default = Standardreihenfolge
+smart-playlist-sort-added = Hinzugefügt
 smart-playlist-sort-label = Sortierung
 smart-playlist-unknown-field = "{ $field }:" ist kein Feld, also passt der Begriff als reiner Text
 smart-playlist-window-title = rox - { $verb }
@@ -1600,9 +1648,12 @@ cover-art-back = Rückseite
 cover-art-disc = CD
 cover-art-front = Vorderseite
 cover-artwork = Bild
-    .description = Welches Bild gezeigt wird; ein Platz, den die Datei nicht trägt, fällt auf die Vorderseite zurück
+    .description = Welches Bild gezeigt wird; ein Slot, den die Datei nicht hat, fällt auf die Vorderseite zurück
 cover-disc-style = CD-Stil
-    .description = Das Bild als CD oder als Etikett einer Schallplatte aufziehen
+    .description = Das Bild als CD oder als Etikett einer Schallplatte darstellen
+cover-disc-off = Aus
+cover-disc-cd = CD
+cover-disc-vinyl = Schallplatte
 cover-editor-choose-image = Bild wählen
 cover-editor-multiple = Mehrere
 cover-editor-none = Keins
@@ -1612,7 +1663,10 @@ cover-editor-reading = Lese das aktuelle Cover...
 cover-editor-remove = Entfernen
 cover-editor-replace = Ersetzen
 cover-editor-revert = Zurücknehmen
-cover-editor-save-errors = { $count } Dateien fehlgeschlagen; { $error }
+cover-editor-save-errors = { $count ->
+    [one] { $count } Datei fehlgeschlagen; { $error }
+   *[other] { $count } Dateien fehlgeschlagen; { $error }
+}
 cover-editor-saving-progress = Speichere { $done }/{ $total }...
 cover-editor-search-online = Online suchen
 cover-editor-section = Cover
@@ -1637,7 +1691,7 @@ cover-matcher-tile-info = { $provider }  { $width }px
 cover-matcher-unsupported-format = Nicht unterstütztes Bildformat
 cover-matcher-window-title = rox - Cover finden
 cover-spin = Drehen
-    .description = Die CD drehen, während ein Titel läuft; gilt für den CD-Platz oder einen CD-Stil
+    .description = Die CD drehen, während ein Titel läuft; gilt für den CD-Slot oder einen CD-Stil
 cover-spin-disc = CD drehen
 cover-spin-ramp = Anlauf
     .description = Wie lange die CD braucht, um auf volle Drehzahl zu kommen, und um wieder auszulaufen
@@ -1655,7 +1709,7 @@ lyrics-auto-search = Automatisch suchen
     .description = Bei einem Titel ohne Text online suchen und einen sicheren Treffer speichern, ohne Auswahl
 lyrics-bold = Fett
 lyrics-build-word-by-word = Wort für Wort aufbauen
-    .description = Wörter zeigen, wie sie gesungen werden, im Karaoke-Stil; ungesungene Zeilen warten versteckt
+    .description = Wörter zeigen, wie sie gesungen werden, im Karaoke-Stil; ungesungene Zeilen bleiben verborgen
 lyrics-edge-bottom = Unten
 lyrics-edge-top = Oben
 lyrics-edit-hint-after-stamp = zum Stempeln
@@ -1674,16 +1728,16 @@ lyrics-falloff-edge = Abdunkelseite
 lyrics-find-online = Songtext online finden...
 lyrics-follow-playback = Wiedergabe folgen
     .description = Die aktive Zeile in die Mitte gleiten lassen, während ein synchrones Blatt läuft
-lyrics-font = Die Schrift des Songtexts; Standard folgt der App-Schrift
+lyrics-font = Schrift
     .description = Die Schrift des Songtexts; Standard folgt der App-Schrift
 lyrics-gap-threshold = Lücken-Schwellwert
     .description = Wie lange ein Intro oder eine Lücke laufen muss, bevor es eine Pause gibt
 lyrics-lead-in-rest = Pause vorm Einsatz
-    .description = Vor einem langen Intro auf einer leeren Pause sitzen, damit die erste Zeile einblendet, wenn sie kommt
+    .description = Vor einem langen Intro eine leere Pause zeigen, damit die erste Zeile einblendet, wenn sie kommt
 lyrics-line-falloff = Abdunklung
     .description = Wie stark jede Zeile pro Schritt weg von der aktiven abdunkelt
 lyrics-line-spacing = Zeilenabstand
-    .description = Wie weit die synchronen Zeilen auseinander sitzen, als Vielfaches der Textgröße
+    .description = Wie weit die synchronen Zeilen auseinanderliegen, als Vielfaches der Textgröße
 lyrics-mark-dots = Punkte
 lyrics-mark-note = Note
 lyrics-matcher-blocked-no-match = Kein Treffer zum Übernehmen
@@ -1730,7 +1784,7 @@ pass-estimate-button = Schätzen
 pass-estimating = Schätze...
 pass-measure = Messen
 pass-no-estimate = Auf diesem Rechner lief noch nichts, also gibt es keine Schätzung. Schätzen misst ein paar Titel und rechnet den Rest daraus hoch.
-pass-replaygain-body = Jede Datei wird dekodiert und gemessen, damit sie in der Lautheit läuft, auf die sie gemastert wurde. Alben werden als Ganzes gemessen, wenn allen ihren Titeln ein Gain fehlt. { $lands }
+pass-replaygain-body = Jede Datei wird dekodiert und gemessen, damit sie in der Lautheit läuft, auf die sie gemastert wurde. Alben werden als Ganzes gemessen, wenn allen ihren Titeln eine Verstärkung fehlt. { $lands }
 pass-replaygain-lands-database = Die Werte landen in der Bibliotheksdatenbank, deine Dateien bleiben unangetastet.
 pass-replaygain-lands-tags = Die Werte werden zurück in die Tags jeder Datei geschrieben, wo jeder andere Player sie liest.
 pass-replaygain-title = { $count ->
@@ -1744,7 +1798,7 @@ pass-tempo-title = { $count ->
 }
 pass-timing = Messe ein paar Titel...
 pass-timing-failed = Zeitmessung für diese Bibliothek fehlgeschlagen: { $error }
-pass-workers = Prozesse
+pass-workers = Arbeitsprozesse
 
 ## Quick play
 quick-play-comfortable-rows = Luftige Zeilen
@@ -1822,7 +1876,7 @@ particles-drift = Drift
 particles-edit-emitters = Emitter bearbeiten
 particles-emitter-label = Emitter { $index }
 particles-emitter-target = Emitter { $index } { $target }
-particles-emitters-empty = Noch keine Emitter, füge einen hinzu, um das Feld zu starten.
+particles-emitters-empty = Noch keine Emitter. Füge einen hinzu, um das Feld zu starten.
 particles-glow = Leuchten
     .description = Einen weichen Schein hinter jedes Partikel legen
 particles-gravity = Schwerkraft
@@ -1830,7 +1884,7 @@ particles-gravity-strength = Stärke
     .description = Konstanter Zug auf alles, was fliegt
 particles-height = Höhe
 particles-hold-on-pause = Bei Pause halten
-    .description = Das Feld während der Pause einfrieren, statt es austreiben zu lassen
+    .description = Das Feld während der Pause einfrieren, statt es davontreiben zu lassen
 particles-length = Länge
 particles-lifetime = Lebensdauer
 particles-position-x = Position X
@@ -1957,6 +2011,40 @@ vu-style = Stil
 vu-style-continuous = Durchgehend
 vu-style-segments = Segmente
 
+## Spectrogram panel
+spectrogram-ceiling = Decke
+    .description = Pegel, der auf das helle Ende der Farbskala abgebildet wird, sodass alles Lautere dort hängen bleibt
+spectrogram-colormap = Farbskala
+    .description = Wie Lautheit auf Farbe abgebildet wird
+spectrogram-colormap-cover = Cover
+spectrogram-colormap-grayscale = Graustufen
+spectrogram-colormap-ice = Eis
+spectrogram-colormap-magma = Magma
+spectrogram-colormap-theme = Farbschema
+spectrogram-colormap-viridis = Viridis
+spectrogram-direction = Richtung
+    .description = Kante, aus der neue Spalten eintreten, was auch bestimmt, ob die Frequenzachse das Panel hinauf oder quer darüber verläuft
+spectrogram-fft-size = FFT-Größe
+    .description = Fenstergröße, mit der die Analyse läuft, ein Abwägen zwischen schnellem Reagieren einer Spalte auf einen Transienten und sauberer Trennung zweier tiefer Töne
+spectrogram-floor = Boden
+    .description = Pegel, der auf das dunkle Ende der Farbskala abgebildet wird, sodass alles Leisere als Hintergrund erscheint
+spectrogram-grid = Raster
+    .description = Frequenzlinien über dem Bild
+spectrogram-high-bound = Obere Grenze
+    .description = Oberes Ende der Frequenzachse, gedeckelt unter Nyquist, um die fast stillen obersten Oktaven wegzulassen
+spectrogram-history = Verlauf
+    .description = Wie viele Spalten das Panel behält, bevor die älteste herausscrollt
+spectrogram-hold-on-pause = Bei Pause halten
+    .description = Das stehende Bild bei Pause halten, statt Stille hineinzuscrollen
+spectrogram-labels = Beschriftungen
+    .description = Frequenzzahlen entlang der Skala, wo das Panel Platz dafür hat
+spectrogram-log-scale = Log-Skala
+    .description = Jeder Oktave denselben Platz geben, die musikalische Lesart, statt der gleichmäßigen Hz-Abstände eines Messgeräts
+spectrogram-low-bound = Untere Grenze
+    .description = Unteres Ende der Frequenzachse
+spectrogram-speed = Geschwindigkeit
+    .description = Wie schnell das Bild scrollt, in Spalten pro Sekunde
+
 ## Oscilloscope panel
 
 oscilloscope-channels = Kanäle
@@ -1997,10 +2085,19 @@ shader-panel-note-empty-body = Wähle ein Beispiel, oder zeige dem Panel eine .w
 shader-panel-note-empty-title = Kein Shader geladen.
 shader-panel-note-missing-body = Dieses Panel verweist auf einen Shader, den die Arbeitsfläche nicht hat, also gibt es nichts auszuführen.
 shader-panel-note-missing-title = { $name } ist nicht in den Shadern dieser Arbeitsfläche.
-shader-panel-note-off-body = Die Quelle und ihre Bindungen sind noch da, geparkt.
+shader-panel-note-off-body = Die Quelle und ihre Bindungen sind noch da, sie laufen nur nicht.
 shader-panel-note-off-title = Dieser Shader ist aus.
-shader-panel-note-pending-body = Er kam mit einem Layout oder einer Arbeitsfläche statt von diesem Rechner, also ist er geparkt, bis du ihn geprüft hast.
+shader-panel-note-pending-body = Er kam mit einem Layout oder einer Arbeitsfläche statt von diesem Rechner, also bleibt er aus, bis du ihn geprüft hast.
 shader-panel-note-pending-title = Dieser Shader wurde noch nicht gelesen.
+shader-pending-origin-file = Soll aus { $path } stammen
+shader-pending-origin-inline = Keine Datei dahinter; die Quelle kam mit dem Layout
+shader-pending-more-lines = { $count ->
+    [one] ... { $count } weitere Zeile
+   *[other] ... { $count } weitere Zeilen
+}
+shader-eject-name-taken = { $name } hat bereits { $count } nummerierte Kopien in den Shadern dieser Arbeitsfläche
+shader-eject-not-in-pool = { $name } ist nicht in den Shadern dieser Arbeitsfläche
+shader-eject-failed = Auswerfen: { $error }
 shader-panel-pick = Shader wählen
 shader-panel-run-shader = Shader ausführen
     .description = Ausgeschaltet bleiben Quelle, Lesezeichen und Bindungen an Ort und Stelle, und nichts wird gezeichnet
@@ -2062,13 +2159,13 @@ artist-grid-track-artist = Titel-Interpret
 wall-dim-always = Immer
     .description = Die Kacheln auch dann zurücknehmen, wenn nichts läuft; nur eine überfahrene Kachel zeigt sich ganz
 wall-dim-amount = Stärke
-    .description = Wie weit die anderen Kacheln verblassen; 100% blendet sie aus
+    .description = Wie weit die anderen Kacheln verblassen; 100 % blendet sie aus
 wall-gap = Abstand
     .description = Platz zwischen den Kacheln
 wall-name-alignment = Namensausrichtung
     .description = Die Beschriftungen unter ihren Kacheln ausrichten
 wall-rounding = Rundung
-    .description = Die Ecken jeder Kachel abrunden; 100% ist ein Kreis
+    .description = Die Ecken jeder Kachel abrunden; 100 % ist ein Kreis
 wall-section-picking = Auswählen
 wall-show-counts = Anzahlen anzeigen
     .description = Die Zahl der Alben und Titel unter jedem Namen
@@ -2146,16 +2243,17 @@ folder-tree-title = Baum
 art-always = Die Cover auch dann zurücknehmen, wenn nichts läuft; nur ein überfahrenes Cover zeigt sich ganz
 art-convert = Umwandeln...
 art-covers-section = Cover
+matcher-section-matches = Treffer
 art-desaturate = Jedes Cover außer dem des laufenden Albums in Graustufen bringen; beim Überfahren kehrt die Farbe eines Covers zurück
 art-dim-while-playing = Jedes Cover außer dem des laufenden Albums verblassen lassen; beim Überfahren leuchtet ein Cover wieder auf
 art-disc-style = CD-Stil
-    .description = Jedes Cover als CD oder als Etikett einer Schallplatte aufziehen
+    .description = Jedes Cover als CD oder als Etikett einer Schallplatte darstellen
 art-edit-tags = Tags bearbeiten...
 art-fill-panel = Panel füllen
     .description = Das zentrierte Cover allein an der Höhe des Panels bemessen (an der Breite, wenn vertikal); die seitlichen Cover laufen über die Kante hinaus, statt es zu schrumpfen
 art-follow-description = Das laufende Album zentrieren, sobald der Titel wechselt
 art-glow = Leuchten
-    .description = Die Akzentfarbe hinter dem zentrierten Cover sammeln; mit der Covertönung nimmt sie die Farbe des laufenden Albums an
+    .description = Die Akzentfarbe hinter dem zentrierten Cover sammeln; mit eingeschalteten Songfarben nimmt sie die Farbe des laufenden Albums an
 art-layout-section = Layout
 art-perspective = Perspektive
     .description = Die seitlichen Cover in echtem 3D drehen statt sie flach zu quetschen
@@ -2165,7 +2263,7 @@ art-resume-description = Das laufende Album wieder zentrieren, wenn du aufhörst
 art-shadows = Schatten
     .description = Ein weicher Schatten unter jedem Cover
 art-smooth-description = Zum Album gleiten statt zu springen
-art-title = Albumkarussell
+art-title = Album-Karussell
 art-vertical-layout = Vertikales Layout
     .description = Das Regal als Spalte stapeln, die hoch und runter scrollt, statt als Zeile
 
@@ -2202,7 +2300,10 @@ queue-title = Warteschlange
 queue-widget-always-modal = Immer als Dialog öffnen
     .description = Die Warteschlange jedes Mal in einem Dialog öffnen, statt zu einem schon offenen Warteschlangen-Panel zu springen
 queue-widget-clear-queue = Warteschlange leeren
-queue-widget-more = +{ $count } weitere
+queue-widget-more = { $count ->
+    [one] +{ $count } weiterer
+   *[other] +{ $count } weitere
+}
 queue-widget-open-on-click = Warteschlange bei Klick öffnen
     .description = Auf das Widget klicken, um zu einem offenen Warteschlangen-Panel zu springen, oder die Warteschlange in einem Fenster öffnen, wenn keines offen ist
 queue-widget-section-click = Klick
@@ -2227,7 +2328,7 @@ biography-not-found = Nichts gefunden für { $name }
 biography-plays-count = { $count } Wiedergaben
 biography-refresh = Aktualisieren
 biography-similar-artists = Ähnliche Interpreten
-    .description = Interpreten, die ähnliche Hörer mögen, am Ende
+    .description = Verwandte Interpreten nach Hördaten, ganz unten
 biography-similar-heading = Ähnliche Interpreten
 biography-stats = Zahlen
     .description = Hörer und Wiedergaben auf Last.fm, unter dem Namen
@@ -2267,7 +2368,7 @@ output-detail-label = Detail
 output-device-name = Gerätename
     .description = Das laufende Gerät in der Hauptzeile nennen; ausgeschaltet bleibt die Zeile bei Modus, Rate und Format
 output-file-rate = Dateirate
-    .description = Die eigene Rate der laufenden Datei bestätigen, wenn nichts sie umwandelt. Eine Umwandlung sagt es ohnehin, denn darum geht es bei der Warnung
+    .description = Die eigene Rate der laufenden Datei bestätigen, wenn nichts sie neu abtastet. Eine Neuabtastung wird so oder so gemeldet, denn genau darum geht es bei der Warnung
 output-mode-exclusive = Exklusiv
 output-mode-shared = Geteilt
 output-no-output = Keine Ausgabe
@@ -2279,10 +2380,10 @@ output-headline-device = { $mode } auf { $device }, { output-headline-numbers }
 output-fell-back-to-shared = Exklusiv ist auf Geteilt zurückgefallen: { $why }
 output-replaygain-levelling = ReplayGain gleicht diese Datei um { $db } dB aus
 output-replaygain-short = ReplayGain { $db } dB
-output-rate-resampled = Diese Datei hat { $rate } Hz und wird umgewandelt, um das Gerät zu erreichen
-output-rate-resampled-short = { $rate } Hz Datei umgewandelt
-output-rate-native = Diese Datei hat { $rate } Hz, es wird also nichts umgewandelt
-output-rate-native-short = { $rate } Hz Datei, keine Umwandlung
+output-rate-resampled = Diese Datei hat { $rate } Hz und wird neu abgetastet, um das Gerät zu erreichen
+output-rate-resampled-short = { $rate } Hz Datei neu abgetastet
+output-rate-native = Diese Datei hat { $rate } Hz, es wird also nichts neu abgetastet
+output-rate-native-short = { $rate } Hz Datei, keine Neuabtastung
 output-start-track-hint = Starte einen Titel, um das Format zu sehen, das das Gerät angenommen hat
 output-title = Ausgabe
 
@@ -2352,8 +2453,8 @@ playback-shuffle-on = Zufall an, Reihenfolge { $order }
 playback-stop-after-armed = Stopp nach diesem Titel, vorgemerkt
 playback-stop-after-tip = Stopp nach diesem Titel
 playback-stop-tip = Stoppen und den Titel entladen
-playback-volume-tip-muted = Ton an, { $percent }%. Rechtsklick für den Schieber
-playback-volume-tip-unmuted = Stumm, { $percent }%. Rechtsklick für den Schieber
+playback-volume-tip-muted = Ton an, { $percent } %. Rechtsklick für den Schieber
+playback-volume-tip-unmuted = Stumm, { $percent } %. Rechtsklick für den Schieber
 
 ## Track info panel
 track-info-color-output-chip = Ausgabe-Chip einfärben
@@ -2404,7 +2505,7 @@ seek-thickness = Dicke
 
 ## Volume panel
 volume-pieces = Teile
-    .description = Entlang der Leiste ziehen zum Umordnen; zwischen die Zeilen ziehen, oder x und Plus eines Chips nutzen, zum Aus- und Einblenden. Bei ausgeblendetem Prozentwert trägt ihn der Hinweis am Lautsprecher
+    .description = Entlang der Leiste ziehen zum Umordnen; zwischen die Zeilen ziehen, oder x und Plus eines Chips nutzen, zum Aus- und Einblenden. Bei ausgeblendetem Prozentwert zeigt ihn der Hinweis am Lautsprecher
 volume-readout = Anzeige
     .description = Den Pegel als Prozent zeigen oder als die Dezibel-Verstärkung, die er anlegt
 volume-readout-decibels = Dezibel
@@ -2434,6 +2535,7 @@ panel-title-particles = Partikel
 panel-title-playback = Wiedergabe
 panel-title-seek = Position
 panel-title-shader = Shader
+panel-title-spectrogram = Spektrogramm
 panel-title-spectrum = Spektrum
 panel-title-theme-toggle = Farbschema-Umschalter
 panel-title-track-info = Titelinfo
@@ -2443,6 +2545,8 @@ panel-title-waveform = Wellenform
 
 ## Everything else
 choice-both = Beides
+choice-dim = Abblenden
+choice-hide = Ausblenden
 composite-add-panel = Panel hinzufügen
 composite-host-settings = Einstellungen für { $host }
 composite-move-left = Nach links
@@ -2524,7 +2628,7 @@ tasks-rest-takes = , der Rest dauert { $estimate }
 tasks-measuring-takes = , das Messen dauert { $estimate }
 tasks-working-out-takes = , das Berechnen dauert { $estimate }
 tasks-time-left = , noch { $left }
-tasks-skipped-suffix = ({ $count } übersprungen)
+tasks-failed-suffix = ({ $count } fehlgeschlagen)
 tasks-file-suffix = - { $file }
 tasks-no-beat-suffix = ({ $count } ohne eindeutiges Tempo)
 tasks-estimate-at-workers = ({ tasks-estimate-at })
@@ -2533,7 +2637,7 @@ tasks-estimate-at-workers = ({ tasks-estimate-at })
 
 panel-title-art-view = Cover-Ansicht
 panel-title-artist-grid = Interpretenraster
-panel-title-genre-grid = Genreraster
+panel-title-genre-grid = Genre-Raster
 panel-title-biography = Biografie
 panel-title-cover-art = Cover
 panel-title-drag-anchor = Ziehanker
@@ -2564,7 +2668,7 @@ panel-title-window-controls = Fenstersteuerung
 ago-just-now = gerade eben
 ago-minutes = vor { $count } Min.
 ago-hours = vor { $count } Std.
-ago-days = vor { $count } T.
+ago-days = vor { $count } Tg.
 ago-weeks = vor { $count } Wo.
 ago-years = vor { $count } J.
 
@@ -2603,17 +2707,17 @@ settings-audio-output-experimental =  (experimentell)
 settings-mlmodels-description = { $summary }. { $dim } Werte pro Titel. { $licence }
 settings-mlmodels-on-disk = , { $size } auf der Festplatte
 settings-mlmodels-to-download = , { $size } zum Herunterladen
-model-summary-dsp-timbre-1 = Eingebaut, kein Download. Eine Zusammenfassung der Bandenergie, der spektralen Form und der Anschlagsrate jedes Titels. Grob neben einem trainierten Netz, aber es braucht nichts und läuft überall
+model-summary-dsp-timbre-1 = Eingebaut, kein Download. Eine Zusammenfassung der logarithmischen Bandenergie, der spektralen Form und der Onset-Rate jedes Titels. Grob neben einem trainierten Netz, aber es braucht nichts und läuft überall
 model-summary-panns-cnn10 = Ein auf AudioSet trainiertes Faltungsnetz, das erkennt, was ein Geräusch ist. Seine 512-Werte-Beschreibung eines Titels ist weit reicher als die eingebaute Skizze, um den Preis eines 24-MB-Downloads und eines langsameren Analysedurchgangs
 
 ## Shipped workspaces
 
 workspace-shipped-default = (Standard)
-workspace-shipped-default-blurb = Wie rox von Haus aus aussieht: durchscheinende Flächen über dem Desktop, kein Fensterrahmen, keine Coverfärbung. Der Ausgangspunkt, von dem jeder andere Look hier abweicht.
+workspace-shipped-default-blurb = Wie rox von Haus aus aussieht: durchscheinende Flächen über dem Desktop, kein Fensterrahmen, keine Songfarben. Der Ausgangspunkt, von dem jeder andere Look hier abweicht.
 workspace-shipped-catrox-blurb = Das foobar2000-Skin, mit dem alles anfing, neu gebaut: eine runde CD-Darstellung des Covers, die Metadatenfelder links untereinander und nach Album gruppierte Titel mit Bewertungspunkten.
 workspace-shipped-critters-blurb = Die ganze App als 1-Bit-Druck: ein geordnetes Dither über jeder Fläche, Töne, die mit dem Subbass zusammenbrechen, und eine Rauschwand, die sich mit dem Lied windet. Nach Critters for Sale.
-workspace-shipped-diffuse-blurb = Nur das laufende Album: Cover und Wiedergabekarte als eine Gruppe, die das Fenster füllt, transparente Flächen über dem Hintergrund, ohne Naht. Bibliothek, Warteschlange und Songtext warten in einer Schublade am rechten Rand und fahren über die Musik heraus, wenn der Griff berührt wird. Monochrom mit Absicht: die Cover tragen die Farbe.
+workspace-shipped-diffuse-blurb = Nur das laufende Album: Cover und Wiedergabekarte als eine Gruppe, die das Fenster füllt, transparente Flächen über dem Hintergrund, ohne Naht. Bibliothek, Warteschlange und Songtext warten in einer Schublade am rechten Rand und fahren über die Musik heraus, wenn der Griff überfahren wird. Monochrom, damit die Farbe von den Covern kommt.
 workspace-shipped-foobar-blurb = Das Layout, mit dem dieses ganze Projekt streitet. Deckende Panels, Filterspalten für Interpret und Album, eine dichte Titeltabelle und die Menüleiste genau da, wo sie immer war.
 workspace-shipped-llama-winamp-blurb = Winamp so, wie du es in Erinnerung hast, nicht so, wie es war. Tahoma, dunkel, kein Rahmen, ein gepunktetes Spektrum über der Breite und ein Shade-Modus im Mini-Layout.
-workspace-shipped-metro-blurb = Flache Panels und bequeme Zeilen in Segoe UI, mit eingeschalteter Coverfärbung, sodass die ganze Palette dem laufenden Cover folgt.
+workspace-shipped-metro-blurb = Flache Panels und bequeme Zeilen in Segoe UI, mit eingeschalteten Songfarben, sodass die ganze Palette dem laufenden Cover folgt.
 workspace-shipped-phosphor-blurb = Alles dicktengleich. Consolas, grün auf schwarz, kein Cover in der Schnellwiedergabe: ein Terminal, das zufällig Musik spielt.

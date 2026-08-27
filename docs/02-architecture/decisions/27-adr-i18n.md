@@ -2,28 +2,28 @@
 
 **Status:** Decided
 
-Decision: interface strings live in Fluent (.ftl) files, one per locale under
+Decision: interface strings are stored in Fluent (.ftl) files, one per locale under
 crates/rox-i18n/locales, compiled into the binary and resolved at render time
-through a `t!` macro that answers in SharedString. en-CA is the source locale:
+through a `t!` macro that returns a SharedString. en-CA is the source locale:
 every key exists there first, the app's existing spelling ("favourites") is
 already Canadian, and every resolution chain ends there so a hole in a
 translation shows English rather than a bare key. The active locale is a
 process-global behind one setter, the theme system's exact shape: settings
-carry `language: Option<String>` (None follows the OS via sys-locale plus
+hold `language: Option<String>` (None follows the OS via sys-locale plus
 langneg negotiation), `set_language` swaps the static and refreshes every
 window, and startup seeds it beside `set_theme`. Numbers and dates never go
 through Fluent's own stringification: ICU4X (compiled data, so a locale is
 data not code) renders them, both through explicit helpers
-(`format::format_int`, `format_date`, ...) and through a formatter hook every
-bundle carries, so a `{ $count }` placeable gets locale grouping while plural
+(`format::format_int`, `format_date`, ...) and through a formatter hook installed
+on every bundle, so a `{ $count }` placeable gets locale grouping while plural
 selection still sees the raw value. Bidi isolation marks are off until an RTL
 locale forces the question. Shipped locales are en-CA, de, fr, it; a locale is
 one row in the `LOCALES` registry plus one ftl file, and a parity test fails
 the build when any locale's key inventory drifts from the source. APIs that
 demand `&'static str` (the settings row DSL, `panel::choices`) bridge through
 `t_static`, a per-locale-and-key memoized leak; each use marks an API that
-wants widening to SharedString, and the widened twin (`choices_shared`) is
-where new translated call sites land.
+needs widening to SharedString, and the widened twin (`choices_shared`) is
+where new translated call sites go.
 
 Alternatives: rust-i18n or gettext instead of Fluent; fluent-templates'
 static_loader instead of hand-held bundles; formatting numbers inside Fluent;
@@ -48,8 +48,8 @@ catch up on their next notify; live switching is a settings-window act, so
 that lag is invisible in practice. t_static's leak is bounded by keys times
 locales visited, kilobytes against the alternative of widening every
 `&'static str` signature in one sweep; the widening still happens, page by
-page as extraction reaches it. What this decision does not cover, recorded
+page as extraction reaches it. What this decision doesn't cover, recorded
 as open: RTL (isolation marks and gpui's bidi story), locale-aware library
 collation (icu_collator, a different sort for the same shelf), and CJK font
-fallback plus IME, which ride gpui's text system and want checking against a
-real zh or ja locale when one lands.
+fallback plus IME, which depend on gpui's text system and still need checking
+now that zh-Hans and ja ship.

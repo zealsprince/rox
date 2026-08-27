@@ -3,16 +3,16 @@
 //! Three windows edit the same kind of list and used to each draw it their
 //! own way: a panel's Shader page, the Shader panel's Bindings page, and
 //! Appearance > Shaders in the app settings. They differ only in where the
-//! routes live and how a write lands, so that difference is the whole
-//! interface here: [`RouteEditor`] reads a borrowed slice and writes back
-//! through one [`RouteMutate`] closure. No trait, on purpose - the settings
-//! window can't satisfy a route-host trait without mirroring state it has
-//! no business owning.
+//! routes are stored and how a write is applied, so that difference is the
+//! whole interface here: [`RouteEditor`] reads a borrowed slice and writes
+//! back through one [`RouteMutate`] closure. No trait: the settings window
+//! can't satisfy a route-host trait without duplicating state it has no
+//! business owning.
 //!
-//! The rows fold. A collapsed one says which slot it fills and what it
-//! rides, with the switch and the delete at its edge; opening one brings
-//! out the slot and signal dropdowns and the span. The fold lives in
-//! [`RouteEditState`] on the host window, never in config: which row you
+//! The rows fold. A collapsed one shows which slot it fills and which
+//! signal drives it, with the switch and the delete at its edge; opening
+//! one brings out the slot and signal dropdowns and the span. The fold is
+//! stored in [`RouteEditState`] on the host window, never in config: which row you
 //! left open is where you are, not what you set.
 
 use std::collections::HashSet;
@@ -33,7 +33,7 @@ use super::{gate_mark, meter};
 
 /// How a host takes one edit to its route list. The editor never touches
 /// the routes it renders: it hands the host a mutation and the host decides
-/// what that means - a panel config write, a field on the panel itself, or
+/// what that means: a panel config write, a field on the panel itself, or
 /// the settings file plus the live driver.
 ///
 /// A host's implementation is expected to notify; the editor's own
@@ -60,7 +60,7 @@ impl RouteEditState {
         self.open.retain(|index| *index < count);
     }
 
-    /// Open one row alone, which is what a freshly added route wants: it
+    /// Open one row alone, the right move for a freshly added route: it
     /// arrives with nothing set, and every other row is something already
     /// settled.
     fn expand_only(&mut self, index: usize) {
@@ -69,7 +69,7 @@ impl RouteEditState {
     }
 
     /// Close over a deleted row: everything below it shifts up a place, so
-    /// the fold and the sliders follow rather than landing on a neighbour.
+    /// the fold and the sliders follow rather than ending up on a neighbour.
     fn removed(&mut self, index: usize) {
         self.open = self
             .open
@@ -94,7 +94,7 @@ impl RouteEditState {
 }
 
 /// What the field shows and whether that's a prompt rather than a pick: a
-/// signal the pool no longer carries reads as an invitation, drawn muted
+/// signal the pool no longer has reads as an invitation, drawn muted
 /// the way an empty input's placeholder is.
 fn pick_label(route: &Route, pool: &[Signal]) -> (String, bool) {
     match pool.iter().find(|signal| signal.id == route.signal) {
@@ -103,8 +103,8 @@ fn pick_label(route: &Route, pool: &[Signal]) -> (String, bool) {
     }
 }
 
-/// What a folded row says it rides: the signal's name, or that it rides
-/// nothing yet.
+/// The folded row's signal summary: the signal's name, or a note that
+/// nothing is routed yet.
 fn ride_summary(route: &Route, pool: &[Signal]) -> String {
     match pool.iter().find(|signal| signal.id == route.signal) {
         Some(signal) => signal.label(),
@@ -113,11 +113,11 @@ fn ride_summary(route: &Route, pool: &[Signal]) -> String {
 }
 
 /// The lowest slot no route fills yet, or None with all sixteen taken.
-/// What "Add Route" lands on, so adding four in a row fills 0 through 3
+/// What "Add Route" picks, so adding four in a row fills 0 through 3
 /// rather than stacking them all on the same slot.
 ///
-/// Duplicates are still legal - the stepper will walk a route onto a slot
-/// another already fills, and the last one resolved wins - this is only
+/// Duplicates are still legal: the stepper will move a route onto a slot
+/// another already fills, and the last one resolved wins. This is only
 /// where a fresh route starts.
 pub fn next_free_slot(routes: &[Route]) -> Option<usize> {
     let taken: Vec<usize> = routes
@@ -131,7 +131,7 @@ pub fn next_free_slot(routes: &[Route]) -> Option<usize> {
 ///
 /// `id` scopes the element ids the rows build, so two editors in one window
 /// never share a dropdown's state. `labels` is the shader's own slot names
-/// where it declares them (`// @slot 0: bass`); a host with nothing to say
+/// where it declares them (`// @slot 0: bass`); a host with no names
 /// passes an empty slice and the slots read by number.
 pub struct RouteEditor<'a, P: 'static> {
     pub id: &'static str,
@@ -147,12 +147,12 @@ pub struct RouteEditor<'a, P: 'static> {
 impl<P: 'static> RouteEditor<'_, P> {
     /// The Add Route button, for the header of whatever section hosts the
     /// list. With every slot filled it dims and takes no press; the list
-    /// says why underneath.
+    /// explains why underneath.
     pub fn add_button(&self, cx: &mut Context<P>) -> Div {
         let full = next_free_slot(self.routes).is_none();
-        // A fresh route rides whatever the pool already carries; with an
-        // empty pool it arrives asking for a signal, and the row points at
-        // the window where one gets made.
+        // A fresh route takes whatever signal the pool already has; with an
+        // empty pool it arrives with none set, and the row points at the
+        // window where one gets made.
         let signal = self.hub.pool().first().map(|signal| signal.id);
         let mutate = self.mutate.clone();
         let ui_mut = self.ui_mut;
@@ -382,8 +382,8 @@ impl<P: 'static> RouteEditor<'_, P> {
     }
 
     /// The signal picker: a select field over the shared pool. An empty
-    /// pool gets no dead control - the row says a signal has to exist
-    /// first and opens the window where they're made.
+    /// pool gets no dead control; the row explains that a signal has to
+    /// exist first and opens the window where they're made.
     fn signal_row(&self, index: usize, pool: &[Signal], cx: &mut Context<P>) -> Div {
         let Some(route) = self.routes.get(index) else {
             return div();
@@ -579,8 +579,8 @@ mod tests {
         assert_eq!(pick_label(&riding, &pool), ("Kick".to_string(), false));
         assert_eq!(ride_summary(&riding, &pool), "Kick");
 
-        // A signal that left the pool prompts rather than lying about a
-        // name it no longer has.
+        // A signal that left the pool prompts rather than showing a name
+        // it no longer has.
         let mut orphan = route("slot1");
         orphan.signal = 99;
         assert_eq!(pick_label(&orphan, &pool), ("Pick a signal".into(), true));

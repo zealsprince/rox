@@ -11,18 +11,18 @@ use gpui::{App, Global, WeakEntity};
 
 use rox_panels::lyrics::LyricsPanel;
 
-/// Every live lyrics panel. Lyrics do not ride the library projection, so
-/// a sheet written by the editor or the matcher has no other way to reach
-/// the panels showing that track - including the duplicates in other tabs
-/// and windows, which is why this is a registry and not the opening
-/// panel's handle. Weak: a closed panel drops out on the next sweep.
+/// Every live lyrics panel. Lyrics aren't part of the library projection,
+/// so a sheet written by the editor or the matcher has no other way to
+/// reach the panels showing that track, duplicates in other tabs and
+/// windows included, which is why this is a registry rather than the
+/// opening panel's handle. Weak: a closed panel drops out on the next sweep.
 #[derive(Default)]
 struct Watchers(Vec<WeakEntity<LyricsPanel>>);
 
 impl Global for Watchers {}
 
 /// Register a panel to hear saves, sweeping the handles that have died
-/// since the last call so a long session does not grow the list.
+/// since the last call so a long session doesn't grow the list.
 pub fn watch(panel: WeakEntity<LyricsPanel>, cx: &mut App) {
     let watchers = cx.default_global::<Watchers>();
     watchers.0.retain(|w| w.upgrade().is_some());
@@ -36,7 +36,7 @@ pub fn watch(panel: WeakEntity<LyricsPanel>, cx: &mut App) {
     watchers.0.push(panel);
 }
 
-/// A sheet for `path` landed on disk: every live panel drops its cache for
+/// A sheet for `path` was written to disk: every live panel drops its cache for
 /// that track and re-reads on the next render.
 pub fn saved(path: &Path, cx: &mut App) {
     let watchers = std::mem::take(&mut cx.default_global::<Watchers>().0);

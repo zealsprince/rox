@@ -1,9 +1,9 @@
 //! The group panel: a run of panels sharing one dock slot as a resizable
-//! split, so several can ride a single tab. The dock's own splits can't
-//! live inside a tab, so the group hosts its children itself through
+//! split, so several can fit in a single tab. The dock's own splits can't
+//! go inside a tab, so the group hosts its children itself through
 //! [`crate::composite`]; the divider drags are the group's own, not the
 //! dock's resize machinery. A fresh group opens as a pair, the menu grows
-//! it a slot at a time, and there is no cap.
+//! it a slot at a time, and there's no cap.
 
 use gpui::{
     canvas, div, prelude::*, px, relative, App, Axis, Context, Div, EventEmitter, FocusHandle,
@@ -25,7 +25,7 @@ use rox_panel_api::panel_settings;
 /// The divider's hit strip, wide enough to grab without reading as a gap.
 const DIVIDER_W: f32 = 5.0;
 
-/// The closest a seam can ride to its neighbor or the edge; keeps every
+/// The closest a seam can get to its neighbor or the edge; keeps every
 /// slot grabbable.
 const SHARE_MIN: f32 = 0.05;
 
@@ -41,7 +41,7 @@ pub struct GroupConfig {
     /// Stacked (top over bottom) instead of side by side.
     pub stacked: bool,
     /// The first seam's position, the whole story back when a group was a
-    /// fixed pair. Dumps from then carry only this, and it shadows
+    /// fixed pair. Dumps from then have only this, and it shadows
     /// `dividers[0]` on the way out so those builds still read ours.
     #[serde(default = "default_ratio")]
     pub ratio: f32,
@@ -92,7 +92,7 @@ pub struct GroupPanel {
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Whether the hosted children have been told which tab panel this
-    /// group sits under; see [`composite::introduce_slots`].
+    /// group is under; see [`composite::introduce_slots`].
     introduced: bool,
 }
 
@@ -153,7 +153,7 @@ impl GroupPanel {
         cx.notify();
     }
 
-    /// Keep the pair era's `ratio` riding the first seam, so an older
+    /// Keep the pair era's `ratio` in sync with the first seam, so an older
     /// build reading this dump still splits where it was left.
     fn sync_ratio(&mut self) {
         if let Some(first) = self.config.dividers.first() {
@@ -198,8 +198,8 @@ impl GroupPanel {
     }
 
     /// Pin seam `ix` to `fraction`, held off its neighbors so no slot
-    /// pinches shut. Crowd enough slots in and the seams simply have no
-    /// room left to move.
+    /// pinches shut. Crowd enough slots in and the seams have no room left
+    /// to move.
     fn drag_seam(&mut self, ix: usize, fraction: f32, cx: &mut Context<Self>) {
         let seams = self.config.dividers.len();
         if ix >= seams {
@@ -336,7 +336,7 @@ impl GroupPanel {
     }
 
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
-        // Let the children reach this host from their own menus; the
+        // Let the children open this host from their own menus; the
         // dock never sees a hosted panel, so nothing else offers it.
         let group_title = rox_i18n::t!("group-panel-title");
         composite::report_hosted(
@@ -351,7 +351,7 @@ impl GroupPanel {
 
         // Every slot sizes off its share as a flex basis rather than hard
         // shares of the span: a slot held to a size by its own settings
-        // then gives the space it refuses back to its neighbors instead
+        // then gives the space it can't use back to its neighbors instead
         // of leaving a gap. A hosted child's own size cap applies along
         // the split, so a card of fixed-height panels reads at those
         // heights instead of stretching each to its share.
@@ -382,9 +382,8 @@ impl GroupPanel {
         // The seams draw at the panel's own frame border width, so a
         // bordered group divides in the same stroke (and the same border
         // role color, which the panel's theme can recolor). A border
-        // that differs side to side lends its widest, since a divider
-        // is one line and has to pick. Borderless groups keep the 1px
-        // hairline.
+        // that differs side to side uses its widest side, since a divider
+        // is one line. Borderless groups keep the 1px hairline.
         let split = self
             .config
             .chrome
@@ -398,9 +397,9 @@ impl GroupPanel {
         let live = !rox_dock::resize_locked();
 
         let count = self.slots.len();
-        // Centered, for the run that refuses space: slots that fill make
-        // this a no-op, but a group of capped panels clusters in the
-        // middle of its span instead of packing toward the start.
+        // Centered, for the run that can't use all its space: slots that
+        // fill make this a no-op, but a group of capped panels clusters in
+        // the middle of its span instead of packing toward the start.
         let mut row = div()
             .size_full()
             .flex()
@@ -624,7 +623,7 @@ impl Panel for GroupPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The toggle names the arrangement a click lands on, not the
+        // The toggle names the arrangement a click switches to, not the
         // current one.
         let (flip_label, flip_icon) = if self.config.stacked {
             (

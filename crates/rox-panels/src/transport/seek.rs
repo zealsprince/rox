@@ -23,7 +23,7 @@ use crate::settings::ui as settings_ui;
 use super::{default_true, transport_panel};
 
 /// One piece of the seek row, the arrange editor's unit. The config's
-/// list carries the shown ones in display order.
+/// list holds the shown ones in display order.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SeekItem {
@@ -37,7 +37,7 @@ pub enum SeekItem {
     /// classic "elapsed, total" read without giving up the countdown.
     Duration,
     /// A flexible gap that pushes the pieces around it apart; a row
-    /// holds as many as the layout wants.
+    /// holds as many as the layout needs.
     Spacer,
     /// A spacer that draws a hairline in the border color across its gap.
     Divider,
@@ -179,7 +179,7 @@ impl From<SeekConfigDump> for SeekConfig {
     fn from(dump: SeekConfigDump) -> Self {
         let items = match dump.items {
             // Deduped row by row, the breaks put back after: the catalog
-            // doesn't carry the break (it draws as the editor's row
+            // doesn't include the break (it draws as the editor's row
             // boundary, not a chip), and each row may hold its own copy
             // of a piece.
             Some(items) => items
@@ -206,7 +206,7 @@ impl From<SeekConfigDump> for SeekConfig {
     }
 }
 
-/// The seek strip: the waveform minus the peaks - a track line with the
+/// The seek strip: the waveform minus the peaks, a track line with the
 /// played side in the accent and a playhead, click or drag to seek, the
 /// elapsed and remaining clocks at its ends. Position and seek come off
 /// the player the same way the waveform's do.
@@ -222,10 +222,10 @@ pub struct SeekStripPanel {
     playhead_max_scrub: ScrubState,
     value_edit: ValueEdit,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// The row as it stood when the quick Show Timings toggle last hid the
-    /// clocks, so turning them back on returns them to where they sat
+    /// clocks, so turning them back on returns them to where they were
     /// rather than their catalog rank. Held on the panel and not the config
     /// because it's the undo for one toggle, not a layout anybody saves.
     timings_stash: Option<Vec<SeekItem>>,
@@ -234,8 +234,8 @@ pub struct SeekStripPanel {
 
 impl SeekStripPanel {
     pub fn new(state: AppState, config: SeekConfig, cx: &mut Context<Self>) -> Self {
-        // The clock and the playhead move every tick, so this one wants the
-        // raw per-pump notify, not the gated observe the other panels ride.
+        // The clock and the playhead move every tick, so this one uses the
+        // raw per-pump notify, not the gated observe the other panels use.
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         SeekStripPanel {
             state,
@@ -262,7 +262,7 @@ impl SeekStripPanel {
             .any(|i| matches!(i, SeekItem::Elapsed | SeekItem::Ending))
     }
 
-    /// Both clocks on or off in one move, the row they sat in kept across
+    /// Both clocks on or off in one move, the row they were in kept across
     /// the round trip.
     fn toggle_timings(&mut self) {
         self.config.items =
@@ -485,7 +485,7 @@ impl From<&SeekConfig> for StripLook {
 }
 
 /// The track line centered in whatever height the panel gets: unplayed side
-/// dim, played side solid, the waveform's playhead on top. `look` carries
+/// dim, played side solid, the waveform's playhead on top. `look` holds
 /// the config's line and playhead knobs, the radius capped at a pill.
 /// `marker` draws the scrobble threshold as a thin full-height line under
 /// the playhead.
@@ -588,8 +588,8 @@ fn editor_rows(items: &[SeekItem]) -> Vec<Vec<SeekItem>> {
         .collect()
 }
 
-/// Tabular digits for the clock, built once - [`clock`] runs twice per
-/// pump tick while playing, so the feature list should not reallocate
+/// Tabular digits for the clock, built once: [`clock`] runs twice per
+/// pump tick while playing, so the feature list shouldn't reallocate
 /// every call.
 static TNUM: LazyLock<FontFeatures> =
     LazyLock::new(|| FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
@@ -619,7 +619,7 @@ impl SeekStripPanel {
         // No frame polling: the raw observe in `new` re-renders the strip
         // on every pump tick while audio moves, which is the rate the clock
         // and playhead actually change at. A per-frame request on top only
-        // redraws identical pixels - and kept the whole window repainting
+        // redraws identical pixels. It also kept the whole window repainting
         // at refresh rate through a paused session. Scrub drags notify on
         // their own through the mouse handlers.
 
@@ -640,12 +640,12 @@ impl SeekStripPanel {
             .filter(|d| *d > 0.0)
             .map(|d| (now.position_secs / d) as f32)
             .unwrap_or(0.0);
-        // The marker only shows where a scrobble could actually land: the
+        // The marker only shows where a scrobble could actually happen: the
         // toggle on and the scrobbler armed.
         let marker = (self.config.scrobble_marker)
             .then(|| self.state.scrobbler.read(cx).marker())
             .flatten();
-        // The seek click lives on the track alone so the clocks beside it
+        // The seek click is on the track alone so the clocks beside it
         // stay inert.
         // The seek preview shows once the duration resolves; before that a
         // fraction maps to nothing.
@@ -788,7 +788,7 @@ mod tests {
         assert!(config.items == vec![SeekItem::Strip]);
     }
 
-    /// A layout that carries the list uses it as-is, duplicates dropped,
+    /// A layout with the list uses it as-is, duplicates dropped,
     /// and round-trips through a save.
     #[test]
     fn item_lists_read_ordered_and_deduped() {
@@ -796,8 +796,8 @@ mod tests {
             serde_json::from_str(r#"{"items": ["strip", "elapsed", "strip"]}"#).unwrap();
         assert!(config.items == vec![SeekItem::Strip, SeekItem::Elapsed]);
 
-        // Uniqueness is per row: a copy on the other side of a break
-        // survives the load, only same-row repeats collapse.
+        // Uniqueness is per row: a copy on the other side of a break is
+        // kept through the load, only same-row repeats collapse.
         let config: SeekConfig =
             serde_json::from_str(r#"{"items": ["elapsed", "break", "elapsed"]}"#).unwrap();
         assert!(config.items == vec![SeekItem::Elapsed, SeekItem::Break, SeekItem::Elapsed]);

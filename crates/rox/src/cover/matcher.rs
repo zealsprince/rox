@@ -40,7 +40,7 @@ const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(35
 /// The open match windows, keyed by the opening editor plus the query, so
 /// the same editor asking again focuses its window. Apply fills the front
 /// slot of the editor that opened it, so two editors on the same album
-/// need their own windows, not a shared one.
+/// each need their own window.
 #[derive(Default)]
 struct OpenMatchers(Vec<((EntityId, String), WindowHandle<Root>)>);
 
@@ -81,8 +81,8 @@ pub fn open(
     );
 }
 
-/// A candidate and its preview once the thumbnail lands. None while the
-/// preview is still downloading.
+/// A candidate and its preview once the thumbnail downloads. None while
+/// the preview is still coming in.
 struct Loaded {
     candidate: ArtCandidate,
     thumb: Option<Arc<Image>>,
@@ -165,8 +165,8 @@ impl CoverMatch {
         this
     }
 
-    /// The query as the boxes stand: the album is the art subject, so it
-    /// rides the query's album field with the title left empty.
+    /// The query as the boxes stand: the art subject is the album, so it
+    /// goes in the query's album field and the title is left empty.
     fn query(&self, cx: &App) -> TrackQuery {
         TrackQuery {
             artist: self.artist_input.read(cx).value().trim().to_string(),
@@ -222,7 +222,7 @@ impl CoverMatch {
     }
 
     /// Fetch each result's preview off the UI thread and swap it in when it
-    /// lands. Each load checks the tile still holds the same URL, so a
+    /// arrives. Each load checks the tile still holds the same URL, so a
     /// newer search's grid never takes a stale thumbnail.
     fn load_thumbs(&self, cx: &mut Context<Self>) {
         let Phase::Ready(loaded) = &self.phase else {
@@ -321,7 +321,7 @@ impl CoverMatch {
     /// The editable query: artist and album, the two fields that steer the
     /// art search.
     fn search_fields(&self) -> Div {
-        let field = |label: &'static str, input: &Entity<InputState>| {
+        let field = |label: SharedString, input: &Entity<InputState>| {
             div()
                 .flex_1()
                 .min_w_0()
@@ -340,8 +340,8 @@ impl CoverMatch {
             .flex()
             .flex_row()
             .gap(tokens::SPACE_SM)
-            .child(field("Artist", &self.artist_input))
-            .child(field("Album", &self.album_input))
+            .child(field(rox_i18n::t!("head-piece-artist"), &self.artist_input))
+            .child(field(rox_i18n::t!("head-piece-album"), &self.album_input))
     }
 
     /// The results as a wrapping grid of preview tiles, biggest first, the
@@ -425,7 +425,7 @@ impl CoverMatch {
 
     /// What stands between the window and a cover, when something does.
     /// The clauses run in the order a search clears them, so the footer
-    /// names the one step that is actually next, and Set Cover is live
+    /// names the one step that's actually next, and Set Cover is live
     /// exactly when nothing is left.
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref l) if !l.is_empty()) {
@@ -445,7 +445,7 @@ impl CoverMatch {
 
     /// The window's actions, and what's in their way. No enter shortcut
     /// here: the query boxes own the key as "search now", and a window
-    /// binding would ride along on the same press and set a cover off
+    /// binding would fire on the same press and set a cover off
     /// results the search is about to replace.
     fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
         let blocker = self.blocker();
@@ -547,12 +547,12 @@ impl Render for CoverMatch {
                     .bg(palette::bg_elevated())
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
-                    .child(section("Search", None, self.search_fields()))
+                    .child(section(rox_i18n::t!("query-search"), None, self.search_fields()))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
                     })
                     .child(
-                        section("Covers", count, div().flex_1().min_h_0().child(content))
+                        section(rox_i18n::t!("art-covers-section"), count, div().flex_1().min_h_0().child(content))
                             .flex_1()
                             .min_h_0(),
                     ),

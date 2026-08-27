@@ -9,7 +9,7 @@
 //! same bake extracts the derivation seed for the palette's tinted mode;
 //! with several windows playing different tracks, the backdrop is per
 //! window but the seed is process-global and follows the most recent bake
-//! to land.
+//! to finish.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,7 +29,7 @@ use crate::player::Player;
 /// The shade the app lays over every backdrop layer: the backdrop
 /// shader's element, built by the layer above this crate, which owns the
 /// shader machinery this crate can't see. Registered once at startup, and
-/// asked per window so the app decides which windows wear it; None paints
+/// asked per window so the app decides which windows show it; None paints
 /// the bake bare, which is also every window before the app wires it.
 type ShadeFn = dyn Fn(&Window, &App) -> Option<AnyElement> + Send + Sync;
 
@@ -59,8 +59,8 @@ pub fn set_gate(gate: impl Fn(&Window, &App) -> bool + Send + Sync + 'static) {
 /// the upscale to window size does the rest of the softening.
 const BAKE_SIZE: u32 = 128;
 
-/// The gaussian sigma at bake size, a heavy blur so no cover detail
-/// survives into the backdrop.
+/// The gaussian sigma at bake size, a heavy blur so no cover detail is
+/// left in the backdrop.
 const BLUR_SIGMA: f32 = 8.0;
 
 /// The playing track's art resolved once per track change and baked into
@@ -168,7 +168,7 @@ fn bake(bytes: &[u8]) -> Option<(Arc<RenderImage>, palette::Seed)> {
     let small = art.thumbnail(BAKE_SIZE, BAKE_SIZE).into_rgba8();
     let seed = extract_seed(&small);
     let mut baked = image::imageops::blur(&small, BLUR_SIGMA);
-    // The renderer wants BGRA, the same swizzle gpui's own decode does.
+    // The renderer needs BGRA, the same swizzle gpui's own decode does.
     for pixel in baked.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
@@ -178,9 +178,9 @@ fn bake(bytes: &[u8]) -> Option<(Arc<RenderImage>, palette::Seed)> {
 /// The hue bands the seed vote runs over; 15 degrees each, wide enough
 /// that one album color doesn't split across a boundary.
 const SEED_BANDS: usize = 24;
-/// Oklch chroma below this is gray noise: those pixels sit the vote out.
+/// Oklch chroma below this is gray noise, so those pixels are skipped.
 const SEED_MIN_CHROMA: f32 = 0.03;
-/// How many bands a runner-up must sit from the winner before it reads
+/// How many bands a runner-up must be from the winner before it reads
 /// as a second color rather than a shade of the first: 60 degrees.
 const SEED_MIN_SEPARATION: usize = 4;
 
@@ -191,8 +191,8 @@ const SEED_MIN_SEPARATION: usize = 4;
 /// dark cover with one vivid element seeds that element; when too little
 /// of the cover is colorful to trust, the colors stay None rather than
 /// amplifying noise. The lightness mean runs over every pixel, gray mass
-/// included - it is the bright-album signal, and the white a colorful
-/// cover sits on is exactly what it must see.
+/// included: it's the bright-album signal, and the white behind a
+/// colorful cover is exactly what it has to see.
 fn extract_seed(small: &RgbaImage) -> palette::Seed {
     let mut weight = [0.0f32; SEED_BANDS];
     let mut lightness = [0.0f32; SEED_BANDS];
@@ -221,7 +221,7 @@ fn extract_seed(small: &RgbaImage) -> palette::Seed {
         cos[band] += h.cos() * c;
     }
     let pixels = (small.width() * small.height()).max(1) as f32;
-    // The floor: a band only counts if it carries at least the weight of
+    // The floor: a band only counts if it has at least the weight of
     // 2% of the cover voting at minimum chroma.
     let floor = pixels * 0.02 * SEED_MIN_CHROMA;
     let band_color = |band: usize| {
@@ -286,7 +286,7 @@ impl Default for WindowBackdrop {
 const OVERSCAN_TEXELS: f32 = 2.0;
 
 /// One bake filling the window at a weight, cover-fit; the bilinear
-/// upscale is what multiplies the baked blur. `overscan` is the atlas-bleed
+/// upscale multiplies the baked blur. `overscan` is the atlas-bleed
 /// margin, see [`OVERSCAN_TEXELS`].
 fn sheet(image: &Arc<RenderImage>, opacity: f32, overscan: Pixels) -> AnyElement {
     div()
@@ -337,10 +337,9 @@ impl WindowBackdrop {
     ) -> Option<AnyElement> {
         // The song-theming switch gates the paint, not the bake: the bake
         // keeps following the player, so flipping the switch mid-track
-        // takes effect right away, riding the normal cross-fade in and out.
-        // A gated-off window reads as having no bake, so flipping the
-        // switch rides the normal cross-fade in and out and the retired
-        // textures leave the atlas the usual way.
+        // takes effect right away, through the normal cross-fade in and
+        // out. A gated-off window reads as having no bake, so it fades the
+        // same way and the retired textures leave the atlas the usual way.
         let allowed = GATE
             .read()
             .unwrap()
@@ -360,9 +359,9 @@ impl WindowBackdrop {
         } else if let Some(old) = self.from.take() {
             let _ = window.drop_image(old);
         }
-        // The registered shade rides inside the layer, over the wash, so
-        // every window that paints a bake wears it the same way and
-        // everything drawn after still lands over the result. It doesn't
+        // The registered shade is drawn inside the layer, over the wash, so
+        // every window that paints a bake gets it the same way and
+        // everything drawn after still goes over the result. It doesn't
         // need the bake: with song theming off, or nothing playing, the
         // shade runs over the bare root and is the whole layer.
         let shade = SHADE
@@ -376,7 +375,7 @@ impl WindowBackdrop {
         }
         // Smoothstepped so the fade eases out instead of stopping dead.
         let u = u * u * (3.0 - 2.0 * u);
-        // Clipping is what makes the overscan work, so the sheets can only
+        // Clipping makes the overscan work, so the sheets can only
         // ever be children of an overflow_hidden root.
         let mut root = div().absolute().inset_0().overflow_hidden();
         let overscan = overscan(window);
@@ -415,7 +414,7 @@ mod tests {
     }
 
     /// The Polychrome case: a mostly white cover with a red mass and a
-    /// smaller blue one must read bright and carry both colors, red
+    /// smaller blue one must read bright and seed both colors, red
     /// first.
     #[test]
     fn bright_cover_seeds_both_accents() {

@@ -5,7 +5,8 @@
 //! the selected sheet on the right. Apply saves the picked candidate
 //! through the same lyrics save the editor uses, honoring the Providers
 //! page's tag/sidecar/store destination, then tells every lyrics panel to
-//! re-read and closes. Nothing is written until Apply; closing walks away clean.
+//! re-read and closes. Nothing is written until Apply; closing leaves the
+//! file untouched.
 //!
 //! One window per track path, registered like the cover editor, so asking
 //! again focuses the open one instead of stacking a twin.
@@ -44,7 +45,7 @@ actions!(lyrics_match, [Apply]);
 /// The key context the window's own binding scopes to.
 const CONTEXT: &str = "LyricsMatch";
 
-/// The window's apply binding; call once at startup. It sits on the
+/// The window's apply binding; call once at startup. It's on the
 /// window root, so enter applies wherever focus is. Nothing here takes
 /// the key first: the window has no fields of its own, only a list to
 /// click through.
@@ -53,7 +54,7 @@ pub fn init(cx: &mut App) {
 }
 
 /// The open match windows, keyed by track path, so a second request for
-/// the same track focuses the first - the cover editor's registry shape.
+/// the same track focuses the first. The cover editor's registry shape.
 #[derive(Default)]
 struct OpenMatchers(Vec<(PathBuf, WindowHandle<Root>)>);
 
@@ -97,7 +98,7 @@ struct LyricsMatch {
     /// The highlighted candidate, an index into the ready list; the search
     /// pre-selects the top score.
     selected: Option<usize>,
-    /// A save is in flight; the buttons hold still until it lands.
+    /// A save is in flight; the buttons hold still until it finishes.
     saving: bool,
     /// A failed save, shown inline over the buttons.
     error: Option<SharedString>,
@@ -154,7 +155,7 @@ impl LyricsMatch {
     }
 
     /// Run the providers' search off the UI thread and fill the list when
-    /// it lands, the top score pre-selected.
+    /// it returns, the top score pre-selected.
     fn search(&self, query: TrackQuery, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -383,7 +384,7 @@ impl LyricsMatch {
 
     /// What stands between the window and a save, when something does.
     /// The clauses run in the order a search clears them, so the footer
-    /// names the one step that is actually next, and Apply is live
+    /// names the one step that's actually next, and Apply is live
     /// exactly when nothing is left.
     fn blocker(&self) -> Option<SharedString> {
         if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
@@ -516,12 +517,12 @@ impl Render for LyricsMatch {
                     .bg(palette::bg_elevated())
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
-                    .child(section("Track", None, self.track_row()))
+                    .child(section(rox_i18n::t!("menu-section-track"), None, self.track_row()))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
                     })
                     .child(
-                        section("Matches", count, div().flex_1().min_h_0().child(content))
+                        section(rox_i18n::t!("matcher-section-matches"), count, div().flex_1().min_h_0().child(content))
                             .flex_1()
                             .min_h_0(),
                     ),

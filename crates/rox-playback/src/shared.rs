@@ -18,13 +18,13 @@ pub struct Segment {
     pub track_frame: u64,
 }
 
-/// One entry in the play queue as the UI sees it: a stable id that survives
-/// reorders and removals, the file it points at, and whether it was queued
-/// explicitly (Play Next, Add to Queue) or came from the playing context (the
-/// album or library view). The queue widgets show only the explicit ones; the
-/// context plays on in the background. The id is the handle the UI passes back
-/// to remove or move an entry, so an index shift between a read and the edit
-/// can't act on the wrong track.
+/// One entry in the play queue as the UI sees it: a stable id that stays the
+/// same across reorders and removals, the file it points at, and whether it
+/// was queued explicitly (Play Next, Add to Queue) or came from the playing
+/// context (the album or library view). The queue widgets show only the
+/// explicit ones; the context plays on in the background. The id is the handle
+/// the UI passes back to remove or move an entry, so an index shift between a
+/// read and the edit can't act on the wrong track.
 #[derive(Clone)]
 pub struct QueueEntry {
     pub id: u64,
@@ -32,8 +32,8 @@ pub struct QueueEntry {
     pub explicit: bool,
     /// The pool index this entry points at, distinct per entry even when two
     /// entries share a path. The UI matches the audible track on this rather
-    /// than the path, so a file that sits in the order more than once resolves
-    /// to the right occurrence instead of the first one by path.
+    /// than the path, so a file that appears in the order more than once
+    /// resolves to the right occurrence instead of the first one by path.
     pub idx: usize,
     /// The album group this entry belongs to (ADR 17), supplied by the player
     /// at insert time; the engine only ever compares ids. Adjacent entries
@@ -77,8 +77,8 @@ pub struct Shared {
     /// no window to lose.
     pub flush_seq: AtomicU64,
     /// The newest epoch a backend has finished discarding. The decode
-    /// thread waits for this to catch up before it resyncs its clock, which
-    /// is what used to be a fixed grace sleep.
+    /// thread waits for this to catch up before it resyncs its clock,
+    /// replacing what used to be a fixed grace sleep.
     pub flush_ack: AtomicU64,
     /// The output-clock frame where the crossfade in flight becomes
     /// audible, with its length in frames beside it; zero length means no
@@ -150,13 +150,13 @@ impl Shared {
         self.queue_rev.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// How many entries sit after the one holding pool index `audible`, and
+    /// How many entries come after the one holding pool index `audible`, and
     /// that entry's own position. Falls back to the published cursor when
-    /// nothing is audible yet or the index isn't in the order, which is where
-    /// a freshly started context sits.
+    /// nothing is audible yet or the index isn't in the order, which is the
+    /// case for a freshly started context.
     ///
     /// Its own read rather than a [`queue_snapshot`](Self::queue_snapshot)
-    /// the caller measures, because the continuation trigger (ADR 17) asks
+    /// the caller measures, because the continuation trigger (ADR 17) calls
     /// this on the pump's 16 ms clock and the snapshot clones a `PathBuf` per
     /// entry. Counting under the lock costs a scan of the order and no
     /// allocation at all. None while nothing is queued.
@@ -187,13 +187,13 @@ impl Shared {
     /// ring ahead of the speakers isn't something to show yet.
     pub fn crossfade(&self) -> Option<(f32, bool)> {
         use std::sync::atomic::Ordering::{Acquire, Relaxed};
-        // Length first and with acquire ordering: it's the field that
-        // publishes the pair, so a nonzero read here means the frame it
-        // starts at is already in place.
+        // Length first and with acquire ordering: it publishes the pair, so
+        // a nonzero read here means the frame it starts at is already in
+        // place.
         //
-        // The pair isn't atomic together, so a re-publish landing between
-        // these two loads can hand back the old length beside the new
-        // frame. One UI tick of a wrong progress number, on a bar that
+        // The pair isn't atomic together, so a re-publish between these two
+        // loads can hand back the old length beside the new frame. One UI
+        // tick of a wrong progress number, on a bar that
         // redraws at frame rate, and packing both into one word would make
         // every reader here do shift arithmetic to save it. Tolerated.
         let len = self.fade_len.load(Acquire);
@@ -244,8 +244,8 @@ mod tests {
 
     /// The continuation trigger's read: how much music is left ahead of the
     /// track coming out of the speakers. Matched on the pool index, so the
-    /// same file sitting in the order twice still resolves to the occurrence
-    /// playing now rather than the first one by path.
+    /// same file appearing in the order twice still resolves to the
+    /// occurrence playing now rather than the first one by path.
     #[test]
     fn upcoming_counts_from_the_audible_entry() {
         let shared = Shared::new(5);
@@ -268,15 +268,15 @@ mod tests {
         };
         assert_eq!(shared.upcoming_from(Some(0)), Some((0, 4)));
         assert_eq!(shared.upcoming_from(Some(3)), Some((3, 1)));
-        // The last entry has nothing ahead of it, which is where a queue
-        // that played out to its end sits.
+        // The last entry has nothing ahead of it, which is the case for a
+        // queue that played out to its end.
         assert_eq!(shared.upcoming_from(Some(4)), Some((4, 0)));
         // Nothing audible yet falls back to the published cursor, and so
         // does an index the order doesn't hold.
         assert_eq!(shared.upcoming_from(None), Some((1, 3)));
         assert_eq!(shared.upcoming_from(Some(99)), Some((1, 3)));
-        // An empty queue has nothing to say rather than an answer of zero,
-        // which would read as dry and fire the trigger on a dead session.
+        // An empty queue returns None rather than a count of zero, which
+        // would read as dry and fire the trigger on a dead session.
         assert!(Shared::new(0).upcoming_from(None).is_none());
     }
 

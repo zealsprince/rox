@@ -6,11 +6,11 @@
 //! Rows are keyed by model name rather than a version number, so a library
 //! can hold two models' worth at once and switching between them costs
 //! nothing. An extractor whose output changes meaning takes a new name, and
-//! the old vectors sit there until something clears them.
+//! the old vectors stay until something clears them.
 //!
 //! Vectors go in raw, unnormalized. Standardizing belongs to the query
 //! ([`nearest`] z-scores each dimension against the corpus before comparing),
-//! because raw feature statistics live on wildly different scales: a band
+//! because raw feature statistics span wildly different scales: a band
 //! energy in the tens and an onset rate near one, compared by cosine, means
 //! the loud dimensions decide every neighbour and the rest are decoration.
 //! Doing it at read time also means the weighting can be retuned without
@@ -25,9 +25,9 @@
 //!
 //! Sound isn't the whole of what makes two tracks play well together, so the
 //! ranking playback draws from is the cosine with a tempo penalty on it (see
-//! [`ranked`]). The tempo rides in the corpus beside the vectors, off the join
-//! that was already there. [`scores`] stays the raw cosine for the column that
-//! prints it.
+//! [`ranked`]). The tempo is loaded into the corpus beside the vectors, off
+//! the join that was already there. [`scores`] stays the raw cosine for the
+//! column that prints it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use rusqlite::Connection;
 
 /// The table beside the tracks it describes. Composite key, so one track
-/// carries a row per model it has been through.
+/// has a row per model it has been through.
 ///
 /// The cascade does fire: the bundled SQLite is compiled with foreign keys
 /// defaulted on, so dropping a track drops its vectors. That's a build flag
@@ -91,7 +91,7 @@ impl Coverage {
 /// running time, and a track that claims none has nothing to aim at. Local
 /// rows only, the same bound the rest of the store's work lists draw: the
 /// extractor opens a path with a decoder, and a streaming source's row
-/// carries nothing it could open.
+/// has nothing it could open.
 ///
 /// Cue subsongs are in the list: a span of an image decodes fine and gets a
 /// vector like anything else. What their `sub` is for is the tag write,
@@ -137,9 +137,9 @@ pub fn coverage(conn: &Connection, model: &str) -> rusqlite::Result<Coverage> {
 
 /// Whether this model has described anything at all.
 ///
-/// [`coverage`] answers the same question and more, at the cost of counting
+/// [`coverage`] gives the same answer and more, at the cost of counting
 /// two tables; this stops at the first row, so it's cheap enough for the
-/// paths that only need to know whether ranking by sound can answer
+/// paths that only need to know whether ranking by sound can return
 /// anything: a mode that would quietly do nothing is worth refusing, and
 /// refusing it is a decision drawn on every menu that offers it.
 pub fn any(conn: &Connection, model: &str) -> rusqlite::Result<bool> {
@@ -152,15 +152,15 @@ pub fn any(conn: &Connection, model: &str) -> rusqlite::Result<bool> {
 
 /// Store one track's vector, replacing whatever this model had for it.
 ///
-/// A vector carrying a NaN or an infinity is refused rather than written.
+/// A vector with a NaN or an infinity is refused rather than written.
 /// One of them is enough to make every score in the library NaN, because
 /// the standardization takes its mean from the corpus and hands the poison
 /// to every vector it touches, and the row would go on doing that to every
 /// query until somebody deleted it by hand. The caller isn't told: the read
 /// side skips such a row anyway, this is the store declining to hold one at
 /// all, and failing a whole batch over a single bad track would throw away
-/// the good work beside it. Whoever produced the vector is the one that can
-/// name the file, so the app-side guard is where a listener hears about it.
+/// the good work beside it. Whoever produced the vector can name the file,
+/// so the app-side guard is where a listener hears about it.
 pub fn upsert(conn: &Connection, track_id: i64, model: &str, vec: &[f32]) -> rusqlite::Result<()> {
     if !vec.iter().all(|v| v.is_finite()) {
         log::warn!("embeddings: refusing a vector with a NaN or an infinity for track {track_id}");
@@ -264,7 +264,7 @@ pub fn prune(conn: &Connection) -> rusqlite::Result<usize> {
 /// It bounds two things now: the one scan that fills [`Corpus`], and what
 /// that corpus then costs to hold, a byte per dimension per candidate. Under
 /// the model rox ships that ceiling is a hundred megabytes for a library four
-/// times the size of any real one, and a fifty-thousand-track library sits at
+/// times the size of any real one, and a fifty-thousand-track library comes to
 /// twenty-five.
 pub const CANDIDATE_CAP: usize = 200_000;
 
@@ -345,7 +345,7 @@ fn model_rows(conn: &Connection, model: &str) -> rusqlite::Result<i64> {
 /// (an index on a hashed bucket, or a union of contiguous id windows) forces
 /// SQLite to fetch each vector by rowid, and scattered fetches cost several
 /// times what reading the table straight through does. The cap bounds the
-/// decoding and the arithmetic, which is what grows without one; the scan
+/// decoding and the arithmetic, the parts that grow without one; the scan
 /// underneath stays linear and cheap per row.
 ///
 /// Deterministic rather than random: the same query twice gives the same
@@ -361,12 +361,12 @@ fn stride_from(total: i64, cap: usize) -> i64 {
     total.div_ceil(cap.max(1)).max(1) as i64
 }
 
-/// Walk a model's vectors, handing each to `visit` in turn with the tempo the
-/// row it belongs to claims. The vector is borrowed from a buffer reused
-/// across rows, so a million-track scan holds one vector at a time rather than
-/// a million of them.
+/// Iterate over a model's vectors, handing each to `visit` in turn with the
+/// tempo the row it belongs to claims. The vector is borrowed from a buffer
+/// reused across rows, so a million-track scan holds one vector at a time
+/// rather than a million of them.
 ///
-/// The tempo rides along off the join that was already there for the track's
+/// The tempo comes off the join that was already there for the track's
 /// existence, so it costs one more column rather than a second pass. None for
 /// a track nothing has measured or tagged, and for a number outside what
 /// [`crate::tempo`] will believe: a row claiming 0 or 9999 is a tagger's
@@ -398,7 +398,7 @@ fn each_vector(
                 .map(|c| f32::from_le_bytes(*c)),
         );
         // A blob of the wrong width can't be compared against the rest, and
-        // neither can one carrying a NaN or an infinity: it wouldn't merely
+        // neither can one holding a NaN or an infinity: it wouldn't merely
         // score badly, it would take the whole corpus with it. One NaN in a
         // dimension makes that dimension's mean NaN, the variance clamp
         // reads NaN as zero (f64::max ignores it), and every vector
@@ -424,7 +424,7 @@ fn believable_bpm(bpm: Option<f64>) -> Option<f32> {
 /// One track's stored tempo, for the seed of a ranking. A point query against
 /// the primary key, read beside the seed's vector for the same reason that one
 /// is: a seed the corpus stride left out still deserves an answer, and the
-/// corpus only carries the rows it kept.
+/// corpus only holds the rows it kept.
 fn track_bpm(conn: &Connection, track_id: i64) -> rusqlite::Result<Option<f32>> {
     conn.query_row("SELECT bpm FROM tracks WHERE id = ?1", [track_id], |r| {
         r.get::<_, Option<f64>>(0)
@@ -442,17 +442,17 @@ fn track_bpm(conn: &Connection, track_id: i64) -> rusqlite::Result<Option<f32>> 
 ///
 /// Three signals, because no one of them sees everything. `data_version` is
 /// SQLite's own change counter, which moves when another connection commits,
-/// but only for a connection that lives long enough to compare two readings;
-/// every caller here opens a fresh one per query, so on its own it says
-/// nothing. `rows` catches the analysis pass filling the table, a [`clear`],
-/// and a scan dropping tracks the cascade takes vectors with, whoever wrote
-/// them. `writes` catches this process replacing a vector in place, which
-/// leaves the count exactly where it was, and the tempo pass writing a bpm
-/// onto `tracks` for the same reason: the corpus carries every row's tempo, so
-/// a measurement that never touched the embeddings table still changes what a
-/// ranking answers. [`crate::store::set_measured_bpm`] counts each row it
-/// takes, which puts the held corpus and every held score map back on the
-/// table.
+/// but only for a connection that stays open long enough to compare two
+/// readings; every caller here opens a fresh one per query, so on its own it
+/// says nothing. `rows` catches the analysis pass filling the table, a
+/// [`clear`], and a scan dropping tracks the cascade takes vectors with,
+/// whoever wrote them. `writes` catches this process replacing a vector in
+/// place, which leaves the count exactly where it was, and the tempo pass
+/// writing a bpm onto `tracks` for the same reason: the corpus holds every
+/// row's tempo, so a measurement that never touched the embeddings table
+/// still changes what a ranking returns. [`crate::store::set_measured_bpm`]
+/// counts each row it takes, which puts the held corpus and every held score
+/// map back on the table.
 ///
 /// What's left over is another process rewriting vectors without changing how
 /// many there are: a second rox re-analyzing the same library under the same
@@ -476,7 +476,7 @@ fn fingerprint(conn: &Connection, model: &str, db: Option<&str>) -> rusqlite::Re
 /// Which database an answer belongs to, and whether it can be held at all.
 /// None for a connection with no file behind it: an in-memory database is a
 /// fixture or a scratch, two of them are never the same corpus, and they
-/// carry no path to tell apart, so they get answered fresh every time rather
+/// have no path to tell apart, so they get recomputed fresh every time rather
 /// than out of each other's rows.
 fn db_key(conn: &Connection) -> Option<String> {
     conn.path().filter(|p| !p.is_empty()).map(str::to_owned)
@@ -522,17 +522,17 @@ struct CachedStats {
     db: String,
     model: String,
     at: Fingerprint,
-    /// The None a model with nothing to standardize answers with is worth
+    /// The None a model with nothing to standardize returns is worth
     /// holding too: it costs the same scan to find out.
     stats: Option<Arc<Stats>>,
 }
 
 /// Score maps for the last few seeds. Small enough to keep several: a map is
 /// twelve bytes a track, so the whole cache is a couple of megabytes even on
-/// a library sitting at [`CANDIDATE_CAP`]. Several rather than one because
-/// the questions arrive in clusters: the transport draws a similar track, the
+/// a library at [`CANDIDATE_CAP`]. Several rather than one because the
+/// questions arrive in clusters: the transport draws a similar track, the
 /// library's Similar column then asks about that same seed, and a queue being
-/// ordered by sound sits between the two.
+/// ordered by sound comes between the two.
 ///
 /// The [`Corpus`] left it standing on a smaller argument than it was built on.
 /// A fresh seed scored off the held corpus is six milliseconds rather than the
@@ -563,7 +563,7 @@ struct CachedCorpus {
     corpus: Arc<Corpus>,
 }
 
-/// The largest magnitude a cell carries. The signed byte's spare value at
+/// The largest magnitude a cell can hold. The signed byte's spare value at
 /// -128 goes unused, so the scale is symmetric and a vector and its opposite
 /// quantize to opposite cells.
 const QUANT_PEAK: f32 = 127.0;
@@ -576,7 +576,7 @@ const QUANT_FLOOR: f32 = 1e-20;
 
 /// How far apart two tempos are, in octaves, folded so a track and its own
 /// double count as the same tempo. Zero for a match and for 70 against 140,
-/// a third for 140 against 175, a half at the furthest two tempos can sit
+/// a third for 140 against 175, a half at the furthest two tempos can be
 /// from each other, which is a tempo and one and a half times it.
 ///
 /// Folding is the whole point. Half time and double time are the same music
@@ -588,8 +588,8 @@ const QUANT_FLOOR: f32 = 1e-20;
 /// per minute, because tempo is heard as a ratio: 60 against 70 is a different
 /// piece of music, 160 against 170 is the same one played tight.
 ///
-/// Zero for a tempo either side is missing, which is what makes an unmeasured
-/// library rank exactly as it did before this existed. The NaN the corpus
+/// Zero for a tempo either side is missing, which keeps an unmeasured
+/// library ranking exactly as it did before this existed. The NaN the corpus
 /// stands a missing tempo up as goes down that branch, and so does anything
 /// else a ratio and a logarithm have no answer for.
 fn tempo_distance(a: f32, b: f32) -> f32 {
@@ -616,14 +616,14 @@ fn tempo_distance(a: f32, b: f32) -> f32 {
 /// tempo gives up the neighbourhood it was in, and a track a real timbral
 /// distance ahead keeps its place anyway.
 ///
-/// Charging a fixed cosine rather than a number of places is what makes that
+/// Charging a fixed cosine rather than a number of places makes that
 /// behave. In a tight neighbourhood, where the vectors barely tell the
 /// candidates apart, 0.09 moves a track hundreds of places and tempo decides
 /// between tracks that all sound alike; in a loose one, where the seed has few
 /// real neighbours, the same 0.09 is a place or two and timbre still picks.
 /// Measured on a re-ranking of those bands against synthetic tempos, half the
-/// raw top thirty survives it, and the share of the band sharing the seed's
-/// tempo goes from a third, which is what chance gives, to four in five.
+/// raw top thirty stays in it, and the share of the band sharing the seed's
+/// tempo goes from a third, the share chance gives, to four in five.
 const TEMPO_WEIGHT: f32 = 0.3;
 
 /// One model's candidates, standardized once and kept as bytes.
@@ -653,7 +653,7 @@ struct Corpus {
     /// Reciprocal length of each row as quantized, in step with `ids` too.
     inv_norm: Vec<f32>,
     /// What each row runs at in beats a minute, in step with `ids`, NaN for a
-    /// track carrying no tempo anything believes. Four bytes a track against
+    /// track with no tempo anything believes. Four bytes a track against
     /// the model's five hundred and twelve, so holding it costs under a
     /// percent of what the vectors already do, and reading the tempo out of
     /// the same scan is the difference between ranking by tempo and running a
@@ -666,7 +666,7 @@ impl Corpus {
     /// used to scan: every row under [`CANDIDATE_CAP`], an evenly spaced
     /// stride of them past it.
     ///
-    /// `rows` is what the fingerprint counted, which is both where the stride
+    /// `rows` is the fingerprint's count, which is both where the stride
     /// comes from and how much room to take up front. Growing a
     /// twenty-five-megabyte buffer by doubling copies most of it several
     /// times over, and the count is already in hand.
@@ -721,15 +721,15 @@ impl Corpus {
         out
     }
 
-    /// Charge every score for how far its track's tempo sits from the seed's,
+    /// Charge every score for how far its track's tempo is from the seed's,
     /// in place. See [`TEMPO_WEIGHT`] for what the charge is worth and
     /// [`tempo_distance`] for what counts as far.
     ///
-    /// Walked in step with the corpus rather than looked up by id. `scores` is
-    /// what [`Corpus::scores`] returned for this same corpus, which is these
+    /// Iterated in step with the corpus rather than looked up by id. `scores`
+    /// is what [`Corpus::scores`] returned for this same corpus, which is these
     /// rows in these positions with at most the seed missing, so one cursor
     /// covers it and a fifty-thousand-track ranking builds no map to throw
-    /// away. The id check is what lets the seed drop out; a row that doesn't
+    /// away. The id check lets the seed drop out; a row that doesn't
     /// match is skipped rather than charged, so the worst a mismatch could do
     /// is leave scores raw.
     fn penalize(&self, scores: &mut [(i64, f32)], seed_bpm: f32) {
@@ -747,13 +747,13 @@ impl Corpus {
     }
 }
 
-/// Append one standardized row to `out` as bytes, and answer the reciprocal
+/// Append one standardized row to `out` as bytes, and return the reciprocal
 /// length of what was written. A row of nothing gets a reciprocal of zero,
-/// which scores it zero against everything: a track sitting exactly on the
-/// corpus mean points nowhere, and that's the honest answer rather than a
+/// which scores it zero against everything: a track exactly on the corpus
+/// mean points nowhere, and that's the honest answer rather than a
 /// direction invented by rounding.
 ///
-/// The clamp is belt and braces. The row's own peak lands on 127 by
+/// The clamp is belt and braces. The row's own peak comes out at 127 by
 /// construction and the cast saturates anyway; what it's guarding is the
 /// float rounding either side of that.
 fn quantize(z: &[f32], out: &mut Vec<i8>) -> f32 {
@@ -930,8 +930,8 @@ pub fn vector(conn: &Connection, track_id: i64, model: &str) -> rusqlite::Result
 /// files they came out of.
 ///
 /// Local rows only, the bound the rest of the work lists draw: a streaming
-/// source's row names nothing on disk to write a tag into. The `sub` rides
-/// along for the refusal a shared cue image earns.
+/// source's row names nothing on disk to write a tag into. The `sub` is
+/// selected too, for the refusal a shared cue image earns.
 pub fn embedded(conn: &Connection, model: &str) -> rusqlite::Result<Vec<(String, u16, Vec<f32>)>> {
     let mut stmt = conn.prepare(
         "SELECT t.path, t.sub, e.vec FROM embeddings e
@@ -960,10 +960,10 @@ pub fn embedded(conn: &Connection, model: &str) -> rusqlite::Result<Vec<(String,
 /// second (the workspace builds this crate optimized in dev too, or it would
 /// be seconds). Every question after it is arithmetic over twenty-five
 /// megabytes of quantized vectors already in memory, six milliseconds in
-/// release and fourteen in a debug build, which is what makes a score per
-/// track change affordable. Past [`CANDIDATE_CAP`] both the corpus and the
-/// scoring cover an evenly spaced slice instead of everything, which is what
-/// keeps a very large library bounded.
+/// release and fourteen in a debug build, which makes a score per track
+/// change affordable. Past [`CANDIDATE_CAP`] both the corpus and the
+/// scoring cover an evenly spaced slice instead of everything, which keeps
+/// a very large library bounded.
 ///
 /// The answer is held on top of that: asking the same seed again while the
 /// table hasn't moved costs the fingerprint and a copy of the map, so a Similar
@@ -977,7 +977,7 @@ pub fn embedded(conn: &Connection, model: &str) -> rusqlite::Result<Vec<(String,
 /// Raw, and staying that way. This is the cosine and nothing else, which is
 /// what a diagnostic wants: the library's Similar column prints this number,
 /// and a column that quietly showed a track's timbre marked down for running
-/// at the wrong speed would be answering a question nobody asked it. What
+/// at the wrong speed would be reporting something nobody asked for. What
 /// playback picks from is [`ranked`], which is this map with the tempo penalty
 /// on top.
 pub fn scores(conn: &Connection, track_id: i64, model: &str) -> rusqlite::Result<Vec<(i64, f32)>> {
@@ -988,9 +988,9 @@ pub fn scores(conn: &Connection, track_id: i64, model: &str) -> rusqlite::Result
 
 /// How much every other track resembles `track_id` once tempo has its say:
 /// [`scores`] with [`TEMPO_WEIGHT`] taken off each candidate in proportion to
-/// how far its tempo sits from the seed's.
+/// how far its tempo is from the seed's.
 ///
-/// This is what every pick playback makes runs on. Two tracks can share a
+/// Every pick playback makes runs on this. Two tracks can share a
 /// timbre and be unplayable one after the other for running at different
 /// speeds, and the vectors say nothing about it: the model hears texture, and
 /// an eight-track band of the nearest is easily eight tempos. Subtracting
@@ -1014,7 +1014,7 @@ pub fn ranked(conn: &Connection, track_id: i64, model: &str) -> rusqlite::Result
         return Ok(scored);
     };
     // The same fingerprint the scores were taken under, so the corpus this
-    // walks is the one they came out of, row for row.
+    // iterates is the one they came out of, row for row.
     let corpus = held_corpus(conn, model, &stats, db.as_deref(), at)?;
     corpus.penalize(&mut scored, seed_bpm);
     Ok(scored)
@@ -1089,11 +1089,11 @@ fn compute_scores(
     Ok(corpus.scores(&seed, seed_inv, track_id))
 }
 
-/// The `k` tracks whose vectors sit closest to `track_id`'s, nearest first.
+/// The `k` tracks whose vectors are closest to `track_id`'s, nearest first.
 /// The seed itself is never in the result, and neither is a track whose file
 /// the library has since dropped.
 ///
-/// Off the raw cosine, the head of [`scores`]. What playback draws from is
+/// Off the raw cosine, the head of [`scores`]. Playback draws from
 /// [`nearest_ranked`].
 pub fn nearest(
     conn: &Connection,
@@ -1117,7 +1117,7 @@ pub fn nearest_ranked(
 
 /// The best `k` of a score map, nearest first. Ties are broken by id so the
 /// order is stable between calls rather than however the sort happened to
-/// land.
+/// come out.
 fn head(mut scored: Vec<(i64, f32)>, k: usize) -> Vec<(i64, f32)> {
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     scored.truncate(k);
@@ -1156,8 +1156,8 @@ mod tests {
     }
 
     /// A library on disk. The held answers are keyed by database file, so
-    /// the in-memory fixture every other test here uses is answered fresh
-    /// every time on purpose and would prove nothing about the cache.
+    /// the in-memory fixture every other test here uses is recomputed fresh
+    /// every time and would prove nothing about the cache.
     fn file_conn(name: &str) -> Connection {
         let dir = std::env::temp_dir().join(format!("rox-embeddings-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1216,7 +1216,7 @@ mod tests {
         close(100.0, 150.0, 0.415);
         close(100.0, 141.4, 0.5);
         // Nothing measurable earns no penalty rather than a wrong one, which
-        // is what leaves an untempoed library ranking as it always did.
+        // leaves an untempoed library ranking as it always did.
         assert_eq!(tempo_distance(f32::NAN, 128.0), 0.0);
         assert_eq!(tempo_distance(128.0, f32::NAN), 0.0);
         assert_eq!(tempo_distance(0.0, 128.0), 0.0);
@@ -1226,7 +1226,7 @@ mod tests {
     /// What [`ranked`] is: [`scores`] with the tempo charge taken off, track
     /// for track, and the reordering that comes out of it.
     ///
-    /// The candidates here sit close enough together that the charge decides
+    /// The candidates here are close enough together that the charge decides
     /// between them, which is the case worth pinning: the raw leader running
     /// at a tempo the seed doesn't share gives up the lead, and the track it
     /// gives it up to is the nearest one that does share it. The raw map is
@@ -1282,7 +1282,7 @@ mod tests {
         // Every candidate is still in the answer: this marks a track down, it
         // doesn't drop it.
         assert_eq!(ranked_order.len(), leader.len());
-        // The raw map is untouched, which is what the Similar column reads.
+        // The raw map is untouched, and it's what the Similar column reads.
         assert_eq!(
             scores(&conn, seed, "m")
                 .unwrap()
@@ -1329,9 +1329,9 @@ mod tests {
     }
 
     /// The tempo pass writes onto `tracks`, not onto the embeddings table, and
-    /// the held corpus carries every row's tempo. So a measurement has to put
+    /// the held corpus holds every row's tempo. So a measurement has to put
     /// that corpus back on the table, or the first ranking after a tempo pass
-    /// goes on answering as though the library had no tempos at all.
+    /// goes on ranking as though the library had no tempos at all.
     ///
     /// The seed's own tempo is read per query and would move on its own, so
     /// the candidate is the one being measured here: nothing but a reread of
@@ -1428,7 +1428,7 @@ mod tests {
     /// The store declines to hold a vector it knows ruins every query that
     /// touches it. Refusing costs the one track, where writing costs every
     /// score in the library: the standardization draws its mean from the
-    /// corpus, so a single NaN reaches vectors that never had one.
+    /// corpus, so a single NaN spreads to vectors that never had one.
     #[test]
     fn a_vector_with_a_nan_never_reaches_the_table() {
         let conn = conn();
@@ -1447,8 +1447,8 @@ mod tests {
 
     /// A library under the cap is read whole; past it the scan takes an
     /// even slice and stays near the ceiling however big the corpus gets.
-    /// This is what keeps one "more like this" from turning into a full
-    /// table scan on a library with a million tracks in it.
+    /// That keeps one "more like this" from turning into a full table scan
+    /// on a library with a million tracks in it.
     #[test]
     fn a_corpus_past_the_cap_is_sampled_evenly() {
         let conn = conn();
@@ -1486,10 +1486,10 @@ mod tests {
         assert_eq!(seen, again);
     }
 
-    /// The cap is a ceiling, so a corpus sitting exactly on it is still read
-    /// whole. Adding one to a plain division strides by two there instead,
-    /// and every score a "more like this" comes back with is drawn from
-    /// whichever half of the library the stride happened to land on.
+    /// The cap is a ceiling, so a corpus exactly at it is still read whole.
+    /// Adding one to a plain division strides by two there instead, and
+    /// every score a "more like this" comes back with is drawn from
+    /// whichever half of the library the stride happened to pick.
     #[test]
     fn a_corpus_at_exactly_the_cap_is_still_read_whole() {
         let conn = conn();
@@ -1611,8 +1611,8 @@ mod tests {
         assert_eq!(nearest(&conn, seed, "m", 6).unwrap(), after);
 
         // A seed nothing has asked about, so nothing but the corpus can
-        // answer it. The rewritten track now carries the same vector the
-        // original seed does, and a corpus that survived the write would
+        // answer it. The rewritten track now holds the same vector the
+        // original seed does, and a corpus kept across the write would
         // still be holding the old one and scoring the two apart.
         let fresh: HashMap<i64, f32> = scores(&conn, ids[3], "m").unwrap().into_iter().collect();
         assert_eq!(
@@ -1650,7 +1650,7 @@ mod tests {
 
     /// The bytes the corpus scores against the floats they stand in for.
     ///
-    /// Quantizing is only worth doing if the answer survives it, and "the
+    /// Quantizing is only worth doing if the answer holds up under it, and "the
     /// answer" is two things: the number the Similar column prints, which
     /// wants the score right to about a hundredth, and the order the
     /// neighbours come back in, which wants the top of the list to be the
@@ -1664,7 +1664,7 @@ mod tests {
         let (tracks, dim) = (300usize, 512usize);
         let mut rolls = Rolls(0x2545_F491_4F6C_DD1D);
         // Per dimension: a scale over four orders of magnitude and an offset
-        // to match, which is what standardizing is for.
+        // to match, exactly what standardizing is for.
         let scale: Vec<f32> = (0..dim).map(|d| 10f32.powi(d as i32 % 5 - 2)).collect();
         let offset: Vec<f32> = (0..dim).map(|d| scale[d] * (d as f32 - 60.0)).collect();
         let mut ids = Vec::new();
@@ -1915,8 +1915,8 @@ mod tests {
         assert_eq!(coverage(&conn, "m").unwrap().total, 2);
 
         // A cue subsong is work like any other: it decodes and it earns a
-        // vector. Its sub rides along so the pass knows the file underneath
-        // is shared and can't be tagged for it.
+        // vector. Its sub comes back with it so the pass can tell the file
+        // underneath is shared and can't be tagged for it.
         conn.execute(
             "INSERT INTO tracks (path, sub, title, artist, album, genre, year, track_no,
                 duration_ms, size, mtime)
@@ -1956,8 +1956,8 @@ mod tests {
         assert!(nearest(&conn, bare, "m", 5).unwrap().is_empty());
     }
 
-    /// A dimension carrying no information changes no neighbours, however
-    /// large it is. This is what standardizing buys: raw cosine over these
+    /// A dimension with no information in it changes no neighbours, however
+    /// large it is. That's what standardizing buys: raw cosine over these
     /// two models would rank them differently, because the constant 500
     /// would dominate the sum and pull every pair toward identical.
     #[test]

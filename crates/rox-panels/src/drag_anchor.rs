@@ -1,4 +1,4 @@
-//! The drag anchor panel: a grip that moves the OS window it sits in.
+//! The drag anchor panel: a grip that moves the OS window it's in.
 //! Layouts without OS decorations (the mini player especially) keep a
 //! handle to drag by; the whole strip is the grab surface, not just the
 //! icon. The move is the compositor's, so it works wherever
@@ -33,7 +33,7 @@ pub struct DragAnchorPanel {
     state: AppState,
     config: DragAnchorConfig,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
 }
 
@@ -167,7 +167,7 @@ impl Panel for DragAnchorPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);

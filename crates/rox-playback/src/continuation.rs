@@ -6,10 +6,10 @@
 //! queue commands (ADR 16). Nothing here opens a file, and nothing here knows
 //! the engine exists.
 //!
-//! Exactly one provider is active at a time. An empty batch means there is
+//! Exactly one provider is active at a time. An empty batch means there's
 //! nothing left to continue with and playback ends; it never means "ask the
-//! next one". That's the deliberate difference from the online enrichment
-//! chain in rox's `providers/` (ADR 14), which races several services for the
+//! next one". That's the difference from the online enrichment chain in
+//! rox's `providers/` (ADR 14), which races several services for the
 //! best answer to the same question. Continuation is a taste, and tastes don't
 //! fall back to each other.
 //!
@@ -45,11 +45,11 @@ pub const FLOOR: usize = 2;
 /// tracks are in the running at all.
 const BAND: usize = 4;
 
-/// Which strategy feeds the queue when it runs dry.
+/// Which strategy fills the queue when it runs dry.
 ///
-/// A real enum rather than the wire string the loop mode carries, because
-/// the modes are a closed set the menus enumerate; the read below is what
-/// keeps that from making the settings file brittle.
+/// A real enum rather than the wire string the loop mode uses, because the
+/// modes are a closed set the menus enumerate; the read below keeps that
+/// from making the settings file brittle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -73,9 +73,9 @@ pub enum Mode {
 /// the volume, the loop mode, and the saved queue with it. Written by hand
 /// rather than with `serde(other)`, which only covers tagged enums.
 ///
-/// "radio" is deliberately not listed. It was a mode of its own until the
-/// radio draw became what Similar shuffle does when it runs out (see
-/// [`provider`]), so a settings file carrying it lands on the default and the
+/// "radio" isn't listed. It was a mode of its own until the radio draw
+/// became what Similar shuffle does when it runs out (see [`provider`]), so
+/// a settings file that still names it reads as the default and the
 /// listener's radio comes back from the shuffle order instead.
 impl<'de> Deserialize<'de> for Mode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Mode, D::Error> {
@@ -124,9 +124,9 @@ pub struct Seed {
     /// The view play started in.
     pub scope: Scope,
     /// Every track this session has held, oldest first: what already played,
-    /// what's still upcoming, and what was queued by hand. In the contract on
-    /// purpose. Queue metal over a country context and the pool should follow
-    /// the metal, and nothing else in the seed would say so.
+    /// what's still upcoming, and what was queued by hand. It's in the
+    /// contract for a reason: queue metal over a country context and the pool
+    /// should follow the metal, and nothing else in the seed would say so.
     pub recent: Vec<i64>,
     /// How many tracks to return. A provider may return fewer.
     pub count: usize,
@@ -153,11 +153,11 @@ impl Seed {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pick {
     pub id: i64,
-    /// The album group the entry carries, or None to let the player fill it
-    /// in from the library at insert time. A strategy that wants its picks
-    /// to stand alone rather than splice as an album says so here; the ones
-    /// below all leave it to the library, which is where album membership is
-    /// actually known.
+    /// The album group on the entry, or None to let the player fill it in
+    /// from the library at insert time. A strategy whose picks should stand
+    /// alone rather than splice as an album says so here; the ones below all
+    /// leave it to the library, which is where album membership is actually
+    /// known.
     pub group: Option<u64>,
 }
 
@@ -202,7 +202,7 @@ pub fn provider(mode: Mode, similar: bool) -> Option<Box<dyn Provider>> {
 ///
 /// The resume point is the *last* seen position rather than the first,
 /// because a window that started mid-view and played to its end must carry on
-/// below it. Taking the first would walk back up into the rows above the
+/// below it. Taking the first would go back up into the rows above the
 /// click, which the listener already skipped past on purpose.
 fn resume(order: &[i64], seen: &HashSet<i64>, count: usize) -> Vec<i64> {
     let from = order
@@ -241,7 +241,7 @@ impl Provider for Browse {
             return out.into_iter().map(Pick::ungrouped).collect();
         };
         // The view's picks count as seen for the library pass, or a track
-        // sitting in both lists would come back twice in one batch.
+        // in both lists would come back twice in one batch.
         let mut seen = seen;
         seen.extend(out.iter().copied());
         out.extend(resume(&all, &seen, seed.count - out.len()));
@@ -259,9 +259,9 @@ impl Provider for Browse {
 /// History-weighted draws (#38): never-played tracks tier first, then the
 /// longest unplayed, with recent listens sinking to the back.
 ///
-/// The exact falloff is implementation detail and this is the crude version
-/// on purpose: two tiers, ordered inside the second by how long ago and how
-/// often. With no history at all every track lands in the first tier and the
+/// The exact falloff is implementation detail and this is the crude
+/// version: two tiers, ordered inside the second by how long ago and how
+/// often. With no history at all every track falls into the first tier and the
 /// shuffle over it is plain uniform random, which is the degradation the
 /// issue asks for and not a special case in the code.
 struct Weighted;
@@ -333,7 +333,7 @@ fn weighted_ids(conn: &Connection, seen: &HashSet<i64>, count: usize) -> Vec<i64
 /// Radio (#39): keep drawing what sounds like the seed, library-wide.
 ///
 /// Off the acoustic vectors rather than the genre and artist strings the
-/// issue first proposed, because #40 landed: `embeddings::ranked` answers the
+/// issue first proposed, because #40 shipped: `embeddings::ranked` answers the
 /// same question without trusting the least consistent field in any real
 /// library, and marks a track down for running at a tempo the seed doesn't
 /// share.
@@ -391,10 +391,10 @@ fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
 mod tests {
     use super::*;
 
-    /// The name the fixtures file their vectors under, deliberately not the
-    /// app's built-in model. The draw has to follow the model the seed
-    /// names, so a provider that reached for the built-in one on its own
-    /// would be scoring a corpus that isn't there.
+    /// The name the fixtures file their vectors under, not the app's
+    /// built-in model. The draw has to follow the model the seed names, so a
+    /// provider that used the built-in one on its own would be scoring a
+    /// corpus that isn't there.
     const MODEL: &str = "test-vectors-1";
 
     /// A second model describing the same library, the corpus a draw must
@@ -531,8 +531,8 @@ mod tests {
     }
 
     /// The session's own plays are excluded even when the history table has
-    /// never heard of them, which is what keeps a fresh library from
-    /// stuttering on the track it just played.
+    /// never heard of them, which keeps a fresh library from stuttering on
+    /// the track it just played.
     #[test]
     fn weighted_skips_what_the_session_already_holds() {
         let conn = library(6);
@@ -557,8 +557,8 @@ mod tests {
 
     /// With vectors in the table the picks come off the acoustic ranking,
     /// out of the band at the near end of it rather than from anywhere in
-    /// the library. And off the model the seed names: the same library sits
-    /// here described twice, so a draw that went to the other name of its
+    /// the library. And off the model the seed names: the same library is
+    /// described twice here, so a draw that went to the other name of its
     /// own accord would pick out of a neighbourhood nobody asked for.
     #[test]
     fn radio_picks_out_of_the_band_nearest_the_seed() {
@@ -573,7 +573,7 @@ mod tests {
         for (step, id) in all.iter().enumerate() {
             let angle = step as f32 / N as f32 * std::f32::consts::TAU;
             embeddings::upsert(&conn, *id, MODEL, &[angle.cos(), angle.sin()]).unwrap();
-            // The other model walks the same circle seven steps at a time,
+            // The other model steps around the same circle seven at a time,
             // which is a full lap of the library with every track's
             // neighbours somewhere else entirely.
             let angle = (step * 7 % N) as f32 / N as f32 * std::f32::consts::TAU;
@@ -606,8 +606,8 @@ mod tests {
     /// Same circle as the test above, with the two tracks either side of the
     /// seed measured half an octave off it, which is as far apart as two
     /// tempos get. They stay in the ranking and they stay near the top of it,
-    /// they just no longer sit inside a band of one, and what the draw hands
-    /// back is the nearest pair that does share the seed's tempo.
+    /// they just no longer fall inside a band of one, and the draw hands back
+    /// the nearest pair that does share the seed's tempo.
     #[test]
     fn radio_passes_over_the_nearest_track_at_the_wrong_tempo() {
         const N: usize = 40;
@@ -700,9 +700,9 @@ mod tests {
         }
     }
 
-    /// The resume walk is the whole of the browse provider's cleverness, so
-    /// it gets its own pass over the edges: nothing seen, everything seen,
-    /// and a seen track sitting at the very end.
+    /// Resuming past the session's position is the whole of the browse
+    /// provider's cleverness, so it gets its own pass over the edges:
+    /// nothing seen, everything seen, and a seen track at the very end.
     #[test]
     fn resume_walks_from_the_last_seen_position() {
         let order = vec![1, 2, 3, 4, 5];

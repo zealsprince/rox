@@ -96,15 +96,15 @@ pub fn open_workspace(cx: &mut App) {
 }
 
 /// Open a workspace window with a chosen starting layout: the Window menu's
-/// New Window (restore), Empty Window, and New Window from Layout all land
-/// here.
+/// New Window (restore), Empty Window, and New Window from Layout all come
+/// through here.
 pub fn open_workspace_with(start: workspace::WorkspaceStart, cx: &mut App) {
     open_workspace_window(start, None, None, cx);
 }
 
 /// Reopen from the tray or the macOS dock: a window on the saved working
 /// layout over the state the last close handed to the hold, so playback
-/// carries straight over. The media service comes back with it where it
+/// continues straight through. The media service comes back with it where it
 /// stayed registered through the windowless stretch.
 pub fn open_workspace_adopting(adopt: workspace::Adopted, cx: &mut App) {
     open_workspace_window(workspace::WorkspaceStart::Restore, Some(adopt), None, cx);
@@ -121,7 +121,7 @@ fn open_workspace_window(
     cx: &mut App,
 ) {
     // Windows open on the saved frame, so a restart, and every New Window,
-    // comes back where the last-closed window sat.
+    // comes back where the last-closed window was.
     let mut window_bounds = match Settings::load().windows.main {
         Some(w) => {
             let bounds = Bounds {
@@ -139,7 +139,7 @@ fn open_workspace_window(
         // still fit a 1366x768 laptop with margin to spare.
         None => WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(720.)), cx)),
     };
-    // A preset window opens at the preset's stored size when it carries one,
+    // A preset window opens at the preset's stored size when it has one,
     // keeping the restored position; a preset without a size opens like any
     // other window.
     if let workspace::WorkspaceStart::Preset(name) = &start {
@@ -187,12 +187,12 @@ fn open_workspace_window(
         // No WindowOptions field for this one, so the fresh window starts
         // with the platform default and takes the setting here.
         window.set_resize_border(resize_border());
-        // System-theme follow rides the OS appearance events, which only
-        // reach us through a window. The window's own cached appearance
-        // feeds the settings cache - the platform's read borrows the
-        // Wayland client, which is already borrowed here. The immediate
-        // note covers a flip that happened while no window was up (tray
-        // residency); the setter dedupes, so repeats cost nothing.
+        // System-theme follow comes from the OS appearance events, which
+        // only reach us through a window. The window's own cached
+        // appearance supplies the settings cache, since the platform's read
+        // borrows the Wayland client, which is already borrowed here. The
+        // immediate note covers a flip that happened while no window was up
+        // (tray residency); the setter dedupes, so repeats cost nothing.
         note_os_appearance(window.appearance(), cx);
         window
             .observe_window_appearance(|window, cx| {
@@ -213,7 +213,7 @@ fn open_workspace_window(
 }
 
 /// Hand rox-panel-api the windows it can't reach on its own. Panels and the
-/// shared helpers live a crate down and can't depend upward, so every call
+/// shared helpers are a crate down and can't depend upward, so every call
 /// into a window (the tag editor, the stats page, the Add Panel flyout)
 /// goes through this table. Installed before anything can open a window.
 fn install_openers() {
@@ -276,22 +276,22 @@ fn main() {
     // drain on a pre-split launch, so it gets pointed at them first, before
     // anything reads a setting.
     set_workspace_migrator(workspaces::migrate_saved);
-    // The windows panels open live up here; the table goes in before any of
+    // The windows panels open are up here; the table goes in before any of
     // them can be reached.
     install_openers();
     // Files handed to us on the command line (`rox song.flac`, or the file
     // manager's Open With). Collected before the app boots so a plausible-file
     // filter runs off the real argv, not gpui's.
     let (launch_mode, launch_files) = rox_library::open_files::from_args();
-    // One rox per data directory. A rox already running takes this launch -
-    // its window comes back out of the tray with our files in hand - and this
-    // process is done before it ever opens a compositor connection.
+    // One rox per data directory. A rox already running takes this launch
+    // (its window comes back out of the tray with our files in hand), and
+    // this process is done before it ever opens a compositor connection.
     let Some(instance) = startup::single_instance::claim(launch_mode, &launch_files) else {
         return;
     };
     let app = Application::new().with_assets(Assets);
     // macOS: clicking the dock icon while the app runs with no windows
-    // brings a workspace back - the platform's own quit-to-tray. Only the
+    // brings a workspace back, the platform's own quit-to-tray. Only the
     // mac backend ever fires this.
     app.on_reopen(|cx| {
         if rox_panel_api::windows::front_workspace(cx).is_none() {
@@ -300,9 +300,10 @@ fn main() {
     });
     app.run(move |cx: &mut App| {
         // The logging backend goes up first, so anything the rest of startup
-        // reports lands in the file and the console ring from the first line.
+        // reports is written to the file and the console ring from the first
+        // line.
         logging::init();
-        // The socket goes live next, so a launch that lands mid-startup is
+        // The socket goes live next, so a launch that arrives mid-startup is
         // already queued for the drain rather than bouncing off a closed
         // door and starting its own rox.
         startup::single_instance::serve(instance, cx);
@@ -333,17 +334,17 @@ fn main() {
         rox_panel_api::panel_settings::init(cx);
         // Last of the inits, and it has to stay last: a rebind rebuilds the
         // whole keymap, and this is where the bindings already registered
-        // above get snapshotted so they survive one.
+        // above get snapshotted so they're preserved through one.
         keymap::init(cx);
-        // Startup theme wiring runs through the palette pipeline - the
-        // same choke point every later palette change goes through. The
-        // setters set the dark baseline and feed the widget theme tokens.
+        // Startup theme wiring runs through the palette pipeline, the same
+        // choke point every later palette change goes through. The setters
+        // set the dark baseline and supply the widget theme tokens.
         let settings = Settings::load();
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
         seed_os_appearance(cx);
         set_theme(settings.theme, cx);
         // Language next to theme: same statics-outside-gpui shape, and
-        // it has to land before the first window title renders.
+        // it has to happen before the first window title renders.
         set_language(settings.language.as_deref(), cx);
         palette::set_scalars(
             settings.look.bundle.appearance.surface_opacity,
@@ -391,12 +392,12 @@ fn main() {
         // one-day cache both gate it, so most launches do nothing here.
         // Opted in, a hit rolls straight into the updater's download.
         startup::updates::check_on_launch(cx);
-        // Launch files ride into the first window; a plain launch (no files)
+        // Launch files go into the first window; a plain launch (no files)
         // opens on the restored state as before.
         let open = (!launch_files.is_empty()).then_some((launch_mode, launch_files));
         open_workspace_window(workspace::WorkspaceStart::Restore, None, open, cx);
         // The macOS system menu bar, once a workspace exists for its picks to
-        // land on. A no-op on every other platform, where the in-window bar
+        // act on. A no-op on every other platform, where the in-window bar
         // is the only menu.
         workspace::native_menu::rebuild(cx);
         cx.activate(true);

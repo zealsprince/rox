@@ -1,6 +1,6 @@
 //! The app's asset source: our own icons layered over the gpui-component
 //! bundle. The widget set ships no media icons (play, skip, volume and
-//! friends), so those live in `crates/rox/assets` and resolve first, with
+//! friends), so those are in `crates/rox/assets` and resolve first, with
 //! everything else falling through to the bundled set.
 
 use std::borrow::Cow;
@@ -47,7 +47,7 @@ pub mod icons {
     pub const SKIP_FORWARD: &str = "icons/skip-forward.svg";
     pub const REWIND: &str = "icons/rewind.svg";
     pub const FAST_FORWARD: &str = "icons/fast-forward.svg";
-    /// The timed nudges where no skip buttons sit alongside to disambiguate:
+    /// The timed nudges where no skip buttons are alongside to disambiguate:
     /// on their own, the double triangles read as track changes, and the
     /// circular arrow is the established mark for a jump by seconds.
     pub const SEEK_BACK: &str = "icons/rotate-ccw.svg";
@@ -56,8 +56,8 @@ pub mod icons {
     pub const REPEAT_1: &str = "icons/repeat-1.svg";
     pub const STOP: &str = "icons/square.svg";
     pub const SHUFFLE: &str = "icons/shuffle.svg";
-    /// Continuation (ADR 17): a queue that doesn't end. The lemniscate says
-    /// "this keeps going" without borrowing the radio, which already means
+    /// Continuation (ADR 17): a queue that doesn't end. The lemniscate reads
+    /// as "this keeps going" without borrowing the radio, which already means
     /// ordering by sound rather than never stopping.
     pub const INFINITY: &str = "icons/infinity.svg";
     /// Crossfade (ADR 19): two circles overlapping, which is the picture of
@@ -91,8 +91,8 @@ pub mod icons {
     pub const UPLOAD: &str = "icons/upload.svg";
     pub const TRASH: &str = "icons/trash-2.svg";
     pub const PENCIL: &str = "icons/pencil.svg";
-    /// The rating stars: the same outline both ways, the filled one
-    /// carrying its fill so the pair reads set/unset at cell size.
+    /// The rating stars: the same outline both ways, the filled one with a
+    /// solid fill so the pair reads set/unset at cell size.
     pub const STAR: &str = "icons/star.svg";
     pub const STAR_FILLED: &str = "icons/star-filled.svg";
     /// The favourites heart, outline and filled, the set/unset pair the
@@ -109,7 +109,7 @@ pub mod icons {
     pub const TAG: &str = "icons/tag.svg";
     pub const IMAGE: &str = "icons/image.svg";
     /// The color grid's role link: an override following another app
-    /// color instead of holding a literal.
+    /// color instead of storing a literal.
     pub const LINK: &str = "icons/link.svg";
     pub const PALETTE: &str = "icons/palette.svg";
     pub const CONTRAST: &str = "icons/contrast.svg";
@@ -132,7 +132,7 @@ pub mod icons {
     pub const ALERT: &str = "icons/triangle-alert.svg";
     /// The Application menu's three ways out to the project: file a bug,
     /// join a thread, sit in the channel. The hash is the IRC one, since
-    /// a channel name is what it draws.
+    /// it draws a channel name.
     pub const BUG: &str = "icons/bug.svg";
     pub const MESSAGES: &str = "icons/messages-square.svg";
     pub const HASH: &str = "icons/hash.svg";
@@ -154,18 +154,18 @@ pub mod icons {
     pub const MINIMIZE: &str = "icons/minimize-2.svg";
     pub const MAXIMIZE: &str = "icons/maximize-2.svg";
     /// Exit fullscreen: corner brackets folding in, pairing with the
-    /// square frame the maximize button wears otherwise. Bracket-style so
+    /// square frame the maximize button shows otherwise. Bracket-style so
     /// it can't be mistaken for the mini toggle's shrink arrows.
     pub const FULLSCREEN_EXIT: &str = "icons/minimize.svg";
     /// The Window menu's Empty Window entry: a blank dock.
     pub const SQUARE_DASHED: &str = "icons/square-dashed.svg";
     /// The unfinished work: the settings sidebar's Development page, and
-    /// the panel menu's experimental group. Both wear the flask, so the two
+    /// the panel menu's experimental group. Both use the flask, so the two
     /// surfaces read as the same thing.
     pub const FLASK: &str = "icons/flask-conical.svg";
     /// The settings sidebar's Keymap page, and the chord chips on it.
     pub const KEYBOARD: &str = "icons/keyboard.svg";
-    /// The theme toggle panel's glyphs, the side a click lands on; both
+    /// The theme toggle panel's glyphs, the side a click switches to; both
     /// resolve from the bundled widget set, no file of ours needed.
     pub const SUN: &str = "icons/sun.svg";
     pub const MOON: &str = "icons/moon.svg";
@@ -186,7 +186,7 @@ pub mod icons {
     pub const COLUMNS_2: &str = "icons/columns-2.svg";
     pub const LAYERS: &str = "icons/layers-2.svg";
     pub const PANEL_BOTTOM: &str = "icons/panel-bottom.svg";
-    /// The rest of the panel-side family: the border edge toggles wear
+    /// The rest of the panel-side family: the border edge toggles use
     /// all four, one per side the line can draw on.
     pub const PANEL_TOP: &str = "icons/panel-top.svg";
     pub const PANEL_LEFT: &str = "icons/panel-left.svg";
@@ -210,7 +210,7 @@ pub mod icons {
     /// Every icon the app draws, the surface an icon pack can override. A
     /// new pack is seeded with these, so an author edits the real files
     /// instead of guessing which names the app asks for. The logo is left
-    /// out on purpose: it is the brand mark, not a themeable icon.
+    /// out: it's the brand mark, not a themeable icon.
     pub const CATALOG: &[&str] = &[
         PLAY,
         PAUSE,
@@ -387,7 +387,7 @@ impl AssetSource for Assets {
         if path.is_empty() {
             return Ok(None);
         }
-        // An active pack overrides same-named files under icons/. It is a
+        // An active pack overrides same-named files under icons/. It's a
         // flat folder, so map icons/play.svg to <pack>/play.svg. A missing
         // file just falls through to the built-in and bundled sets below.
         if let Some(name) = path.strip_prefix("icons/") {
@@ -417,7 +417,7 @@ mod tests {
     use super::*;
 
     /// An active pack overrides a same-named icon and falls through for one
-    /// it doesn't carry, the whole point of the layered resolver.
+    /// it doesn't have, the whole point of the layered resolver.
     #[test]
     fn active_pack_overrides_then_falls_through() {
         let dir = std::env::temp_dir().join("rox-pack-test");
@@ -426,10 +426,10 @@ mod tests {
         std::fs::write(dir.join("play.svg"), b"<svg id=\"packed\"/>").unwrap();
 
         set_active_pack(Some(dir.clone()));
-        // The pack carries play.svg, so it wins.
+        // The pack has play.svg, so it wins.
         let play = Assets.load("icons/play.svg").unwrap().unwrap();
         assert_eq!(play.as_ref(), b"<svg id=\"packed\"/>");
-        // It carries no pause.svg, so that falls through to the built-in.
+        // It has no pause.svg, so that falls through to the built-in.
         let pause = Assets.load("icons/pause.svg").unwrap().unwrap();
         assert_ne!(pause.as_ref(), b"<svg id=\"packed\"/>");
         assert!(!pause.is_empty());

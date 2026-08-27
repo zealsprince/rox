@@ -1,6 +1,6 @@
 //! One card's geometry, laid off a u64 seed: deterministic procedural tile
 //! art, quiet enough to sit under a label. The genre wall and the stats
-//! window both draw it, so a seed wears the same geometry wherever it
+//! window both draw it, so a seed draws the same geometry wherever it
 //! turns up.
 
 use gpui::{
@@ -17,7 +17,7 @@ use rox_design::palette;
 /// it a touch, and picks a symmetry: the motif alone, its mirror twin
 /// across either axis, or all four reflections at once, which folds a
 /// single shape into a pattern. The ink thins as the reflections multiply,
-/// so a four-fold card carries more geometry without carrying more weight.
+/// so a four-fold card shows more geometry without more weight.
 /// `ink` comes in solid; the alpha is this function's to set. The caller's
 /// overflow_hidden clips the bleed.
 pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
@@ -39,7 +39,7 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
             // diagonal to close the pattern.
             // Symmetry stays the exception: five of eight seeds paint
             // the motif alone, the mirrored pairs and the four-fold
-            // each take one - a wall full of symmetric cards is itself
+            // each take one. A wall full of symmetric cards is itself
             // a pattern, and the eye finds it.
             let passes: &[(bool, bool)] = match (seed >> 42) % 8 {
                 0..=4 => &[(false, false)],
@@ -113,7 +113,7 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
             };
             // Each reflection re-paints the motif with the axes folded:
             // the effective flips are the base placement XOR the pass's
-            // mirrors, so the twin lands exactly opposite its original.
+            // mirrors, so the twin ends up exactly opposite its original.
             for &(mx, my) in passes {
                 let ex = flip_x != mx;
                 let ey = flip_y != my;
@@ -121,8 +121,8 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
                 let y = |f: f32| if ey { f } else { 1. - f };
                 // Bits 13-16, never a `% 8` or `% 16` of the raw seed:
                 // both divide 360, so that would be the hue's own low
-                // bits and same-colored cards would always share a motif
-                // - the stamped-twin look this field exists to prevent.
+                // bits and same-colored cards would always share a motif,
+                // the stamped-twin look this field exists to prevent.
                 match pick {
                     // A disc bleeding past a corner.
                     0 => disc(x(0.9), y(0.86), 1.0, window),
@@ -172,7 +172,7 @@ pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
                         shape(x(0.55), y(0.44), 0.19, 0.19, 0.2, window);
                         shape(x(0.37), y(0.63), 0.13, 0.13, 0.2, window);
                     }
-                    // A ring with a small disc riding its rim, an orbit.
+                    // A ring with a small disc on its rim, an orbit.
                     8 => {
                         ring(x(0.7), y(0.35), 0.6, 0.02, window);
                         disc(x(0.49), y(0.14), 0.11, window);

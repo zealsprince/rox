@@ -20,12 +20,12 @@ use lofty::prelude::*;
 
 /// File stems that count as folder art, best first.
 const FOLDER_ART: &[&str] = &["cover", "folder", "front", "album"];
-/// Image extensions folder art may carry.
+/// Image extensions folder art may use.
 const ART_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
 /// The picture slot a caller asks for, the tag picture types a player
 /// shows. Every pick falls back through the front cover, any embedded
-/// picture, and folder art, so asking for a slot a file doesn't carry
+/// picture, and folder art, so asking for a slot a file doesn't have
 /// still resolves to something.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArtKind {
@@ -172,10 +172,10 @@ pub fn identity(path: &Path) -> (i64, i64) {
     }
 }
 
-/// Whether an image's bytes carry their end marker, so a file caught
+/// Whether an image's bytes include their end marker, so a file caught
 /// halfway through a download reads as what it is. Only the formats with
-/// an unambiguous end answer; anything else passes, since guessing wrong
-/// costs a cover. The marker scan tolerates the trailing padding some
+/// an unambiguous end are checked; anything else passes, since guessing
+/// wrong costs a cover. The marker scan tolerates the trailing padding some
 /// encoders leave after it.
 pub fn complete(bytes: &[u8]) -> bool {
     // Far enough back to clear padding, short enough that a marker found
@@ -296,12 +296,12 @@ fn folder_art(path: &Path, kind: ArtKind) -> Cover {
 /// unsynchronisation flag. lofty de-unsynchronises such a tag whole, then
 /// again per frame for the frame's own flag, so every stuffed `ff 00 00`
 /// collapses to `ff` instead of `ff 00` and the image never decodes. Only
-/// frames carrying their own flag qualify - per the v2.4 spec the scheme
+/// frames with their own flag set qualify: per the v2.4 spec the scheme
 /// is applied frame by frame, so their sizes count the stuffed bytes as
 /// stored and the walk below stays aligned. A tag unsynchronised as one
 /// stream (header flag alone) reads fine through lofty and stays there.
 /// None means the tag is not this shape; the lofty path takes over. The
-/// writer leans on the same probe to carry the picture through a commit,
+/// writer uses the same probe to pass the picture through a commit,
 /// since lofty would hand it the mangled bytes to write back.
 pub(crate) fn unsync_apic(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
     let mut file = std::fs::File::open(path).ok()?;
@@ -313,7 +313,7 @@ pub(crate) fn unsync_apic(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String
     let mut tag = vec![0u8; synchsafe(&header[6..10])? as usize];
     file.read_exact(&mut tag).ok()?;
     let mut pos = 0;
-    // The extended header sits before the frames and counts itself in its
+    // The extended header comes before the frames and counts itself in its
     // own size.
     if header[5] & 0x40 != 0 {
         pos = synchsafe(tag.get(..4)?)? as usize;
@@ -422,7 +422,7 @@ pub(crate) fn synchsafe(bytes: &[u8]) -> Option<u32> {
     Some(quad.iter().fold(0u32, |acc, b| acc << 7 | u32::from(*b)))
 }
 
-/// The 4-byte synchsafe encode, the write-side mirror of [`synchsafe`].
+/// The 4-byte synchsafe encode, the write-side counterpart of [`synchsafe`].
 /// The value must fit 28 bits; callers bound it before asking.
 pub(crate) fn synchsafe_encode(n: u32) -> [u8; 4] {
     [
@@ -506,7 +506,7 @@ mod tests {
         out
     }
 
-    /// A 4-byte synchsafe encode, the write-side mirror of `synchsafe`.
+    /// A 4-byte synchsafe encode, the write-side counterpart of `synchsafe`.
     fn synch(n: u32) -> [u8; 4] {
         [
             (n >> 21) as u8 & 0x7F,

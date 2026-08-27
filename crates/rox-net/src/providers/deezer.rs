@@ -73,7 +73,7 @@ const ARTIST_API: &str = "https://api.deezer.com/search/artist";
 
 /// Search Deezer for an artist's portrait: the xl picture URL of the
 /// best name match, None when nothing matches. The name has to match
-/// once folded - a search for an unknown act returns lookalikes, and a
+/// once folded: a search for an unknown act returns lookalikes, and a
 /// wrong face is worse than none.
 pub fn artist_picture(name: &str) -> Result<Option<String>, String> {
     if name.trim().is_empty() {

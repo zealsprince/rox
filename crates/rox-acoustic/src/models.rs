@@ -3,30 +3,30 @@
 //!
 //! ## Why nothing is bundled
 //!
-//! Network weights are tens of megabytes and they carry their own licences,
-//! which are frequently not licences you can ship under. The two best music
-//! embedding models available are a case in point: Essentia's discogs-effnet
-//! family is CC BY-NC-SA, so it can't ride along in a release at all, while
+//! Network weights are tens of megabytes and they come with their own
+//! licences, which are frequently not licences you can ship under. The two
+//! best music embedding models available are a case in point: Essentia's
+//! discogs-effnet family is CC BY-NC-SA, so it can't ship in a release, while
 //! PANNs is CC BY, which can, at the cost of most of the installer. Putting
 //! the download behind a button the user presses sidesteps both: the app
 //! stays small, an NC-licensed model stays legal to offer because the user
 //! is the one fetching it for their own use, and someone who never wants
 //! acoustic similarity never pays for it.
 //!
-//! ## Where files land
+//! ## Where files go
 //!
 //! `models/` inside [`rox_core::settings::data_dir`], beside `library.db`, so
-//! portable install carries its models with it and a wiped data folder takes
+//! a portable install keeps its models with it and a wiped data folder takes
 //! them with everything else. One file per model, named by the catalog.
 //!
 //! ## Verification
 //!
-//! Every catalog entry states its size and SHA-256, and a download is not
-//! installed until both match. This is not about a hostile network so much
+//! Every catalog entry states its size and SHA-256, and a download isn't
+//! installed until both match. This isn't about a hostile network so much
 //! as a truncated one: a download cut off at 90% is a perfectly well formed
 //! file that loads as garbage weights and produces embeddings nobody can
-//! tell are wrong. The hash is also what pins the catalog to a specific
-//! revision of a Hugging Face repo, which can be force-pushed underneath us.
+//! tell are wrong. The hash also pins the catalog to a specific revision of
+//! a Hugging Face repo, which can be force-pushed underneath us.
 //!
 //! The download writes to a `.part` file and renames on success, so an
 //! interrupted download can never be mistaken for an installed model.
@@ -167,7 +167,7 @@ pub fn fallback() -> &'static Model {
     &CATALOG[0]
 }
 
-/// Where the weight files live.
+/// Where the weight files are kept.
 pub fn dir() -> PathBuf {
     rox_core::settings::data_dir().join("models")
 }
@@ -239,8 +239,8 @@ impl Model {
 }
 
 /// Live progress of a download: the worker writes it, the UI polls it.
-/// Shaped after `replaygain_job::Progress` for the same reason, which is
-/// that the settings window already knows how to sample one of these.
+/// Shaped after `replaygain_job::Progress` for the same reason: the
+/// settings window already knows how to sample one of these.
 #[derive(Default)]
 pub struct Progress {
     /// Which model is coming down, so a UI can tell whose row to light up.
@@ -304,7 +304,7 @@ impl Progress {
     }
 }
 
-/// The agent downloads ride. Not [`rox_net::providers::agent`]: that one caps
+/// The agent downloads use. Not [`rox_net::providers::agent`]: that one caps
 /// every request at ten seconds, which is the right call for a metadata
 /// lookup and would guarantee failure on a 24 MB file over anything but a
 /// fast link. This one bounds the connect and each read instead, so a
@@ -374,7 +374,7 @@ pub fn fetch(model: &Model, progress: &Progress) -> Result<(), String> {
 }
 
 /// Copy the body into the part file, hashing and counting as it goes, then
-/// check what landed against the catalog.
+/// check what arrived against the catalog.
 fn stream(
     mut body: impl Read,
     part_path: &std::path::Path,
@@ -425,7 +425,7 @@ fn stream(
     Ok(())
 }
 
-/// SHA-256 of a file, as lowercase hex. What names a weights file the
+/// SHA-256 of a file, as lowercase hex. Names a weights file the
 /// catalog knows nothing about: [`crate::local_id`] takes the head of this,
 /// so two checkpoints can't share a name and the same one picked twice keeps
 /// the vectors it already wrote.
@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(PANNS_MEL.fmax, 14_000.0);
         assert_eq!(PANNS_MEL.scale, mel::Scale::Slaney);
         assert_eq!(PANNS_MEL.norm, mel::Norm::Area);
-        // Centered framing, which is what torchlibrosa asks librosa for and
+        // Centered framing, what torchlibrosa asks librosa for and
         // what every PyTorch pipeline inherits. Read off the config rather
         // than asserted flat, so this fails if the const above changes.
         let recipe = PANNS_MEL;
@@ -533,7 +533,7 @@ mod tests {
                 top_db: None
             }
         );
-        // 513 bins is what the shipped melW tensor is sized for.
+        // The shipped melW tensor is sized for 513 bins.
         assert_eq!(PANNS_MEL.bins(), 513);
     }
 
@@ -612,7 +612,7 @@ mod tests {
     }
 
     /// The real download, end to end against the catalog's URL. Ignored, so
-    /// `cargo test` never reaches for the network or writes 24 MB into the
+    /// `cargo test` never touches the network or writes 24 MB into the
     /// data folder; run it by hand (`cargo test -- --ignored fetches_the`)
     /// when a catalog entry changes, since a wrong URL, size, or checksum is
     /// exactly the kind of mistake that only shows up against the server.

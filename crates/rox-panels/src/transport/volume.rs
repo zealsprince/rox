@@ -20,7 +20,7 @@ use crate::player::observe_view;
 
 use super::{default_true, transport_panel};
 
-/// Where a strip piece sat in the retired side-picker configs: leading
+/// Where a strip piece went in the retired side-picker configs: leading
 /// the slider, trailing it, or gone. Legacy-only; new layouts write the
 /// ordered items list instead.
 #[derive(Clone, Copy, Default, PartialEq, Deserialize)]
@@ -33,7 +33,7 @@ enum PiecePos {
 }
 
 /// One piece of the volume strip, the arrange editor's unit. The config's
-/// list carries the shown ones in display order.
+/// list holds the shown ones in display order.
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VolumeItem {
@@ -42,11 +42,11 @@ pub enum VolumeItem {
     Icon,
     /// The volume slider.
     Slider,
-    /// The percent readout. While it is hidden the speaker icon carries
-    /// the number in a tooltip instead.
+    /// The percent readout. While it's hidden the speaker icon shows the
+    /// number in a tooltip instead.
     Percent,
     /// A flexible gap that pushes the pieces around it apart; the strip
-    /// holds as many as the layout wants.
+    /// holds as many as the layout needs.
     Spacer,
 }
 
@@ -221,19 +221,19 @@ pub struct VolumePanel {
     /// The slider's painted bounds and drag state.
     scrub: ScrubState,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// The strip as it stood when a menu toggle last hid a piece, so
     /// showing it again puts it back where it was rather than at its
     /// catalog rank. The undo for one toggle, not a layout anybody saves,
-    /// so it rides the panel and not the config.
+    /// so it's stored on the panel and not the config.
     items_stash: Option<Vec<VolumeItem>>,
     _player_changed: Subscription,
 }
 
 impl VolumePanel {
     pub fn new(state: AppState, config: VolumeConfig, cx: &mut Context<Self>) -> Self {
-        // Volume and mute are not on the pump at all; the gated observe
+        // Volume and mute aren't on the pump at all; the gated observe
         // still catches changes from a keyboard shortcut or elsewhere.
         let _player_changed = observe_view(&state.player, cx);
         VolumePanel {
@@ -249,8 +249,8 @@ impl VolumePanel {
 
     /// The panel's own dropdown entries: the per-piece toggles and the
     /// stretch knob. The menu shows and hides a piece, putting it back
-    /// where it sat; the customize window's arrange editor is where the
-    /// order changes.
+    /// where it was; the order changes in the customize window's arrange
+    /// editor.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
@@ -394,7 +394,7 @@ fn fmt_db(volume: f32) -> String {
     }
 }
 
-/// One wheel step over the volume panel, wherever the pointer sits on the
+/// One wheel step over the volume panel, wherever the pointer is on the
 /// strip. The step itself is shared with the playback strip's speaker
 /// button, so the two never drift apart.
 fn volume_scroll(
@@ -437,7 +437,7 @@ impl VolumePanel {
         };
 
         // Click toggles mute, so that's what the tip says; with the readout
-        // off, the level rides along behind it so it still has a home.
+        // off, the tip includes the level so it still shows somewhere.
         let tip = match (muted, self.config.items.contains(&VolumeItem::Percent)) {
             (true, true) => rox_i18n::t!("volume-tip-unmute").to_string(),
             (true, false) => {
@@ -551,7 +551,7 @@ impl VolumePanel {
     }
 }
 
-// The volume strip is fully composable, so it leans on the app's own panel
+// The volume strip is fully composable, so it uses the app's own panel
 // floor instead of pinning a width.
 transport_panel!(
     VolumePanel,
@@ -564,7 +564,7 @@ transport_panel!(
 mod tests {
     use super::{VolumeConfig, VolumeItem};
 
-    /// A layout saved before the pieces became toggles carries `icon_only`,
+    /// A layout saved before the pieces became toggles has `icon_only`,
     /// which folds into the icon alone.
     #[test]
     fn icon_only_folds_into_the_item_list() {
@@ -598,7 +598,7 @@ mod tests {
         assert!(config.items == vec![VolumeItem::Percent, VolumeItem::Slider, VolumeItem::Icon]);
     }
 
-    /// A layout that carries the list uses it as-is, duplicates dropped,
+    /// A layout with the list uses it as-is, duplicates dropped,
     /// and round-trips through a save.
     #[test]
     fn item_lists_read_ordered_and_deduped() {

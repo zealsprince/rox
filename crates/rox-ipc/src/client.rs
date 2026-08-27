@@ -1,8 +1,8 @@
 //! A small blocking client over the socket: connect, shake hands, call
-//! methods. The reference consumers (the CLI, the MCP proxy) ride this so
-//! the frame discipline lives in one place on their side too. The transport
-//! is behind boxed halves, which is what lets `call` stay one body over the
-//! Unix socket and the Windows pipe.
+//! methods. The reference consumers (the CLI, the MCP proxy) use this so
+//! the frame discipline stays in one place on their side too. The transport
+//! is behind boxed halves, which lets `call` stay one body over the Unix
+//! socket and the Windows pipe.
 
 use std::collections::VecDeque;
 use std::io::{BufRead as _, BufReader, Read, Write};

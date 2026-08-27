@@ -1,5 +1,5 @@
 //! Numbers and dates through ICU4X, targeted at the active locale. One
-//! formatter set lives behind a lock and rebuilds on locale switch; the
+//! formatter set is held behind a lock and rebuilds on locale switch; the
 //! data is compiled in, so a locale we ship can't fail to load and CJK
 //! locales later are a data question, not a code one.
 
@@ -92,17 +92,17 @@ pub fn format_datetime(year: i32, month: u8, day: u8, hour: u8, minute: u8) -> S
 /// those the same everywhere, so translating them would invent variants
 /// no reader wants.
 ///
-/// The separator is a plain space. Typographically French and German
-/// both want a non-breaking one here, and this is the single place that
+/// The separator is a plain space. French and German typography both
+/// call for a non-breaking one here, and this is the single place that
 /// changes if it ever matters enough to chase.
 pub fn format_unit(value: f64, max_frac: u8, symbol: &str) -> String {
     format!("{} {symbol}", format_float(value, max_frac))
 }
 
 /// A percentage, sign included. Placement is a locale question rather
-/// than a notational one - French and German set the sign off with a
-/// space where English and Italian close it up - so the whole string
-/// comes from the locale and the number rides the usual hook.
+/// than a notational one (French and German set the sign off with a
+/// space where English and Italian close it up), so the whole string
+/// comes from the locale and the number goes through the usual hook.
 ///
 /// The value arrives already scaled: pass 50.0 for half, not 0.5.
 pub fn format_percent(value: f64) -> String {
@@ -110,8 +110,8 @@ pub fn format_percent(value: f64) -> String {
 }
 
 /// An ISO `YYYY-MM-DD` string in the locale's medium form. Dates stored
-/// in files stay ISO because that's a format machines agree on across
-/// versions; this is the one-way trip to what a reader sees.
+/// in files stay ISO because that's a format machines read the same way
+/// across versions; this is the one-way trip to what a reader sees.
 ///
 /// Anything that isn't an ISO date comes back untouched. The workspace
 /// card's dates are author-editable text, so a hand-typed "spring 2019"
@@ -130,11 +130,11 @@ pub fn format_iso_date(text: &str) -> String {
     format_date(year, month, day)
 }
 
-/// The hook every Fluent bundle carries: number placeables render here
-/// instead of through Fluent's bare `to_string`, so `{ $count }` gets
+/// The hook installed on every Fluent bundle: number placeables render
+/// here instead of through Fluent's bare `to_string`, so `{ $count }` gets
 /// locale grouping without call sites pre-formatting. Formatting follows
-/// the active locale even when the message fell back to English, which
-/// is what a German reader wants from an untranslated string.
+/// the active locale even when the message fell back to English, so a
+/// German reader still sees German number formatting.
 pub(crate) fn fluent_number(
     value: &FluentValue<'_>,
     _memoizer: &IntlLangMemoizer,
@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(format_int(12345), "12,345");
     }
 
-    /// The decimal mark is the whole point; the symbol rides along
+    /// The decimal mark is the whole point; the symbol passes through
     /// untouched because SI doesn't translate.
     #[test]
     fn units_localize_the_number_and_leave_the_symbol() {

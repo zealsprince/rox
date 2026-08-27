@@ -2,7 +2,7 @@
 //! its mini and primary layouts, the menubar toggle and the window
 //! controls' lead button as a panel of its own. The glyph follows the
 //! workspace, minimize while on the primary layout, maximize while on the
-//! mini one. With no mini layout assigned it sits faint and inert, the
+//! mini one. With no mini layout assigned it's drawn faint and inert, the
 //! same gate every mini toggle shows behind.
 
 use gpui::{
@@ -36,10 +36,10 @@ pub struct MiniTogglePanel {
     state: AppState,
     config: MiniToggleConfig,
     /// The workspace this panel toggles; gone in a popped-out window whose
-    /// workspace has closed, where the button just sits inert.
+    /// workspace has closed, where the button is just inert.
     workspace: WeakEntity<Workspace>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// The glyph follows the workspace's mini state.
     _workspace_changed: Option<Subscription>,
@@ -110,7 +110,7 @@ impl MiniTogglePanel {
                             cx.listener(|this, _, window, cx| {
                                 // Deferred out of this panel's update: the toggle
                                 // stashes a dock dump, and dumping reads every
-                                // panel, this one included - a read inside its own
+                                // panel, this one included. A read inside its own
                                 // update panics.
                                 let ws = this.workspace.clone();
                                 window.defer(cx, move |window, cx| {
@@ -233,7 +233,7 @@ impl Panel for MiniTogglePanel {
         rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
-    /// The layout dump carries the panel's config; the builder registered
+    /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);

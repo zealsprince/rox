@@ -3,7 +3,7 @@
 //! header block opening every group run.
 //!
 //! All of it is arithmetic over the projection's interned columns, so it
-//! sits here next to the projection instead of inside a panel. The panel
+//! belongs here next to the projection instead of inside a panel. The panel
 //! keeps the parts that need a window: resolving its column keys to
 //! [`SortKey`]s, and drawing the rows this hands back.
 
@@ -17,7 +17,7 @@ use crate::projection::{FilterSet, Projection, SortKey};
 /// of the group header opening the artist/album run that follows it.
 /// Headers open whatever runs the current order holds: the canonical
 /// order's groups, or the runs a column sort leaves adjacent. Search hits
-/// render flat. Headers live in the same index space as tracks, so a
+/// render flat. Headers share the same index space as tracks, so a
 /// virtualized table scrolls them like any row. A table draws
 /// every row one fixed height, so a header block is one row per composed
 /// line, each drawing its own piece list.
@@ -41,7 +41,7 @@ pub struct Group {
     /// The group's codec symbol while every track agrees; None once two
     /// differ, and the meta line drops it.
     pub codec: Option<u32>,
-    /// The bitrate spread over tracks that carry one, in kbps; both 0 when
+    /// The bitrate spread over tracks that have one, in kbps; both 0 when
     /// none does.
     pub min_kbps: u16,
     pub max_kbps: u16,
@@ -49,7 +49,7 @@ pub struct Group {
     /// once two differ, the same all-or-nothing rule the codec follows:
     /// a mixed album has no one shape to name. Option rather than a 0
     /// sentinel because 0 is also what a track with an unread depth or
-    /// rate carries, and a group where every track agrees on "unread" is
+    /// rate gets, and a group where every track agrees on "unread" is
     /// not a group that disagrees.
     pub bit_depth: Option<u8>,
     pub sample_rate_hz: Option<u32>,
@@ -207,9 +207,9 @@ pub fn view_for(
 /// group spanning discs gets a divider row opening each numbered disc's
 /// run, as long as the run lists its discs in order (the canonical order
 /// always does; a column sort can interleave them, and an out-of-order
-/// run reads better undivided). Untagged tracks (disc 0) sit under the
+/// run reads better undivided). Untagged tracks (disc 0) go under the
 /// header undivided. Breaks compare interned symbols (years their raw
-/// value) and the stats are two integer sums, so the walk stays cheap and
+/// value) and the stats are two integer sums, so the pass stays cheap and
 /// runs once per view swap, never while scrolling.
 ///
 /// `solo_heads` says whether a run of one track still opens a block. The
@@ -227,8 +227,8 @@ pub fn group_rows(
     let mut i = 0;
     while i < order.len() {
         // One album run: the order keeps a group contiguous, so its extent
-        // is known before any of its rows are pushed, which is what lets
-        // the first disc get its divider too.
+        // is known before any of its rows are pushed, which lets the first
+        // disc get its divider too.
         let mut j = i + 1;
         while j < order.len() && key(order[j]) == key(order[i]) {
             j += 1;

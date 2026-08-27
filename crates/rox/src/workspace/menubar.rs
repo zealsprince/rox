@@ -1,13 +1,13 @@
 //! The menubar: the dropdown menus, their layout and workspace flyout
 //! submenus, and menu action dispatch. Split out of the workspace shell it
-//! renders into; it reaches back into the same private state, so these are
+//! renders into; it touches the same private state, so these are
 //! `impl Workspace` methods in a child module.
 
 use super::*;
 
 use gpui::MouseDownEvent;
 
-/// Where the Application menu's three project links land. The issue form is
+/// Where the Application menu's three project links go. The issue form is
 /// the chooser rather than a blank issue, so a report arrives on a template.
 const ISSUES_URL: &str = "https://github.com/zealsprince/rox/issues/new/choose";
 const DISCUSSIONS_URL: &str = "https://github.com/zealsprince/rox/discussions";
@@ -127,8 +127,9 @@ impl Workspace {
         }
     }
 
-    /// Something landed under the held Alt, so it's a chord or a drag rather
-    /// than a tap, and the pair it might have completed is off too.
+    /// A key or a button went down under the held Alt, so it's a chord or a
+    /// drag rather than a tap, and the pair it might have completed is off
+    /// too.
     pub(crate) fn cancel_alt_tap(&mut self) {
         self.alt_tap.cancel();
     }
@@ -148,7 +149,7 @@ impl Workspace {
 
     /// The pointer crossing the pinned bar's edge. Entering arms the pin,
     /// leaving drops it, so the bar clears itself once it's been used. A
-    /// leave with a dropdown open is the pointer walking into the dropdown,
+    /// leave with a dropdown open is the pointer moving into the dropdown,
     /// which hangs below the bar's bounds, so the pin holds through it.
     pub(crate) fn note_menubar_hover(&mut self, hovered: bool, cx: &mut Context<Self>) {
         if !self.menubar_pinned {
@@ -207,7 +208,7 @@ impl Workspace {
     /// One builder so the docked row and the alt-revealed overlay stay
     /// the same bar.
     pub(crate) fn menubar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        // On macOS the menus live in the system bar, so this row keeps only
+        // On macOS the menus are in the system bar, so this row keeps only
         // what the system bar has no place for: the mini toggle, the drag
         // handle, and the library status.
         let native_menus = cfg!(target_os = "macos");
@@ -367,8 +368,8 @@ impl Workspace {
     }
 
     /// A paint-time capture of a menu surface's bounds into
-    /// [`Workspace::menu_surfaces`], with the viewport width alongside:
-    /// what the next frame's flyout side decisions read.
+    /// [`Workspace::menu_surfaces`], with the viewport width alongside. The
+    /// next frame's flyout side decisions read both.
     fn menu_surface_capture(&self, level: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         canvas(
@@ -483,7 +484,7 @@ impl Workspace {
     /// flyout.
     fn action_item(&self, item: MenuItem, cx: &mut Context<Self>) -> Div {
         let action = item.action;
-        // The static menu table can't carry state, so the toggle row reads
+        // The static menu table can't hold state, so the toggle row reads
         // its check live.
         let checked = match action {
             MenuAction::ToggleMenubar => settings::hide_menubar(),
@@ -540,8 +541,8 @@ impl Workspace {
                         .text_color(palette::text_muted()),
                 )
             })
-            // Panels with knobs the signal pool can drive say so here, so
-            // the list itself answers which ones the pool reaches.
+            // Panels with knobs the signal pool can drive are marked here, so
+            // the list itself shows which ones the pool can reach.
             .when(signal_marked(action), |d| {
                 d.child(div().flex_1().min_w(px(24.))).child(
                     svg()
@@ -756,7 +757,7 @@ impl Workspace {
     }
 
     /// A preset row in a layouts flyout: closes the menu, then does the
-    /// flyout's thing with the named preset - open a window, overwrite it
+    /// flyout's thing with the named preset: open a window, overwrite it
     /// with the current arrangement, or apply it here behind a confirm.
     fn layout_item(
         &self,
@@ -794,7 +795,7 @@ impl Workspace {
     }
 
     /// The panel-presets flyout: the saved panels, read when it opens, each
-    /// doing the flyout's `target` - built into this window, or opened in one
+    /// doing the flyout's `target`: built into this window, or opened in one
     /// of its own.
     fn presets_submenu_row(
         &self,
@@ -822,8 +823,8 @@ impl Workspace {
         })
     }
 
-    /// The Window menu's panel picker: one flyout of groups - the saved
-    /// presets, then the catalog's own - each flying out again into its
+    /// The Window menu's panel picker: one flyout of groups (the saved
+    /// presets, then the catalog's own), each flying out again into its
     /// panels. Every pick opens that panel in a window of its own, which is
     /// why this is a flyout of its own rather than a target on the Panels
     /// menu.
@@ -1041,7 +1042,7 @@ impl Workspace {
                 // parent-menu paint, and only far enough to name them: the
                 // bundles stay on disk until one is applied. The Save flyout
                 // can't overwrite shipped bundles, so it drops them, matching
-                // the settings window where shipped rows carry no Overwrite.
+                // the settings window where shipped rows have no Overwrite.
                 let mut entries = crate::workspaces::all();
                 if target == WorkspaceTarget::Overwrite {
                     entries.retain(|entry| !entry.builtin);
@@ -1172,7 +1173,7 @@ pub(crate) fn toggle_design_mode(cx: &mut App) {
 
 /// A flyout row's own chrome: the icon, the label, the chevron, and the hover
 /// that opens it at `index`. The flyout itself is the caller's, chained onto
-/// what comes back - it's the part that differs between a static group and a
+/// what comes back: it's the part that differs between a static group and a
 /// list read at open time.
 fn submenu_shell(
     index: usize,
@@ -1223,7 +1224,7 @@ fn submenu_shell(
         )
 }
 
-/// The panel a flyout's items sit in, beside the row that opened it on the
+/// The panel a flyout's items go in, beside the row that opened it on the
 /// side [`flyout_leftward`] picked. The top offset backs out the parent's
 /// padding and the dropdown border so the first item lines up with that row.
 fn flyout_box(leftward: bool) -> Div {
@@ -1240,7 +1241,7 @@ fn flyout_box(leftward: bool) -> Div {
         .occlude()
 }
 
-/// What a flyout says instead of its items when it has none.
+/// What a flyout shows instead of its items when it has none.
 fn flyout_note(text: impl Into<SharedString>) -> Div {
     div()
         .px(tokens::SPACE_MD)
@@ -1251,7 +1252,7 @@ fn flyout_note(text: impl Into<SharedString>) -> Div {
 
 /// The Alt tap tracker behind the menubar pin. Alt held floats a hidden bar
 /// over the dock, and two quick taps of it pin the bar up so it stays with
-/// nothing held. Holding the key is what makes the plain reveal awkward to
+/// nothing held. Holding the key makes the plain reveal awkward to
 /// click: Alt+drag is the compositor's window move, and on macOS
 /// Option-click on the zoom light means zoom, so fullscreen was unreachable
 /// while the bar only existed under a held Option.
@@ -1302,7 +1303,7 @@ impl AltTap {
         }
     }
 
-    /// A key or a button landed under the held Alt, so it's a chord or a
+    /// A key or a button went down under the held Alt, so it's a chord or a
     /// drag; the press and the pair it might have completed are both off.
     fn cancel(&mut self) {
         self.held_since = None;

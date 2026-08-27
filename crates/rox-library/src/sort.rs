@@ -55,7 +55,7 @@ mod tests {
     use super::*;
 
     /// Filenames sort the file-manager way: digit runs compare as numbers,
-    /// so padded and unpadded track numbers both land 1, 2, ... 10, 11 and
+    /// so padded and unpadded track numbers both order 1, 2, ... 10, 11 and
     /// never 1, 10, 11, 2.
     #[test]
     fn natural_sort_orders_track_numbers() {

@@ -1,5 +1,5 @@
 //! The spectrum panel: live frequency bars over the player's PCM tap, the
-//! classic analyzer look - log-spaced bands, snappy attack, eased decay,
+//! classic analyzer look: log-spaced bands, snappy attack, eased decay,
 //! peak-hold caps falling under gravity, dB gridlines behind. Everything is
 //! paint primitives on the UI thread: one FFT per frame while audio flows,
 //! and once the bars have settled the panel stops asking for frames, so an
@@ -9,7 +9,7 @@
 //! grow from and the mirrored symmetry, the bar width and fill, the
 //! peak-hold caps and their gravity, and the axis scale (octave pitches or
 //! frequencies) are per-view config the customize window edits and the
-//! layout dump carries.
+//! layout dump stores.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -48,7 +48,7 @@ const MAX_BARS: usize = 512;
 /// The panel's own height floor, under the dock's 40px default: the body is
 /// one canvas that draws at whatever height it gets, so a layout is free to
 /// run the bands as a thin strip along an edge. The width keeps the dock
-/// floor, which is what the band count needs to stay readable.
+/// floor, which the band count needs to stay readable.
 const MIN_HEIGHT: gpui::Pixels = gpui::px(16.);
 
 /// The bar width slider's span, px: thin bars pack more bands into the
@@ -87,17 +87,17 @@ const SLIDER_MAX_HZ: f32 = 20_000.0;
 /// mapping always has room and never inverts.
 const MIN_RATIO: f32 = 2.0;
 
-/// C0's pitch; each octave up doubles it. The pitch markers walk these.
+/// C0's pitch; each octave up doubles it. The pitch markers step through these.
 const C0_HZ: f32 = 16.352;
 
 /// dB window the bars normalize into, on magnitudes where a full-scale sine
-/// sits at 0 dB. The top leaves headroom so a busy mix pins near full height
+/// is 0 dB. The top leaves headroom so a busy mix pins near full height
 /// without every band clipping there.
 const FLOOR_DB: f32 = -66.0;
 const MAX_DB: f32 = -12.0;
 
-/// Per-second smoothing rates: bands jump up fast and fall slowly, which is
-/// what makes kicks read as kicks instead of flicker.
+/// Per-second smoothing rates: bands jump up fast and fall slowly, so kicks
+/// read as kicks instead of flicker.
 const ATTACK: f32 = 40.0;
 const RELEASE: f32 = 10.0;
 
@@ -130,7 +130,7 @@ const EPSILON: f32 = 0.002;
 /// How long the feed may sit still before it reads as stopped audio rather
 /// than the gap between pump ticks (the tap drains on a ~16ms timer, so
 /// frames between ticks see no new samples). Between ticks the bars hold
-/// their targets instead of dipping toward silence - the dip-and-reattack
+/// their targets instead of dipping toward silence. The dip-and-reattack
 /// used to read as shimmer on high-refresh displays and as a full strobe
 /// under load. Paused and stopped push nothing and cross this quickly;
 /// playing audio always pushes, silence included.
@@ -178,11 +178,11 @@ impl Orientation {
     }
 }
 
-/// How the bands color: flat accent, or a loudness ramp - the theme's dim
-/// floor up to the accent, the cover art's two extracted colors while song
-/// theming derives (the accent and highlight carry the art's primary and
-/// runner-up, and fall back to the plain palette when it doesn't), or a
-/// custom two-color pair.
+/// How the bands color: flat accent, or a loudness ramp. The ramp is the
+/// theme's dim floor up to the accent, the cover art's two extracted colors
+/// while song theming derives (the accent and highlight hold the art's
+/// primary and runner-up, and fall back to the plain palette when it
+/// doesn't), or a custom two-color pair.
 #[derive(Clone, Copy, Default, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Gradient {
@@ -346,7 +346,7 @@ pub struct SpectrumConfig {
     pub style: SpectrumStyle,
     /// The edge the bands grow from.
     pub orientation: Orientation,
-    /// Fold the spectrum around the axis center - the symmetry look:
+    /// Fold the spectrum around the axis center, the symmetry look:
     /// forward runs the lows to the outer edges, reverse meets them at
     /// the middle.
     pub symmetry: Symmetry,
@@ -360,7 +360,7 @@ pub struct SpectrumConfig {
     /// a more detailed spectrum.
     pub bar_width: f32,
     /// Gap between bars, px: zero packs them edge to edge, wider spreads
-    /// them out. Also feeds the bar count, so a wider gap fits fewer bars.
+    /// them out. Also sets the bar count, so a wider gap fits fewer bars.
     pub bar_gap: f32,
     /// Cell depth in the block style, px.
     pub block_height: f32,
@@ -388,7 +388,7 @@ pub struct SpectrumConfig {
     pub outline: bool,
     /// Stroke thickness of the hollow bars, px.
     pub outline_width: f32,
-    /// Peak-hold caps riding above the bars.
+    /// Peak-hold caps above the bars.
     pub caps: bool,
     /// Freeze the bars while playback is paused instead of letting them
     /// fall to silence.
@@ -490,17 +490,22 @@ impl SpectrumConfig {
     }
 
     /// The FFT sizes, snapped to the picker's power-of-two steps so a
-    /// hand-edited file can't feed the analyzer a bad size.
+    /// hand-edited file can't give the analyzer a bad size. The clamp comes
+    /// first on purpose: `next_power_of_two` overflows on anything past the
+    /// top power of two the type holds, which is a panic in debug and a wrap
+    /// to zero in release, so rounding an unbounded number straight out of a
+    /// layout file is the one input that gets past this. Every size in range
+    /// rounds the same either way.
     fn fft_lo(&self) -> usize {
         self.fft_size
-            .next_power_of_two()
             .clamp(MIN_FFT_SIZE, MAX_FFT_SIZE)
+            .next_power_of_two()
     }
 
     fn fft_hi(&self) -> usize {
         self.fft_size_hi
-            .next_power_of_two()
             .clamp(MIN_FFT_SIZE, MAX_FFT_SIZE)
+            .next_power_of_two()
     }
 }
 
@@ -610,7 +615,7 @@ impl Bars {
     /// One tick: pull the newest window off the feed, fold it into the bar
     /// levels, advance the holds. No new audio means the bars decay, unless
     /// `hold` keeps the last frame standing (the freeze-on-pause option).
-    /// `axis` is the length the bands lay along - the panel's width or
+    /// `axis` is the length the bands lay along, the panel's width or
     /// height per the orientation, halved when mirrored.
     fn step(&mut self, feed: &AudioFeed, axis: f32, config: &SpectrumConfig, hold: bool) {
         let (freq_lo, freq_hi) = config.range();
@@ -653,7 +658,7 @@ impl Bars {
 
         // Frozen: keep the levels and holds exactly where they are and stop
         // animating; paint keeps showing the standing frame. A settings edit
-        // that remaps the bars still lands: the feed keeps the last window,
+        // that remaps the bars still takes effect: the feed keeps the last window,
         // so the frame re-analyzes below at the new mapping instead of
         // ignoring the edit until playback resumes.
         if hold && !fresh && !remap {
@@ -662,9 +667,9 @@ impl Bars {
         }
 
         // New audio since last tick: analyze the latest window per zone and
-        // refresh the targets. Nothing new: hold the targets - it's just
-        // the gap between pump ticks - until the feed has sat still long
-        // enough to read as stopped, then let the bars fall to silence.
+        // refresh the targets. Nothing new: hold the targets (it's just the
+        // gap between pump ticks) until the feed has sat still long enough
+        // to read as stopped, then let the bars fall to silence.
         // A remap also re-analyzes: it just reset the targets, and the
         // buffered window rebuilds them at the new mapping without waiting
         // for the next pump tick.
@@ -700,9 +705,9 @@ impl Bars {
                 }
                 let target = self.targets[i];
                 if hold {
-                    // Frozen: the frame changed mapping, not time. Land on
-                    // the new targets at once - the next tick parks again,
-                    // so an ease would strand the bars partway.
+                    // Frozen: the frame changed mapping, not time. Jump to
+                    // the new targets at once, since the next tick parks
+                    // again and an ease would strand the bars partway.
                     self.levels[i] = target;
                 } else {
                     let rate = if target > self.levels[i] {
@@ -713,8 +718,8 @@ impl Bars {
                     self.levels[i] += (target - self.levels[i]) * (rate * dt).min(1.0);
                 }
 
-                // The cap rides up with the bar and falls back under gravity
-                // once the bar drops away. Caps off: the holds shadow the
+                // The cap follows the bar up and falls back under gravity
+                // once the bar drops away. Caps off: the holds track the
                 // bars so they don't keep the panel animating.
                 if !config.caps || self.levels[i] >= self.holds[i] {
                     self.holds[i] = self.levels[i];
@@ -804,7 +809,7 @@ impl Bars {
                 for &a in slots {
                     if config.style == SpectrumStyle::Blocks {
                         // The stack: cells lit up to the level, each colored
-                        // by its own height on the ramp - the classic look
+                        // by its own height on the ramp, the classic look
                         // where only a tall stack's top runs hot.
                         let lit = (level * cells as f32).round() as usize;
                         for c in 0..lit {
@@ -854,7 +859,7 @@ impl Bars {
             return;
         }
         // Peak-hold caps at the held level above each band: position marks
-        // like the playheads and slider knobs, so they wear the highlight
+        // like the playheads and slider knobs, so they use the highlight
         // and stay legible over accent-colored bars. Block style lights a
         // floating segment on the cell grid instead of a thin line.
         for i in 0..count {
@@ -878,7 +883,7 @@ impl Bars {
 
     /// The line style: a solid stroke through the band tips over a soft
     /// fill down to the baseline, built as triangle strips the way the
-    /// chart donut fans its ring. Intensity color rides the depth here -
+    /// chart donut fans its ring. Intensity color follows the depth here:
     /// one path is one fill, so the ramp runs base to tip rather than
     /// per band.
     #[allow(clippy::too_many_arguments)]
@@ -918,7 +923,7 @@ impl Bars {
         tips.push((half, (self.levels[count - 1] * max_d).max(2.0)));
 
         // The ramp's ends for the configured source; None paints the flat
-        // accent. One path is one fill, so the ramp rides the depth as a
+        // accent. One path is one fill, so the ramp follows the depth as a
         // base-to-tip gradient rather than per band.
         let ramp = match config.gradient {
             Gradient::Off => None,
@@ -986,8 +991,8 @@ impl Bars {
     }
 }
 
-/// A band's color at ramp position `t` - its level, or a cell's height in
-/// the block stack. The ramp itself lives in [`ramp_color`], shared with the
+/// A band's color at ramp position `t`: its level, or a cell's height in
+/// the block stack. The ramp itself is in [`ramp_color`], shared with the
 /// VU meter panel.
 fn bar_color(config: &SpectrumConfig, t: f32) -> Rgba {
     ramp_color(config.gradient, t, config.custom_ramp())
@@ -996,8 +1001,8 @@ fn bar_color(config: &SpectrumConfig, t: f32) -> Rgba {
 /// The loudness ramp at position `t`, shared with the VU meter panel so both
 /// visualizers color the same way. Flat mode is the accent everywhere; the
 /// ramps blend upward, curved so the mids stay muted and only the top lights
-/// up. The cover ramp runs accent to highlight - the art's primary and
-/// runner-up while song theming derives - and stops short of full highlight
+/// up. The cover ramp runs accent to highlight (the art's primary and
+/// runner-up while song theming derives) and stops short of full highlight
 /// so the peak caps stay legible on a pinned band. `custom` is the parsed
 /// custom pair, ignored unless the source is [`Gradient::Custom`].
 pub fn ramp_color(gradient: Gradient, t: f32, custom: (Rgba, Rgba)) -> Rgba {
@@ -1029,8 +1034,8 @@ fn axis_rule(orientation: Orientation, frac: f32, color: Rgba) -> Div {
     }
 }
 
-/// Where an axis fraction of the analyzed range lands on the panel: one
-/// spot as-is, or two under symmetry, folded into the halves - forward
+/// Where an axis fraction of the analyzed range maps to on the panel: one
+/// spot as-is, or two under symmetry, folded into the halves: forward
 /// outside-in, reverse inside-out.
 fn axis_fracs(symmetry: Symmetry, frac: f32) -> Vec<f32> {
     if !symmetry.mirrored() {
@@ -1093,7 +1098,7 @@ fn labels_overlay(config: &SpectrumConfig) -> Div {
 
 /// One marker: the divider across the panel with its label against it.
 /// Horizontal orientations run the divider full height with the text along
-/// the base edge; sideways ones sit the text on the divider, against the
+/// the base edge; sideways ones put the text on the divider, against the
 /// base edge.
 fn axis_mark(orientation: Orientation, frac: f32, label: Option<String>) -> Div {
     let mark = axis_rule(orientation, frac, palette::alpha(palette::gridline(), 0x1f));
@@ -1126,24 +1131,24 @@ fn axis_mark(orientation: Orientation, frac: f32, label: Option<String>) -> Div 
 
 /// How much of the axis a band has to cover before both its bounds get
 /// their number: under this the two would print over each other, and the
-/// low bound is the one carrying the name.
+/// low bound is the one that gets the name.
 const BAND_LABEL_GAP: f32 = 0.08;
 
 /// Mark a frequency band across a spectrum drawn with `config`: a rule at
 /// each bound, each saying its own frequency, with the band's name leading
 /// the low one. Positioned off the same log mapping the bars use, so a
-/// bound picked here lands where the eye put it.
+/// bound picked here ends up where the eye put it.
 ///
 /// Both labels hang inside the band, so the pair brackets what it covers
 /// rather than trailing off one side, and neither runs off the panel when a
-/// bound sits near an edge. They ride the edge the frequency scale's own
+/// bound is near an edge. They use the edge the frequency scale's own
 /// numbers leave alone, or the two would sit on top of each other.
 ///
 /// `strong` is the drag: a band brightens while one of its bounds is
 /// actually moving, so the one being edited stands out from the rest.
 ///
 /// A bound outside the analyzed range draws nothing, the way the split
-/// marker sits out: pinning it to the edge would put a line where the
+/// marker is hidden: pinning it to the edge would put a line where the
 /// bound isn't, and the slider's own readout has the number.
 pub fn band_overlay(
     config: &SpectrumConfig,
@@ -1248,12 +1253,12 @@ pub struct SpectrumPanel {
     /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
     /// The custom ramp's pickers, base then tip, built on the first
-    /// settings render: the panel itself constructs without a window,
-    /// which the picker state needs.
+    /// settings render, since the panel itself constructs without a window
+    /// and the picker state needs one.
     ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
     _ramp_changes: Vec<Subscription>,
     focus: FocusHandle,
-    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Wakes the panel when a session starts, so an idle window resumes
     /// animating without the player bar's frame pump.
@@ -1394,7 +1399,7 @@ impl PanelSettings for SpectrumPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // The custom ramp's pickers on first need; each edit writes its
-        // hex back into the config, the format the layout dump carries.
+        // hex back into the config, the format the layout dump stores.
         if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
             let (lo, hi) = self.config.custom_ramp();
             let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
@@ -1721,8 +1726,6 @@ impl Panel for SpectrumPanel {
         false
     }
 
-    /// The layout dump carries the panel's config; the builder registered in
-    /// `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
@@ -1734,6 +1737,8 @@ impl Panel for SpectrumPanel {
         crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
+    /// The layout dump stores the panel's config; the builder registered in
+    /// `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
@@ -1799,7 +1804,7 @@ impl Render for SpectrumPanel {
 impl SpectrumPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // While audio moves the direct observe re-renders the panel on
-        // every pump tick - the only rate new samples arrive at, so frames
+        // every pump tick, the only rate new samples arrive at, so frames
         // past it re-analyze nothing. Frame polling is just for the falling
         // bars after audio stops, when no more ticks come; once they settle
         // the panel parks, and a resume wakes it through the pump's
@@ -1842,7 +1847,7 @@ impl SpectrumPanel {
             root = root.child(labels_overlay(&self.config));
         }
         // While the split slider drags, mark where the zones meet so the
-        // pick lands by eye; the playhead's alpha keeps it legible. A
+        // pick can be made by eye; the playhead's alpha keeps it legible. A
         // symmetric panel's zones meet twice, once per half.
         if self.config.split && self.split_scrub.is_dragging() {
             let split = self.config.split_hz.clamp(SLIDER_MIN_HZ, SLIDER_MAX_HZ);
@@ -1865,8 +1870,8 @@ impl SpectrumPanel {
 mod tests {
     use super::*;
 
-    /// Every shipped bundle still spells `labels` as the old bool, so the
-    /// legacy read is what most configs in the wild go through.
+    /// Every shipped bundle still spells `labels` as the old bool, so most
+    /// configs in the wild go through the legacy read.
     #[test]
     fn labels_read_the_old_bool_as_the_pitch_scale() {
         let on: Labels = serde_json::from_str("true").unwrap();
@@ -1907,6 +1912,42 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_edited_fft_size_lands_in_range_instead_of_overflowing() {
+        // The number nobody types on purpose: rounding it up before the clamp
+        // runs off the top of the type, which is what the accessor's ordering
+        // is there to dodge.
+        let junk = SpectrumConfig {
+            fft_size: usize::MAX,
+            fft_size_hi: usize::MAX,
+            ..SpectrumConfig::default()
+        };
+        for size in [junk.fft_lo(), junk.fft_hi()] {
+            assert!((MIN_FFT_SIZE..=MAX_FFT_SIZE).contains(&size));
+            assert!(size.is_power_of_two());
+        }
+
+        // Zero from the other end, and the sizes the picker really offers,
+        // which have to survive the reorder unchanged.
+        let low = SpectrumConfig {
+            fft_size: 0,
+            fft_size_hi: 0,
+            ..SpectrumConfig::default()
+        };
+        assert_eq!(low.fft_lo(), MIN_FFT_SIZE);
+        assert_eq!(low.fft_hi(), MIN_FFT_SIZE);
+
+        for (&(_, offered), want) in FFT_CHOICES.iter().zip(FFT_CHOICES.iter().map(|c| c.1)) {
+            let config = SpectrumConfig {
+                fft_size: offered,
+                fft_size_hi: offered,
+                ..SpectrumConfig::default()
+            };
+            assert_eq!(config.fft_lo(), want);
+            assert_eq!(config.fft_hi(), want);
+        }
+    }
+
+    #[test]
     fn the_pitch_scale_still_marks_the_octaves() {
         let config = SpectrumConfig {
             labels: Labels::Pitch,
@@ -1916,7 +1957,7 @@ mod tests {
             .into_iter()
             .map(|(_, text)| text)
             .collect();
-        // C0 sits under the default range's floor and C10 over its ceiling.
+        // C0 is under the default range's floor and C10 over its ceiling.
         assert_eq!(
             labels,
             vec!["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]

@@ -9,15 +9,15 @@
 //! which lofty maps to `IntegerBpm` and `Bpm`; taggers that write both agree
 //! on the number, so the integer key is asked first and the other only fills
 //! a gap. MP4's `tmpo` is an integer atom lofty's generic tag drops on the
-//! way out, so an m4a reads as untagged unless it carries iTunes' freeform
-//! BPM beside it.
+//! way out, so an m4a reads as untagged unless it also has iTunes' freeform
+//! BPM.
 
 use lofty::tag::{ItemKey, Tag};
 
 /// The slowest tempo a stored row may claim.
 ///
 /// Below this a number is not a tempo anybody meant. Taggers write 0 for
-/// "unset", and the odd file carries a beat period or a sample count in the
+/// "unset", and the odd file has a beat period or a sample count in the
 /// frame instead of a rate; either would sort ahead of the whole library
 /// and pick wrong for anything built on tempo.
 pub const SLOWEST: f32 = 40.0;
@@ -63,7 +63,7 @@ impl Source {
     }
 }
 
-/// Read the tempo off a parsed tag, None where the file carries none rox
+/// Read the tempo off a parsed tag, None where the file has none rox
 /// will believe. One tag, not every tag the file holds: a second tag
 /// disagreeing about the tempo is a conflict to resolve, not a gap to fill,
 /// and the wide read [`crate::scanner`] does for ReplayGain exists because
@@ -76,8 +76,8 @@ pub fn read(tag: &Tag) -> Option<f32> {
 /// A tempo field: a plain number of beats a minute, written whole by most
 /// taggers and with a fraction by the ones that estimated it. Anything
 /// outside [`SLOWEST`]..=[`FASTEST`] reads as untagged, junk included, so a
-/// file claiming 0 or 9999 lands on the measurement pass's list rather than
-/// carrying a number the library would sort and mix by.
+/// file claiming 0 or 9999 goes onto the measurement pass's list rather than
+/// keeping a number the library would sort and mix by.
 pub fn parse(value: &str) -> Option<f32> {
     let bpm: f32 = value.trim().parse().ok()?;
     (bpm.is_finite() && (SLOWEST..=FASTEST).contains(&bpm)).then_some(bpm)
@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(read(&vorbis), Some(174.3));
     }
 
-    /// MP4 is the format that carries both, `tmpo` beside iTunes' freeform
+    /// MP4 is the format that has both, `tmpo` beside iTunes' freeform
     /// BPM. The integer key wins where they disagree, and a gap in it falls
     /// through to the other rather than reading as untagged outright.
     #[test]

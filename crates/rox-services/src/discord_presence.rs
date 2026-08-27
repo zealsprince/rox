@@ -268,8 +268,9 @@ impl DiscordPresence {
                         // clock Discord ever stops: it counts on from there client-side and
                         // nothing goes out while paused, so a track left paused for twenty
                         // minutes would read 21:00 into a four-minute song. Off means no
-                        // running counter at all, which is the honest thing for a pause.
-                        // The end stamp is what draws the progress bar, so it rides along.
+                        // running counter at all, which is accurate for a pause.
+                        // Discord draws the progress bar from the end stamp, so that
+                        // goes out too.
                         // Resume re-anchors on the position we're actually at, since
                         // same_metadata counts is_playing and both transitions re-send.
                         if state.is_playing {

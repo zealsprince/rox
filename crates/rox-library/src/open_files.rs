@@ -1,6 +1,6 @@
 //! Turning OS-handed paths into playable ones. Both the command line
-//! (`rox song.flac`) and an external file drop onto the window land here to
-//! get filtered down to files the engine can actually decode before they hit
+//! (`rox song.flac`) and an external file drop onto the window come through
+//! here to get filtered down to files the engine can decode before they hit
 //! the path-based player queue.
 
 use std::path::{Path, PathBuf};
@@ -17,8 +17,8 @@ fn is_audio_file(path: &Path) -> bool {
 }
 
 /// Every audio file directly under a directory, sorted so a dropped folder
-/// enqueues in a stable order. Shallow on purpose - a folder drop grabs the
-/// tracks sitting in it, not a whole recursive tree.
+/// enqueues in a stable order. Shallow: a folder drop grabs the tracks
+/// directly in it, not a whole recursive tree.
 fn audio_files_in_dir(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(entries) => entries

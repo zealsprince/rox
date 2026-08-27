@@ -3,14 +3,14 @@
 rox's machine interface: newline-delimited JSON-RPC 2.0 over a Unix domain socket on
 Linux and macOS, a named pipe on Windows. Anything running as your user can read the
 library, watch the player, and drive playback through it. Media keys and desktop
-now-playing ride MPRIS as usual; this is the surface for front ends and scripts.
+now-playing use MPRIS as usual; this is the surface for front ends and scripts.
 
-The socket binds when rox launches and answers until it quits, including while rox
-sits windowless in the tray. Each data directory gets its own socket, so a
-`--portable` or `--fresh` run carries its own control surface instead of steering the
+The socket binds when rox launches and stays up until it quits, including while rox
+is windowless in the tray. Each data directory gets its own socket, so a
+`--portable` or `--fresh` run has its own control surface instead of steering the
 daily driver.
 
-## Where it lives
+## Where to find it
 
 | Platform     | Path                                                                                        |
 | ------------ | ------------------------------------------------------------------------------------------- |
@@ -23,8 +23,8 @@ shows the exact path, with buttons to copy it or reveal it in the file manager.
 ## Wire format
 
 One JSON object per line, LF-terminated, UTF-8, frames capped at 1 MiB. A request
-carries `id`, `method`, and optional `params`; every request gets exactly one response
-frame echoing the id, holding either `result` or `error`.
+has `id`, `method`, and optional `params`; every request gets exactly one response
+frame echoing the id, with either `result` or `error`.
 
 A connection opens with a handshake naming the protocol generation it speaks. Every
 other method is refused until then:
@@ -39,7 +39,7 @@ fields arrive without a bump, so clients should ignore fields they don't know.
 
 ## Methods
 
-Transport verbs answer with the full player status, so a caller sees what its command
+Transport verbs return the full player status, so a caller sees what its command
 did without a second round trip.
 
 | Method                                                     | Params                                        | Answers                                                                |
@@ -60,14 +60,14 @@ did without a second round trip.
 | `debug.settings`                                           |                                               | the settings as saved                                                  |
 | `debug.panels`                                             |                                               | the frontmost workspace's panel tree, as the layout persist writes it   |
 
-Queue entry ids are stable handles: `queue.list` hands them out, and remove, move,
+Queue entry ids are stable handles: `queue.list` returns them, and remove, move,
 and jump name entries by them, so an edit can't hit the wrong row when the queue
 shifts underneath it. `queue.add` takes files and folders, filters to decodable
 audio, and accepts `path#N` for a cue sheet's Nth track, the same spelling the m3u
 export uses. `mode` places the batch: `end` behind what's queued, `next` right after
 the playing track, `now` splices and plays.
 
-Search speaks the panels' query language: free terms match title, artist, album, and
+Search uses the panels' query language: free terms match title, artist, album, and
 genre, while `artist:name`, `album:name`, `genre:name`, and `year:1990` pin one
 field. `limit` defaults to 50 and caps at 500.
 
@@ -94,9 +94,7 @@ apply and the `-32000` range for rox's own:
 ## roxctl
 
 The reference client, for developing against the socket and testing it. It
-doesn't ship with releases: transport control is already scriptable through
-MPRIS and the system media keys, and the rest of the surface is plain JSON-RPC
-any language speaks in a few lines. Build it from the repo with
+doesn't ship with releases; build it from the repo with
 `cargo build --release --package rox-cli`. One call per invocation; `--json`
 prints raw results for scripts, the default output is lines for people.
 
@@ -134,6 +132,6 @@ roxctl raw queue.move '{"id": 3, "after": 7}'
 ## Security
 
 The surface is local, never a network port. Auth is filesystem permissions: the
-Unix socket is created user-only (0600), and the Windows pipe rides the platform's
+Unix socket is created user-only (0600), and the Windows pipe uses the platform's
 default per-session access control. Remote access means proxying the socket
 yourself.

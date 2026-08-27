@@ -312,7 +312,7 @@ impl Tiles {
                 continue;
             }
 
-            // Horizontal snapping (X axis) - find closest snap point
+            // Horizontal snapping (X axis): find closest snap point
             if snap_x.is_none() {
                 let candidates = [
                     ((drag_left - other_left).abs(), other_left),
@@ -329,7 +329,7 @@ impl Tiles {
                 }
             }
 
-            // Vertical snapping (Y axis) - find closest snap point
+            // Vertical snapping (Y axis): find closest snap point
             if snap_y.is_none() {
                 let candidates = [
                     ((drag_top - other_top).abs(), other_top),

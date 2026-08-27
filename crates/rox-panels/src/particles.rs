@@ -410,7 +410,7 @@ impl Default for Scene {
             drag: 0.4,
             round: true,
             glow: false,
-            freeze: false,
+            freeze: true,
         }
     }
 }
@@ -1264,6 +1264,32 @@ impl PanelSettings for ParticlesPanel {
             _ => self.emitters_page(window, cx).into_any_element(),
         }
     }
+
+    /// Hold on Pause sits on the shared Behavior page rather than on the
+    /// Scene page: it's about how the panel acts when the audio stops, not
+    /// what the scene looks like, and that's where every other panel keeps
+    /// its behavior switches.
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        Some(
+            section(
+                rox_i18n::t!("viz-section-playback"),
+                None,
+                setting_row(
+                    rox_i18n::t!("particles-hold-on-pause"),
+                    Some(rox_i18n::t!("particles-hold-on-pause.description")),
+                    toggle(
+                        self.config.scene.freeze,
+                        |this: &mut Self, on, cx| {
+                            this.config.scene.freeze = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ),
+            )
+            .into_any_element(),
+        )
+    }
 }
 
 impl ParticlesPanel {
@@ -1921,22 +1947,6 @@ impl ParticlesPanel {
                             cx,
                         ),
                     )),
-            ))
-            .child(section(
-                rox_i18n::t!("particles-section-playback"),
-                None,
-                setting_row(
-                    rox_i18n::t!("particles-hold-on-pause"),
-                    Some(rox_i18n::t!("particles-hold-on-pause.description")),
-                    toggle(
-                        self.config.scene.freeze,
-                        |this: &mut Self, on, cx| {
-                            this.config.scene.freeze = on;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ),
             ))
     }
 }

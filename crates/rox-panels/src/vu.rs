@@ -200,7 +200,7 @@ impl Default for VuConfig {
             seg_gap: 1.0,
             caps: true,
             cap_gravity: HOLD_GRAVITY,
-            freeze: false,
+            freeze: true,
             scale: false,
         }
     }
@@ -719,7 +719,8 @@ impl PanelSettings for VuPanel {
         let seg_h = self.config.seg_h();
         let seg_gap = self.config.seg_gap();
         let gravity = self.config.gravity();
-        div()
+        // What the meter reads and what it's drawn as.
+        let meter = div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
@@ -800,7 +801,12 @@ impl PanelSettings for VuPanel {
                         cx,
                     ),
                 ))
-            })
+            });
+        // The loudness ramp the meter is painted with.
+        let color = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(setting_row(
                 rox_i18n::t!("vu-gradient-mode"),
                 Some(rox_i18n::t!("vu-gradient-mode.description")),
@@ -830,7 +836,12 @@ impl PanelSettings for VuPanel {
                         ColorPicker::new(&hi).small(),
                     ))
                 },
-            )
+            );
+        // The caps riding the meter, and how fast they fall back.
+        let peaks = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(setting_row(
                 rox_i18n::t!("vu-peak-caps"),
                 Some(rox_i18n::t!("vu-peak-caps.description")),
@@ -856,32 +867,68 @@ impl PanelSettings for VuPanel {
                     Self::set_gravity,
                     cx,
                 ),
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(settings_ui::SECTION_GAP)
+            .child(settings_ui::section(
+                rox_i18n::t!("vu-section-meter"),
+                None,
+                meter,
             ))
-            .child(setting_row(
-                rox_i18n::t!("vu-hold-on-pause"),
-                Some(rox_i18n::t!("vu-hold-on-pause.description")),
-                toggle(
-                    self.config.freeze,
-                    |this: &mut Self, on, cx| {
-                        this.config.freeze = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-color"),
+                None,
+                color,
             ))
-            .child(setting_row(
-                rox_i18n::t!("vu-db-scale"),
-                Some(rox_i18n::t!("vu-db-scale.description")),
-                toggle(
-                    self.config.scale,
-                    |this: &mut Self, on, cx| {
-                        this.config.scale = on;
-                        cx.notify();
-                    },
-                    cx,
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-peaks"),
+                None,
+                peaks,
+            ))
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-scale"),
+                None,
+                setting_row(
+                    rox_i18n::t!("vu-db-scale"),
+                    Some(rox_i18n::t!("vu-db-scale.description")),
+                    toggle(
+                        self.config.scale,
+                        |this: &mut Self, on, cx| {
+                            this.config.scale = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
                 ),
             ))
             .into_any_element()
+    }
+
+    /// Hold on Pause sits on the shared Behavior page rather than here: it's
+    /// about how the panel acts when the audio stops, not how the meter is
+    /// drawn, and that's where every other panel keeps its behavior switches.
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        Some(
+            settings_ui::section(
+                rox_i18n::t!("viz-section-playback"),
+                None,
+                setting_row(
+                    rox_i18n::t!("vu-hold-on-pause"),
+                    Some(rox_i18n::t!("vu-hold-on-pause.description")),
+                    toggle(
+                        self.config.freeze,
+                        |this: &mut Self, on, cx| {
+                            this.config.freeze = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ),
+            )
+            .into_any_element(),
+        )
     }
 }
 

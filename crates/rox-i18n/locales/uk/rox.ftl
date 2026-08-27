@@ -1889,6 +1889,16 @@ window-controls-style-icons = Значки
 window-controls-title = Кнопки вікна
 window-controls-traffic-lights = Світлофори
 
+## Section names the audio panels share. Each one heads the same kind of
+## rows in the spectrum, VU, oscilloscope, spectrogram and particles
+## settings, so they're defined once rather than per panel.
+viz-section-analysis = Аналіз
+viz-section-color = Колір
+viz-section-peaks = Піки
+viz-section-playback = Відтворення
+viz-section-scale = Шкала
+viz-section-signal = Сигнал
+
 ## Particles panel
 particles-add-emitter = Додати емітер
 particles-aim = Приціл
@@ -1929,7 +1939,6 @@ particles-scale = Масштаб
 particles-section-emitters = Емітери
 particles-section-medium = Середовище
 particles-section-particles = Частинки
-particles-section-playback = Відтворення
 particles-shape = Форма
 particles-shape-box = Прямокутник
 particles-shape-line = Лінія
@@ -1985,6 +1994,7 @@ spectrum-outline-width = Товщина контуру
     .description = Товщина обведення порожніх смуг
 spectrum-peak-caps = Позначки піків
     .description = Тримати позначку на недавньому піку кожної смуги
+spectrum-section-bands = Смуги
 spectrum-split-at = Розділ на
     .description = Де сходяться зони, прив'язано до найближчої смуги
 spectrum-split-zones = Розділити зони
@@ -2032,6 +2042,7 @@ vu-orientation = Орієнтація
     .description = Край, від якого ростуть індикатори
 vu-peak-caps = Позначки піків
     .description = Тримати позначку на недавньому піку кожного індикатора
+vu-section-meter = Індикатор
 vu-segment-gap = Проміжок між сегментами
     .description = Шов між комірками в стовпчику
 vu-segment-height = Висота сегмента
@@ -2072,6 +2083,7 @@ spectrogram-log-scale = Логарифмічна шкала
     .description = Давати кожній октаві однакове місце, музичне читання, замість рівномірного кроку в Гц, як у лабораторному приладі
 spectrogram-low-bound = Нижня межа
     .description = Низ осі частот
+spectrogram-section-picture = Зображення
 spectrogram-speed = Швидкість
     .description = Наскільки швидко прокручується зображення, у стовпцях за секунду
 
@@ -2095,6 +2107,7 @@ oscilloscope-line-width = Товщина лінії
     .description = Наскільки товстою малюється крива
 oscilloscope-persistence = Післясвітіння
     .description = Як довго попередні кадри затримуються за кривою, той самий ефект післясвітіння люмінофору
+oscilloscope-section-trace = Крива
 oscilloscope-trigger = Тригер
     .description = Починати кожен кадр там, де сигнал перетинає рівень тригера, щоб періодичний матеріал стояв на місці
 oscilloscope-trigger-falling = Спадний

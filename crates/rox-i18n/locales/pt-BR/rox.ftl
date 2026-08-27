@@ -1880,6 +1880,16 @@ window-controls-style-icons = Ícones
 window-controls-title = Controles de janela
 window-controls-traffic-lights = Semáforo
 
+## Section names the audio panels share. Each one heads the same kind of
+## rows in the spectrum, VU, oscilloscope, spectrogram and particles
+## settings, so they're defined once rather than per panel.
+viz-section-analysis = Análise
+viz-section-color = Cor
+viz-section-peaks = Picos
+viz-section-playback = Reprodução
+viz-section-scale = Escala
+viz-section-signal = Sinal
+
 ## Particles panel
 particles-add-emitter = Adicionar emissor
 particles-aim = Mira
@@ -1920,7 +1930,6 @@ particles-scale = Escala
 particles-section-emitters = Emissores
 particles-section-medium = Meio
 particles-section-particles = Partículas
-particles-section-playback = Reprodução
 particles-shape = Forma
 particles-shape-box = Retângulo
 particles-shape-line = Linha
@@ -1976,6 +1985,7 @@ spectrum-outline-width = Largura do contorno
     .description = Espessura do traço das barras vazadas
 spectrum-peak-caps = Marcas de pico
     .description = Segurar uma marca no pico recente de cada banda
+spectrum-section-bands = Bandas
 spectrum-split-at = Dividir em
     .description = Onde as zonas se encontram, encaixado na barra mais próxima
 spectrum-split-zones = Dividir zonas
@@ -2023,6 +2033,7 @@ vu-orientation = Orientação
     .description = A borda de onde os medidores crescem
 vu-peak-caps = Marcas de pico
     .description = Segurar uma marca no pico recente de cada medidor
+vu-section-meter = Medidor
 vu-segment-gap = Espaço entre segmentos
     .description = A costura entre as células de uma pilha
 vu-segment-height = Altura dos segmentos
@@ -2063,6 +2074,7 @@ spectrogram-log-scale = Escala log
     .description = Dar o mesmo espaço a cada oitava, a leitura musical, em vez do espaçamento uniforme em Hz de um instrumento de laboratório
 spectrogram-low-bound = Limite inferior
     .description = Base do eixo de frequência
+spectrogram-section-picture = Imagem
 spectrogram-speed = Velocidade
     .description = Com que rapidez a imagem rola, em colunas por segundo
 
@@ -2087,6 +2099,7 @@ oscilloscope-line-width = Largura da linha
     .description = Com que largura o traço é desenhado
 oscilloscope-persistence = Persistência
     .description = Por quanto tempo os quadros anteriores ficam visíveis atrás do traço, o efeito de persistência fosforescente
+oscilloscope-section-trace = Traço
 oscilloscope-trigger = Gatilho
     .description = Começar cada quadro onde o sinal cruza o nível do gatilho, para que material periódico fique parado
 oscilloscope-trigger-falling = Descida

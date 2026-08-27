@@ -221,7 +221,7 @@ impl Default for OscilloscopeConfig {
             gradient_lo: "#22aa44".into(),
             gradient_hi: "#dd3322".into(),
             persistence: 0.0,
-            freeze: false,
+            freeze: true,
         }
     }
 }
@@ -919,7 +919,9 @@ impl PanelSettings for OscilloscopePanel {
         let level = self.config.trigger_level();
         let line_w = self.config.line_w();
         let persistence = self.config.persistence();
-        div()
+        // The slice of samples a frame draws: how long a window, how far it's
+        // lifted, where it's cut, and which channels reach the trace.
+        let signal = div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
@@ -988,7 +990,12 @@ impl PanelSettings for OscilloscopePanel {
                     },
                     cx,
                 ),
-            ))
+            ));
+        // How the line itself is drawn.
+        let trace = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(setting_row(
                 rox_i18n::t!("oscilloscope-line-width"),
                 Some(rox_i18n::t!("oscilloscope-line-width.description")),
@@ -1014,17 +1021,22 @@ impl PanelSettings for OscilloscopePanel {
                 ),
             ))
             .child(setting_row(
-                rox_i18n::t!("oscilloscope-grid"),
-                Some(rox_i18n::t!("oscilloscope-grid.description")),
-                toggle(
-                    self.config.grid,
-                    |this: &mut Self, on, cx| {
-                        this.config.grid = on;
-                        cx.notify();
-                    },
+                rox_i18n::t!("oscilloscope-persistence"),
+                Some(rox_i18n::t!("oscilloscope-persistence.description")),
+                settings_ui::scalar(
+                    &self.persist_scrub,
+                    &self.value_edit,
+                    persistence,
+                    settings_ui::span(0.0, PERSIST_MAX, "").decimals(2).hard(),
+                    Self::set_persistence,
                     cx,
                 ),
-            ))
+            ));
+        // The ramp the trace is painted with.
+        let color = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(setting_row(
                 rox_i18n::t!("oscilloscope-gradient-mode"),
                 Some(rox_i18n::t!("oscilloscope-gradient-mode.description")),
@@ -1054,32 +1066,68 @@ impl PanelSettings for OscilloscopePanel {
                         ColorPicker::new(&hi).small(),
                     ))
                 },
-            )
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-persistence"),
-                Some(rox_i18n::t!("oscilloscope-persistence.description")),
-                settings_ui::scalar(
-                    &self.persist_scrub,
-                    &self.value_edit,
-                    persistence,
-                    settings_ui::span(0.0, PERSIST_MAX, "").decimals(2).hard(),
-                    Self::set_persistence,
-                    cx,
-                ),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .gap(settings_ui::SECTION_GAP)
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-signal"),
+                None,
+                signal,
             ))
-            .child(setting_row(
-                rox_i18n::t!("oscilloscope-hold-on-pause"),
-                Some(rox_i18n::t!("oscilloscope-hold-on-pause.description")),
-                toggle(
-                    self.config.freeze,
-                    |this: &mut Self, on, cx| {
-                        this.config.freeze = on;
-                        cx.notify();
-                    },
-                    cx,
+            .child(settings_ui::section(
+                rox_i18n::t!("oscilloscope-section-trace"),
+                None,
+                trace,
+            ))
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-color"),
+                None,
+                color,
+            ))
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-scale"),
+                None,
+                setting_row(
+                    rox_i18n::t!("oscilloscope-grid"),
+                    Some(rox_i18n::t!("oscilloscope-grid.description")),
+                    toggle(
+                        self.config.grid,
+                        |this: &mut Self, on, cx| {
+                            this.config.grid = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
                 ),
             ))
             .into_any_element()
+    }
+
+    /// Hold on Pause sits on the shared Behavior page rather than here: it's
+    /// about how the panel acts when the audio stops, not how the trace is
+    /// drawn, and that's where every other panel keeps its behavior switches.
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        Some(
+            settings_ui::section(
+                rox_i18n::t!("viz-section-playback"),
+                None,
+                setting_row(
+                    rox_i18n::t!("oscilloscope-hold-on-pause"),
+                    Some(rox_i18n::t!("oscilloscope-hold-on-pause.description")),
+                    toggle(
+                        self.config.freeze,
+                        |this: &mut Self, on, cx| {
+                            this.config.freeze = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ),
+            )
+            .into_any_element(),
+        )
     }
 }
 

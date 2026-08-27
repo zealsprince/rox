@@ -1800,6 +1800,16 @@ window-controls-style-icons = アイコン
 window-controls-title = ウィンドウ操作
 window-controls-traffic-lights = トラフィックライト
 
+## Section names the audio panels share. Each one heads the same kind of
+## rows in the spectrum, VU, oscilloscope, spectrogram and particles
+## settings, so they're defined once rather than per panel.
+viz-section-analysis = 解析
+viz-section-color = 色
+viz-section-peaks = ピーク
+viz-section-playback = 再生
+viz-section-scale = 目盛り
+viz-section-signal = 信号
+
 ## Particles panel
 particles-add-emitter = エミッターを追加
 particles-aim = 向き
@@ -1840,7 +1850,6 @@ particles-scale = スケール
 particles-section-emitters = エミッター
 particles-section-medium = 媒質
 particles-section-particles = パーティクル
-particles-section-playback = 再生
 particles-shape = 形
 particles-shape-box = 四角
 particles-shape-line = 線
@@ -1896,6 +1905,7 @@ spectrum-outline-width = 輪郭の太さ
     .description = 中抜きバーの線の太さ
 spectrum-peak-caps = ピークの印
     .description = 各帯域の直近のピークに印を残す
+spectrum-section-bands = バンド
 spectrum-split-at = 分割点
     .description = 二つのゾーンが接する位置。最寄りのバーに吸着する
 spectrum-split-zones = ゾーンを分割
@@ -1943,6 +1953,7 @@ vu-orientation = 向き
     .description = メーターが伸びる元になる辺
 vu-peak-caps = ピークの印
     .description = 各メーターの直近のピークに印を残す
+vu-section-meter = メーター
 vu-segment-gap = セグメントの間隔
     .description = 積み上げたセルどうしの継ぎ目
 vu-segment-height = セグメントの高さ
@@ -1983,6 +1994,7 @@ spectrogram-log-scale = 対数スケール
     .description = 実験機器のような均等な Hz 間隔ではなく、すべてのオクターブに同じ幅を与える、音楽的な読み方
 spectrogram-low-bound = 下限
     .description = 周波数軸の下端
+spectrogram-section-picture = 表示
 spectrogram-speed = 速さ
     .description = 画面がどれくらいの速さでスクロールするか。1 秒あたりの列数
 
@@ -2007,6 +2019,7 @@ oscilloscope-line-width = 線の太さ
     .description = トレースをどれくらい太く描くか
 oscilloscope-persistence = 残光
     .description = 以前のフレームがトレースの後ろにどれくらい残るか、蛍光体の残光効果
+oscilloscope-section-trace = 波形
 oscilloscope-trigger = トリガー
     .description = 信号がトリガーレベルを超えた点から各フレームを始め、周期的な素材が静止して見えるようにする
 oscilloscope-trigger-falling = 立ち下がり

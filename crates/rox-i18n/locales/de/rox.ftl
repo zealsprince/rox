@@ -1859,6 +1859,16 @@ window-controls-style-icons = Symbole
 window-controls-title = Fenstersteuerung
 window-controls-traffic-lights = Ampeln
 
+## Section names the audio panels share. Each one heads the same kind of
+## rows in the spectrum, VU, oscilloscope, spectrogram and particles
+## settings, so they're defined once rather than per panel.
+viz-section-analysis = Analyse
+viz-section-color = Farbe
+viz-section-peaks = Spitzen
+viz-section-playback = Wiedergabe
+viz-section-scale = Skala
+viz-section-signal = Signal
+
 ## Particles panel
 particles-add-emitter = Emitter hinzufügen
 particles-aim = Zielrichtung
@@ -1899,7 +1909,6 @@ particles-scale = Maßstab
 particles-section-emitters = Emitter
 particles-section-medium = Medium
 particles-section-particles = Partikel
-particles-section-playback = Wiedergabe
 particles-shape = Form
 particles-shape-box = Rechteck
 particles-shape-line = Linie
@@ -1955,6 +1964,7 @@ spectrum-outline-width = Konturbreite
     .description = Strichstärke der hohlen Balken
 spectrum-peak-caps = Spitzenmarken
     .description = Eine Marke an der letzten Spitze jedes Bandes halten
+spectrum-section-bands = Bänder
 spectrum-split-at = Teilen bei
     .description = Wo die Zonen sich treffen, auf den nächsten Balken gerastet
 spectrum-split-zones = Zonen teilen
@@ -2002,6 +2012,7 @@ vu-orientation = Ausrichtung
     .description = Die Kante, aus der die Anzeigen wachsen
 vu-peak-caps = Spitzenmarken
     .description = Eine Marke an der letzten Spitze jeder Anzeige halten
+vu-section-meter = Anzeige
 vu-segment-gap = Segmentabstand
     .description = Die Naht zwischen den Zellen eines Stapels
 vu-segment-height = Segmenthöhe
@@ -2042,6 +2053,7 @@ spectrogram-log-scale = Log-Skala
     .description = Jeder Oktave denselben Platz geben, die musikalische Lesart, statt der gleichmäßigen Hz-Abstände eines Messgeräts
 spectrogram-low-bound = Untere Grenze
     .description = Unteres Ende der Frequenzachse
+spectrogram-section-picture = Bild
 spectrogram-speed = Geschwindigkeit
     .description = Wie schnell das Bild scrollt, in Spalten pro Sekunde
 
@@ -2066,6 +2078,7 @@ oscilloscope-line-width = Linienbreite
     .description = Wie dick die Kurve gezeichnet wird
 oscilloscope-persistence = Persistenz
     .description = Wie lange vorherige Bilder hinter der Kurve nachleuchten, der Phosphor-Nachleuchteffekt
+oscilloscope-section-trace = Kurve
 oscilloscope-trigger = Trigger
     .description = Jeden Frame dort beginnen, wo das Signal den Triggerpegel kreuzt, damit periodisches Material stillsteht
 oscilloscope-trigger-falling = Fallend

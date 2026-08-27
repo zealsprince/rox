@@ -422,7 +422,7 @@ impl Default for SpectrumConfig {
             outline: false,
             outline_width: 1.0,
             caps: true,
-            freeze: false,
+            freeze: true,
             cap_gravity: HOLD_GRAVITY,
             labels: Labels::default(),
         }
@@ -1428,7 +1428,9 @@ impl PanelSettings for SpectrumPanel {
         let block_gap = self.config.block_gap();
         let outline_w = self.config.outline_w();
         let gravity = self.config.gravity();
-        div()
+        // The shape of the bands: what they're drawn as, which way they
+        // grow, and how wide each one and its gap are.
+        let bands = div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
@@ -1470,16 +1472,6 @@ impl PanelSettings for SpectrumPanel {
                     },
                     cx,
                 ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("signal-low-bound"),
-                Some(rox_i18n::t!("spectrum-low-bound-description")),
-                self.freq_slider(&self.lo_scrub, self.config.freq_lo, Self::set_freq_lo, cx),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("signal-high-bound"),
-                Some(rox_i18n::t!("spectrum-high-bound-description")),
-                self.freq_slider(&self.hi_scrub, self.config.freq_hi, Self::set_freq_hi, cx),
             ))
             .child(setting_row(
                 rox_i18n::t!("spectrum-bar-width"),
@@ -1531,6 +1523,50 @@ impl PanelSettings for SpectrumPanel {
                     ),
                 ))
             })
+            .when(self.config.style == SpectrumStyle::Bars, |d| {
+                d.child(setting_row(
+                    rox_i18n::t!("spectrum-outline-bars"),
+                    Some(rox_i18n::t!("spectrum-outline-bars.description")),
+                    toggle(
+                        self.config.outline,
+                        |this: &mut Self, on, cx| {
+                            this.config.outline = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .when(self.config.outline, |d| {
+                    d.child(setting_row(
+                        rox_i18n::t!("spectrum-outline-width"),
+                        Some(rox_i18n::t!("spectrum-outline-width.description")),
+                        settings_ui::scalar(
+                            &self.outline_w_scrub,
+                            &self.value_edit,
+                            outline_w,
+                            settings_ui::span(OUTLINE_W_MIN, OUTLINE_W_MAX, " px"),
+                            Self::set_outline_width,
+                            cx,
+                        ),
+                    ))
+                })
+            });
+        // The slice of the spectrum the bands are folded out of, and the
+        // window the FFT reads it through.
+        let analysis = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(setting_row(
+                rox_i18n::t!("signal-low-bound"),
+                Some(rox_i18n::t!("spectrum-low-bound-description")),
+                self.freq_slider(&self.lo_scrub, self.config.freq_lo, Self::set_freq_lo, cx),
+            ))
+            .child(setting_row(
+                rox_i18n::t!("signal-high-bound"),
+                Some(rox_i18n::t!("spectrum-high-bound-description")),
+                self.freq_slider(&self.hi_scrub, self.config.freq_hi, Self::set_freq_hi, cx),
+            ))
             .child(setting_row(
                 rox_i18n::t!("spectrum-fft-size"),
                 Some(rox_i18n::t!("spectrum-fft-size.description")),
@@ -1580,7 +1616,12 @@ impl PanelSettings for SpectrumPanel {
                         cx,
                     ),
                 ))
-            })
+            });
+        // The loudness ramp the bands are painted with.
+        let color = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(setting_row(
                 rox_i18n::t!("spectrum-gradient-mode"),
                 Some(rox_i18n::t!("spectrum-gradient-mode.description")),
@@ -1610,35 +1651,12 @@ impl PanelSettings for SpectrumPanel {
                         ColorPicker::new(&hi).small(),
                     ))
                 },
-            )
-            .when(self.config.style == SpectrumStyle::Bars, |d| {
-                d.child(setting_row(
-                    rox_i18n::t!("spectrum-outline-bars"),
-                    Some(rox_i18n::t!("spectrum-outline-bars.description")),
-                    toggle(
-                        self.config.outline,
-                        |this: &mut Self, on, cx| {
-                            this.config.outline = on;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .when(self.config.outline, |d| {
-                    d.child(setting_row(
-                        rox_i18n::t!("spectrum-outline-width"),
-                        Some(rox_i18n::t!("spectrum-outline-width.description")),
-                        settings_ui::scalar(
-                            &self.outline_w_scrub,
-                            &self.value_edit,
-                            outline_w,
-                            settings_ui::span(OUTLINE_W_MIN, OUTLINE_W_MAX, " px"),
-                            Self::set_outline_width,
-                            cx,
-                        ),
-                    ))
-                })
-            })
+            );
+        // The caps riding the bands, and how fast they fall back.
+        let peaks = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(setting_row(
                 rox_i18n::t!("spectrum-peak-caps"),
                 Some(rox_i18n::t!("spectrum-peak-caps.description")),
@@ -1646,18 +1664,6 @@ impl PanelSettings for SpectrumPanel {
                     self.config.caps,
                     |this: &mut Self, on, cx| {
                         this.config.caps = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-hold-on-pause"),
-                Some(rox_i18n::t!("spectrum-hold-on-pause.description")),
-                toggle(
-                    self.config.freeze,
-                    |this: &mut Self, on, cx| {
-                        this.config.freeze = on;
                         cx.notify();
                     },
                     cx,
@@ -1676,21 +1682,74 @@ impl PanelSettings for SpectrumPanel {
                     Self::set_gravity,
                     cx,
                 ),
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(settings_ui::SECTION_GAP)
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-analysis"),
+                None,
+                analysis,
             ))
-            .child(setting_row(
-                rox_i18n::t!("spectrum-axis-labels"),
-                Some(rox_i18n::t!("spectrum-axis-labels.description")),
-                choices_shared(
-                    &label_choices(),
-                    self.config.labels,
-                    |this: &mut Self, labels, cx| {
-                        this.config.labels = labels;
-                        cx.notify();
-                    },
-                    cx,
+            .child(settings_ui::section(
+                rox_i18n::t!("spectrum-section-bands"),
+                None,
+                bands,
+            ))
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-color"),
+                None,
+                color,
+            ))
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-peaks"),
+                None,
+                peaks,
+            ))
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-scale"),
+                None,
+                setting_row(
+                    rox_i18n::t!("spectrum-axis-labels"),
+                    Some(rox_i18n::t!("spectrum-axis-labels.description")),
+                    choices_shared(
+                        &label_choices(),
+                        self.config.labels,
+                        |this: &mut Self, labels, cx| {
+                            this.config.labels = labels;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
                 ),
             ))
             .into_any_element()
+    }
+
+    /// Hold on Pause sits on the shared Behavior page rather than here: it's
+    /// about how the panel acts when the audio stops, not how the bands are
+    /// drawn, and that's where every other panel keeps its behavior switches.
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        Some(
+            settings_ui::section(
+                rox_i18n::t!("viz-section-playback"),
+                None,
+                setting_row(
+                    rox_i18n::t!("spectrum-hold-on-pause"),
+                    Some(rox_i18n::t!("spectrum-hold-on-pause.description")),
+                    toggle(
+                        self.config.freeze,
+                        |this: &mut Self, on, cx| {
+                            this.config.freeze = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ),
+            )
+            .into_any_element(),
+        )
     }
 }
 

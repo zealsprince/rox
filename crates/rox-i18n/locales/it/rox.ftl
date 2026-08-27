@@ -1915,6 +1915,16 @@ window-controls-style-icons = Icone
 window-controls-title = Controlli finestra
 window-controls-traffic-lights = Semafori
 
+## Section names the audio panels share. Each one heads the same kind of
+## rows in the spectrum, VU, oscilloscope, spectrogram and particles
+## settings, so they're defined once rather than per panel.
+viz-section-analysis = Analisi
+viz-section-color = Colore
+viz-section-peaks = Picchi
+viz-section-playback = Riproduzione
+viz-section-scale = Scala
+viz-section-signal = Segnale
+
 ## Particles panel
 particles-add-emitter = Aggiungi emettitore
 particles-aim = Mira
@@ -1955,7 +1965,6 @@ particles-scale = Scala
 particles-section-emitters = Emettitori
 particles-section-medium = Mezzo
 particles-section-particles = Particelle
-particles-section-playback = Riproduzione
 particles-shape = Forma
 particles-shape-box = Rettangolo
 particles-shape-line = Linea
@@ -2011,6 +2020,7 @@ spectrum-outline-width = Spessore contorno
     .description = Lo spessore del tratto delle barre vuote
 spectrum-peak-caps = Segni di picco
     .description = Tiene un segno sul picco recente di ogni banda
+spectrum-section-bands = Bande
 spectrum-split-at = Taglio a
     .description = Dove si incontrano le zone, agganciato alla barra più vicina
 spectrum-split-zones = Zone divise
@@ -2058,6 +2068,7 @@ vu-orientation = Orientamento
     .description = Il lato da cui crescono gli indicatori
 vu-peak-caps = Segni di picco
     .description = Tiene un segno sul picco recente di ogni indicatore
+vu-section-meter = Indicatore
 vu-segment-gap = Spazio tra i segmenti
     .description = La giunzione tra le celle di una pila
 vu-segment-height = Altezza segmento
@@ -2098,6 +2109,7 @@ spectrogram-log-scale = Scala log
     .description = Dare a ogni ottava lo stesso spazio, la lettura musicale, invece della spaziatura uniforme in Hz di uno strumento da laboratorio
 spectrogram-low-bound = Limite inferiore
     .description = Fondo dell'asse delle frequenze
+spectrogram-section-picture = Immagine
 spectrogram-speed = Velocità
     .description = Quanto velocemente scorre l'immagine, in colonne al secondo
 
@@ -2122,6 +2134,7 @@ oscilloscope-line-width = Spessore linea
     .description = Quanto spesso si disegna la traccia
 oscilloscope-persistence = Persistenza
     .description = Quanto restano visibili i fotogrammi precedenti dietro la traccia, l'effetto di persistenza fosforescente
+oscilloscope-section-trace = Traccia
 oscilloscope-trigger = Trigger
     .description = Inizia ogni fotogramma dove il segnale attraversa il livello di trigger, così il materiale periodico resta fermo
 oscilloscope-trigger-falling = Discesa

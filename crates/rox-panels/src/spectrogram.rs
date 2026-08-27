@@ -28,8 +28,8 @@ use std::time::Instant;
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, size, AnyElement, App, Bounds, Context, Corners, Div,
-    EventEmitter, FocusHandle, Focusable, Hsla, Pixels, RenderImage, SharedString, Subscription,
-    TextRun, WeakEntity, Window,
+    EventEmitter, FocusHandle, Focusable, Hsla, Pixels, RenderImage, Rgba, SharedString,
+    Subscription, TextRun, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use image::{Frame, RgbaImage};
@@ -48,7 +48,7 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::settings::ui as settings_ui;
-use crate::spectrum::{orientation_choices, ramp_color, Gradient, Orientation};
+use crate::spectrum::{orientation_choices, Orientation};
 
 /// The frequency resolution a stored column keeps, rows. Fixed rather than
 /// following the FFT size, so the window size and the history's memory are
@@ -112,9 +112,9 @@ const MIN_SIDE: Pixels = px(24.);
 
 /// How the loudness maps to color. The first four are perceptual ramps that
 /// carry the same order everywhere along them, which is the whole reason a
-/// heatmap is readable at all; the last two route through the ramp the
-/// spectrum and VU panels share, so the waterfall follows the palette and the
-/// cover art like every other visualizer.
+/// heatmap is readable at all; the last two build a ramp of the same shape out
+/// of the palette's own colors ([`heat_color`]), so the waterfall follows the
+/// theme and the cover art like every other visualizer.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Colormap {
@@ -225,8 +225,8 @@ impl Default for SpectrogramConfig {
         SpectrogramConfig {
             chrome: PanelChrome::default(),
             fft_size: 4096,
-            lo_hz: 40.0,
-            hi_hz: 16_000.0,
+            lo_hz: 20.0,
+            hi_hz: 20_000.0,
             log_scale: true,
             floor_db: -90.0,
             ceil_db: -20.0,
@@ -236,7 +236,7 @@ impl Default for SpectrogramConfig {
             direction: Orientation::Right,
             grid: true,
             labels: true,
-            freeze: false,
+            freeze: true,
         }
     }
 }
@@ -255,8 +255,8 @@ impl SpectrogramConfig {
     /// The frequency axis, clamped to the slider band and the minimum span, so
     /// a hand-edited file can't invert or collapse the mapping.
     fn range(&self) -> (f32, f32) {
-        let lo = sane(self.lo_hz, HZ_MIN, HZ_MAX, 40.0);
-        let hi = sane(self.hi_hz, HZ_MIN, HZ_MAX, 16_000.0)
+        let lo = sane(self.lo_hz, HZ_MIN, HZ_MAX, 20.0);
+        let hi = sane(self.hi_hz, HZ_MIN, HZ_MAX, 20_000.0)
             .max(lo * MIN_RATIO)
             .min(HZ_MAX);
         (lo.min(hi / MIN_RATIO), hi)
@@ -399,33 +399,91 @@ fn cell_color(map: Colormap, t: f32) -> [u8; 3] {
         Colormap::Viridis => sample_stops(&VIRIDIS, t),
         Colormap::Ice => sample_stops(&ICE, t),
         Colormap::Grayscale => sample_stops(&GRAYSCALE, t),
-        Colormap::Theme | Colormap::Cover => {
-            let gradient = if map == Colormap::Theme {
-                Gradient::Theme
-            } else {
-                Gradient::Cover
-            };
-            // The custom pair is only read for Gradient::Custom, which this
-            // never asks for.
-            let accent = palette::accent();
-            let color = ramp_color(gradient, t, (accent, accent));
-            // That ramp carries alpha at its quiet end, since it's built for
-            // bars drawn over the panel. A heatmap cell is opaque, so it gets
-            // composed over the panel background here rather than handed to
-            // the renderer as a hole.
-            let bg = palette::bg_root();
-            let a = if color.a.is_nan() {
-                1.0
-            } else {
-                color.a.clamp(0.0, 1.0)
-            };
-            let mix = |base: f32, over: f32| {
-                let v = base * (1.0 - a) + over * a;
-                (v.clamp(0.0, 1.0) * 255.0).round() as u8
-            };
-            [mix(bg.r, color.r), mix(bg.g, color.g), mix(bg.b, color.b)]
-        }
+        Colormap::Theme => heat_color(palette::bg_root(), palette::accent(), palette::accent(), t),
+        Colormap::Cover => heat_color(
+            palette::bg_root(),
+            palette::accent(),
+            palette::highlight(),
+            t,
+        ),
     }
+}
+
+/// Where the seed color sits along the heat ramp. Past the middle so most of
+/// the travel is the climb out of the background, which is where a heatmap
+/// does its reading.
+const HEAT_MID: f32 = 0.6;
+
+/// How far from the end of the OkLCh lightness range the ramp's loud stop
+/// lands, and the room it keeps clear of the middle stop. A palette that hands
+/// us a seed already at that end still gets a ramp that travels.
+const HEAT_PEAK_L: f32 = 0.96;
+const HEAT_GAP_L: f32 = 0.15;
+
+/// How much of the top color's chroma survives at the ramp's bright end. The
+/// last stop is mostly white with the hue still in it, the way every readable
+/// heat ramp ends.
+const HEAT_TOP_C: f32 = 0.35;
+
+/// The palette-driven colormaps as a heat ramp: the panel background (`floor`)
+/// at the quiet end, `seed` through the middle, and a wash of `top`'s hue at
+/// the loud one.
+///
+/// The bar ramp in [`crate::spectrum::ramp_color`] won't do here. It runs
+/// accent to highlight because a bar's height already says how loud it is, so
+/// its quiet end is a perfectly visible color. Drop that into a heatmap, where
+/// color is the only thing carrying the level, and the whole panel paints one
+/// wash of accent.
+///
+/// The climb is in OkLCh so lightness rises the same amount everywhere along
+/// the ramp and the order stays readable, which straight RGB mixing between
+/// two palette colors can't promise: under song theming the cover's two
+/// colors are whatever the art gave us, and one is often no brighter than the
+/// other.
+fn heat_color(floor: Rgba, seed: Rgba, top: Rgba, t: f32) -> [u8; 3] {
+    let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+    let (floor_l, _, _) = palette::rgba_to_oklch(floor);
+    let (seed_l, seed_c, seed_h) = palette::rgba_to_oklch(seed);
+    let (_, top_c, top_h) = palette::rgba_to_oklch(top);
+    // Which way there's room to travel. A light theme's panel already sits
+    // near the top of the lightness range, so the ramp runs the other way and
+    // the loud end is the dark one; the cells still walk away from the
+    // background, which is all the eye is reading.
+    let peak_l = if floor_l < 0.5 {
+        HEAT_PEAK_L
+    } else {
+        1.0 - HEAT_PEAK_L
+    };
+    // The seed keeps its own lightness where there's room for it, held off
+    // both ends so neither half of the ramp can collapse.
+    let lo = floor_l.min(peak_l) + HEAT_GAP_L;
+    let hi = (floor_l.max(peak_l) - HEAT_GAP_L).max(lo);
+    let mid_l = sane(seed_l, lo, hi, lo);
+    let lerp = |a: f32, b: f32, k: f32| a + (b - a) * k;
+    let (l, c, h) = if t < HEAT_MID {
+        let k = t / HEAT_MID;
+        // Chroma comes up with the lightness: at the floor the cell is the
+        // panel background, so it has no hue to show yet.
+        (lerp(floor_l, mid_l, k), lerp(0.0, seed_c, k), seed_h)
+    } else {
+        let k = (t - HEAT_MID) / (1.0 - HEAT_MID);
+        (
+            lerp(mid_l, peak_l, k),
+            lerp(seed_c, top_c * HEAT_TOP_C, k),
+            hue_lerp(seed_h, top_h, k),
+        )
+    };
+    let color = palette::oklch_to_rgba(l, c.max(0.0), h, 1.0);
+    let byte = |v: f32| (sane(v, 0.0, 1.0, 0.0) * 255.0).round() as u8;
+    [byte(color.r), byte(color.g), byte(color.b)]
+}
+
+/// Two OkLCh hues blended the short way around the wheel. The long way would
+/// drag the ramp through half the spectrum to join two neighbouring colors.
+fn hue_lerp(from: f32, to: f32, t: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let delta = (to - from + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
+    from + delta * t
 }
 
 /// A stop table sampled at `t`, the stops evenly spaced across 0 to 1.
@@ -499,6 +557,15 @@ struct Waterfall {
     retired: Option<Arc<RenderImage>>,
     skin: Option<Skin>,
     dirty: bool,
+    /// The colormap sampled into renderer-order pixels, rebuilt when the
+    /// skin changes.
+    lut: Vec<[u8; 4]>,
+    /// The baked pixels, kept between bakes so a scroll shifts them and
+    /// recolors only the new columns.
+    raw: Vec<u8>,
+    /// Columns pushed since the last bake; `usize::MAX` means everything,
+    /// forcing a full rebuild.
+    pending: usize,
     /// Something still needs to move: render keeps requesting frames until
     /// this clears.
     alive: bool,
@@ -523,6 +590,9 @@ impl Waterfall {
             retired: None,
             skin: None,
             dirty: false,
+            lut: Vec::new(),
+            raw: Vec::new(),
+            pending: usize::MAX,
             alive: false,
         }
     }
@@ -539,6 +609,7 @@ impl Waterfall {
         self.quiet = mapping.history;
         self.accum = 0.0;
         self.dirty = true;
+        self.pending = usize::MAX;
         self.mapping = Some(mapping.clone());
     }
 
@@ -633,23 +704,35 @@ impl Waterfall {
         self.head = (self.head + 1) % self.history;
         self.quiet = if silent { self.quiet + 1 } else { 0 };
         self.dirty = true;
+        self.pending = self.pending.saturating_add(1);
     }
 
     /// The ring as a texture at its own resolution, one texel per column and
     /// per row, which the renderer then scales to the panel. Sizing it to the
     /// panel's pixels instead would rebuild everything on every resize and
     /// make a wide panel expensive for no more detail than this.
-    fn bake(&self, config: &SpectrogramConfig) -> Option<Arc<RenderImage>> {
+    ///
+    /// The pixels persist between bakes, so the steady case (a column or two
+    /// on an unchanged skin) shifts the standing picture and recolors only
+    /// what arrived; recoloring the whole ring on every pushed column was
+    /// the panel's biggest per-frame cost. A skin or mapping change marks
+    /// everything pending and rebuilds from scratch.
+    fn bake(&mut self, config: &SpectrogramConfig) -> Option<Arc<RenderImage>> {
         let history = self.history;
         if history == 0 || self.cells.len() < history * ROWS {
             return None;
         }
-        let lut: Vec<[u8; 4]> = (0..LUT_STEPS)
-            .map(|i| {
-                let [r, g, b] = cell_color(config.colormap, i as f32 / (LUT_STEPS - 1) as f32);
-                [r, g, b, 0xff]
-            })
-            .collect();
+        // The colormap sampled once per skin, stored BGRA (the renderer's
+        // order, the same swizzle the backdrop's bake does) so the per-cell
+        // loop below stays a lookup and a copy.
+        if self.lut.len() != LUT_STEPS {
+            self.lut = (0..LUT_STEPS)
+                .map(|i| {
+                    let [r, g, b] = cell_color(config.colormap, i as f32 / (LUT_STEPS - 1) as f32);
+                    [b, g, r, 0xff]
+                })
+                .collect();
+        }
 
         // The frequency axis runs across the scroll, so a sideways scroll puts
         // time along the width and frequency up the height, and a vertical one
@@ -661,15 +744,42 @@ impl Waterfall {
         } else {
             (history, ROWS)
         };
-        let mut raw = vec![0u8; w * h * 4];
-        for i in 0..history {
+        let stride = w * 4;
+        let fresh = if self.pending >= history || self.raw.len() != w * h * 4 {
+            self.raw.resize(w * h * 4, 0);
+            0..history
+        } else {
+            // Scroll the standing pixels toward the old edge, which leaves
+            // the newest `pending` columns to recolor below. After the shift
+            // every kept column sits exactly where the full loop would put
+            // it, so both paths share the write-out.
+            let k = self.pending;
+            match config.direction {
+                Orientation::Right => {
+                    for row in 0..h {
+                        let at = row * stride;
+                        self.raw.copy_within(at + k * 4..at + stride, at);
+                    }
+                }
+                Orientation::Left => {
+                    for row in 0..h {
+                        let at = row * stride;
+                        self.raw.copy_within(at..at + stride - k * 4, at + k * 4);
+                    }
+                }
+                Orientation::Bottom => self.raw.copy_within(k * stride.., 0),
+                Orientation::Top => self.raw.copy_within(..(h - k) * stride, k * stride),
+            }
+            history - k..history
+        };
+        for i in fresh {
             // `i` counts up from the oldest column.
             let slot = (self.head + i) % history;
             let base = slot * ROWS;
             for row in 0..ROWS {
                 let t = self.cells[base + row];
                 let step = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
-                let color = lut[((step * (LUT_STEPS - 1) as f32) as usize).min(LUT_STEPS - 1)];
+                let color = self.lut[((step * (LUT_STEPS - 1) as f32) as usize).min(LUT_STEPS - 1)];
                 let (x, y) = match config.direction {
                     Orientation::Right => (i, ROWS - 1 - row),
                     Orientation::Left => (history - 1 - i, ROWS - 1 - row),
@@ -677,14 +787,11 @@ impl Waterfall {
                     Orientation::Top => (row, history - 1 - i),
                 };
                 let at = (y * w + x) * 4;
-                raw[at..at + 4].copy_from_slice(&color);
+                self.raw[at..at + 4].copy_from_slice(&color);
             }
         }
-        // The renderer needs BGRA, the same swizzle the backdrop's bake does.
-        for pixel in raw.as_chunks_mut::<4>().0 {
-            pixel.swap(0, 2);
-        }
-        let buf = RgbaImage::from_raw(w as u32, h as u32, raw)?;
+        self.pending = 0;
+        let buf = RgbaImage::from_raw(w as u32, h as u32, self.raw.clone())?;
         Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
     }
 
@@ -715,6 +822,8 @@ impl Waterfall {
         let skin = Skin::of(config);
         if self.skin.as_ref() != Some(&skin) {
             self.skin = Some(skin);
+            self.lut.clear();
+            self.pending = usize::MAX;
             self.dirty = true;
         }
         if self.dirty {
@@ -1036,7 +1145,10 @@ impl PanelSettings for SpectrogramPanel {
         let (floor, ceil) = self.config.db_window();
         let speed = self.config.speed();
         let history = self.config.history() as f32;
-        div()
+        // What the FFT is handed and what it reads back: the window, the
+        // frequency axis it folds into, and the two dB bounds the ramp is
+        // stretched between.
+        let analysis = div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
@@ -1098,7 +1210,13 @@ impl PanelSettings for SpectrogramPanel {
                     Self::set_ceil_db,
                     cx,
                 ),
-            ))
+            ));
+        // How the reduced columns are drawn: the colors, the edge they enter
+        // from, and how much time the panel holds.
+        let picture = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(setting_row(
                 rox_i18n::t!("spectrogram-speed"),
                 Some(rox_i18n::t!("spectrogram-speed.description")),
@@ -1148,7 +1266,12 @@ impl PanelSettings for SpectrogramPanel {
                     },
                     cx,
                 ),
-            ))
+            ));
+        // The frequency ruler over the picture.
+        let scale = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
             .child(setting_row(
                 rox_i18n::t!("spectrogram-grid"),
                 Some(rox_i18n::t!("spectrogram-grid.description")),
@@ -1172,20 +1295,53 @@ impl PanelSettings for SpectrogramPanel {
                     },
                     cx,
                 ),
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(settings_ui::SECTION_GAP)
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-analysis"),
+                None,
+                analysis,
             ))
-            .child(setting_row(
-                rox_i18n::t!("spectrogram-hold-on-pause"),
-                Some(rox_i18n::t!("spectrogram-hold-on-pause.description")),
-                toggle(
-                    self.config.freeze,
-                    |this: &mut Self, on, cx| {
-                        this.config.freeze = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
+            .child(settings_ui::section(
+                rox_i18n::t!("spectrogram-section-picture"),
+                None,
+                picture,
+            ))
+            .child(settings_ui::section(
+                rox_i18n::t!("viz-section-scale"),
+                None,
+                scale,
             ))
             .into_any_element()
+    }
+
+    /// Hold on Pause lives here rather than on the panel's own page: it's
+    /// about how the panel acts when the audio stops, not how the waterfall
+    /// is drawn, and this is where every other panel keeps that kind of
+    /// switch.
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        Some(
+            settings_ui::section(
+                rox_i18n::t!("viz-section-playback"),
+                None,
+                setting_row(
+                    rox_i18n::t!("spectrogram-hold-on-pause"),
+                    Some(rox_i18n::t!("spectrogram-hold-on-pause.description")),
+                    toggle(
+                        self.config.freeze,
+                        |this: &mut Self, on, cx| {
+                            this.config.freeze = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ),
+            )
+            .into_any_element(),
+        )
     }
 }
 
@@ -1428,6 +1584,51 @@ mod tests {
         assert_eq!(view.quiet, 4);
     }
 
+    /// The steady bake shifts the standing pixels and recolors only the new
+    /// columns. That shortcut has to land on exactly the pixels a
+    /// from-scratch bake produces, in every scroll direction, batched
+    /// columns and ring wrap included.
+    #[test]
+    fn an_incremental_bake_matches_a_full_one() {
+        for (i, direction) in [
+            Orientation::Right,
+            Orientation::Left,
+            Orientation::Bottom,
+            Orientation::Top,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let config = SpectrogramConfig {
+                colormap: Colormap::Viridis,
+                direction,
+                ..SpectrogramConfig::default()
+            };
+            let mut inc = Waterfall::new();
+            let mut all = Waterfall::new();
+            inc.reset(&mapping(6));
+            all.reset(&mapping(6));
+            for step in 0..9 {
+                for (row, v) in inc.rows.iter_mut().enumerate() {
+                    *v = ((step + row) % 5) as f32 / 4.0;
+                }
+                all.rows.clone_from(&inc.rows);
+                inc.push_column();
+                all.push_column();
+                // Baking every other push leaves batches of two, the shape a
+                // slow frame hands the incremental path.
+                if step % 2 == 0 {
+                    assert!(inc.bake(&config).is_some());
+                }
+            }
+            assert!(inc.bake(&config).is_some());
+            // The reference never baked along the way, so this one runs the
+            // full rebuild.
+            assert!(all.bake(&config).is_some());
+            assert_eq!(inc.raw, all.raw, "direction {i} diverged");
+        }
+    }
+
     /// The scroll rate is wall clock, so the same stretch of time moves the
     /// same distance whatever the display's refresh is. Dropping the fraction
     /// each tick would leave the fast run short.
@@ -1483,6 +1684,67 @@ mod tests {
         assert_eq!(cell_color(Colormap::Grayscale, 9.0), [255, 255, 255]);
         assert_eq!(cell_color(Colormap::Grayscale, f32::NAN), [0, 0, 0]);
         assert_eq!(cell_color(Colormap::Magma, f32::INFINITY), MAGMA[4]);
+    }
+
+    /// The lightness of each step of a heat ramp over a given background.
+    fn heat_lightness(floor: Rgba, seed: Rgba, top: Rgba) -> Vec<f32> {
+        (0..=10)
+            .map(|i| {
+                let [r, g, b] = heat_color(floor, seed, top, i as f32 / 10.0);
+                let color = Rgba {
+                    r: r as f32 / 255.0,
+                    g: g as f32 / 255.0,
+                    b: b as f32 / 255.0,
+                    a: 1.0,
+                };
+                palette::rgba_to_oklch(color).0
+            })
+            .collect()
+    }
+
+    /// The whole point of the heat ramp: a cell only carries its level in its
+    /// color, so the palette maps have to travel the way the baked ramps do.
+    /// Cover used to hand back full accent at the floor, which painted the
+    /// whole panel one flat wash.
+    ///
+    /// Both themes are checked, since which way the ramp runs depends on
+    /// where the panel background sits: over a light panel the loud end is
+    /// the dark one.
+    #[test]
+    fn the_palette_colormaps_walk_away_from_the_background() {
+        let accent = gpui::rgb(0xffb300);
+        let highlight = gpui::rgb(0xfacc15);
+        for (floor, rising) in [(gpui::rgb(0x121212), true), (gpui::rgb(0xededed), false)] {
+            for top in [accent, highlight] {
+                let steps = heat_lightness(floor, accent, top);
+                for pair in steps.windows(2) {
+                    let moved = if rising {
+                        pair[1] - pair[0]
+                    } else {
+                        pair[0] - pair[1]
+                    };
+                    assert!(moved >= -0.01, "the ramp turned back on itself: {steps:?}");
+                }
+                let start = palette::rgba_to_oklch(floor).0;
+                assert!((steps[0] - start).abs() < 0.02, "the floor isn't the panel");
+                assert!(
+                    (steps[10] - start).abs() > 0.5,
+                    "the ramp never left the background: {steps:?}"
+                );
+            }
+        }
+    }
+
+    /// Two hues a few degrees apart on either side of the wrap join across it
+    /// rather than travelling the long way round the wheel.
+    #[test]
+    fn the_ramp_takes_the_short_way_between_hues() {
+        let pi = std::f32::consts::PI;
+        let mid = hue_lerp(pi - 0.1, -pi + 0.1, 0.5);
+        assert!(
+            mid.abs() > pi - 0.05,
+            "the hue crossed the whole wheel: {mid}"
+        );
     }
 
     /// A hand-edited layout is the one place these arrive broken, and a NaN

@@ -1924,6 +1924,17 @@ window-controls-style-icons = Icons
 window-controls-title = Window Controls
 window-controls-traffic-lights = Traffic Lights
 
+## Section names the audio panels share. Each one heads the same kind of
+## rows in the spectrum, VU, oscilloscope, spectrogram and particles
+## settings, so they're defined once rather than per panel.
+
+viz-section-analysis = Analysis
+viz-section-color = Color
+viz-section-peaks = Peaks
+viz-section-playback = Playback
+viz-section-scale = Scale
+viz-section-signal = Signal
+
 ## Particles panel
 
 particles-add-emitter = Add Emitter
@@ -1965,7 +1976,6 @@ particles-scale = Scale
 particles-section-emitters = Emitters
 particles-section-medium = Medium
 particles-section-particles = Particles
-particles-section-playback = Playback
 particles-shape = Shape
 particles-shape-box = Box
 particles-shape-line = Line
@@ -2022,6 +2032,7 @@ spectrum-outline-width = Outline Width
     .description = Stroke thickness of the hollow bars
 spectrum-peak-caps = Peak Caps
     .description = Hold a mark at each band's recent peak
+spectrum-section-bands = Bands
 spectrum-split-at = Split At
     .description = Where the zones meet, snapped to the nearest bar
 spectrum-split-zones = Split Zones
@@ -2071,6 +2082,7 @@ vu-orientation = Orientation
     .description = The edge the meters grow from
 vu-peak-caps = Peak Caps
     .description = Hold a mark at each meter's recent peak
+vu-section-meter = Meter
 vu-segment-gap = Segment Gap
     .description = The seam between cells in a stack
 vu-segment-height = Segment Height
@@ -2112,6 +2124,7 @@ spectrogram-log-scale = Log Scale
     .description = Give every octave the same room, the musical reading, instead of the even Hz spacing a lab tool shows
 spectrogram-low-bound = Low Bound
     .description = Bottom of the frequency axis
+spectrogram-section-picture = Picture
 spectrogram-speed = Speed
     .description = How fast the picture scrolls, in columns a second
 
@@ -2136,6 +2149,7 @@ oscilloscope-line-width = Line Width
     .description = How thick the trace draws
 oscilloscope-persistence = Persistence
     .description = How long previous frames linger behind the trace, the phosphor afterglow look
+oscilloscope-section-trace = Trace
 oscilloscope-trigger = Trigger
     .description = Start each frame where the signal crosses the trigger level, so periodic material stands still
 oscilloscope-trigger-falling = Falling

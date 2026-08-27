@@ -1800,6 +1800,16 @@ window-controls-style-icons = 图标
 window-controls-title = 窗口按钮
 window-controls-traffic-lights = 红黄绿圆点
 
+## Section names the audio panels share. Each one heads the same kind of
+## rows in the spectrum, VU, oscilloscope, spectrogram and particles
+## settings, so they're defined once rather than per panel.
+viz-section-analysis = 分析
+viz-section-color = 颜色
+viz-section-peaks = 峰值
+viz-section-playback = 播放
+viz-section-scale = 刻度
+viz-section-signal = 信号
+
 ## Particles panel
 particles-add-emitter = 添加发射器
 particles-aim = 朝向
@@ -1840,7 +1850,6 @@ particles-scale = 尺度
 particles-section-emitters = 发射器
 particles-section-medium = 介质
 particles-section-particles = 粒子
-particles-section-playback = 播放
 particles-shape = 形状
 particles-shape-box = 矩形
 particles-shape-line = 线
@@ -1896,6 +1905,7 @@ spectrum-outline-width = 描边宽度
     .description = 空心柱的线条粗细
 spectrum-peak-caps = 峰值帽
     .description = 在每个频段最近的峰值上留一个标记
+spectrum-section-bands = 频带
 spectrum-split-at = 分割点
     .description = 两个区在哪里交界，会对齐到最近的一根柱子
 spectrum-split-zones = 分区分析
@@ -1943,6 +1953,7 @@ vu-orientation = 方向
     .description = 表从哪条边长出来
 vu-peak-caps = 峰值帽
     .description = 在每个表最近的峰值上留一个标记
+vu-section-meter = 仪表
 vu-segment-gap = 段间距
     .description = 一叠里各格之间的接缝
 vu-segment-height = 段高
@@ -1983,6 +1994,7 @@ spectrogram-log-scale = 对数刻度
     .description = 给每个倍频程同样的空间，这是音乐化的读法，而不是像实验室仪器那样按 Hz 均匀分布
 spectrogram-low-bound = 低端
     .description = 频率轴的底端
+spectrogram-section-picture = 图像
 spectrogram-speed = 速度
     .description = 画面滚动的快慢，以每秒多少列计
 
@@ -2007,6 +2019,7 @@ oscilloscope-line-width = 线宽
     .description = 轨迹画得多粗
 oscilloscope-persistence = 余辉
     .description = 之前的帧在轨迹后面残留多久，也就是荧光屏余辉的效果
+oscilloscope-section-trace = 波形
 oscilloscope-trigger = 触发
     .description = 让每一帧都从信号穿过触发电平的地方开始，这样周期性的内容就能稳定不动
 oscilloscope-trigger-falling = 下降

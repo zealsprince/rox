@@ -1,6 +1,6 @@
 ### Русский. Отражает en-CA/rox.ftl ключ в ключ; тест на паритет
 ### в rox-i18n за этим следит. Ключи в kebab-case с префиксом по
-### поверхности; описание строки это атрибут её сообщения.
+### поверхности; описание строки — это атрибут её сообщения.
 
 ## Shared widgets
 tracking-title = Слежение
@@ -75,7 +75,7 @@ route-range-note = Диапазон только для этого параме�
 route-quiet = Тишина
     .description = Что показывает регулятор в тишине, как доля от собственной настройки
 route-loud = Громко
-    .description = Что он показывает при полном сигнале; 100% это собственное значение ползунка, ниже Тишины модуляция идёт вниз
+    .description = Что он показывает при полном сигнале; 100% — это собственное значение ползунка, ниже Тишины модуляция идёт вниз
 route-slot = Слот
     .description = Какой из шестнадцати сигнальных слотов шейдера заполняет этот маршрут
 route-slot-quiet-description = Что показывает слот в тишине
@@ -500,7 +500,7 @@ settings-appearance-font-size = Размер шрифта
     .description = Базовый размер текста, от которого масштабируется текст каждой панели; элементы и значки держат свой размер
 settings-appearance-hide-menubar = Скрывать строку меню
     .description = Держать строку меню скрытой и выводить её над доком, пока зажат Alt. Двойное нажатие Alt оставляет её на экране, и тогда её кнопки нажимаются обычным кликом
-settings-appearance-icons-intro = Набор это папка с SVG, которая заменяет встроенные значки; переключение вступает в силу при следующем запуске
+settings-appearance-icons-intro = Набор — это папка с SVG, которая заменяет встроенные значки; переключение вступает в силу при следующем запуске
 settings-appearance-icons-open-folder = Открыть папку
 settings-appearance-inverse-from-dark = Инверсия из тёмной темы
 settings-appearance-inverse-from-light = Инверсия из светлой темы
@@ -699,7 +699,7 @@ settings-integrations-section-lastfm = Last.fm
 settings-integrations-section-scrobbling = Скробблинг
 
 ## Settings: keymap
-settings-keymap-clash = { $chord } это ещё и { $other }; сработает только одно из двух
+settings-keymap-clash = { $chord } — это ещё и { $other }; сработает только одно из двух
 settings-keymap-not-bound = Не назначено
 settings-keymap-recording = Нажмите клавиши
 settings-keymap-restore = Восстановить
@@ -851,7 +851,7 @@ settings-shader-section-overlay = Шейдер наложения
 settings-shader-signals-block = Сигналы
     .description = Какой общий сигнал читает каждый из шестнадцати слотов шейдера
 settings-shader-slots-block = Слоты
-    .description = Каждый слот в том виде, в каком его получает шейдер; слоты без маршрута это регуляторы, выставленные вручную
+    .description = Каждый слот в том виде, в каком его получает шейдер; слоты без маршрута — это регуляторы, выставленные вручную
 
 ## Settings: storage
 settings-storage-artist-images = Изображения исполнителей
@@ -913,10 +913,10 @@ settings-workspace-card-website-placeholder = Где это живёт
 settings-workspace-composition-closed = Окно рабочего пространства закрыто
 settings-workspace-composition-hint = Панели окна так, как они расставлены по разделениям и группам вкладок; стрелки меняют порядок строки среди соседей, замок закрепляет панель на месте, а шестерёнка открывает её настройки
 settings-workspace-empty = Пока нет рабочих пространств
-settings-workspace-hint = Рабочее пространство это целый внешний вид: макеты, палитра, оформление; применение заменяет все три
+settings-workspace-hint = Рабочее пространство — это целый внешний вид: макеты, палитра, оформление; применение заменяет все три
 settings-workspace-layout-name-placeholder = Название макета
 settings-workspace-layouts-empty = Пока нет макетов
-settings-workspace-layouts-hint = Основной и мини это те два, между которыми переключает кнопка мини-плеера в строке меню
+settings-workspace-layouts-hint = Основной и мини — это те два, между которыми переключает кнопка мини-плеера в строке меню
 settings-workspace-name-placeholder = Название рабочего пространства
 settings-workspace-panel-preset-unknown-kind = Неизвестная панель
 settings-workspace-panel-presets-empty = Пока нет пресетов панелей
@@ -1196,7 +1196,7 @@ about-checking = Проверка...
 about-download = Скачать
 about-downloading = Скачивание... { $percent }%
 about-get-it = Получить
-about-license-lead = rox это свободное ПО под GNU AGPLv3. Исходный код лежит на
+about-license-lead = rox — это свободное ПО под GNU AGPLv3. Исходный код лежит на
 about-notice-lead = Копия лицензии должна была прийти вместе с программой. Если нет, смотрите
 about-release-notes = Заметки о выпуске
 about-restart-now = Перезапустить сейчас
@@ -1230,7 +1230,7 @@ welcome-menubar-mid = чтобы вывести её над доком, или �
 welcome-music-note = rox просканирует её в медиатеку, а файлы останутся на месте. Другие папки добавляются в настройках, в разделе медиатеки.
 welcome-next = Далее
 welcome-or = или
-welcome-panels-note = Каждая поверхность это панель, а меню «Панели» в строке меню открывает новые.
+welcome-panels-note = Каждая поверхность — это панель, а меню «Панели» в строке меню открывает новые.
 welcome-playback-after = перематывают.
 welcome-playback-before = переключает воспроизведение;
 welcome-quickplay-after = и он играет.
@@ -1272,7 +1272,7 @@ console-window-title = rox - Консоль
 signals-about-toggle = О сигналах
 signals-blurb-marked = У панелей, отмеченных этим значком в меню, можно привязать большинство параметров: щёлкните правой кнопкой по параметру в настройках панели и выберите сигнал или добавьте новый оттуда же.
 signals-blurb-shared = Настроенное здесь общее: изменение применяется к каждому параметру, направленному на этот сигнал, в каждой панели и каждом окне.
-signals-blurb-total = Сумма это четвёртый вид: она накапливает другой сигнал со временем и сбрасывается по достижении 1, поэтому растёт, пока музыка громкая, и замирает, пока нет. Пригодится, когда шейдеру нужна фаза, которая движется с песней, а не с часами.
+signals-blurb-total = Сумма — это четвёртый вид: она накапливает другой сигнал со временем и сбрасывается по достижении 1, поэтому растёт, пока музыка громкая, и замирает, пока нет. Пригодится, когда шейдеру нужна фаза, которая движется с песней, а не с часами.
 signals-blurb-what = Сигнал превращает то, что играет, в одно число от 0 до 1: энергия в полосе частот, уровень всей смеси или импульс на каждом ударе внутри полосы. Отклик задаёт, как быстро он следует, Порог глушит его ниже выбранного уровня.
 signals-no-library = Ни одного окна медиатеки не открыто, поэтому звука здесь нет. Правки всё равно сохраняются.
 signals-window-title = rox - Сигналы
@@ -1565,7 +1565,7 @@ convert-dialog-window-title = rox - Преобразование
 convert-ffmpeg-silent-failure = ffmpeg упал, не сказав почему
 convert-flag-attach = -attach читает отдельный файл, а это здесь не разрешено
 convert-flag-f = Контейнер задаётся расширением, поэтому -f задавать нельзя
-convert-flag-i = Вход это выбранный вами трек, так что -i задавать нельзя
+convert-flag-i = Вход — это выбранный вами трек, так что -i задавать нельзя
 convert-flag-n = -n уже стоит на каждом запуске
 convert-flag-y = Здесь ничего не перезаписывается, поэтому -y недоступен; существующий файл назначения пропускается
 convert-preset-flac = FLAC
@@ -1646,7 +1646,7 @@ smart-playlist-query-label = Запрос
 smart-playlist-sort-default = Порядок по умолчанию
 smart-playlist-sort-added = Добавлено
 smart-playlist-sort-label = Сортировка
-smart-playlist-unknown-field = «{ $field }:» это не поле, поэтому оно ищется как обычный текст
+smart-playlist-unknown-field = «{ $field }:» — это не поле, поэтому оно ищется как обычный текст
 smart-playlist-window-title = rox - { $verb }
 
 ## Playlist creation
@@ -1900,7 +1900,7 @@ particles-cone = Конус
 particles-direction = Направление
     .description = Куда тянет; 0 вверх, 180 вниз
 particles-drag = Сопротивление
-    .description = Сколько скорости съедает воздух за секунду; ноль это вакуум
+    .description = Сколько скорости съедает воздух за секунду; ноль — это вакуум
 particles-drift = Дрейф
     .description = Как быстро движется само поле, чтобы вихри не стояли на месте
 particles-edit-emitters = Править эмиттеры

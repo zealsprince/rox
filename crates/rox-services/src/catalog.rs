@@ -2103,18 +2103,19 @@ fn status_line(
     // Zero counts say nothing, keep them out so the line stays short
     // enough for the menubar.
     let mut parts = Vec::new();
+    let count = |n: usize| rox_i18n::format::format_int(n as i64);
     if let Some(s) = summary {
         if s.indexed > 0 {
-            parts.push(format!("{} indexed", s.indexed));
+            parts.push(format!("{} indexed", count(s.indexed)));
         }
         if s.unchanged > 0 {
-            parts.push(format!("{} unchanged", s.unchanged));
+            parts.push(format!("{} unchanged", count(s.unchanged)));
         }
         if s.untagged > 0 {
-            parts.push(format!("{} untagged", s.untagged));
+            parts.push(format!("{} untagged", count(s.untagged)));
         }
         if s.removed > 0 {
-            parts.push(format!("{} removed", s.removed));
+            parts.push(format!("{} removed", count(s.removed)));
         }
         if s.aborted {
             parts.push("stopped early".into());
@@ -2123,19 +2124,22 @@ fn status_line(
     // A watch sync reports its own counts, terse in the same voice as a scan.
     if let Some(w) = watch {
         if w.updated > 0 {
-            parts.push(format!("{} updated", w.updated));
+            parts.push(format!("{} updated", count(w.updated)));
         }
         if w.removed > 0 {
-            parts.push(format!("{} removed", w.removed));
+            parts.push(format!("{} removed", count(w.removed)));
         }
         if w.renamed > 0 {
-            parts.push(format!("{} renamed", w.renamed));
+            parts.push(format!("{} renamed", count(w.renamed)));
         }
     }
+    // The count comes from the same message the status panel's readout
+    // uses, so it's grouped and plural-correct in one step.
+    let tracks = rox_i18n::t!("status-count-tracks", count = total as u64);
     if parts.is_empty() {
-        return format!("{total} tracks");
+        return tracks.to_string();
     }
-    format!("{} tracks ({})", total, parts.join(", "))
+    format!("{tracks} ({})", parts.join(", "))
 }
 
 /// Prompt for a folder and add it to the library. The picker is the

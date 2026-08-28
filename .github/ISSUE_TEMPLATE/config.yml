@@ -3,3 +3,9 @@ contact_links:
   - name: "Chat: #rox on IRC"
     url: https://hivecom.net/chat?channel=rox
     about: Quick questions and ideas that aren't issues yet. irc.hivecom.net, or the web chat right here.
+  # No translation template, because filing one here would be the slower half of
+  # the job: on Weblate the report and the fix are the same edit, and it comes
+  # back as a pull request.
+  - name: "Translations: rox on Weblate"
+    url: https://hosted.weblate.org/projects/rox/app/
+    about: A string that reads wrong in your language, or one rox doesn't speak yet. Fix it in place, no clone needed.

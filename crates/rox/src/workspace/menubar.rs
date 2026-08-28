@@ -406,7 +406,15 @@ impl Workspace {
                         crate::startup::updates::dismiss(dismiss_version.clone());
                         cx.refresh_windows();
                     })
-                    .child(svg().path(icons::CLOSE).size(px(10.)).flex_none()),
+                    // The svg takes its color from its own style, the chip's
+                    // text color doesn't reach it, so set it here.
+                    .child(
+                        svg()
+                            .path(icons::CLOSE)
+                            .size(px(10.))
+                            .flex_none()
+                            .text_color(palette::text_on_accent()),
+                    ),
             );
         panel::Tip::keyed(
             "update-chip",

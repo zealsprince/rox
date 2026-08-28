@@ -73,6 +73,7 @@ pub mod icons {
     pub const ROWS_2: &str = "icons/rows-2.svg";
     pub const ROWS_3: &str = "icons/rows-3.svg";
     pub const REFRESH_CW: &str = "icons/refresh-cw.svg";
+    pub const POWER: &str = "icons/power.svg";
     pub const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
     pub const CHEVRON_DOWN: &str = "icons/chevron-down.svg";
     pub const DISC: &str = "icons/disc-3.svg";
@@ -236,6 +237,7 @@ pub mod icons {
         ROWS_2,
         ROWS_3,
         REFRESH_CW,
+        POWER,
         CHEVRON_RIGHT,
         CHEVRON_DOWN,
         DISC,

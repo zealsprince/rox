@@ -1017,6 +1017,7 @@ menu-signals = Sinais
 menu-song-theming = Tema da música
 menu-stats = Estatísticas
 menu-tasks = Tarefas
+menu-update-available = Atualização disponível
 menu-welcome = Boas-vindas
 menu-window = Janela
 menu-workspace = Espaço de trabalho

@@ -1073,6 +1073,7 @@ menu-signals = Signals
 menu-song-theming = Song Theming
 menu-stats = Stats
 menu-tasks = Tasks
+menu-update-available = Update Available
 menu-welcome = Welcome
 menu-window = Window
 menu-workspace = Workspace

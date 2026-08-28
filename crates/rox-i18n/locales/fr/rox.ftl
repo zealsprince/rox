@@ -1051,6 +1051,7 @@ menu-signals = Signaux
 menu-song-theming = Couleurs du morceau
 menu-stats = Statistiques
 menu-tasks = Tâches
+menu-update-available = Mise à jour disponible
 menu-welcome = Bienvenue
 menu-window = Fenêtre
 menu-workspace = Espace de travail

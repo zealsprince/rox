@@ -1002,6 +1002,7 @@ menu-signals = 信号
 menu-song-theming = 歌曲配色
 menu-stats = 统计
 menu-tasks = 任务
+menu-update-available = 有可用更新
 menu-welcome = 欢迎
 menu-window = 窗口
 menu-workspace = 工作区

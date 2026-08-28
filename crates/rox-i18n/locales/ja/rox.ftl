@@ -1002,6 +1002,7 @@ menu-signals = シグナル
 menu-song-theming = 曲テーマ
 menu-stats = 統計
 menu-tasks = タスク
+menu-update-available = 更新があります
 menu-welcome = ようこそ
 menu-window = ウィンドウ
 menu-workspace = ワークスペース

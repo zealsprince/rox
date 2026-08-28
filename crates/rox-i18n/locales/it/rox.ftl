@@ -1023,6 +1023,7 @@ menu-signals = Segnali
 menu-song-theming = Colori del brano
 menu-stats = Statistiche
 menu-tasks = Attività
+menu-update-available = Aggiornamento disponibile
 menu-welcome = Benvenuto
 menu-window = Finestra
 menu-workspace = Spazio di lavoro

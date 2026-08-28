@@ -8,8 +8,8 @@
 //! Application; the button here checks now either way.
 
 use gpui::{
-    div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div, Global, MouseButton,
-    ScrollHandle, SharedString, Subscription, Window, WindowHandle,
+    div, prelude::*, px, size, svg, App, Bounds, Context, Div, Global, MouseButton, ScrollHandle,
+    SharedString, Subscription, Window, WindowHandle,
 };
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::Root;
@@ -150,6 +150,11 @@ impl AboutWindow {
                     Ok(release) => {
                         let entry = updates::cache(&release);
                         Settings::update(move |s| s.session.update_cache = Some(entry));
+                        // The menubar chip reads a live static off this
+                        // cache; recompute it and repaint the workspaces so
+                        // they agree with the answer here.
+                        updates::refresh_available(&Settings::load());
+                        cx.refresh_windows();
                         if release.is_new() {
                             UpdateCheck::Available(release)
                         } else {
@@ -182,43 +187,48 @@ impl AboutWindow {
         cx.notify();
     }
 
-    /// The announcement row for a newer release. Where the install can
+    /// The buttons for a newer release, the notes link before the download
+    /// so the acting button holds the end of the row. Where the install can
     /// replace itself it offers the download with the release page demoted
     /// to notes; everywhere else (a distro package, a read-only home, a
     /// platform without an artifact) the page link is the whole offer,
     /// notify-only as before.
-    fn release_row(release: &updates::Release, note: String, cx: &mut Context<Self>) -> AnyElement {
+    fn release_buttons(release: &updates::Release, cx: &mut Context<Self>) -> Vec<Div> {
         let url = release.url.clone();
-        let row = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_SM)
-            .child(line(note));
         if updater::can_update() {
             let release = release.clone();
-            row.child(small_button(
-                rox_i18n::t!("about-download"),
-                icons::DOWNLOAD,
-                false,
-                cx.listener(move |_, _, _, cx| Self::download(&release, cx)),
-            ))
-            .child(small_button(
-                rox_i18n::t!("about-release-notes"),
-                icons::EXTERNAL_LINK,
-                false,
-                cx.listener(move |_, _, _, cx| cx.open_url(&url)),
-            ))
-            .into_any_element()
+            vec![
+                small_button(
+                    rox_i18n::t!("about-release-notes"),
+                    icons::EXTERNAL_LINK,
+                    false,
+                    cx.listener(move |_, _, _, cx| cx.open_url(&url)),
+                ),
+                small_button(
+                    rox_i18n::t!("about-download"),
+                    icons::DOWNLOAD,
+                    false,
+                    cx.listener(move |_, _, _, cx| Self::download(&release, cx)),
+                ),
+            ]
         } else {
-            row.child(small_button(
+            vec![small_button(
                 rox_i18n::t!("about-get-it"),
                 icons::EXTERNAL_LINK,
                 false,
                 cx.listener(move |_, _, _, cx| cx.open_url(&url)),
-            ))
-            .into_any_element()
+            )]
         }
+    }
+
+    /// The check button, the row's resting state.
+    fn check_button(&self, cx: &mut Context<Self>) -> Div {
+        small_button(
+            rox_i18n::t!("about-check-for-updates"),
+            icons::REFRESH_CW,
+            false,
+            cx.listener(|this, _, _, cx| this.check_for_updates(cx)),
+        )
     }
 
     /// Repaint on a timer while the download runs: the progress is stored in
@@ -288,63 +298,76 @@ impl Render for AboutWindow {
         palette::note_focus(player, window.is_window_active(), cx);
 
         panel::window_body(player, || {
-            let checking = matches!(self.update_check, UpdateCheck::Checking);
-
-            // The status line beside the button, one wording per state. The
-            // updater's state outranks the check's: once a download is
-            // running or done, that's the story, whatever the last check said.
-            let status: Option<AnyElement> = match updater::status() {
-                updater::Status::Applied { version } => Some(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_SM)
-                        .child(line(rox_i18n::t!("about-version-ready", version = version)))
-                        .child(small_button(
-                            rox_i18n::t!("about-restart-now"),
-                            icons::REFRESH_CW,
-                            false,
-                            cx.listener(|_, _, _, cx| cx.restart()),
-                        ))
-                        .into_any_element(),
+            // The update row: the state's wording first, then the buttons,
+            // one wording per state. The row ends on one button that
+            // transforms with the update (check, download, restart), going
+            // inert while a check or download runs; only a found release
+            // adds the notes link beside it. The updater's state outranks
+            // the check's: once a download is running or done, that's the
+            // story, whatever the last check said.
+            let (note, buttons): (Option<SharedString>, Vec<Div>) = match updater::status() {
+                updater::Status::Applied { version } => (
+                    Some(rox_i18n::t!("about-version-ready", version = version)),
+                    vec![small_button(
+                        rox_i18n::t!("about-restart-now"),
+                        icons::POWER,
+                        false,
+                        cx.listener(|_, _, _, cx| cx.restart()),
+                    )],
                 ),
-                updater::Status::Downloading(progress) => Some(
-                    line(rox_i18n::t!(
-                        "about-downloading",
-                        percent = (progress.fraction() * 100.).round() as u64
-                    ))
-                    .into_any_element(),
+                updater::Status::Downloading(progress) => (
+                    match &self.update_check {
+                        UpdateCheck::Available(release) => Some(rox_i18n::t!(
+                            "about-version-available",
+                            version = release.version.clone()
+                        )),
+                        _ => None,
+                    },
+                    vec![small_button(
+                        rox_i18n::t!(
+                            "about-downloading",
+                            percent = (progress.fraction() * 100.).round() as u64
+                        ),
+                        icons::DOWNLOAD,
+                        true,
+                        |_, _, _| {},
+                    )],
                 ),
-                updater::Status::Failed { error } => match &self.update_check {
-                    // The release the download failed for is still the cached
-                    // one, so the retry button appears beside the reason.
-                    UpdateCheck::Available(release) => Some(Self::release_row(
-                        release,
-                        rox_i18n::t!("about-update-failed", error = error).to_string(),
-                        cx,
-                    )),
-                    _ => Some(
-                        line(rox_i18n::t!("about-update-failed", error = error)).into_any_element(),
-                    ),
-                },
+                updater::Status::Failed { error } => (
+                    Some(rox_i18n::t!("about-update-failed", error = error)),
+                    match &self.update_check {
+                        // The release the download failed for is still the
+                        // cached one, so the retry appears beside the reason.
+                        UpdateCheck::Available(release) => Self::release_buttons(release, cx),
+                        _ => vec![self.check_button(cx)],
+                    },
+                ),
                 updater::Status::Idle => match &self.update_check {
-                    UpdateCheck::Idle => None,
-                    UpdateCheck::Checking => {
-                        Some(line(rox_i18n::t!("about-checking")).into_any_element())
-                    }
-                    UpdateCheck::UpToDate => {
-                        Some(line(rox_i18n::t!("about-up-to-date")).into_any_element())
-                    }
-                    UpdateCheck::Failed => {
-                        Some(line(rox_i18n::t!("about-check-failed")).into_any_element())
-                    }
-                    UpdateCheck::Available(release) => Some(Self::release_row(
-                        release,
-                        rox_i18n::t!("about-version-available", version = release.version.clone())
-                            .to_string(),
-                        cx,
-                    )),
+                    UpdateCheck::Idle => (None, vec![self.check_button(cx)]),
+                    UpdateCheck::Checking => (
+                        None,
+                        vec![small_button(
+                            rox_i18n::t!("about-checking"),
+                            icons::REFRESH_CW,
+                            true,
+                            |_, _, _| {},
+                        )],
+                    ),
+                    UpdateCheck::UpToDate => (
+                        Some(rox_i18n::t!("about-up-to-date")),
+                        vec![self.check_button(cx)],
+                    ),
+                    UpdateCheck::Failed => (
+                        Some(rox_i18n::t!("about-check-failed")),
+                        vec![self.check_button(cx)],
+                    ),
+                    UpdateCheck::Available(release) => (
+                        Some(rox_i18n::t!(
+                            "about-version-available",
+                            version = release.version.clone()
+                        )),
+                        Self::release_buttons(release, cx),
+                    ),
                 },
             };
 
@@ -353,13 +376,8 @@ impl Render for AboutWindow {
                 .flex_row()
                 .items_center()
                 .gap(tokens::SPACE_SM)
-                .child(small_button(
-                    rox_i18n::t!("about-check-for-updates"),
-                    icons::REFRESH_CW,
-                    checking,
-                    cx.listener(|this, _, _, cx| this.check_for_updates(cx)),
-                ))
-                .when_some(status, |d, status| d.child(status));
+                .when_some(note, |d, note| d.child(line(note)))
+                .children(buttons);
 
             // The identity column beside the logo: name and version up top, then
             // the copyright, the copyleft notice, and where the source lives.

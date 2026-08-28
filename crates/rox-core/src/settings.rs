@@ -832,6 +832,14 @@ pub struct SessionState {
         deserialize_with = "lenient::option"
     )]
     pub update_cache: Option<UpdateCache>,
+    /// The release version whose menubar chip was dismissed, so the chip
+    /// stays away for that version across restarts and comes back when a
+    /// newer one lands. None until a dismissal.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::option"
+    )]
+    pub update_dismissed: Option<String>,
     /// What the last acoustic pass measured on this machine, worker-seconds
     /// per track by model id, so the Library page can price Analyze Missing
     /// before it runs: divide by the worker setting, multiply by what's
@@ -900,6 +908,7 @@ impl Default for SessionState {
             last_queue: None,
             last_scan: 0,
             update_cache: None,
+            update_dismissed: None,
             acoustic_pace: HashMap::new(),
             replaygain_pace: 0.0,
             tempo_pace: 0.0,

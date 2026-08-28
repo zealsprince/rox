@@ -1029,6 +1029,7 @@ menu-signals = Сигнали
 menu-song-theming = Тема пісні
 menu-stats = Статистика
 menu-tasks = Завдання
+menu-update-available = Доступне оновлення
 menu-welcome = Вітання
 menu-window = Вікно
 menu-workspace = Робочий простір

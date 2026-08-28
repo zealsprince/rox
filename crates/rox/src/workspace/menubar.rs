@@ -294,6 +294,9 @@ impl Workspace {
             .flex_none()
             .gap(tokens::SPACE_SM)
             .px(tokens::SPACE_MD)
+            .when_some(crate::startup::updates::available(), |d, version| {
+                d.child(self.update_chip(version, cx))
+            })
             .when(!status.is_empty(), |d| {
                 let library = self.state.library.clone();
                 d.child(
@@ -365,6 +368,51 @@ impl Workspace {
                     cx,
                 ))
             })
+    }
+
+    /// The "Update Available" chip beside the catalog status, shown while a
+    /// newer release sits in the cache. The chip opens the About window,
+    /// which offers the download where the install can replace itself and
+    /// the release page everywhere else; the x dismisses it for this
+    /// release, so it only returns with the next one.
+    fn update_chip(&self, version: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let dismiss_version = version.clone();
+        let chip = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .px(tokens::SPACE_SM)
+            .py(px(2.))
+            .rounded_full()
+            .bg(palette::accent())
+            .text_xs()
+            .text_color(palette::text_on_accent())
+            .cursor_pointer()
+            .hover(|d| d.bg(palette::accent_hover()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    crate::startup::about_window::open(this.state.clone(), cx);
+                }),
+            )
+            .child(rox_i18n::t!("menu-update-available"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx: &mut App| {
+                        cx.stop_propagation();
+                        crate::startup::updates::dismiss(dismiss_version.clone());
+                        cx.refresh_windows();
+                    })
+                    .child(svg().path(icons::CLOSE).size(px(10.)).flex_none()),
+            );
+        panel::Tip::keyed(
+            "update-chip",
+            rox_i18n::t!("about-version-available", version = version),
+        )
+        .apply(chip)
     }
 
     /// A paint-time capture of a menu surface's bounds into

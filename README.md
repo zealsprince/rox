@@ -151,8 +151,8 @@ Grab your platform's build from the [releases page](https://github.com/zealsprin
   - **Arch Linux** - Available on the AUR as [`rox-player`](https://aur.archlinux.org/packages/rox-player).
   - **Tarball** - Unpack the tarball and run `./rox`.
 - **macOS** - Open the DMG and drag `rox` into Applications.
-- **Windows** - Unzip anywhere and run `rox.exe`. If SmartScreen objects, More info >
-  Run anyway.
+- **Windows** - Run the setup, and rox lands in your Start menu. Prefer portable? Unzip
+  the zip anywhere and run `rox.exe`. If SmartScreen objects, More info > Run anyway.
 
 ## Command line
 

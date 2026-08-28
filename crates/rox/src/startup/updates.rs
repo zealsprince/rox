@@ -7,6 +7,7 @@
 //! called from the About page or, opted in, straight from the launch check
 //! here.
 
+use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -25,6 +26,49 @@ const LATEST: &str = "https://api.github.com/repos/zealsprince/rox/releases/late
 
 /// How long a cached check is good for before a launch runs another: a day.
 const CHECK_INTERVAL: u64 = 24 * 60 * 60;
+
+/// The version the menubar's "Update Available" chip announces, a live
+/// static like the palette's flags: the menubar reads it per frame, where a
+/// settings-file load has no place. Some only when the cached check found a
+/// newer release that hasn't been dismissed; installs that can't replace
+/// themselves see it too, since knowing a release exists doesn't need the
+/// updater. Seeded at launch and refreshed when a check lands or the chip
+/// is dismissed.
+static AVAILABLE: RwLock<Option<String>> = RwLock::new(None);
+
+/// What the menubar chip shows, if anything.
+pub fn available() -> Option<String> {
+    AVAILABLE.read().unwrap().clone()
+}
+
+/// Recompute the chip's static from the settings on hand: the cached
+/// release against the running build and the dismissal. Runs when the
+/// cache or the dismissal moves, never per frame.
+pub fn refresh_available(settings: &Settings) {
+    let version = settings
+        .session
+        .update_cache
+        .as_ref()
+        .filter(|cache| {
+            let release = Release {
+                version: cache.latest.clone(),
+                url: cache.url.clone(),
+                assets: Vec::new(),
+            };
+            release.is_new()
+                && settings.session.update_dismissed.as_deref() != Some(cache.latest.as_str())
+        })
+        .map(|cache| cache.latest.clone());
+    *AVAILABLE.write().unwrap() = version;
+}
+
+/// Put the chip away for this release: remember the version so it stays
+/// dismissed across restarts, and clear the live static. A newer release
+/// brings the chip back on its own.
+pub fn dismiss(version: String) {
+    Settings::update(move |s| s.session.update_dismissed = Some(version));
+    *AVAILABLE.write().unwrap() = None;
+}
 
 /// A published release as the check reads it: the version its tag names,
 /// the page a user opens to get it, and the files attached to it for the
@@ -115,25 +159,36 @@ pub fn fetch_latest() -> Result<Release, String> {
 /// home stays notify-only whatever the toggle says.
 pub fn check_on_launch(cx: &mut gpui::App) {
     let settings = Settings::load();
+    // Seed the menubar chip from the cache whether or not a check is due,
+    // so a launch inside the one-day window still announces what the last
+    // check found.
+    refresh_available(&settings);
     if !auto_check_due(&settings) {
         return;
     }
     let auto_download = settings.download_updates;
-    cx.background_executor()
-        .spawn(async move {
-            match fetch_latest() {
-                Ok(release) => {
-                    Settings::update(|s| s.session.update_cache = Some(cache(&release)));
-                    if auto_download && release.is_new() && updater::can_update() {
-                        if let Some(job) = updater::begin(&release) {
-                            job();
-                        }
+    let check = cx.background_executor().spawn(async move {
+        match fetch_latest() {
+            Ok(release) => {
+                Settings::update(|s| s.session.update_cache = Some(cache(&release)));
+                refresh_available(&Settings::load());
+                if auto_download && release.is_new() && updater::can_update() {
+                    if let Some(job) = updater::begin(&release) {
+                        job();
                     }
                 }
-                Err(e) => log::warn!("update check: {e}"),
             }
-        })
-        .detach();
+            Err(e) => log::warn!("update check: {e}"),
+        }
+    });
+    // Back on the foreground once the check settles: repaint the open
+    // windows, since the chip's static is outside gpui's reactivity and
+    // nothing else would wake an idle menubar.
+    cx.spawn(async move |cx| {
+        check.await;
+        cx.refresh().ok();
+    })
+    .detach();
 }
 
 /// The cache entry a finished check writes: the release stamped with now.

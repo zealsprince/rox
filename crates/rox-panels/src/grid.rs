@@ -281,6 +281,12 @@ pub struct GridPanel {
     /// measured width, then applied once in `body` and cleared. A user drag
     /// clears it too, so a hand on the wall wins over the restore.
     restore: Option<usize>,
+    /// The letter rail's active entry, pinned to the one just clicked until
+    /// a real scroll gesture or another jump moves the wall. Without this
+    /// the active letter falls back to whatever `first_cell` reports, which
+    /// can name the letter above the one clicked when the target has only a
+    /// few albums and doesn't reach the top of the viewport on its own.
+    letter_hold: Option<usize>,
     /// The last animation tick, the coast's and the glide's dt.
     last_tick: Instant,
     /// The idle-resume clock: stamped on every scroll or press, it wakes
@@ -407,6 +413,7 @@ impl GridPanel {
             flick: FlickState::default(),
             glide_to: None,
             restore,
+            letter_hold: None,
             last_tick: Instant::now(),
             resume_idle: ResumeIdle::default(),
             playing_key: None,
@@ -492,6 +499,7 @@ impl GridPanel {
         let Some(cell_ix) = self.playing_ix else {
             return;
         };
+        self.letter_hold = None;
         // Both modes head for the same line through the per-frame stepping
         // in `body`: the line is the stable fact, its offset depends on a
         // layout that may still be settling (a launch's first frames), so
@@ -656,13 +664,14 @@ impl GridPanel {
 
     /// The letter rail's gutter: its own strip beside the wall rather
     /// than an overlay, so the letters never sit on top of the covers.
-    /// The lit letter follows the first visible tile; a click centers
-    /// that letter's first album.
+    /// The lit letter follows the first visible tile, except right after a
+    /// rail click: `letter_hold` pins it to the letter clicked until a real
+    /// scroll or another jump lets the first-visible tile take over again.
     fn letter_rail(&self, cx: &mut Context<Self>) -> Option<Div> {
         if !self.config.letters {
             return None;
         }
-        let first = self.first_cell();
+        let first = self.letter_hold.unwrap_or_else(|| self.first_cell());
         let active = self
             .letters
             .iter()
@@ -676,7 +685,7 @@ impl GridPanel {
             self.config.letters_compact,
             |this: &mut Self, first, cx| {
                 this.touch_resume(cx);
-                this.scroll_to_cell(first, cx);
+                this.scroll_to_letter(first, cx);
             },
             cx,
         )?;
@@ -1009,12 +1018,30 @@ impl GridPanel {
     }
 
     /// Bring an album's tile into view, centered on the scroll axis. Clears
-    /// any pending glide or restore so the jump wins over an automatic move.
+    /// any pending glide or restore so the jump wins over an automatic move,
+    /// and releases a held rail letter since this jump didn't come from it.
     fn scroll_to_cell(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.letter_hold = None;
+        self.scroll_to_cell_with(ix, ScrollStrategy::Center, cx);
+    }
+
+    /// Bring a letter's first album to the top of the scroll axis rather
+    /// than centering it, and pin the rail's active letter to the one
+    /// clicked. A rail jump has to land the clicked letter where the click
+    /// landed; centering a letter with only a few albums leaves the previous
+    /// letter's tiles filling the top of the view, so the rail's active
+    /// highlight (driven by the first visible cell) would still point at the
+    /// letter above the one actually clicked until the hold takes over.
+    fn scroll_to_letter(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.letter_hold = Some(ix);
+        self.scroll_to_cell_with(ix, ScrollStrategy::Top, cx);
+    }
+
+    fn scroll_to_cell_with(&mut self, ix: usize, strategy: ScrollStrategy, cx: &mut Context<Self>) {
         self.glide_to = None;
         self.restore = None;
         let line = ix / self.lanes();
-        self.scroll.scroll_to_item(line, ScrollStrategy::Center);
+        self.scroll.scroll_to_item(line, strategy);
         cx.notify();
     }
 
@@ -2169,6 +2196,7 @@ impl GridPanel {
                         window.focus(&this.focus);
                         this.glide_to = None;
                         this.restore = None;
+                        this.letter_hold = None;
                         this.flick.begin(event.position.along(axis));
                         this.touch_resume(cx);
                         cx.notify();
@@ -2179,6 +2207,7 @@ impl GridPanel {
                 // and leaves the scroll itself to the list and the gap-filler
                 // below, so nothing scrolls twice.
                 .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                    this.letter_hold = None;
                     this.touch_resume(cx);
                 }))
                 // A plain wheel only sends a vertical delta, and the list
@@ -2194,6 +2223,7 @@ impl GridPanel {
                         }
                         this.glide_to = None;
                         this.restore = None;
+                        this.letter_hold = None;
                         let base = this.scroll.base_handle().clone();
                         let offset = base.offset().apply_along(Axis::Horizontal, |x| x + delta.y);
                         base.set_offset(offset);

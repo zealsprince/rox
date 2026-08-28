@@ -1073,6 +1073,132 @@ pub fn type_ahead_grow(buffer: &mut String, at: &mut Option<Instant>, text: Stri
     *at = Some(now);
     grown
 }
+
+/// The phrase a panel's type-ahead is jumping by, as a small floating
+/// badge, so typing on a focused panel shows what it's matching instead of
+/// working invisibly. None once the window since the last stroke has
+/// passed; pair it with [`type_ahead_fade`] so the badge actually leaves
+/// when the phrase expires rather than waiting for the next repaint.
+pub fn type_ahead_overlay(phrase: &str, at: Option<Instant>) -> Option<Div> {
+    if phrase.is_empty() || !at.is_some_and(|last| last.elapsed() < TYPE_AHEAD) {
+        return None;
+    }
+    Some(
+        div()
+            .absolute()
+            .top(tokens::SPACE_SM)
+            .right(tokens::SPACE_SM)
+            .px(tokens::SPACE_SM)
+            .py(tokens::SPACE_XS)
+            .rounded(tokens::RADIUS)
+            .bg(palette::bg_menu())
+            .border_1()
+            .border_color(palette::border())
+            .text_sm()
+            .text_color(palette::text())
+            .child(SharedString::from(phrase.to_string())),
+    )
+}
+
+/// The letter-rail initial for a name: A-Z for ASCII, the character
+/// itself uppercased elsewhere, and a "#" bucket for digits, symbols, and
+/// the nameless.
+pub fn letter_initial(name: &str) -> String {
+    match name.chars().next() {
+        Some(c) if c.is_ascii_alphabetic() => c.to_ascii_uppercase().to_string(),
+        Some(c) if !c.is_ascii() => c.to_uppercase().to_string(),
+        _ => "#".to_string(),
+    }
+}
+
+/// A letter index rail: each entry a letter and the first cell under it,
+/// a click handing that cell to `pick`. The strip runs as a row when
+/// `horizontal`, a column otherwise, and fills its container along that
+/// axis; the caller decides where it sits (an overlay, a gutter).
+/// Overflow either wraps to more lines or, with `compact`, stays one
+/// line that scrolls. The `active` entry draws in accent. None under two
+/// letters; one letter has nowhere to jump.
+pub fn letter_rail<P: 'static>(
+    letters: &[(SharedString, usize)],
+    active: usize,
+    horizontal: bool,
+    compact: bool,
+    pick: impl Fn(&mut P, usize, &mut Context<P>) + Copy + 'static,
+    cx: &mut Context<P>,
+) -> Option<Div> {
+    if letters.len() < 2 {
+        return None;
+    }
+    let mut strip = if horizontal {
+        div().flex().flex_row().items_center()
+    } else {
+        div().flex().flex_col().items_center()
+    };
+    for (i, (letter, first)) in letters.iter().enumerate() {
+        let first = *first;
+        strip = strip.child(
+            div()
+                .id(("letter-rail", i))
+                .px(px(3.))
+                .text_xs()
+                .cursor_pointer()
+                .text_color(if i == active {
+                    palette::accent()
+                } else {
+                    palette::text_muted()
+                })
+                .hover(|d| d.text_color(palette::text()))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        // The host surface's own press scrubs or drags; a
+                        // rail press is a jump, so it must not fall through.
+                        cx.stop_propagation();
+                        pick(this, first, cx);
+                    }),
+                )
+                .child(letter.clone()),
+        );
+    }
+    Some(if compact {
+        // One line clamped to the container, scrolling for the overflow;
+        // the outer wrapper centers it while it still fits.
+        let scroll = strip.id("letter-rail-scroll");
+        if horizontal {
+            div()
+                .w_full()
+                .flex()
+                .flex_row()
+                .justify_center()
+                .child(scroll.overflow_x_scroll().max_w(gpui::relative(1.)))
+        } else {
+            div()
+                .h_full()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .child(scroll.overflow_y_scroll().max_h(gpui::relative(1.)))
+        }
+    } else {
+        let strip = strip.flex_wrap().justify_center();
+        if horizontal {
+            strip.w_full()
+        } else {
+            strip.h_full()
+        }
+    })
+}
+
+/// Arm a repaint for when the current type-ahead phrase expires, so the
+/// overlay fades out on time. One task per keystroke; each just notifies
+/// once, and a stale one repaints a badge-less panel for free.
+pub fn type_ahead_fade<P: 'static>(cx: &mut Context<P>) {
+    cx.spawn(async move |this, cx| {
+        cx.background_executor().timer(TYPE_AHEAD).await;
+        this.update(cx, |_, cx| cx.notify()).ok();
+    })
+    .detach();
+}
 /// The shared "tracking" section for a panel's Behavior page: the
 /// follow-playing toggle and, while it is on, the smooth-scrolling toggle,
 /// under one header so the library, the grids, and the art shelf all read

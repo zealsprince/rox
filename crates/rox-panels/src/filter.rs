@@ -262,6 +262,10 @@ impl FilterPanel {
             self.type_ahead = text;
         }
         self.type_ahead_at = Some(now);
+        // The badge shows the phrase now and leaves when it expires; a miss
+        // below still updated the phrase, so repaint either way.
+        panel::type_ahead_fade(cx);
+        cx.notify();
         let Some(values) = self.columns.get(self.active_col) else {
             return;
         };
@@ -982,7 +986,10 @@ impl FilterPanel {
                         .child(self.add_button(false, cx)),
                 ),
         );
-        root.child(cols)
+        root.child(cols.relative().children(panel::type_ahead_overlay(
+            &self.type_ahead,
+            self.type_ahead_at,
+        )))
     }
 }
 

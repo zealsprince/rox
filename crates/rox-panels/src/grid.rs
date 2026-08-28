@@ -32,6 +32,7 @@ use gpui_component::{h_virtual_list, v_virtual_list, Icon, Side, VirtualListScro
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
+use rox_library::sort::natural_cmp;
 use rox_panel_kit::config::{default_true, is_zero};
 use rox_panel_kit::wall::{default_dim, WallLayout, TILE_DIM_MAX, TILE_LABEL_H};
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,23 @@ pub enum TitleAlign {
     Right,
 }
 
+/// What order the album tiles read in. Artist is the library's canonical
+/// browse order; the rest reorder whole albums by one key and keep that
+/// canonical order as the tie-break, so equal keys never shuffle.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GridSort {
+    #[default]
+    Artist,
+    Album,
+    /// Oldest first, the unknown years at the end.
+    Year,
+    /// Newest arrival first, by the album's most recently added track.
+    Added,
+    /// Most played first, the album's tracks summed.
+    Plays,
+}
+
 /// The grid panel's per-view config: what a saved layout restores, and
 /// what the settings window edits.
 #[derive(Clone, Serialize, Deserialize)]
@@ -103,6 +121,18 @@ pub struct GridConfig {
     /// long-standing shape.
     #[serde(default = "default_true")]
     pub vertical: bool,
+    /// What order the tiles read in. Canonical artist order by default.
+    #[serde(default)]
+    pub sort: GridSort,
+    /// A letter index rail in its own gutter along the wall's edge, each
+    /// initial a click that jumps to its first album. Follows the sort
+    /// key's initials, so it only shows under the artist and album sorts.
+    #[serde(default)]
+    pub letters: bool,
+    /// Keep the rail to one line that scrolls instead of wrapping, for
+    /// libraries whose scripts spill past one row of initials.
+    #[serde(default)]
+    pub letters_compact: bool,
     /// The preferred tile edge in px. The strip picks inside
     /// [`TILE_MIN`]..[`TILE_MAX`]; a typed size can go past the top.
     #[serde(default = "default_tile")]
@@ -166,6 +196,9 @@ impl Default for GridConfig {
             search: false,
             query_source: QuerySource::default(),
             vertical: true,
+            sort: GridSort::default(),
+            letters: false,
+            letters_compact: false,
             tile: default_tile(),
             follow_playing: false,
             resume_playing: false,
@@ -215,6 +248,10 @@ pub struct GridPanel {
     /// The albums of the current view, rebuilt on library updates and
     /// query changes.
     cells: Vec<Cell>,
+    /// The letter rail's entries: each distinct initial under the active
+    /// sort and the first cell under it, rebuilt with the cells. Empty
+    /// under the sorts with no letters to index (year, added, plays).
+    letters: Vec<(SharedString, usize)>,
     /// The query editor, the shared search box; `config.query` tracks
     /// its value via change events.
     search: Entity<SearchBox>,
@@ -360,6 +397,7 @@ impl GridPanel {
             config,
             view: Arc::new(Vec::new()),
             cells: Vec::new(),
+            letters: Vec::new(),
             search,
             selected: HashSet::new(),
             anchor: None,
@@ -585,8 +623,159 @@ impl GridPanel {
                 self.cells.last_mut().unwrap().len += 1;
             }
         }
+        self.sort_cells(cx);
+        // The rail's letters, one entry per distinct initial of the sort
+        // key. The artist and album sorts order by folded name, so the
+        // initials arrive grouped; the other keys have no letters to
+        // index and leave the rail empty.
+        self.letters.clear();
+        if let Some(projection) = self.state.library.read(cx).projection() {
+            let table = match self.config.sort {
+                GridSort::Artist => Some((&projection.album_artist, &projection.album_artists)),
+                GridSort::Album => Some((&projection.album, &projection.albums)),
+                GridSort::Year | GridSort::Added | GridSort::Plays => None,
+            };
+            if let Some((column, table)) = table {
+                for (ix, cell) in self.cells.iter().enumerate() {
+                    let row = self.view[cell.start] as usize;
+                    let name = table
+                        .lower
+                        .get(column[row] as usize)
+                        .map(String::as_str)
+                        .unwrap_or("");
+                    let letter = panel::letter_initial(name);
+                    if self.letters.last().map(|(l, _)| l.as_ref()) != Some(letter.as_str()) {
+                        self.letters.push((SharedString::from(letter), ix));
+                    }
+                }
+            }
+        }
         self.playing_ix = self.playing_cell(cx);
         cx.notify();
+    }
+
+    /// The letter rail's gutter: its own strip beside the wall rather
+    /// than an overlay, so the letters never sit on top of the covers.
+    /// The lit letter follows the first visible tile; a click centers
+    /// that letter's first album.
+    fn letter_rail(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.config.letters {
+            return None;
+        }
+        let first = self.first_cell();
+        let active = self
+            .letters
+            .iter()
+            .rposition(|&(_, ix)| ix <= first)
+            .unwrap_or(0);
+        let horizontal = self.axis() == Axis::Horizontal;
+        let rail = panel::letter_rail(
+            &self.letters,
+            active,
+            horizontal,
+            self.config.letters_compact,
+            |this: &mut Self, first, cx| {
+                this.touch_resume(cx);
+                this.scroll_to_cell(first, cx);
+            },
+            cx,
+        )?;
+        Some(if horizontal {
+            div()
+                .flex_none()
+                .w_full()
+                .py(px(2.))
+                .border_t_1()
+                .border_color(palette::border())
+                .child(rail)
+        } else {
+            div()
+                .flex_none()
+                .h_full()
+                .px(px(2.))
+                .border_l_1()
+                .border_color(palette::border())
+                .child(rail)
+        })
+    }
+
+    /// Reorder the album tiles by the configured key. The view's runs stay
+    /// canonical and each cell keeps pointing into them; only the tiles'
+    /// order moves, so an album never splits however its tracks scatter on
+    /// the key. Stable sorts throughout, so ties hold the canonical
+    /// artist-album order.
+    fn sort_cells(&mut self, cx: &App) {
+        if self.config.sort == GridSort::Artist || self.cells.is_empty() {
+            return;
+        }
+        let library = self.state.library.read(cx);
+        let Some(projection) = library.projection() else {
+            return;
+        };
+        let first = |cell: &Cell| self.view[cell.start] as usize;
+        match self.config.sort {
+            GridSort::Artist => {}
+            GridSort::Album => {
+                // The interner's pre-lowered names, the type-ahead's own
+                // key, so no per-comparison allocation.
+                let lower = &projection.albums.lower;
+                self.cells.sort_by(|a, b| {
+                    let name = |cell: &Cell| {
+                        lower
+                            .get(projection.album[self.view[cell.start] as usize] as usize)
+                            .map(String::as_str)
+                            .unwrap_or("")
+                    };
+                    natural_cmp(name(a), name(b))
+                });
+            }
+            GridSort::Year => {
+                // Ascending, the tagless zero years pushed past the rest.
+                self.cells.sort_by_key(|cell| {
+                    let year = projection.year[first(cell)];
+                    (year == 0, year)
+                });
+            }
+            GridSort::Added => {
+                // The album's newest track stamps the album, so a fresh
+                // rip surfaces even when older tracks share the tag.
+                self.cells.sort_by_key(|cell| {
+                    let rows = &self.view[cell.start..cell.start + cell.len as usize];
+                    let added = rows
+                        .iter()
+                        .map(|&row| projection.added[row as usize])
+                        .max()
+                        .unwrap_or(0);
+                    std::cmp::Reverse(added)
+                });
+            }
+            GridSort::Plays => {
+                self.cells.sort_by_key(|cell| {
+                    let rows = &self.view[cell.start..cell.start + cell.len as usize];
+                    let plays: u64 = rows
+                        .iter()
+                        .map(|&row| {
+                            projection.plays[row as usize]
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                as u64
+                        })
+                        .sum();
+                    std::cmp::Reverse(plays)
+                });
+            }
+        }
+    }
+
+    /// Pick the wall's order from the menu. Any motion in flight aimed at
+    /// the old order, so clear it and rebuild.
+    fn set_sort(&mut self, sort: GridSort, cx: &mut Context<Self>) {
+        if self.config.sort == sort {
+            return;
+        }
+        self.config.sort = sort;
+        self.glide_to = None;
+        self.restore = None;
+        self.rebuild(cx);
     }
 
     /// Map the shared box's events onto the grid: a changed query rebuilds
@@ -777,6 +966,10 @@ impl GridPanel {
     /// caption's own text.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
+        // The badge shows the phrase now and leaves when it expires; a miss
+        // below still updated the phrase, so repaint either way.
+        panel::type_ahead_fade(cx);
+        cx.notify();
         let len = self.cells.len();
         if len == 0 {
             return;
@@ -1381,6 +1574,32 @@ impl PanelSettings for GridPanel {
                             cx,
                         ),
                     ))
+                    .child(setting_row(
+                        rox_i18n::t!("grid-letter-rail"),
+                        Some(rox_i18n::t!("grid-letter-rail.description")),
+                        toggle(
+                            self.config.letters,
+                            |this: &mut Self, on, cx| {
+                                this.config.letters = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .when(self.config.letters, |d| {
+                        d.child(setting_row(
+                            rox_i18n::t!("letter-rail-compact"),
+                            Some(rox_i18n::t!("letter-rail-compact.description")),
+                            toggle(
+                                self.config.letters_compact,
+                                |this: &mut Self, on, cx| {
+                                    this.config.letters_compact = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                    })
                     .when(self.config.labels, |d| {
                         d.child(setting_row(
                             rox_i18n::t!("grid-title-alignment"),
@@ -1660,6 +1879,46 @@ impl Panel for GridPanel {
         let menu = menu.item(PopupMenuItem::submenu(
             rox_i18n::t!("grid-menu-scroll"),
             submenu,
+        ));
+        // The wall's order, a checked list so the active key reads at a
+        // glance. Artist is the canonical browse order the wall has always
+        // had; the rest reorder whole albums by one key.
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            panel::follow_panel(&panel, cx);
+            submenu = submenu.check_side(Side::Right);
+            for (name, sort) in [
+                (rox_i18n::t!("grid-sort-artist"), GridSort::Artist),
+                (rox_i18n::t!("grid-sort-album"), GridSort::Album),
+                (rox_i18n::t!("grid-sort-year"), GridSort::Year),
+                (rox_i18n::t!("grid-sort-added"), GridSort::Added),
+                (rox_i18n::t!("grid-sort-plays"), GridSort::Plays),
+            ] {
+                submenu = submenu.item(panel::check_row(
+                    name,
+                    None,
+                    move |this: &Self| this.config.sort == sort,
+                    move |this, cx| this.set_sort(sort, cx),
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("grid-menu-sort"),
+            submenu,
+        ));
+        // The letter rail, icon on the row so the tick lands on the right
+        // like every other top-level check row.
+        let menu = menu.item(panel::check_row(
+            rox_i18n::t!("grid-letter-rail"),
+            Some(icons::PANEL_RIGHT),
+            |this: &Self| this.config.letters,
+            |this, cx| {
+                this.config.letters = !this.config.letters;
+                cx.notify();
+            },
+            &cx.entity(),
         ));
         // Follow the shared search query, or filter by this wall's own box.
         let menu = crate::query::shared_query::search_flyout(
@@ -1968,6 +2227,10 @@ impl GridPanel {
                     .size_full(),
                 )
                 .child(div().absolute().inset_0().child(scrollbar))
+                .children(panel::type_ahead_overlay(
+                    &self.type_ahead,
+                    self.type_ahead_at,
+                ))
                 // The wall's right-click menu, keyed off the hovered tile
                 // since the builder gets no position: a click inside the
                 // selection acts on the whole set, outside it the click
@@ -2054,6 +2317,23 @@ impl GridPanel {
                     }
                 })
                 .into_any_element()
+        };
+        // The rail rides in its own gutter beside the wall, so the wall
+        // shrinks to make room instead of the letters overlaying covers.
+        let content = match self.letter_rail(cx) {
+            Some(gutter) => {
+                let row = self.axis() == Axis::Vertical;
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .flex()
+                    .map(|d| if row { d.flex_row() } else { d.flex_col() })
+                    .child(div().flex_1().min_w_0().min_h_0().flex().child(content))
+                    .child(gutter)
+                    .into_any_element()
+            }
+            None => content,
         };
         root.child(content)
             .when_some(self.error.clone(), |d, error| {

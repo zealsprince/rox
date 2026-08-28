@@ -290,11 +290,12 @@
                                   "query_source": "global",
                                   "vertical": false,
                                   "follow_playing": true,
-                                  "resume_playing": false,
+                                  "resume_playing": true,
                                   "smooth_follow": true,
                                   "dim_playing": false,
                                   "dim": 60.0,
-                                  "rounding": 0.0
+                                  "rounding": 0.0,
+                                  "label": "bottom"
                                 }
                               }
                             },

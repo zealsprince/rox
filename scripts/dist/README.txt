@@ -133,6 +133,16 @@ what its command did without a second round trip:
   library.now_playing    The playing track's full tags; null while
                          nothing plays.
   library.artwork        {"path": ".."} returns {"mime", "data_base64"}.
+  library.rescan         Scan the library folders again; {"started": true},
+                         or an error while busy or without folders.
+  tasks.status           The analysis passes (acoustic, ReplayGain,
+                         tempo): switch state, tracks to do, progress
+                         while one runs.
+  tasks.start            {"pass": "acoustic"/"replaygain"/"tempo"};
+                         answers with count, workers, estimate, and save
+                         mode.
+  tasks.stop             {"pass": ..}; the pass stops at the next file,
+                         keeping what's done.
   ai.status              {"enabled", "mcp"}, the toggles rox-mcp checks.
   debug.settings         The settings as saved.
   debug.panels           The frontmost workspace's panel tree.
@@ -180,7 +190,8 @@ MCP
 
 rox-mcp is in this folder. It's a stdio MCP server that proxies a running
 rox, so an MCP client can ask what's playing, search the library, work the
-playback/transport, and read the queue. Every tool is a straight proxy of
+playback/transport, read the queue, and kick off library scans and the
+long analysis passes. Every tool is a straight proxy of
 one socket method (see IPC above).
 
 Two switches gate it, both off by default:
@@ -226,6 +237,13 @@ The tools:
                    tags; pins like artist:name narrow one field.
   get_queue        The play order with each entry's stable id and the one
                    playing.
+  rescan_library   Starts a background rescan of the library folders.
+  get_tasks        The analysis passes: switch state, tracks to do,
+                   progress while one runs.
+  start_task       pass: acoustic, replaygain, or tempo. Starts the pass;
+                   answers with count, workers, estimate, and save mode.
+  stop_task        pass: acoustic, replaygain, or tempo. Stops the pass
+                   at the next file, keeping what's done.
 
 The socket does everything the tools do and more. Queue edits, seeking,
 volume, artwork, and the debug scope are socket-only.

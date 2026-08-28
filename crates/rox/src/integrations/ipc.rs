@@ -7,8 +7,9 @@
 //! the socket can never say something the UI wouldn't.
 //!
 //! Method surface, version 1: `transport.*` for the deck, `queue.*` for
-//! edits by stable entry id, `library.*` for search, now-playing tags, and
-//! artwork. `subscribe` turns on the push half: `event.*` frames for track
+//! edits by stable entry id, `library.*` for search, now-playing tags,
+//! artwork, and kicking off a rescan, `tasks.*` for the long analysis
+//! passes the tasks window runs. `subscribe` turns on the push half: `event.*` frames for track
 //! turnover, play-state edges, and queue revision bumps, published off the
 //! player observer below so a front end never has to poll. The `debug.*`
 //! scope is the runtime test surface: the settings and panel dumps here,
@@ -211,6 +212,26 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             Ok(Value::Null)
         }
         "library.now_playing" => Ok(now_playing(state, cx)),
+        // Kick off the same rescan as the menubar's refresh button. The scan
+        // runs in the background; the reply only says it started. Refused in
+        // a sentence while other background work holds the library, since
+        // rescan() would silently no-op and the caller would wait forever.
+        "library.rescan" => {
+            let library = state.library.read(cx);
+            if let Some(busy) = library.busy() {
+                return Err(RpcError::app(format!("the library is busy: {busy}")));
+            }
+            if !library.can_rescan() {
+                return Err(RpcError::app(
+                    "no library folders to rescan; open one in rox first",
+                ));
+            }
+            state.library.update(cx, |library, cx| library.rescan(cx));
+            Ok(json!({ "started": true }))
+        }
+        "tasks.status" => Ok(tasks_status(state, cx)),
+        "tasks.start" => tasks_start(state, params, cx),
+        "tasks.stop" => tasks_stop(params, cx),
         // What rox-mcp asks before serving a tool call: with the AI gate or
         // the MCP page's own switch off it turns clients away in a sentence
         // instead of hanging or pretending (ADR 22). The socket itself stays
@@ -257,6 +278,165 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
         other => super::drive::route(other, params, cx)
             .unwrap_or_else(|| Err(RpcError::method_not_found(other))),
     }
+}
+
+/// The pass a tasks method names, or a sentence listing what it takes.
+fn pass_param(params: &Value) -> Result<&str, RpcError> {
+    match params.get("pass").and_then(Value::as_str) {
+        Some(pass @ ("acoustic" | "replaygain" | "tempo")) => Ok(pass),
+        _ => Err(RpcError::invalid_params(
+            "takes {\"pass\": \"acoustic\" | \"replaygain\" | \"tempo\"}",
+        )),
+    }
+}
+
+/// One pass's row: whether it could start, what it would work through, and
+/// live progress while it runs. `progress` arrives pre-serialized because
+/// the three passes each have their own Progress type.
+fn pass_json(enabled: bool, missing: u64, progress: Option<Value>) -> Value {
+    match progress {
+        Some(Value::Object(mut fields)) => {
+            fields.insert("running".into(), json!(true));
+            fields.insert("enabled".into(), json!(enabled));
+            fields.insert("missing".into(), json!(missing));
+            Value::Object(fields)
+        }
+        _ => json!({ "running": false, "enabled": enabled, "missing": missing }),
+    }
+}
+
+/// The three long passes the tasks window lists, one row each. The library
+/// scan isn't in here: it has its own surface in `library.rescan` and the
+/// menubar, the same split the window's badge makes.
+fn tasks_status(state: &AppState, cx: &App) -> Value {
+    let settings = rox_core::settings::Settings::load();
+    let source = rox_services::acoustic::acoustic_source();
+    let library = state.library.read(cx);
+    json!({
+        "acoustic": pass_json(
+            settings.acoustic_analysis,
+            library.acoustic_coverage(source.id()).missing() as u64,
+            crate::embeddings::progress(cx).map(|p| json!({
+                "done": p.done(), "total": p.total(), "failed": p.failed(),
+                "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
+            })),
+        ),
+        "replaygain": pass_json(
+            true,
+            library.replaygain_breakdown().missing,
+            crate::replaygain_job::progress(cx).map(|p| json!({
+                "done": p.done(), "total": p.total(), "failed": p.failed(),
+                "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
+            })),
+        ),
+        "tempo": pass_json(
+            settings.tempo_analysis,
+            library.bpm_breakdown().missing,
+            crate::tempo_job::progress(cx).map(|p| json!({
+                "done": p.done(), "total": p.total(), "failed": p.failed(),
+                "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
+            })),
+        ),
+    })
+}
+
+/// Start one of the long passes, the tasks window's start button without
+/// its prompt. The UI never starts these on a bare press, so the reply
+/// carries what the prompt would have shown: the track count, the worker
+/// count, the estimate where this machine has a pace, and the save mode,
+/// which matters because tags mode rewrites audio files. The silent no-op
+/// guards inside the passes become sentences here, same as the rescan.
+fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
+    let pass = pass_param(params)?;
+    let settings = rox_core::settings::Settings::load();
+    let library = state.library.clone();
+    let (missing, workers, pace, detail) = match pass {
+        "acoustic" => {
+            if crate::embeddings::progress(cx).is_some() {
+                return Err(RpcError::app("the acoustic pass is already running"));
+            }
+            if !settings.acoustic_analysis {
+                return Err(RpcError::app(
+                    "acoustic analysis is switched off; turn on \"Describe How Tracks \
+                     Sound\" on Settings > Library first",
+                ));
+            }
+            let source = rox_services::acoustic::acoustic_source();
+            let missing = library.read(cx).acoustic_coverage(source.id()).missing() as u64;
+            let pace = settings
+                .session
+                .acoustic_pace
+                .get(source.id())
+                .copied()
+                .unwrap_or_default();
+            let detail = json!({ "model": source.label(), "save": settings.acoustic_save });
+            crate::embeddings::start(library, cx);
+            (missing, settings.acoustic_workers.max(1), pace, detail)
+        }
+        "replaygain" => {
+            if crate::replaygain_job::progress(cx).is_some() {
+                return Err(RpcError::app("the ReplayGain pass is already running"));
+            }
+            let missing = library.read(cx).replaygain_breakdown().missing;
+            let detail = json!({ "save": settings.replay_gain.save });
+            crate::replaygain_job::start(library, cx);
+            (
+                missing,
+                settings.replaygain_workers.max(1),
+                settings.session.replaygain_pace,
+                detail,
+            )
+        }
+        _ => {
+            if crate::tempo_job::progress(cx).is_some() {
+                return Err(RpcError::app("the tempo pass is already running"));
+            }
+            if !settings.tempo_analysis {
+                return Err(RpcError::app(
+                    "tempo analysis is switched off; turn on \"Work Out How Fast Tracks \
+                     Run\" on Settings > Library first",
+                ));
+            }
+            let missing = library.read(cx).bpm_breakdown().missing;
+            crate::tempo_job::start(library, cx);
+            (
+                missing,
+                settings.tempo_workers.max(1),
+                settings.session.tempo_pace,
+                json!({}),
+            )
+        }
+    };
+    let mut reply = json!({
+        "started": true,
+        "missing": missing,
+        "workers": workers,
+        "estimate": rox_core::pace::estimate(pace, missing, workers),
+    });
+    if let (Value::Object(reply), Value::Object(detail)) = (&mut reply, detail) {
+        reply.extend(detail);
+    }
+    Ok(reply)
+}
+
+/// Ask a running pass to stop. Graceful the way the stop button is: the
+/// workers drop out at the next file, so "stopping" rather than "stopped".
+fn tasks_stop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
+    let pass = pass_param(params)?;
+    let running = match pass {
+        "acoustic" => crate::embeddings::progress(cx).is_some(),
+        "replaygain" => crate::replaygain_job::progress(cx).is_some(),
+        _ => crate::tempo_job::progress(cx).is_some(),
+    };
+    if !running {
+        return Err(RpcError::app(format!("the {pass} pass isn't running")));
+    }
+    match pass {
+        "acoustic" => crate::embeddings::stop(cx),
+        "replaygain" => crate::replaygain_job::stop(cx),
+        _ => crate::tempo_job::stop(cx),
+    }
+    Ok(json!({ "stopping": true }))
 }
 
 /// The frontmost workspace's dock tree, the same dump the layout persist

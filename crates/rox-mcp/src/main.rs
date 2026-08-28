@@ -124,8 +124,9 @@ fn initialize(params: &Value) -> Value {
     })
 }
 
-/// The tool surface: now-playing, transport, library search, and the
-/// queue, each a straight proxy of one socket method. `--dev` adds the
+/// The tool surface: now-playing, transport, library search, the queue,
+/// the rescan kick, and the long analysis passes, each a straight proxy
+/// of one socket method. `--dev` adds the
 /// drive tools over the socket's debug scope, for agents working on rox
 /// itself; a user-facing MCP config leaves them out.
 fn tools(dev: bool) -> Value {
@@ -180,6 +181,46 @@ fn base_tools() -> Value {
             "description": "The play order: every queued entry with its stable id, \
                             path, and whether it is the one playing.",
             "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "rescan_library",
+            "description": "Rescan the library folders for new, changed, and removed \
+                            files. The scan runs in the background; searches pick up \
+                            its results as they land.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "get_tasks",
+            "description": "The long analysis passes (acoustic, ReplayGain, tempo): \
+                            whether each could start, how many tracks it would work \
+                            through, and live progress while one runs.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "start_task",
+            "description": "Start a long analysis pass over the library. These cost \
+                            hours on a large library, and in tags save mode rewrite \
+                            audio files; the answer says what the pass took on, with \
+                            an estimate where this machine knows its pace.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pass": { "type": "string", "enum": ["acoustic", "replaygain", "tempo"] },
+                },
+                "required": ["pass"],
+            },
+        },
+        {
+            "name": "stop_task",
+            "description": "Ask a running analysis pass to stop. Graceful: the \
+                            workers drop out at the next file, keeping what's done.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pass": { "type": "string", "enum": ["acoustic", "replaygain", "tempo"] },
+                },
+                "required": ["pass"],
+            },
         },
     ])
 }
@@ -362,6 +403,12 @@ fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev:
             ("library.search", params)
         }
         "get_queue" => ("queue.list", json!({})),
+        "rescan_library" => ("library.rescan", json!({})),
+        "get_tasks" => ("tasks.status", json!({})),
+        // The pass argument goes through whole: the socket method validates
+        // it and its error already reads as a sentence.
+        "start_task" => ("tasks.start", args),
+        "stop_task" => ("tasks.stop", args),
         other => return refusal(&format!("no such tool: {other}")),
     };
 

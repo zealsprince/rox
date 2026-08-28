@@ -56,6 +56,10 @@ did without a second round trip.
 | `library.search`                                           | `{"query": "..", "limit": 1..500}`            | total hit count plus rows with tags and the path that plays them        |
 | `library.now_playing`                                      |                                               | the playing track's full tags, null while nothing plays                 |
 | `library.artwork`                                          | `{"path": ".."}`                              | `{"mime": "..", "data_base64": ".."}`                                   |
+| `library.rescan`                                           |                                               | `{"started": true}`; an error while busy or without library folders     |
+| `tasks.status`                                             |                                               | the analysis passes: switch state, tracks to do, progress while running |
+| `tasks.start`                                              | `{"pass": "acoustic"/"replaygain"/"tempo"}`   | what the pass took on: count, workers, estimate, save mode              |
+| `tasks.stop`                                               | `{"pass": ..}`                                | `{"stopping": true}`; the pass drops out at the next file               |
 | `ai.status`                                                |                                               | `{"enabled": bool, "mcp": bool}`, the toggles rox-mcp checks            |
 | `debug.settings`                                           |                                               | the settings as saved                                                  |
 | `debug.panels`                                             |                                               | the frontmost workspace's panel tree, as the layout persist writes it   |
@@ -70,6 +74,12 @@ the playing track, `now` splices and plays.
 Search uses the panels' query language: free terms match title, artist, album, and
 genre, while `artist:name`, `album:name`, `genre:name`, and `year:1990` pin one
 field. `limit` defaults to 50 and caps at 500.
+
+The tasks methods drive the long passes the tasks window runs. The UI puts an
+estimate and a worker slider in front of every start because a pass can cost an
+afternoon and, in tags save mode, rewrites audio files; over the socket that
+context comes back in the start reply instead, so the caller sees what it just
+set going.
 
 The debug methods let a script or an agent verify player and layout state against a
 live instance without eyes on the screen.
@@ -118,6 +128,10 @@ commands:
   jump <id>                  play a queued entry now
   search [--limit N] <terms> search the library
   now                        the playing track's full tags
+  rescan                     scan the library folders again
+  tasks                      the long analysis passes and their progress
+  task-start <pass>          start acoustic, replaygain, or tempo
+  task-stop <pass>           stop a running pass at the next file
   art <path> <out-file>      save a track's cover art
   raw <method> [json]        any method, params as one JSON argument
 ```

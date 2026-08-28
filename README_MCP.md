@@ -51,6 +51,10 @@ Two flags cover the non-default socket:
 | `transport`      | `action`: `toggle` `play` `pause` `next` `prev` `stop`        | the resulting player state                                           |
 | `search_library` | `query`, optional `limit` (1..500)                            | matching tracks with tags; pins like `artist:name` narrow one field   |
 | `get_queue`      |                                                               | the play order with each entry's stable id and the one playing        |
+| `rescan_library` |                                                               | starts a background rescan of the library folders                     |
+| `get_tasks`      |                                                               | the analysis passes: switch state, tracks to do, progress while running |
+| `start_task`     | `pass`: `acoustic` `replaygain` `tempo`                       | starts the pass; answers with count, workers, estimate, and save mode |
+| `stop_task`      | `pass`: `acoustic` `replaygain` `tempo`                       | asks the pass to stop at the next file, keeping what's done           |
 
 The socket does everything the tools do and more. Queue edits, seeking, volume,
 artwork, and the debug scope stay socket-only, reachable through `roxctl` or any

@@ -120,6 +120,11 @@ pub struct FolderTreeConfig {
     pub query_source: QuerySource,
     /// The panel's own query, kept while following the shared one.
     pub query: String,
+    /// The folders left open when the layout was saved, so a relaunch
+    /// reopens the tree where it was instead of folding back to the
+    /// roots. Paths a rescan no longer knows just sit inert in the set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expanded: Vec<String>,
 }
 
 impl Default for FolderTreeConfig {
@@ -138,6 +143,7 @@ impl Default for FolderTreeConfig {
             search: false,
             query_source: QuerySource::default(),
             query: String::new(),
+            expanded: Vec::new(),
         }
     }
 }
@@ -294,6 +300,10 @@ impl FolderTreePanel {
                 this.on_selection_changed(event.source, cx);
             },
         );
+        // A restored layout carries its open folders; seed from them and
+        // skip the root seeding, so the tree comes back as it was left.
+        let expanded: HashSet<String> = config.expanded.iter().cloned().collect();
+        let seeded = !expanded.is_empty();
         let mut this = FolderTreePanel {
             state,
             config,
@@ -305,8 +315,8 @@ impl FolderTreePanel {
             folder_tracks: HashMap::new(),
             dimmed_songs: HashSet::new(),
             visible: Vec::new(),
-            expanded: HashSet::new(),
-            seeded: false,
+            expanded,
+            seeded,
             scroll: UniformListScrollHandle::new(),
             cursor: None,
             selected: HashSet::new(),
@@ -754,6 +764,32 @@ impl FolderTreePanel {
         self.flatten(cx);
     }
 
+    /// Fold a folder and its whole subtree open or shut in one move, the
+    /// alt-click and branch-menu answer to deep trees: open when the
+    /// folder itself is shut, shut everything below otherwise.
+    fn toggle_expand_deep(&mut self, path: &str, cx: &mut Context<Self>) {
+        fn collect(node: &Node, out: &mut Vec<String>) {
+            out.push(node.path.clone());
+            for child in &node.children {
+                collect(child, out);
+            }
+        }
+        let Some(node) = node_at(&self.roots, path) else {
+            return;
+        };
+        let mut paths = Vec::new();
+        collect(node, &mut paths);
+        if self.expanded.contains(path) {
+            for path in &paths {
+                self.expanded.remove(path);
+            }
+        } else {
+            self.expanded.extend(paths);
+        }
+        self.glide_to = None;
+        self.flatten(cx);
+    }
+
     /// Fold every branch shut, leaving only the root rows. The follow glide
     /// stops too: its target index just moved under it.
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
@@ -991,32 +1027,41 @@ impl FolderTreePanel {
                 self.set_cursor(last, cx);
             }
             "left" => {
-                if let Some(ix) = self.cursor {
-                    if matches!(
-                        self.visible.get(ix),
-                        Some(Row {
-                            kind: RowKind::Folder { expanded: true, .. },
-                            ..
-                        })
-                    ) {
-                        self.toggle_expand(ix, cx);
+                let Some(ix) = self.cursor else { return };
+                let Some(Row {
+                    kind: RowKind::Folder { path, expanded, .. },
+                    ..
+                }) = self.visible.get(ix)
+                else {
+                    return;
+                };
+                // Shift folds the whole branch, the arrows' spelling of the
+                // shift-click.
+                if keystroke.modifiers.shift {
+                    if *expanded {
+                        let path = path.clone();
+                        self.toggle_expand_deep(&path, cx);
                     }
+                } else if *expanded {
+                    self.toggle_expand(ix, cx);
                 }
             }
             "right" => {
-                if let Some(ix) = self.cursor {
-                    if matches!(
-                        self.visible.get(ix),
-                        Some(Row {
-                            kind: RowKind::Folder {
-                                expanded: false,
-                                ..
-                            },
-                            ..
-                        })
-                    ) {
-                        self.toggle_expand(ix, cx);
+                let Some(ix) = self.cursor else { return };
+                let Some(Row {
+                    kind: RowKind::Folder { path, expanded, .. },
+                    ..
+                }) = self.visible.get(ix)
+                else {
+                    return;
+                };
+                if keystroke.modifiers.shift {
+                    if !*expanded {
+                        let path = path.clone();
+                        self.toggle_expand_deep(&path, cx);
                     }
+                } else if !*expanded {
+                    self.toggle_expand(ix, cx);
                 }
             }
             "enter" => {
@@ -1053,6 +1098,10 @@ impl FolderTreePanel {
     /// row first so refining a match stays put instead of skipping ahead.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
+        // The badge shows the phrase now and leaves when it expires; a miss
+        // below still updated the phrase, so repaint either way.
+        panel::type_ahead_fade(cx);
+        cx.notify();
         let needle = self.type_ahead.to_lowercase();
         let start = match self.cursor {
             Some(ix) if grown => ix,
@@ -1271,6 +1320,12 @@ impl FolderTreePanel {
                             this.cursor = Some(ix);
                             if event.click_count > 1 {
                                 this.play_folder(&path.clone(), cx);
+                            } else if event.modifiers.alt || event.modifiers.shift {
+                                // Shift or Alt folds the whole branch, the
+                                // file manager's deep toggle. Both spellings
+                                // because Linux WMs commonly grab Alt+click
+                                // for window drags before the app sees it.
+                                this.toggle_expand_deep(&path.clone(), cx);
                             } else {
                                 this.toggle_expand(ix, cx);
                             }
@@ -1707,8 +1762,13 @@ impl Panel for FolderTreePanel {
 
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
+        // The live expand set rides along in the config, sorted so the
+        // saved layout doesn't churn with the set's iteration order.
+        let mut config = self.config.clone();
+        config.expanded = self.expanded.iter().cloned().collect();
+        config.expanded.sort_unstable();
         state.info = rox_dock::PanelInfo::panel(
-            serde_json::to_value(self.config.clone()).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(config).unwrap_or(serde_json::Value::Null),
         );
         state
     }
@@ -1986,6 +2046,10 @@ impl FolderTreePanel {
                     .inset_0()
                     .child(Scrollbar::vertical(&self.scroll)),
             )
+            .children(crate::panel::type_ahead_overlay(
+                &self.type_ahead,
+                self.type_ahead_at,
+            ))
             // A press anywhere in the body takes keyboard focus, so
             // type-ahead works without first clicking a row. It runs in
             // the capture phase, before any row's bubble handler records
@@ -2068,7 +2132,8 @@ impl FolderTreePanel {
                         },
                     );
                     let scope_panel = weak.clone();
-                    menu.separator().item(
+                    let scope_path = path.clone();
+                    let menu = menu.separator().item(
                         PopupMenuItem::new(if scoped {
                             rox_i18n::t!("folder-tree-clear-scope")
                         } else {
@@ -2079,7 +2144,30 @@ impl FolderTreePanel {
                             let Some(this) = scope_panel.upgrade() else {
                                 return;
                             };
-                            this.update(cx, |this, cx| this.toggle_scope(path.clone(), cx));
+                            this.update(cx, |this, cx| this.toggle_scope(scope_path.clone(), cx));
+                        }),
+                    );
+                    // The branch fold, the menu's spelling of the
+                    // alt-click: one entry per state, so the label says
+                    // what the click will do.
+                    let open = this.read(cx).expanded.contains(&path);
+                    let deep_panel = weak.clone();
+                    menu.item(
+                        PopupMenuItem::new(if open {
+                            rox_i18n::t!("folder-tree-collapse-branch")
+                        } else {
+                            rox_i18n::t!("folder-tree-expand-branch")
+                        })
+                        .icon(Icon::default().path(if open {
+                            icons::CHEVRON_RIGHT
+                        } else {
+                            icons::CHEVRON_DOWN
+                        }))
+                        .on_click(move |_, _, cx| {
+                            let Some(this) = deep_panel.upgrade() else {
+                                return;
+                            };
+                            this.update(cx, |this, cx| this.toggle_expand_deep(&path.clone(), cx));
                         }),
                     )
                 }

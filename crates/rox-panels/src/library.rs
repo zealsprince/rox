@@ -2126,6 +2126,10 @@ impl LibraryPanel {
     /// stays put instead of skipping ahead.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
+        // The badge shows the phrase now and leaves when it expires; a miss
+        // below still updated the phrase, so repaint either way.
+        panel::type_ahead_fade(cx);
+        cx.notify();
         let target = {
             let delegate = self.table.read(cx).delegate();
             delegate.find_prefix(&self.type_ahead, grown, cx)
@@ -4079,6 +4083,8 @@ impl LibraryPanel {
                 headerless && (self.show_search || self.error.is_some()),
                 |d| d.child(self.toolbar(window, cx)),
             )
-            .child(div().flex_1().min_h_0().child(body))
+            .child(div().flex_1().min_h_0().relative().child(body).children(
+                panel::type_ahead_overlay(&self.type_ahead, self.type_ahead_at),
+            ))
     }
 }

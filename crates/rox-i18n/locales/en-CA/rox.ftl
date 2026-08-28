@@ -18,6 +18,8 @@ valign-row = Vertical Alignment
 valign-top = Top
 valign-middle = Middle
 valign-bottom = Bottom
+letter-rail-compact = Compact Rail
+    .description = Keep the rail to a single line that scrolls instead of wrapping
 
 ## Panel source and search rows
 
@@ -454,6 +456,14 @@ library-genre-face = Genre Face
 
 panel-title-album-grid = Album Grid
 grid-menu-scroll = Scroll
+grid-menu-sort = Sort
+grid-sort-artist = Artist
+grid-sort-album = Album
+grid-sort-year = Year
+grid-sort-added = Recently Added
+grid-sort-plays = Most Played
+grid-letter-rail = Letter Rail
+    .description = The initials along the wall's edge; a click jumps to that letter's first album
 grid-vertical-scroll = Vertical Scroll
 grid-horizontal-scroll = Horizontal Scroll
 grid-jump-to-playing = Jump to Playing
@@ -2311,11 +2321,13 @@ history-view-row = View
 
 folder-tree-clear-scope = Clear Folder Scope
 folder-tree-collapse-all = Collapse All
+folder-tree-collapse-branch = Collapse Branch
 folder-tree-cover-art = Cover Art
     .description = Show album art in place of the row icon, on folders or songs
 folder-tree-cover-folders = Folders
 folder-tree-cover-songs = Songs
 folder-tree-empty = No folders in the library yet
+folder-tree-expand-branch = Expand Branch
 folder-tree-follow-description = Reveal and scroll to the playing track whenever it changes
 folder-tree-nonmatch-folders = Non-matching Folders
     .description = Hide the folders with no match, or keep them dim
@@ -2347,6 +2359,10 @@ art-fill-panel = Fill the Panel
 art-follow-description = Center the playing album whenever the track changes
 art-glow = Glow
     .description = Pool the accent color behind the centered cover; with the art tint on it takes the playing album's color
+art-label-position = Label Position
+    .description = Where the album caption sits: over the top, under the cover, along the bottom, or hidden
+art-letter-rail = Letter Rail
+    .description = The artists' initials along the shelf's edge; a click jumps to that letter's first album
 art-layout-section = Layout
 art-perspective = Perspective
     .description = Turn the side covers in real 3D instead of the flat squash

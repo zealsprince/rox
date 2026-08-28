@@ -858,6 +858,10 @@ impl GenreGridPanel {
     /// names.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
+        // The badge shows the phrase now and leaves when it expires; a miss
+        // below still updated the phrase, so repaint either way.
+        panel::type_ahead_fade(cx);
+        cx.notify();
         let len = self.cells.len();
         if len == 0 {
             return;
@@ -2258,6 +2262,10 @@ impl GenreGridPanel {
                     .size_full(),
                 )
                 .child(div().absolute().inset_0().child(scrollbar))
+                .children(panel::type_ahead_overlay(
+                    &self.type_ahead,
+                    self.type_ahead_at,
+                ))
                 // The wall's right-click menu, keyed off the hovered tile,
                 // the artist grid's rule: a click inside the picks acts on
                 // the whole set, outside it repicks just that tile first.

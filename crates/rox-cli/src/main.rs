@@ -37,6 +37,10 @@ commands:
   jump <id>                  play a queued entry now
   search [--limit N] <terms> search the library
   now                        the playing track's full tags
+  rescan                     scan the library folders again
+  tasks                      the long analysis passes and their progress
+  task-start <pass>          start acoustic, replaygain, or tempo
+  task-stop <pass>           stop a running pass at the next file
   watch                      follow playback, track, and queue events
   art <path> <out-file>      save a track's cover art
   raw <method> [json]        any method, params as one JSON argument
@@ -208,6 +212,20 @@ fn run(
             ("library.search".into(), params)
         }
         "now" => ("library.now_playing".into(), json!({})),
+        "rescan" => ("library.rescan".into(), json!({})),
+        "tasks" => ("tasks.status".into(), json!({})),
+        "task-start" => {
+            let pass = args
+                .first()
+                .ok_or("task-start takes acoustic, replaygain, or tempo")?;
+            ("tasks.start".into(), json!({ "pass": pass }))
+        }
+        "task-stop" => {
+            let pass = args
+                .first()
+                .ok_or("task-stop takes acoustic, replaygain, or tempo")?;
+            ("tasks.stop".into(), json!({ "pass": pass }))
+        }
         "windows" => ("debug.windows".into(), json!({})),
         "panels" => ("debug.panels".into(), json!({})),
         "actions" => {
@@ -327,6 +345,10 @@ fn run(
         "queue" => print_queue(&result),
         "search" => print_search(&result),
         "now" => print_now(&result),
+        "rescan" => println!("scan started"),
+        "tasks" => print_tasks(&result),
+        "task-start" => print_task_started(&result),
+        "task-stop" => println!("stopping at the next file"),
         "windows" => print_windows(&result),
         "actions" => print_actions(&result),
         _ => println!(
@@ -551,6 +573,48 @@ fn print_now(track: &Value) {
             println!("{field:>12}  {text}");
         }
     }
+}
+
+/// One line per pass: progress while it runs, otherwise what a start would
+/// take on and whether its switch is even on.
+fn print_tasks(result: &Value) {
+    for pass in ["acoustic", "replaygain", "tempo"] {
+        let task = &result[pass];
+        let missing = task["missing"].as_u64().unwrap_or_default();
+        if task["running"].as_bool().unwrap_or(false) {
+            println!(
+                "{pass:>10}  {}/{}  eta {}{}",
+                task["done"].as_u64().unwrap_or_default(),
+                task["total"].as_u64().unwrap_or_default(),
+                clock(task["eta_secs"].as_f64()),
+                if task["stopping"].as_bool().unwrap_or(false) {
+                    "  (stopping)"
+                } else {
+                    ""
+                },
+            );
+        } else if !task["enabled"].as_bool().unwrap_or(true) {
+            println!("{pass:>10}  switched off, {missing} tracks to do");
+        } else {
+            println!("{pass:>10}  idle, {missing} tracks to do");
+        }
+    }
+}
+
+/// What a started pass took on, the prompt's facts in one line.
+fn print_task_started(result: &Value) {
+    let mut line = format!(
+        "started  {} tracks on {} workers",
+        result["missing"].as_u64().unwrap_or_default(),
+        result["workers"].as_u64().unwrap_or_default(),
+    );
+    if let Some(estimate) = result["estimate"].as_str() {
+        line.push_str(&format!(", {estimate}"));
+    }
+    if let Some(save) = result["save"].as_str() {
+        line.push_str(&format!(", saving to {save}"));
+    }
+    println!("{line}");
 }
 
 /// Decode one artwork response to a file.

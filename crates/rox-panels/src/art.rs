@@ -183,10 +183,34 @@ pub struct ArtConfig {
     /// the old squash-and-scrim look, which also keeps art rounding.
     #[serde(default = "default_true")]
     pub perspective: bool,
+    /// A letter rail along the shelf's edge: the album artists' initials,
+    /// each a click that jumps the carousel to its first album.
+    #[serde(default)]
+    pub letters: bool,
+    /// Keep the rail to one line that scrolls instead of wrapping, for
+    /// libraries whose scripts spill past one row of initials.
+    #[serde(default)]
+    pub letters_compact: bool,
+    /// Where the hero's caption sits: over the shelf's top, right under
+    /// the cover, along the panel's bottom, or nowhere.
+    #[serde(default)]
+    pub label: LabelPos,
     /// The album at the center when the layout was saved, so a relaunch
     /// reopens the shelf where it was left. A cell index.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub center: usize,
+}
+
+/// Where the hero's caption goes. Center, the default, hangs it right
+/// under the cover so it reads as the album's own caption.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LabelPos {
+    Top,
+    #[default]
+    Center,
+    Bottom,
+    Hidden,
 }
 
 impl Default for ArtConfig {
@@ -211,6 +235,9 @@ impl Default for ArtConfig {
             glow: false,
             disc_style: DiscStyle::Off,
             perspective: true,
+            letters: false,
+            letters_compact: false,
+            label: LabelPos::default(),
             center: 0,
         }
     }
@@ -295,6 +322,10 @@ pub struct ArtPanel {
     /// steps just these plus the visible window instead of scanning every
     /// cover in a big library each frame.
     dimming: HashSet<usize>,
+    /// The letter rail's entries: each distinct initial in the view and
+    /// the first cell under it, rebuilt with the cells. The canonical
+    /// order sorts by folded artist name, so the initials arrive grouped.
+    letters: Vec<(SharedString, usize)>,
     /// The baked disc faces while a disc style is on, keyed by art path
     /// and filled off-thread as covers come into view.
     discs: DiscCache,
@@ -439,6 +470,7 @@ impl ArtPanel {
             view: Arc::new(Vec::new()),
             cells: Vec::new(),
             dimming: HashSet::new(),
+            letters: Vec::new(),
             discs: DiscCache::default(),
             search,
             selected: HashSet::new(),
@@ -668,6 +700,25 @@ impl ArtPanel {
                     last = Some(key);
                 }
                 self.cells.last_mut().unwrap().len += 1;
+            }
+        }
+        // The rail's letters, one entry per distinct initial. Cheap enough
+        // to keep fresh whether or not the rail shows, so the toggle is
+        // instant.
+        self.letters.clear();
+        if let Some(projection) = self.state.library.read(cx).projection() {
+            for (ix, cell) in self.cells.iter().enumerate() {
+                let row = self.view[cell.start] as usize;
+                let name = projection
+                    .album_artists
+                    .lower
+                    .get(projection.album_artist[row] as usize)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let letter = panel::letter_initial(name);
+                if self.letters.last().map(|(l, _)| l.as_ref()) != Some(letter.as_str()) {
+                    self.letters.push((SharedString::from(letter), ix));
+                }
             }
         }
         // A shorter view (a query) can leave the center past the end. Only
@@ -1528,8 +1579,11 @@ impl ArtPanel {
             .into_any_element()
     }
 
-    /// The label under the hero: album over artist, centered.
-    fn label(&self, ix: usize, cx: &App) -> Div {
+    /// The hero's caption: album over artist, centered. `below` is where
+    /// the Center position hangs it, right under the cover's lower edge;
+    /// `rail` lifts the Bottom position clear of a horizontal letter rail.
+    /// Hidden never gets here; the caller skips the child.
+    fn label(&self, ix: usize, pos: LabelPos, below: f32, rail: bool, cx: &App) -> Div {
         let (album, artist) = {
             let library = self.state.library.read(cx);
             match (self.cells.get(ix), library.projection()) {
@@ -1555,48 +1609,47 @@ impl ArtPanel {
             }
         };
         let has_text = !album.is_empty() || !artist.is_empty();
-        div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom(px(6.))
-            .flex()
-            .flex_col()
-            .items_center()
-            .when(has_text, |d| {
-                d.child(
-                    // A rounded scrim behind the text keeps it readable over
-                    // the covers a column stacks under the hero.
-                    div()
-                        .max_w(relative(0.9))
-                        .px(tokens::SPACE_SM)
-                        .py(tokens::SPACE_XS)
-                        .rounded(tokens::RADIUS)
-                        .bg(palette::alpha(palette::bg_root(), 0xB0))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .when(!album.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .max_w(relative(1.0))
-                                    .truncate()
-                                    .text_color(palette::text_bright())
-                                    .child(album),
-                            )
-                        })
-                        .when(!artist.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .max_w(relative(1.0))
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(palette::text_secondary())
-                                    .child(artist),
-                            )
-                        }),
-                )
-            })
+        let anchor = div().absolute().left_0().right_0();
+        let anchor = match pos {
+            LabelPos::Top => anchor.top(px(6.)),
+            LabelPos::Center => anchor.top(px(below)),
+            // The rail owns the very bottom edge while it's down there.
+            LabelPos::Bottom | LabelPos::Hidden => anchor.bottom(px(if rail { 22. } else { 6. })),
+        };
+        anchor.flex().flex_col().items_center().when(has_text, |d| {
+            d.child(
+                // A rounded scrim behind the text keeps it readable over
+                // the covers a column stacks under the hero.
+                div()
+                    .max_w(relative(0.9))
+                    .px(tokens::SPACE_SM)
+                    .py(tokens::SPACE_XS)
+                    .rounded(tokens::RADIUS)
+                    .bg(palette::alpha(palette::bg_root(), 0xB0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .when(!album.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .max_w(relative(1.0))
+                                .truncate()
+                                .text_color(palette::text_bright())
+                                .child(album),
+                        )
+                    })
+                    .when(!artist.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .max_w(relative(1.0))
+                                .truncate()
+                                .text_xs()
+                                .text_color(palette::text_secondary())
+                                .child(artist),
+                        )
+                    }),
+            )
+        })
     }
 
     /// Solo or popped out there's no title bar to host the search, so it
@@ -1617,6 +1670,50 @@ impl ArtPanel {
                     .update(cx, |search, cx| search.element(cx))
                     .flex_1(),
             )
+    }
+
+    /// The letter rail along the shelf's edge: each initial once, a click
+    /// jumping the carousel to its first album. Along the bottom for a
+    /// row, down the right for a column.
+    fn letter_rail(&self, axis: Axis, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.config.letters {
+            return None;
+        }
+        // The lit letter: the last rail entry at or before the center.
+        let center = self.pos.round().max(0.) as usize;
+        let active = self
+            .letters
+            .iter()
+            .rposition(|&(_, ix)| ix <= center)
+            .unwrap_or(0);
+        let rail = panel::letter_rail(
+            &self.letters,
+            active,
+            axis == Axis::Horizontal,
+            self.config.letters_compact,
+            |this: &mut Self, first, cx| {
+                this.touch_resume(cx);
+                this.navigate(first, cx);
+            },
+            cx,
+        )?;
+        // The strip positions itself only along its axis; the shelf hangs
+        // it on the bottom edge for a row, the right edge for a column.
+        Some(if axis == Axis::Horizontal {
+            div()
+                .absolute()
+                .bottom(tokens::SPACE_XS)
+                .left_0()
+                .right_0()
+                .child(rail)
+        } else {
+            div()
+                .absolute()
+                .right(tokens::SPACE_XS)
+                .top_0()
+                .bottom_0()
+                .child(rail)
+        })
     }
 }
 
@@ -1888,7 +1985,51 @@ impl PanelSettings for ArtPanel {
                             },
                             cx,
                         ),
-                    )),
+                    ))
+                    .child(setting_row(
+                        rox_i18n::t!("art-label-position"),
+                        Some(rox_i18n::t!("art-label-position.description")),
+                        panel::choices_shared(
+                            &[
+                                (rox_i18n::t!("valign-top"), LabelPos::Top),
+                                (rox_i18n::t!("valign-middle"), LabelPos::Center),
+                                (rox_i18n::t!("valign-bottom"), LabelPos::Bottom),
+                                (rox_i18n::t!("arrange-hidden"), LabelPos::Hidden),
+                            ],
+                            self.config.label,
+                            |this: &mut Self, pos, cx| {
+                                this.config.label = pos;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        rox_i18n::t!("art-letter-rail"),
+                        Some(rox_i18n::t!("art-letter-rail.description")),
+                        toggle(
+                            self.config.letters,
+                            |this: &mut Self, on, cx| {
+                                this.config.letters = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .when(self.config.letters, |d| {
+                        d.child(setting_row(
+                            rox_i18n::t!("letter-rail-compact"),
+                            Some(rox_i18n::t!("letter-rail-compact.description")),
+                            toggle(
+                                self.config.letters_compact,
+                                |this: &mut Self, on, cx| {
+                                    this.config.letters_compact = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                    }),
             )
             .into_any_element(),
         )
@@ -2104,6 +2245,18 @@ impl Panel for ArtPanel {
         let menu = menu.item(PopupMenuItem::submenu(
             rox_i18n::t!("grid-menu-scroll"),
             submenu,
+        ));
+        // The letter rail, icon on the row so the tick lands on the right
+        // like every other top-level check row.
+        let menu = menu.item(panel::check_row(
+            rox_i18n::t!("art-letter-rail"),
+            Some(icons::PANEL_RIGHT),
+            |this: &Self| this.config.letters,
+            |this, cx| {
+                this.config.letters = !this.config.letters;
+                cx.notify();
+            },
+            &cx.entity(),
         ));
         // Follow the shared search query, or filter by this shelf's own box.
         let menu = crate::query::shared_query::search_flyout(
@@ -2325,8 +2478,22 @@ impl ArtPanel {
                 let d = ix as f32 - self.pos;
                 shelf = shelf.child(self.cover(ix as usize, d, hero, cx_px, cy_px, cx));
             }
+            // A horizontal rail sits on the bottom edge, so a Bottom label
+            // lifts above it.
+            let rail_below =
+                self.config.letters && self.letters.len() >= 2 && axis == Axis::Horizontal;
+            let shelf = if self.config.label == LabelPos::Hidden {
+                shelf
+            } else {
+                shelf.child(self.label(
+                    center,
+                    self.config.label,
+                    cy_px + hero / 2.0 + 8.,
+                    rail_below,
+                    cx,
+                ))
+            };
             shelf
-                .child(self.label(center, cx))
                 // Any press might be a scrub; the covers' clicks moved to
                 // release so both can tell.
                 .on_mouse_down(
@@ -2412,6 +2579,7 @@ impl ArtPanel {
                     .absolute()
                     .size_full(),
                 )
+                .children(self.letter_rail(axis, cx))
                 // The shelf's right-click menu, keyed off the hovered cover
                 // since the builder gets no position: the hovered cover is
                 // selected first so the menu acts on what's highlighted. Off

@@ -32,11 +32,11 @@ query-source-selection = Selección
 
 ## Signals and routes
 signal-source = Origen
-    .description = Qué sigue la señal: Banda rastrea un rango de frecuencias, Nivel toda la mezcla, Onset pulsa en cada golpe del rango, Trigger lanza un pulso cuando el rango alcanza su umbral, Total suma otra señal a lo largo del tiempo
+    .description = Qué sigue la señal: Banda rastrea un rango de frecuencias, Nivel toda la mezcla, Ataque pulsa en cada golpe del rango, Disparo lanza un pulso cuando el rango alcanza su umbral, Total suma otra señal a lo largo del tiempo
 signal-kind-band = Banda
 signal-kind-level = Nivel
-signal-kind-onset = Onset
-signal-kind-trigger = Trigger
+signal-kind-onset = Ataque
+signal-kind-trigger = Disparo
 signal-kind-total = Total
 signal-response = Respuesta
 signal-response-pulse = Cuánto resuena cada pulso antes de apagarse
@@ -2775,7 +2775,7 @@ ago-just-now = ahora mismo
 ago-minutes = hace { $count } min
 ago-hours = hace { $count } h
 ago-days = hace { $count } d
-ago-weeks = hace { $count } sem.
+ago-weeks = hace { $count } sem
 ago-years = hace { $count } a
 
 span-seconds = { $count ->

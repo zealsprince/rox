@@ -3,6 +3,28 @@ name = "rox"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "A desktop music player for large, carefully tagged local libraries"
+
+# Read by `cargo deb -p rox --no-build` in the release workflow, which packs
+# the already built binaries into a Debian package. Paths under target/release
+# resolve against the workspace target dir; everything else is relative to
+# this crate.
+[package.metadata.deb]
+maintainer = "Andrew Lake <andrew@zealsprince.com>"
+section = "sound"
+# No Debian revision, so the artifact is named rox_<version>_amd64.deb the way
+# an upstream package normally is.
+revision = ""
+# dpkg-shlibdeps derives the runtime dependencies from the binary on the
+# build runner.
+depends = "$auto"
+assets = [
+    ["target/release/rox", "usr/bin/", "755"],
+    ["target/release/rox-mcp", "usr/bin/", "755"],
+    ["assets/app/rox.desktop", "usr/share/applications/", "644"],
+    ["assets/app/rox-music.svg", "usr/share/icons/hicolor/scalable/apps/rox.svg", "644"],
+    ["assets/app/rox.png", "usr/share/pixmaps/rox.png", "644"],
+]
 
 [dependencies]
 gpui = { workspace = true }

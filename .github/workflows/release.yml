@@ -151,6 +151,22 @@ jobs:
           cp LICENSE "$staging/"
           tar czf "$staging.tar.gz" "$staging"
 
+      # Prebuilt binary instead of `cargo install`, which would compile
+      # cargo-deb for minutes on every release.
+      - uses: taiki-e/install-action@v2
+        if: runner.os == 'Linux'
+        with:
+          tool: cargo-deb
+
+      # Same binaries as the tarball, wrapped with the .desktop entry and
+      # icons for menu integration and clean uninstall. Built on ubuntu-latest
+      # (24.04), so the glibc floor covers Debian 13, Ubuntu 24.04+, and MX
+      # 25, but not Debian 12. Layout and dependencies live in
+      # [package.metadata.deb] in crates/rox/Cargo.toml.
+      - name: Package (Linux .deb)
+        if: runner.os == 'Linux'
+        run: cargo deb -p rox --no-build -o .
+
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -219,6 +235,18 @@ jobs:
           Compress-Archive -Path target/release/rox.exe, target/release/rox-mcp.exe, LICENSE `
             -DestinationPath "rox-v$env:VERSION-${{ matrix.artifact }}.zip"
 
+      # Inno Setup wizard around the same binaries: Start Menu shortcut,
+      # Add/Remove Programs entry, in-place upgrades. ISCC is preinstalled on
+      # the Windows runners. Unsigned, so SmartScreen warns on first run, same
+      # as the zip; a signing certificate is blocked on legal logistics for
+      # now.
+      - name: Package (Windows installer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            /DVersion=$env:VERSION scripts\rox.iss
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
@@ -226,6 +254,8 @@ jobs:
             rox-v*.tar.gz
             rox-v*.zip
             rox-v*.dmg
+            rox-v*-setup.exe
+            rox_*.deb
           if-no-files-found: error
 
   release:

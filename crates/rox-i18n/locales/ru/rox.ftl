@@ -562,7 +562,7 @@ settings-application-section-layout = Макет
 settings-application-section-startup = Запуск
 settings-application-section-window = Окно
 settings-application-socket-path = Путь к сокету
-    .description = Машинный интерфейс rox во время работы: JSON-RPC через локальный сокет, привязанный к этой папке данных. roxctl управляет им из терминала, а прокси rox-mcp обслуживает через него MCP-клиентов
+    .description = Машинный интерфейс rox во время работы: JSON-RPC через локальный сокет, привязанный к этой папке данных. Прокси rox-mcp обслуживает через него MCP-клиентов
 
 ## Settings: audio
 settings-audio-broadcast-bitrate = Битрейт

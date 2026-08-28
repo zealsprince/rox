@@ -566,7 +566,7 @@ settings-application-section-layout = Disposición
 settings-application-section-startup = Arranque
 settings-application-section-window = Ventana
 settings-application-socket-path = Ruta del socket
-    .description = La interfaz de máquina de rox mientras corre: JSON-RPC sobre un socket local, atado a esta carpeta de datos. roxctl la maneja desde una shell, y el proxy rox-mcp atiende con ella a los clientes MCP
+    .description = La interfaz de máquina de rox mientras corre: JSON-RPC sobre un socket local, atado a esta carpeta de datos. El proxy rox-mcp atiende con ella a los clientes MCP
 
 ## Settings: audio
 settings-audio-broadcast-bitrate = Tasa de bits

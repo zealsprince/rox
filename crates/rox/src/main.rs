@@ -271,7 +271,36 @@ fn confirm_close_locked(
     });
 }
 
+/// Rein in glibc's malloc before the thread pools exist. Its default of one
+/// arena per contending thread (up to 8 x cores) had a dozen arenas each
+/// parking a few megabytes of freed-but-retained heap: about 50 MB of idle
+/// footprint on the measured library, and the reason applying a workspace
+/// looked like a leak - every rebuild's transient allocations spread across
+/// arenas that never give pages back. Four arenas keep the parallel paths
+/// out of each other's way while bounding that retention, and the megabyte
+/// thresholds hand freed panel trees and cover decodes back to the kernel
+/// instead of holding them against a rainy day. Measured: idle 234 -> 182 MB,
+/// and thirty same-workspace applies flatten at ~230 MB where they used to
+/// climb ~8 MB each, forever. Launch-to-ready stays sub-second.
+///
+/// glibc only; musl, macOS, and Windows allocators don't have these knobs
+/// (or the retention pattern).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_allocator() {
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 4);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 1 << 20);
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_allocator() {}
+
 fn main() {
+    // Allocator knobs go first: mallopt decides arena policy lazily as
+    // threads first contend, so this has to beat every thread spawn.
+    tune_allocator();
     // The settings model can't reach up into the workspace files it has to
     // drain on a pre-split launch, so it gets pointed at them first, before
     // anything reads a setting.

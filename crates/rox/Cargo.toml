@@ -108,6 +108,9 @@ url = "2"
 # same zbus 5 line souvlaki brought in. Runtime-agnostic via async-io
 # instead of the default tokio; blocking gives the thread-and-handle API.
 [target.'cfg(target_os = "linux")'.dependencies]
+# The glibc malloc knobs main() sets before anything allocates; see
+# tune_allocator. Already in the tree through every native dependency.
+libc = "0.2"
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
 # The updater unpacks the release tarball; flate2 is already in the tree
 # through image's png path, same 1.x line.

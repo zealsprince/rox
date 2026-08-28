@@ -1,0 +1,51 @@
+--- a/src/input/popovers/context_menu.rs
++++ b/src/input/popovers/context_menu.rs
+@@ -1,7 +1,7 @@
+ use gpui::{
+     App, AppContext as _, Context, Corner, DismissEvent, Entity, IntoElement, MouseDownEvent,
+-    ParentElement as _, Pixels, Point, Render, Styled, Subscription, Window, anchored, deferred,
+-    div, prelude::FluentBuilder as _, px,
++    ParentElement as _, Pixels, Point, Render, Styled, Subscription, WeakEntity, Window, anchored,
++    deferred, div, prelude::FluentBuilder as _, px,
+ };
+ use rust_i18n::t;
+ 
+@@ -13,7 +13,11 @@
+ 
+ /// Context menu for mouse right clicks.
+ pub(crate) struct MouseContextMenu {
+-    editor: Entity<InputState>,
++    // rox patch: weak, because every InputState owns a MouseContextMenu and
++    // this back-reference held strong made the pair a reference cycle gpui's
++    // ref counting can never collect - one leaked InputState (plus its
++    // BlinkCursor and PopupMenu) per input ever created.
++    editor: WeakEntity<InputState>,
+     menu: Entity<PopupMenu>,
+     mouse_position: Point<Pixels>,
+     open: bool,
+@@ -102,7 +106,7 @@
+             })];
+ 
+             Self {
+-                editor,
++                editor: editor.downgrade(),
+                 menu,
+                 mouse_position: Point::default(),
+                 open: false,
+@@ -119,9 +123,13 @@
+     #[inline]
+     pub(crate) fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         self.open = false;
+-        self.editor.update(cx, |this, cx| {
+-            this.focus(window, cx);
+-        });
++        // rox patch: upgrade the weak editor; a menu outliving its input has
++        // nothing left to focus.
++        if let Some(editor) = self.editor.upgrade() {
++            editor.update(cx, |this, cx| {
++                this.focus(window, cx);
++            });
++        }
+     }
+ }
+ 

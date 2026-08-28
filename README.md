@@ -21,18 +21,21 @@ start in under a second, it isn't rox.
 
 | Area      | What's there                                                                                                                                                                                                        |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Library   | Parallel scanner reading full tags, true durations, and each file's own codec, sample rate, and bit depth, live folder watching that handles renames, files with unreadable tags indexed by filename so nothing silently drops, folder tree, filters, and search, cue sheets whose tracks become real rows instead of one long file |
+| Library   | Parallel scanner reading full tags, true durations, and each file's own codec, sample rate, and bit depth, live folder watching that handles renames, files with unreadable tags indexed by filename so nothing silently drops, folder tree, filters, and search, cue sheets whose tracks become real rows instead of one long file, a quick-play box over the whole workspace on one key, a duplicate finder that groups copies and trashes the ones you don't keep, and ffmpeg-backed conversion writing into a folder pattern you name |
 | Playback  | Gapless single-stream engine, queue with shuffle, repeat, and play-next, endless play that refills the queue from your browse order, from what you've neglected, or from what the current track sounds like, crossfade that leaves album-contiguous boundaries alone, recovery when an audio device disappears, media keys and now-playing integration on all three platforms |
 | Sound     | Optional local analysis describing how each track actually sounds, driving a sortable Similar column, Play Similar, and a nearest-by-sound shuffle. The built-in extractor needs no download; PANNs CNN10 or a weights file of your own if you want a heavier ear. Nothing leaves the machine |
 | Audio     | A ten-band equalizer in a window of its own, ReplayGain off the tags with an EBU R128 pass for the files no tagger ever measured, and an exclusive output mode (ALSA, WASAPI, CoreAudio) that reports the format the hardware accepted |
-| Panels    | Forty-odd panel types (library, queue, history, playlists, lyrics, cover, biography, artist and genre grids, spectrum, waveform, VU), composed freely, duplicated with independent configs, popped out into OS windows, saved as named presets, and a design mode switch so a finished layout stays put |
+| Panels    | Forty-odd panel types (library, queue, history, playlists, lyrics, cover, biography, artist and genre grids, spectrum, spectrogram, oscilloscope, waveform, VU, particles), composed freely, duplicated with independent configs, popped out into OS windows, saved as named presets, drawers that slide out over a panel and a mini layout you shrink into, and a design mode switch so a finished layout stays put |
 | Theming   | Workspaces as single shareable files (layout, palette, appearance) in a folder you can drop a bundle into, palette tinting from the playing album's cover per window, light and dark following cover brightness |
 | Shaders   | Music-reactive WGSL shaders in a panel or over the whole window: multi-pass pipelines, cover-art and image bindings, shipped examples or your own files, and a signals window for tuning what drives them. Shaders are included in workspace bundles and never run without your approval |
-| Tagging   | Full tag editor with atomic writes and batch edits, multi-value genres with merges kept as a library opinion rather than a tag write, ratings stored in the files themselves (FMPS and POPM), online tag and cover lookup through MusicBrainz, iTunes, and Deezer, artist biographies |
+| Tagging   | Full tag editor with atomic writes and batch edits, multi-value genres with merges kept as a library opinion rather than a tag write, ratings stored in the files themselves (FMPS and POPM), online tag and cover lookup through MusicBrainz, iTunes, Deezer, and TheAudioDB, artist biographies, and a pass that embeds what rox stores (lyrics, gains, acoustic descriptions) into the files so another player reads it too |
 | Lyrics    | Synced and plain lyrics from sidecar files, tags, or lrclib, with an in-panel editor that writes back where it read from                                                                                              |
 | History   | A full listen log driving the history panel and stats window, Last.fm scrobbling with favourites and loved tracks synced in both directions                                                                          |
-| Playlists | Favourites, drag reorder across playlists, m3u import and export, entries that persist when their files leave and come back                                                                                             |
-| System    | Tray with quit-to-tray, one instance per data directory, portable mode, one binary, a keymap where every shortcut rebinds, chords included, and a tasks window for the long library jobs with time estimates measured on your own machine |
+| Playlists | Favourites, drag reorder across playlists, m3u import and export, smart playlists that stay a query with their own sort and limit, entries that persist when their files leave and come back                            |
+| Sharing   | Discord rich presence with optional Last.fm and YouTube buttons, and an Icecast source client that pushes what rox plays out as MP3, connecting outward only so an unreachable server never touches local playback |
+| Language  | Nine translations besides the English source (German, French, Italian, Spanish, Brazilian Portuguese, Russian, Ukrainian, Japanese, Simplified Chinese), following the OS by default, with numbers, dates, and plurals rendered per locale |
+| Control   | A JSON-RPC socket keyed to the data directory, with a `rox-mcp` proxy beside the app so an MCP client can ask what's playing, search the library, and work the transport. It stays off until you turn AI features on, and every tool call rechecks the toggle |
+| System    | Tray with quit-to-tray, one instance per data directory, portable mode, a self-updater that checksum-verifies the release and stages it beside the running build (notify-only where the install folder isn't writable), a keymap where every shortcut rebinds, chords included, and a tasks window for the long library jobs with time estimates measured on your own machine |
 
 </details>
 
@@ -46,7 +49,7 @@ visible.
 
 | Player     | Window up | Fully loaded  | Memory  | Idle CPU |
 | ---------- | --------- | ------------- | ------- | -------- |
-| rox        | 0.3 s     | 2.3 s         | 134 MB  | 0.5%     |
+| rox        | 0.3 s     | 2.3 s         | 180 MB  | 0.5%     |
 | Elisa      | 0.7 s     | never settles | 206 MB  | 74%      |
 | fooyin     | 0.3 s     | 18 s          | 364 MB  | 0%       |
 | Quod Libet | -         | 19 s          | 384 MB  | 0.2%     |
@@ -66,7 +69,7 @@ around 3 minutes, the drive maxed out with CPU to spare. Like for like, fooyin
 re-imports the same collection from a reset in about 30 seconds where rox takes
 3. In every rox run the ceiling was the disk, never the player.
 
-rox ships as one binary: a 39 MB download that unpacks to 117 MB. Tauon's Flatpak is a
+rox ships as one binary: a 44 MB download that unpacks to 133 MB. Tauon's Flatpak is a
 [135 MB download](https://flathub.org/apps/com.github.taiko2k.tauonmb), the
 Spotify client idles between 300 and 900 MB. Foobar2000 itself stays lean, but
 you knew that, that's the point.

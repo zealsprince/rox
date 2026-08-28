@@ -1,0 +1,60 @@
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -913,6 +913,12 @@
+         )
+     }
+ 
++    /// rox diagnostic: live entity counts by concrete type, for leak
++    /// attribution.
++    pub fn entity_diagnostic_counts(&self) -> Vec<(&'static str, usize)> {
++        self.entities.diagnostic_counts()
++    }
++
+     /// Returns handles to all open windows in the application.
+     /// Each handle could be downcast to a handle typed for the root view of that window.
+     /// To find all windows of a given type, you could filter on
+--- a/src/app/entity_map.rs
++++ b/src/app/entity_map.rs
+@@ -56,6 +56,8 @@
+ 
+ pub(crate) struct EntityMap {
+     entities: SecondaryMap<EntityId, Box<dyn Any>>,
++    // rox diagnostic: concrete type name per live entity, for leak attribution.
++    type_names: SecondaryMap<EntityId, &'static str>,
+     pub accessed_entities: RefCell<FxHashSet<EntityId>>,
+     ref_counts: Arc<RwLock<EntityRefCounts>>,
+ }
+@@ -71,6 +73,7 @@
+     pub fn new() -> Self {
+         Self {
+             entities: SecondaryMap::new(),
++            type_names: SecondaryMap::new(),
+             accessed_entities: RefCell::new(FxHashSet::default()),
+             ref_counts: Arc::new(RwLock::new(EntityRefCounts {
+                 counts: SlotMap::with_key(),
+@@ -100,9 +103,25 @@
+ 
+         let handle = slot.0;
+         self.entities.insert(handle.entity_id, Box::new(entity));
++        self.type_names
++            .insert(handle.entity_id, std::any::type_name::<T>());
+         handle
+     }
+ 
++    /// rox diagnostic: live entity counts by concrete type, for leak
++    /// attribution.
++    pub fn diagnostic_counts(&self) -> Vec<(&'static str, usize)> {
++        let mut counts: std::collections::HashMap<&'static str, usize> =
++            std::collections::HashMap::new();
++        for (id, _) in self.entities.iter() {
++            let name = self.type_names.get(id).copied().unwrap_or("<unknown>");
++            *counts.entry(name).or_default() += 1;
++        }
++        let mut out: Vec<_> = counts.into_iter().collect();
++        out.sort_by(|a, b| b.1.cmp(&a.1));
++        out
++    }
++
+     /// Move an entity to the stack.
+     #[track_caller]
+     pub fn lease<T>(&mut self, pointer: &Entity<T>) -> Lease<T> {

@@ -548,7 +548,7 @@ settings-application-section-layout = 布局
 settings-application-section-startup = 启动
 settings-application-section-window = 窗口
 settings-application-socket-path = 套接字路径
-    .description = rox 运行时的机器接口：本地套接字上的 JSON-RPC，绑定到这个数据文件夹。roxctl 从 shell 驱动它，rox-mcp 代理在它之上服务 MCP 客户端
+    .description = rox 运行时的机器接口：本地套接字上的 JSON-RPC，绑定到这个数据文件夹。rox-mcp 代理在它之上服务 MCP 客户端
 
 ## Settings: audio
 settings-audio-broadcast-bitrate = 比特率

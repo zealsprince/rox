@@ -583,7 +583,7 @@ settings-application-section-layout = Layout
 settings-application-section-startup = Startup
 settings-application-section-window = Window
 settings-application-socket-path = Socket Path
-    .description = rox's machine interface while it runs: JSON-RPC over a local socket, keyed to this data folder. roxctl drives it from a shell, and the rox-mcp proxy serves MCP clients over it
+    .description = rox's machine interface while it runs: JSON-RPC over a local socket, keyed to this data folder. The rox-mcp proxy serves MCP clients over it
 
 ## Settings: audio
 

@@ -1,0 +1,49 @@
+--- a/src/elements/img.rs
++++ b/src/elements/img.rs
+@@ -7,7 +7,7 @@
+ };
+ use anyhow::{Context as _, Result};
+ 
+-use futures::{AsyncReadExt, Future};
++use futures::{AsyncReadExt, Future, FutureExt as _};
+ use image::{
+     AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageError, ImageFormat, Rgba,
+     codecs::{gif::GifDecoder, webp::WebPDecoder},
+@@ -573,13 +573,36 @@
+     }
+ 
+     /// Remove this image source from the asset system
++    ///
++    /// rox patch: a finished decode also leaves every window's sprite atlas.
++    /// Without that, removing the cache entry orphans the texture the decode
++    /// uploaded - nothing holds its id anymore, so no later call can free it,
++    /// and re-loading the same bytes mints a fresh `RenderImage` and uploads
++    /// a second copy. One leaked full-size cover per panel rebuild, measured
++    /// at an atlas texture per workspace apply.
+     pub fn remove_asset(&self, cx: &mut App) {
+         match self {
+             ImageSource::Resource(resource) => {
++                if let Some(Ok(render)) = cx
++                    .fetch_asset::<ImgResourceLoader>(resource)
++                    .0
++                    .now_or_never()
++                {
++                    cx.drop_image(render, None);
++                }
+                 cx.remove_asset::<ImgResourceLoader>(resource);
+             }
+             ImageSource::Custom(_) | ImageSource::Render(_) => {}
+-            ImageSource::Image(data) => cx.remove_asset::<AssetLogger<ImageDecoder>>(data),
++            ImageSource::Image(data) => {
++                if let Some(Ok(render)) = cx
++                    .fetch_asset::<AssetLogger<ImageDecoder>>(data)
++                    .0
++                    .now_or_never()
++                {
++                    cx.drop_image(render, None);
++                }
++                cx.remove_asset::<AssetLogger<ImageDecoder>>(data);
++            }
+         }
+     }
+ }

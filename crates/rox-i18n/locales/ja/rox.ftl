@@ -548,7 +548,7 @@ settings-application-section-layout = レイアウト
 settings-application-section-startup = 起動
 settings-application-section-window = ウィンドウ
 settings-application-socket-path = ソケットのパス
-    .description = 実行中の rox のマシン向けインターフェース。ローカルソケット上の JSON-RPC で、このデータフォルダーに紐づく。roxctl がシェルから叩き、rox-mcp プロキシがこれを通して MCP クライアントに応える
+    .description = 実行中の rox のマシン向けインターフェース。ローカルソケット上の JSON-RPC で、このデータフォルダーに紐づく。rox-mcp プロキシがこれを通して MCP クライアントに応える
 
 ## Settings: audio
 settings-audio-broadcast-bitrate = ビットレート

@@ -227,6 +227,33 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             serde_json::to_value(rox_core::settings::Settings::load()).map_err(RpcError::app)
         }
         "debug.panels" => panel_tree(cx),
+        // Apply a workspace to the front window by name, the welcome tiles'
+        // path. Debug scope: lets a script step through looks without
+        // driving the settings window's dialog (ADR 22).
+        "debug.workspace" => {
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::invalid_params("workspace takes {\"name\"}"))?;
+            if crate::workspaces::resolve(name).is_none() {
+                return Err(RpcError::app(format!("no workspace named {name}")));
+            }
+            crate::workspace::apply_workspace_to_front(name, cx);
+            Ok(Value::Null)
+        }
+        // Live gpui entity counts by type, largest first. Diagnostic surface
+        // for leak hunting; rides the vendored entity-map accessor.
+        "debug.entities" => {
+            let counts = cx.entity_diagnostic_counts();
+            let total: usize = counts.iter().map(|(_, n)| n).sum();
+            Ok(json!({
+                "total": total,
+                "by_type": counts
+                    .into_iter()
+                    .map(|(name, n)| json!([name, n]))
+                    .collect::<Vec<_>>(),
+            }))
+        }
         other => super::drive::route(other, params, cx)
             .unwrap_or_else(|| Err(RpcError::method_not_found(other))),
     }

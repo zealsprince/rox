@@ -567,7 +567,7 @@ settings-application-section-layout = Розкладка
 settings-application-section-startup = Запуск
 settings-application-section-window = Вікно
 settings-application-socket-path = Шлях до сокета
-    .description = Машинний інтерфейс rox, поки він працює: JSON-RPC через локальний сокет, прив'язаний до цієї теки даних. roxctl керує ним із термінала, а проксі rox-mcp обслуговує через нього клієнтів MCP
+    .description = Машинний інтерфейс rox, поки він працює: JSON-RPC через локальний сокет, прив'язаний до цієї теки даних. Проксі rox-mcp обслуговує через нього клієнтів MCP
 
 ## Settings: audio
 settings-audio-broadcast-bitrate = Бітрейт

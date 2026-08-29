@@ -1126,7 +1126,16 @@ actions!(
         ResetFontSize,
         TogglePostShader,
         CloseWindow,
-        Quit
+        Quit,
+        NewWindow,
+        OpenConsole,
+        OpenTasks,
+        OpenWelcome,
+        OpenAbout,
+        OpenEqualizer,
+        NextTrack,
+        PreviousTrack,
+        StopPlayback
     ]
 );
 
@@ -1180,6 +1189,39 @@ pub fn init(cx: &mut App) {
     // The shader flip is app-wide like the zoom chords: whichever window
     // has focus dispatches, and the apply covers them all.
     cx.on_action(|_: &TogglePostShader, cx| toggle_post_shader(cx));
+    // The rest of the menu's windows and transport rows, bound so they
+    // answer a chord as well as a click. Each runs what its menu row runs,
+    // routed through the front workspace where it needs one, so a child
+    // window being key doesn't swallow the chord.
+    cx.on_action(|_: &NewWindow, cx| crate::open_workspace(cx));
+    cx.on_action(|_: &OpenConsole, cx| crate::console_window::open(cx));
+    cx.on_action(|_: &OpenTasks, cx| crate::tasks_window::open(cx));
+    cx.on_action(|_: &OpenEqualizer, cx| crate::eq_window::open(cx));
+    cx.on_action(|_: &OpenWelcome, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            crate::startup::welcome_window::open(ws.state.clone(), cx);
+        });
+    });
+    cx.on_action(|_: &OpenAbout, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            crate::startup::about_window::open(ws.state.clone(), cx);
+        });
+    });
+    cx.on_action(|_: &NextTrack, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.state.player.update(cx, |player, cx| player.next(cx));
+        });
+    });
+    cx.on_action(|_: &PreviousTrack, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.state.player.update(cx, |player, _| player.prev());
+        });
+    });
+    cx.on_action(|_: &StopPlayback, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.state.player.update(cx, |player, cx| player.stop(cx));
+        });
+    });
 }
 
 /// Nudge the app font size by `delta` px from where it stands.

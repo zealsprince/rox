@@ -1847,8 +1847,8 @@ impl Render for TabPanel {
                         div()
                             .absolute()
                             .inset_0()
-                            .border_1()
-                            .border_color(cx.theme().ring)
+                            .border_2()
+                            .border_color(rox_design::palette::accent())
                             .rounded(cx.theme().radius),
                     )
                 },

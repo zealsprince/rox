@@ -2,7 +2,7 @@
 //! and every handler stay up in the app; only the types are here, so a
 //! panel's `on_action` and the workspace's binding name the same one.
 
-use gpui::{actions, App, KeyBinding};
+use gpui::actions;
 
 actions!(
     rox,
@@ -20,26 +20,6 @@ actions!(
         TypeAheadPrev
     ]
 );
-
-/// The type-ahead cycle bindings; call once at startup. Scoped to the
-/// cycle context, which a panel carries for as long as it holds a phrase:
-/// gpui-component's Root binds bare tab to focus traversal, and the
-/// deeper context match wins while a phrase is up, handing tab back to
-/// traversal once the phrase is dropped.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new(
-            "tab",
-            TypeAheadNext,
-            Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT),
-        ),
-        KeyBinding::new(
-            "shift-tab",
-            TypeAheadPrev,
-            Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT),
-        ),
-    ]);
-}
 
 actions!(
     lyrics,

@@ -26,12 +26,15 @@ use gpui::{App, Global, KeyBinding, Keystroke};
 use rox_core::settings::Settings;
 
 use rox_dock::ToggleZoom;
-use rox_panel_api::actions::{SeekBackward, SeekForward, TogglePlayback};
+use rox_panel_api::actions::{
+    SeekBackward, SeekForward, TogglePlayback, TypeAheadNext, TypeAheadPrev,
+};
 use rox_panels::lyrics::StampLine;
 
 use crate::workspace::{
-    CloseWindow, DecreaseFontSize, FocusSearch, IncreaseFontSize, OpenQuickPlay, OpenSettings,
-    OpenStats, Quit, ResetFontSize, TogglePostShader,
+    CloseWindow, DecreaseFontSize, FocusSearch, IncreaseFontSize, NewWindow, NextTrack, OpenAbout,
+    OpenConsole, OpenEqualizer, OpenQuickPlay, OpenSettings, OpenStats, OpenTasks, OpenWelcome,
+    PreviousTrack, Quit, ResetFontSize, StopPlayback, TogglePostShader,
 };
 
 /// Bindings match key contexts along the focus path, so this scope holds
@@ -54,25 +57,37 @@ const WORKSPACE: Option<&str> = Some("Workspace");
 /// window root.
 const LYRICS: Option<&str> = Some("LyricsEdit");
 
+/// Where the type-ahead cycle binds: a panel carries this only while it
+/// holds a phrase, so tab steps matches then and goes back to walking
+/// panels the rest of the time.
+const TYPE_AHEAD: Option<&str> = Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT);
+
 /// Which part of the app a command belongs to. The Keymap page draws one
 /// section per group, in this order.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Playback,
     Windows,
+    Browsing,
     View,
     Editing,
 }
 
 impl Group {
     /// The groups the page steps through, in the order it draws them.
-    pub const ALL: &'static [Group] =
-        &[Group::Playback, Group::Windows, Group::View, Group::Editing];
+    pub const ALL: &'static [Group] = &[
+        Group::Playback,
+        Group::Windows,
+        Group::Browsing,
+        Group::View,
+        Group::Editing,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Group::Playback => rox_i18n::t_static("keymap-group-playback"),
             Group::Windows => rox_i18n::t_static("keymap-group-windows"),
+            Group::Browsing => rox_i18n::t_static("keymap-group-browsing"),
             Group::View => rox_i18n::t_static("keymap-group-view"),
             Group::Editing => rox_i18n::t_static("keymap-group-editing"),
         }
@@ -83,6 +98,7 @@ impl Group {
         match self {
             Group::Playback => icons::PLAY,
             Group::Windows => icons::APP_WINDOW,
+            Group::Browsing => icons::SEARCH,
             Group::View => icons::EYE,
             Group::Editing => icons::PENCIL,
         }
@@ -175,6 +191,12 @@ mod defaults {
     pub const POST_SHADER: &[&str] = &["cmd-shift-x"];
     pub const CLOSE_WINDOW: &[&str] = &["cmd-w"];
     pub const QUIT: &[&str] = &["cmd-q"];
+    pub const NEW_WINDOW: &[&str] = &["cmd-n"];
+    pub const TASKS: &[&str] = &["cmd-j"];
+    pub const EQUALIZER: &[&str] = &["cmd-e"];
+    pub const NEXT_TRACK: &[&str] = &["cmd-right"];
+    pub const PREVIOUS_TRACK: &[&str] = &["cmd-left"];
+    pub const STOP: &[&str] = &["cmd-."];
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -189,6 +211,12 @@ mod defaults {
     pub const POST_SHADER: &[&str] = &["ctrl-shift-x"];
     pub const CLOSE_WINDOW: &[&str] = &["ctrl-w"];
     pub const QUIT: &[&str] = &["alt-f4"];
+    pub const NEW_WINDOW: &[&str] = &["ctrl-n"];
+    pub const TASKS: &[&str] = &["ctrl-j"];
+    pub const EQUALIZER: &[&str] = &["ctrl-e"];
+    pub const NEXT_TRACK: &[&str] = &["ctrl-right"];
+    pub const PREVIOUS_TRACK: &[&str] = &["ctrl-left"];
+    pub const STOP: &[&str] = &["ctrl-."];
 }
 
 /// Everything rox binds. The page draws this in order within each group,
@@ -228,6 +256,105 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             &["right"],
             SeekForward,
             rox_i18n::t_static("keymap-seek-forward.description")
+        ),
+        command!(
+            "stop_playback",
+            rox_i18n::t_static("keymap-stop-playback"),
+            Group::Playback,
+            WORKSPACE,
+            defaults::STOP,
+            StopPlayback,
+            rox_i18n::t_static("keymap-stop-playback.description")
+        ),
+        command!(
+            "next_track",
+            rox_i18n::t_static("keymap-next-track"),
+            Group::Playback,
+            WORKSPACE,
+            defaults::NEXT_TRACK,
+            NextTrack,
+            rox_i18n::t_static("keymap-next-track.description")
+        ),
+        command!(
+            "previous_track",
+            rox_i18n::t_static("keymap-previous-track"),
+            Group::Playback,
+            WORKSPACE,
+            defaults::PREVIOUS_TRACK,
+            PreviousTrack,
+            rox_i18n::t_static("keymap-previous-track.description")
+        ),
+        command!(
+            "type_ahead_next",
+            rox_i18n::t_static("keymap-type-ahead-next"),
+            Group::Browsing,
+            TYPE_AHEAD,
+            &["tab"],
+            TypeAheadNext,
+            rox_i18n::t_static("keymap-type-ahead-next.description")
+        ),
+        command!(
+            "type_ahead_prev",
+            rox_i18n::t_static("keymap-type-ahead-prev"),
+            Group::Browsing,
+            TYPE_AHEAD,
+            &["shift-tab"],
+            TypeAheadPrev,
+            rox_i18n::t_static("keymap-type-ahead-prev.description")
+        ),
+        command!(
+            "new_window",
+            rox_i18n::t_static("keymap-new-window"),
+            Group::Windows,
+            WORKSPACE,
+            defaults::NEW_WINDOW,
+            NewWindow,
+            rox_i18n::t_static("keymap-new-window.description")
+        ),
+        command!(
+            "open_tasks",
+            rox_i18n::t_static("keymap-open-tasks"),
+            Group::Windows,
+            WORKSPACE,
+            defaults::TASKS,
+            OpenTasks,
+            rox_i18n::t_static("keymap-open-tasks.description")
+        ),
+        command!(
+            "open_equalizer",
+            rox_i18n::t_static("keymap-open-equalizer"),
+            Group::Windows,
+            WORKSPACE,
+            defaults::EQUALIZER,
+            OpenEqualizer,
+            rox_i18n::t_static("keymap-open-equalizer.description")
+        ),
+        command!(
+            "open_console",
+            rox_i18n::t_static("keymap-open-console"),
+            Group::Windows,
+            WORKSPACE,
+            &["f12"],
+            OpenConsole,
+            rox_i18n::t_static("keymap-open-console.description")
+        ),
+        command!(
+            "open_welcome",
+            rox_i18n::t_static("keymap-open-welcome"),
+            Group::Windows,
+            WORKSPACE,
+            &["f1"],
+            OpenWelcome,
+            rox_i18n::t_static("keymap-open-welcome.description")
+        ),
+        command!(
+            "open_about",
+            rox_i18n::t_static("keymap-open-about"),
+            Group::Windows,
+            WORKSPACE,
+            &["shift-f1"],
+            OpenAbout,
+            rox_i18n::t_static("keymap-open-about.description")
         ),
         command!(
             "open_settings",

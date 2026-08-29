@@ -361,7 +361,6 @@ fn main() {
         lyrics::matcher::init(cx);
         cover::editor::init(cx);
         rox_panel_api::panel_settings::init(cx);
-        rox_panel_api::actions::init(cx);
         // Last of the inits, and it has to stay last: a rebind rebuilds the
         // whole keymap, and this is where the bindings already registered
         // above get snapshotted so they're preserved through one.

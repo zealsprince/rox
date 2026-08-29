@@ -1135,7 +1135,8 @@ actions!(
         OpenEqualizer,
         NextTrack,
         PreviousTrack,
-        StopPlayback
+        StopPlayback,
+        PlayRandom
     ]
 );
 
@@ -1220,6 +1221,17 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &StopPlayback, cx| {
         with_front_workspace(cx, |ws, _, cx| {
             ws.state.player.update(cx, |player, cx| player.stop(cx));
+        });
+    });
+    // The plain draw, the transport panel's dice button without its per-panel
+    // pick: a chord has no config to read a Similar mode off, and a random
+    // track is what the button does everywhere it hasn't been told otherwise.
+    cx.on_action(|_: &PlayRandom, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            let library = ws.state.library.clone();
+            ws.state
+                .player
+                .update(cx, |player, cx| player.play_random(&library, cx));
         });
     });
 }
@@ -2023,26 +2035,33 @@ pub(crate) fn signal_marked(action: MenuAction) -> bool {
     matches!(action, MenuAction::OpenPanel(def) if catalog::supports_signals(def))
 }
 
-pub(crate) fn shortcut_for(action: MenuAction) -> Option<&'static str> {
-    match action {
-        MenuAction::TogglePlayback => Some("Space"),
-        MenuAction::OpenSettings => Some(if cfg!(target_os = "macos") {
-            "Cmd-,"
-        } else {
-            "Ctrl-,"
-        }),
-        MenuAction::OpenStats => Some(if cfg!(target_os = "macos") {
-            "Cmd-Shift-S"
-        } else {
-            "Ctrl-Shift-S"
-        }),
-        MenuAction::TogglePostShader => Some(if cfg!(target_os = "macos") {
-            "Cmd-Shift-X"
-        } else {
-            "Ctrl-Shift-X"
-        }),
-        _ => None,
-    }
+pub(crate) fn shortcut_for(action: MenuAction) -> Option<SharedString> {
+    crate::keymap::shortcut(keymap_command(action)?).map(SharedString::from)
+}
+
+/// The keymap command a menu row runs on, so the row can trail the chord
+/// it's really bound to rather than one written out beside it that a
+/// rebind would make a lie. `None` for the rows nothing binds: the empty
+/// window, the signals window, the toggles and the links.
+fn keymap_command(action: MenuAction) -> Option<&'static str> {
+    Some(match action {
+        MenuAction::TogglePlayback => "toggle_playback",
+        MenuAction::Stop => "stop_playback",
+        MenuAction::Next => "next_track",
+        MenuAction::Previous => "previous_track",
+        MenuAction::NewWindow => "new_window",
+        MenuAction::OpenSettings => "open_settings",
+        MenuAction::OpenStats => "open_stats",
+        MenuAction::OpenTasks => "open_tasks",
+        MenuAction::OpenEqualizer => "open_equalizer",
+        MenuAction::OpenConsole => "open_console",
+        MenuAction::OpenWelcome => "open_welcome",
+        MenuAction::OpenAbout => "open_about",
+        MenuAction::CloseWindow => "close_window",
+        MenuAction::Quit => "quit",
+        MenuAction::TogglePostShader => "toggle_post_shader",
+        _ => return None,
+    })
 }
 
 /// A layout action waiting on its dialog, floated over the window: naming a
@@ -3914,9 +3933,15 @@ impl Workspace {
     /// Dump the dock layout and the window frame into the settings file.
     /// With several windows open the last writer wins; the file records the
     /// layout most recently touched.
+    ///
+    /// Except an empty one. A blank dock has nothing to restore, and writing
+    /// it here takes the saved working layout down with it: open Empty
+    /// Window, close it, and the next New Window comes back blank because
+    /// this is what it saved. So an empty dock leaves the stored layout
+    /// alone and the window frame still goes in.
     pub(crate) fn persist(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.save_task = None;
-        let layout = self.dock_dump(cx).ok();
+        let layout = self.dock_dump(cx).ok().filter(|_| !self.dock_is_empty(cx));
         let bounds = window.window_bounds();
         let frame = bounds.get_bounds();
         let window_state = WindowState {
@@ -3968,7 +3993,9 @@ impl Workspace {
             },
         );
         Settings::update(move |s| {
-            s.look.layout = layout;
+            if let Some(layout) = layout {
+                s.look.layout = Some(layout);
+            }
             s.windows.main = Some(window_state);
             s.session.last_track = last_track;
             s.session.last_queue = last_queue;
@@ -5062,6 +5089,27 @@ impl Render for Workspace {
 mod tests {
     use super::denoise_f32;
     use serde_json::json;
+
+    /// Every id [`super::keymap_command`] hands back has to be one the
+    /// keymap registry actually knows, or the row silently loses its
+    /// shortcut instead of failing anywhere visible.
+    #[test]
+    fn every_menu_row_names_a_command_the_keymap_has() {
+        for menu in super::MENUS {
+            for entry in menu.entries {
+                let super::MenuEntry::Item(item) = entry else {
+                    continue;
+                };
+                let Some(id) = super::keymap_command(item.action) else {
+                    continue;
+                };
+                assert!(
+                    crate::keymap::command(id).is_some(),
+                    "{id} is not a keymap command"
+                );
+            }
+        }
+    }
 
     #[test]
     fn denoise_strips_widened_f32_tails() {

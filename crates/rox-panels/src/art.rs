@@ -20,8 +20,8 @@ use std::time::Instant;
 use gpui::{
     canvas, div, hsla, img, point, prelude::*, px, relative, size, svg, Along, AnyElement, App,
     Axis, Bounds, BoxShadow, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    ImageSource, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, Pixels, RenderImage,
-    ScrollWheelEvent, SharedString, Size, Subscription, WeakEntity, Window,
+    ImageSource, KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, Pixels,
+    RenderImage, ScrollWheelEvent, SharedString, Size, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Side};
@@ -624,6 +624,56 @@ impl ArtPanel {
         self.coasting = false;
         self.publish_pending = true;
         cx.notify();
+    }
+
+    /// Step the shelf `delta` covers, clamped to the ends. Measured off
+    /// `goal` rather than `pos` so a held arrow banks its steps instead of
+    /// fighting the ease back to where the last one started.
+    fn step_cover(&mut self, delta: i64, cx: &mut Context<Self>) {
+        let last = self.max_index() as i64;
+        let target = (self.goal.round() as i64 + delta).clamp(0, last) as usize;
+        self.center_on(target, cx);
+    }
+
+    /// Center a cover and select it, the single click's pair of moves.
+    fn center_on(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.cells.len() {
+            return;
+        }
+        self.select_only(ix, cx);
+        self.navigate(ix, cx);
+    }
+
+    /// Browse from the keyboard while the shelf is focused: the arrows step
+    /// a cover, home and end run to the ends, and enter plays whatever is
+    /// centered. Both arrow pairs step, the wheel's rule above: the shelf
+    /// has one dimension, so there's nothing else for the cross pair to
+    /// mean. Modifiers pass through so the workspace keeps its shortcuts.
+    fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
+            return;
+        }
+        // Browsing by keyboard is browsing, so it restarts the idle clock
+        // the same as a wheel or a drag.
+        self.touch_resume(cx);
+        match keystroke.key.as_str() {
+            "left" | "up" => self.step_cover(-1, cx),
+            "right" | "down" => self.step_cover(1, cx),
+            // A page is the covers actually on screen to one side, so it
+            // lands the shelf just past what you were looking at.
+            "pageup" => self.step_cover(-VIS, cx),
+            "pagedown" => self.step_cover(VIS, cx),
+            "home" => self.center_on(0, cx),
+            "end" => self.center_on(self.cells.len().saturating_sub(1), cx),
+            "enter" => {
+                let ix = self.goal.round().max(0.) as usize;
+                if ix < self.cells.len() {
+                    self.play(ix, cx);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Flip the scroll axis, from the context menu or the settings toggle.
@@ -2127,6 +2177,8 @@ impl Panel for ArtPanel {
         "art view"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
@@ -2443,6 +2495,19 @@ impl ArtPanel {
             .size_full()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
+            // Bindings win over key listeners and an action stops
+            // propagation by default, so the workspace's left and right
+            // would seek instead of ever reaching the listener below.
+            // PanelNav takes the pair back while the shelf holds focus.
+            .key_context(panel::PANEL_NAV_CONTEXT)
+            // Arrow browsing while the shelf itself holds focus. The guard
+            // keeps it off while the search box is focused, whose keys
+            // bubble up through the toolbar child.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.focus.is_focused(window) {
+                    this.on_panel_key(event, cx);
+                }
+            }))
             .when(headerless && self.config.search, |d| {
                 d.child(self.toolbar(cx))
             });

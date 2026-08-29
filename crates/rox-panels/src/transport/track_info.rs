@@ -725,7 +725,7 @@ impl TrackInfoPanel {
             swap_scrub: ScrubState::default(),
             scale_scrubs: Vec::new(),
             value_edit: panel::ValueEdit::default(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _player_changed,
             _library_changed,
@@ -1214,7 +1214,11 @@ impl PanelSettings for TrackInfoPanel {
 impl Render for TrackInfoPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(window, cx))
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
 }
 

@@ -22,7 +22,9 @@ use crate::panel_catalog::{self as catalog, PanelPlacement};
 
 /// What the presets group is called and the icon it shows wherever a panel
 /// picker lists it, so the group reads the same in every menu that has one.
-pub(crate) const GROUP_LABEL: &str = "Presets";
+/// The label is an i18n key, like every other group label a picker draws,
+/// and it's the same one the Panels menu's own presets row uses.
+pub(crate) const GROUP_LABEL: &str = "menu-panels-presets";
 pub(crate) const GROUP_ICON: &str = icons::COPY;
 
 /// Every preset the live look holds, in save order. Read at the moment a
@@ -127,7 +129,7 @@ pub(crate) fn pick_submenu(
     }
     menu.submenu_with_icon(
         Some(Icon::default().path(GROUP_ICON)),
-        GROUP_LABEL,
+        rox_i18n::t!(GROUP_LABEL),
         window,
         cx,
         move |mut menu, _, _| {
@@ -156,6 +158,17 @@ pub(crate) fn pick_submenu(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The presets group sits beside the catalog's groups in every picker
+    /// and goes through the same lookup, so its label has to be a key the
+    /// same way theirs are. It was plain English for a while, which drew as
+    /// the missing marker once the pickers started translating it.
+    #[test]
+    fn the_group_label_is_a_message_key() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some(rox_i18n::SOURCE_LOCALE));
+        assert!(rox_i18n::try_translate(GROUP_LABEL).is_some());
+    }
 
     /// A dump makes the round trip a save and an add put it through: a panel
     /// state to JSON, the kind readable off it without parsing, and back to

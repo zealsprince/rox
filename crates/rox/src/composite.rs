@@ -38,6 +38,30 @@ use rox_panel_api::panel::{AppState, PanelSettings};
 /// affordance.
 pub type Slot = Option<Arc<dyn PanelView>>;
 
+/// Open the settings of whichever hosted child holds focus, or the host's
+/// own when focus is on the container itself. The `Panel::open_settings`
+/// override every composite uses in place of `opens_settings!`.
+///
+/// The dock's chord reaches the tab group, which only knows the panel it
+/// holds directly, and inside a composite that's the container. Without
+/// this, standing in a child and asking for panel settings would open the
+/// container's.
+pub fn open_slot_settings<'a, P: PanelSettings>(
+    slots: impl IntoIterator<Item = &'a Slot>,
+    window: &mut Window,
+    cx: &mut Context<P>,
+) {
+    let focused = slots
+        .into_iter()
+        .flatten()
+        .find(|child| child.focus_handle(cx).contains_focused(window, cx))
+        .cloned();
+    match focused {
+        Some(child) => child.open_settings(window, cx),
+        None => rox_panel_api::panel_settings::open(cx.entity(), cx),
+    }
+}
+
 /// Hand a host's tab panel down to its hosted children, once per change.
 ///
 /// `on_added_to` is only ever called on panels the dock holds directly, so
@@ -296,7 +320,7 @@ pub fn pick_items(
                 let on_pick = on_pick.clone();
                 menu = menu.submenu_with_icon(
                     Some(Icon::default().path(icon)),
-                    label,
+                    rox_i18n::t!(label),
                     window,
                     cx,
                     move |mut menu, _, _| {

@@ -1089,6 +1089,27 @@ pub fn type_ahead_context(phrase: &str, at: Option<Instant>) -> Option<&'static 
     }
 }
 
+/// The key context a panel carries when its own arrow keys mean something
+/// on the horizontal axis: a tile wall's cursor, a tree's fold pair. The
+/// workspace binds bare left and right to seek, bindings beat key
+/// listeners, and an action stops propagation by default, so without this
+/// the panel's listener never sees the keystroke at all. Carried
+/// unconditionally, since a key context only counts while the element
+/// holding it is on the focus path.
+pub const PANEL_NAV_CONTEXT: &str = "PanelNav";
+
+/// The whole key context a browsing panel with horizontal arrows should
+/// carry: [`PANEL_NAV_CONTEXT`] plus whatever its type-ahead state adds.
+/// One string because `key_context` holds a single value and the second
+/// call would drop the first.
+pub fn panel_nav_context(phrase: &str, at: Option<Instant>) -> &'static str {
+    match type_ahead_context(phrase, at) {
+        None => "PanelNav",
+        Some(TYPE_AHEAD_CYCLE_CONTEXT) => "PanelNav TypeAheadCycle",
+        Some(_) => "PanelNav TypeAhead TypeAheadCycle",
+    }
+}
+
 /// Whether a type-ahead phrase stamped at `at` is still within its window,
 /// i.e. still absorbing keystrokes rather than sitting expired. Panels use
 /// this both for the fade-out badge and to gate [`TYPE_AHEAD_CONTEXT`].

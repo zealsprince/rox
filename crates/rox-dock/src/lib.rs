@@ -79,6 +79,17 @@ pub fn init(cx: &mut App) {
 
 actions!(rox_dock, [ToggleZoom, ClosePanel]);
 
+// rox addition: stepping the tabs of one group, as opposed to tab's walk
+// between panels. Bound in the app's keymap and handled by the tab panel
+// itself, so the group they act on is the innermost one holding focus.
+actions!(rox_dock, [NextTab, PrevTab]);
+
+// rox addition: the keyboard's way into the focused panel's settings, the
+// same window its dropdown's Panel Settings row opens. Handled by the tab
+// panel and passed to whichever panel is active, so it lands on the one
+// holding focus. See [`Panel::open_settings`].
+actions!(rox_dock, [OpenPanelSettings]);
+
 /// rox addition: whether the app is in design mode, the state where the
 /// layout can be rearranged. Off, every tab group reads as locked (no
 /// drag, no drop, no close), so a finished workspace stops offering the

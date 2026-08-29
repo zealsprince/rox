@@ -701,6 +701,13 @@ impl Panel for SlidePanel {
         "slide"
     }
 
+    /// The chord acts on the slide you're standing in, not the deck
+    /// around it; focus on the deck itself falls back to its own.
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let slots: Vec<composite::Slot> = self.slides.iter().cloned().map(Some).collect();
+        composite::open_slot_settings(&slots, window, cx);
+    }
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),

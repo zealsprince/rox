@@ -1380,12 +1380,16 @@ keymap-open-quick-play = Быстрый запуск
     .description = Поднять окно поиска и запуска поверх окна
 keymap-open-settings = Открыть настройки
     .description = Открыть это окно
+keymap-open-panel-settings = Настройки панели
+    .description = Открывает окно настроек активной панели
 keymap-open-stats = Открыть статистику
     .description = Открыть окно статистики прослушиваний
 keymap-open-tasks = Задачи
     .description = Показать, чем rox занят в фоне
 keymap-open-welcome = Приветствие
     .description = Снова открыть окно приветствия
+keymap-play-random = Случайный трек
+    .description = Взять случайный трек из фонотеки и включить его
 keymap-previous-track = Предыдущий трек
     .description = Вернуться к предыдущему треку
 keymap-quit = Выход
@@ -1410,6 +1414,10 @@ keymap-type-ahead-next = Следующее совпадение
     .description = Перейти к следующей строке, совпадающей с набранным
 keymap-type-ahead-prev = Предыдущее совпадение
     .description = Вернуться к предыдущему совпадению с набранным
+keymap-next-tab = Следующая вкладка
+    .description = Показывает следующую вкладку в активной группе панелей
+keymap-prev-tab = Предыдущая вкладка
+    .description = Показывает предыдущую вкладку в активной группе панелей
 
 ## Panel catalog
 panel-catalog-album-carousel = Карусель альбомов

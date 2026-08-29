@@ -1361,12 +1361,16 @@ keymap-open-quick-play = Schnellwiedergabe
     .description = Die Such- und Abspielleiste über dem Fenster einblenden
 keymap-open-settings = Einstellungen öffnen
     .description = Dieses Fenster öffnen
+keymap-open-panel-settings = Panel-Einstellungen
+    .description = Öffnet das Einstellungsfenster des fokussierten Panels
 keymap-open-stats = Statistik öffnen
     .description = Das Fenster mit der Hörstatistik öffnen
 keymap-open-tasks = Aufgaben
     .description = Anzeigen, woran rox im Hintergrund arbeitet
 keymap-open-welcome = Willkommen
     .description = Das Willkommensfenster wieder öffnen
+keymap-play-random = Zufällig abspielen
+    .description = Einen zufälligen Titel aus der Bibliothek ziehen und abspielen
 keymap-previous-track = Vorheriger Titel
     .description = Zurück zum vorherigen Titel
 keymap-quit = Beenden
@@ -1391,6 +1395,10 @@ keymap-type-ahead-next = Nächster Treffer der Schnellsuche
     .description = Zur nächsten Zeile springen, die zum Getippten passt
 keymap-type-ahead-prev = Vorheriger Treffer der Schnellsuche
     .description = Zurück zum vorherigen Treffer des Getippten
+keymap-next-tab = Nächster Tab
+    .description = Zeigt den nächsten Tab der fokussierten Panelgruppe
+keymap-prev-tab = Vorheriger Tab
+    .description = Zeigt den vorherigen Tab der fokussierten Panelgruppe
 
 ## Panel catalog
 panel-catalog-album-carousel = Album-Karussell

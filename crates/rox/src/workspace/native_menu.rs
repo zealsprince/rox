@@ -322,7 +322,7 @@ fn panel_window_items() -> Vec<gpui::MenuItem> {
     let presets = crate::panel_presets::saved();
     if !presets.is_empty() {
         items.push(gpui::MenuItem::submenu(gpui::Menu {
-            name: crate::panel_presets::GROUP_LABEL.into(),
+            name: rox_i18n::t!(crate::panel_presets::GROUP_LABEL),
             items: preset_items(PanelTarget::NewWindow),
         }));
     }

@@ -1345,12 +1345,16 @@ keymap-open-quick-play = クイック再生
     .description = 検索してすぐ再生するプロンプトをウィンドウの上に出す
 keymap-open-settings = 設定を開く
     .description = このウィンドウを開く
+keymap-open-panel-settings = パネル設定
+    .description = フォーカス中のパネルの設定ウィンドウを開きます
 keymap-open-stats = 統計を開く
     .description = 再生統計のウィンドウを開く
 keymap-open-tasks = タスク
     .description = rox がバックグラウンドで進めている処理を表示する
 keymap-open-welcome = ようこそ
     .description = ようこそウィンドウを開き直す
+keymap-play-random = ランダム再生
+    .description = ライブラリからランダムに曲を引いて再生する
 keymap-previous-track = 前の曲
     .description = 前の曲に戻る
 keymap-quit = 終了
@@ -1375,6 +1379,10 @@ keymap-type-ahead-next = 次の一致
     .description = 入力した文字に一致する次の行へ進む
 keymap-type-ahead-prev = 前の一致
     .description = 入力した文字に一致する前の行へ戻る
+keymap-next-tab = 次のタブ
+    .description = フォーカス中のパネルグループの次のタブを表示します
+keymap-prev-tab = 前のタブ
+    .description = フォーカス中のパネルグループの前のタブを表示します
 
 ## Panel catalog
 panel-catalog-album-carousel = アルバムカルーセル

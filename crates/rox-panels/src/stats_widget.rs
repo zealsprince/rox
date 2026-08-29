@@ -208,7 +208,7 @@ impl StatsWidgetPanel {
             state,
             config,
             counts: Counts::default(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _history_changed,
             _library_changed,
@@ -560,6 +560,8 @@ impl Panel for StatsWidgetPanel {
         "stats widget"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
@@ -672,85 +674,99 @@ impl Render for StatsWidgetPanel {
             .flatten();
         let open_on_click = self.config.open_on_click;
         let weak = cx.entity().downgrade();
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
         panel::themed(&chrome, move || {
-            div().size_full().bg(palette::bg_root()).child(
-                div()
-                    .id("stats-widget")
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_center()
-                    .gap(tokens::SPACE_XS)
-                    .px(tokens::SPACE_SM)
-                    .size_full()
-                    .when(open_on_click, |d| {
-                        let weak = weak.clone();
-                        d.cursor_pointer().on_click(move |_, _, cx| {
-                            if let Some(state) =
-                                weak.upgrade().map(|this| this.read(cx).state.clone())
-                            {
-                                rox_panel_api::openers::stats_window(state, cx);
-                            }
+            div()
+                .size_full()
+                .bg(palette::bg_root())
+                .track_focus(&focus)
+                .child(
+                    div()
+                        .id("stats-widget")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .gap(tokens::SPACE_XS)
+                        .px(tokens::SPACE_SM)
+                        .size_full()
+                        .when(open_on_click, |d| {
+                            let weak = weak.clone();
+                            d.cursor_pointer().on_click(move |_, _, cx| {
+                                if let Some(state) =
+                                    weak.upgrade().map(|this| this.read(cx).state.clone())
+                                {
+                                    rox_panel_api::openers::stats_window(state, cx);
+                                }
+                            })
                         })
-                    })
-                    .child(
-                        svg()
-                            .path(icons::CHART_PIE)
-                            .size(px(16.))
-                            .flex_none()
-                            .text_color(if count > 0 {
-                                palette::text()
-                            } else {
-                                palette::text_muted()
-                            }),
-                    )
-                    .when(show_count, |d| {
-                        d.child(
-                            div()
-                                // The strip is short, and a four-digit
-                                // count would otherwise wrap.
-                                .whitespace_nowrap()
-                                .text_xs()
+                        .child(
+                            svg()
+                                .path(icons::CHART_PIE)
+                                .size(px(16.))
+                                .flex_none()
                                 .text_color(if count > 0 {
                                     palette::text()
                                 } else {
                                     palette::text_muted()
-                                })
-                                .child(SharedString::from(rox_i18n::format::format_int(
-                                    count as i64,
-                                ))),
-                        )
-                    })
-                    .when_some(change, |d, delta| {
-                        let (icon, color) = change_look(delta);
-                        d.child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .flex_none()
-                                .whitespace_nowrap()
-                                .text_xs()
-                                .text_color(color)
-                                .child(svg().path(icon).size(px(11.)).flex_none().text_color(color))
-                                // The dash already covers a flat window;
-                                // a zero beside it would just be another
-                                // digit to read past.
-                                .when(delta != 0, |d| {
-                                    d.child(SharedString::from(rox_i18n::format::format_int(
-                                        delta.unsigned_abs() as i64,
-                                    )))
                                 }),
                         )
-                    })
-                    .tooltip(move |_window, cx| {
-                        let rows = weak
-                            .upgrade()
-                            .map(|this| this.read(cx).rows())
-                            .unwrap_or_default();
-                        cx.new(|_| StatsTooltip { rows }).into()
-                    }),
-            )
+                        .when(show_count, |d| {
+                            d.child(
+                                div()
+                                    // The strip is short, and a four-digit
+                                    // count would otherwise wrap.
+                                    .whitespace_nowrap()
+                                    .text_xs()
+                                    .text_color(if count > 0 {
+                                        palette::text()
+                                    } else {
+                                        palette::text_muted()
+                                    })
+                                    .child(SharedString::from(rox_i18n::format::format_int(
+                                        count as i64,
+                                    ))),
+                            )
+                        })
+                        .when_some(change, |d, delta| {
+                            let (icon, color) = change_look(delta);
+                            d.child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .flex_none()
+                                    .whitespace_nowrap()
+                                    .text_xs()
+                                    .text_color(color)
+                                    .child(
+                                        svg()
+                                            .path(icon)
+                                            .size(px(11.))
+                                            .flex_none()
+                                            .text_color(color),
+                                    )
+                                    // The dash already covers a flat window;
+                                    // a zero beside it would just be another
+                                    // digit to read past.
+                                    .when(delta != 0, |d| {
+                                        d.child(SharedString::from(rox_i18n::format::format_int(
+                                            delta.unsigned_abs() as i64,
+                                        )))
+                                    }),
+                            )
+                        })
+                        .tooltip(move |_window, cx| {
+                            let rows = weak
+                                .upgrade()
+                                .map(|this| this.read(cx).rows())
+                                .unwrap_or_default();
+                            cx.new(|_| StatsTooltip { rows }).into()
+                        }),
+                )
         })
     }
 }

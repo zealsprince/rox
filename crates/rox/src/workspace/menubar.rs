@@ -653,7 +653,7 @@ impl Workspace {
                             .size_3p5()
                             .text_color(palette::text_muted()),
                     )
-                    .child(label),
+                    .child(rox_i18n::t!(label)),
             )
             .child(
                 svg()
@@ -975,7 +975,7 @@ impl Workspace {
                             .size_3p5()
                             .text_color(palette::text_muted()),
                     )
-                    .child(label),
+                    .child(rox_i18n::t!(label)),
             )
             .child(
                 svg()

@@ -152,7 +152,7 @@ impl EqWidgetPanel {
         EqWidgetPanel {
             state,
             config,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _eq_changed: player::observe_eq(cx),
         }
@@ -468,6 +468,8 @@ impl Panel for EqWidgetPanel {
         "eq widget"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
@@ -572,6 +574,10 @@ impl Panel for EqWidgetPanel {
 impl Render for EqWidgetPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        panel::themed(&chrome, || self.body(cx).track_focus(&focus))
     }
 }

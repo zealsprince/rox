@@ -3818,6 +3818,8 @@ impl Panel for LibraryPanel {
         "library"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.chrome.title.as_deref(),

@@ -246,7 +246,7 @@ impl SeekStripPanel {
             playhead_scrub: ScrubState::default(),
             playhead_max_scrub: ScrubState::default(),
             value_edit: ValueEdit::default(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             timings_stash: None,
             _player_changed,
@@ -608,7 +608,11 @@ fn clock(text: String) -> Div {
 impl Render for SeekStripPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        panel::themed(&chrome, || self.body(cx).track_focus(&focus))
     }
 }
 

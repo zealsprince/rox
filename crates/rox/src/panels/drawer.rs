@@ -930,6 +930,12 @@ impl Panel for DrawerPanel {
         "drawer"
     }
 
+    /// The chord acts on the child you're standing in, not the container
+    /// around it; focus on the container itself falls back to its own.
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        composite::open_slot_settings(&self.slots, window, cx);
+    }
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),

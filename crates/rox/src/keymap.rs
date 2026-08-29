@@ -19,13 +19,13 @@
 //! init order in `main` matters.
 
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, PoisonError, RwLock};
 
 use gpui::{App, Global, KeyBinding, Keystroke};
 
 use rox_core::settings::Settings;
 
-use rox_dock::ToggleZoom;
+use rox_dock::{NextTab, OpenPanelSettings, PrevTab, ToggleZoom};
 use rox_panel_api::actions::{
     SeekBackward, SeekForward, TogglePlayback, TypeAheadNext, TypeAheadPrev,
 };
@@ -34,7 +34,7 @@ use rox_panels::lyrics::StampLine;
 use crate::workspace::{
     CloseWindow, DecreaseFontSize, FocusSearch, IncreaseFontSize, NewWindow, NextTrack, OpenAbout,
     OpenConsole, OpenEqualizer, OpenQuickPlay, OpenSettings, OpenStats, OpenTasks, OpenWelcome,
-    PreviousTrack, Quit, ResetFontSize, StopPlayback, TogglePostShader,
+    PlayRandom, PreviousTrack, Quit, ResetFontSize, StopPlayback, TogglePostShader,
 };
 
 /// Bindings match key contexts along the focus path, so this scope holds
@@ -48,6 +48,13 @@ use crate::workspace::{
 /// isn't anything the search box needs and losing the binding while you
 /// type is the whole complaint. See [`Command::binding`].
 const PLAYBACK: Option<&str> = Some("Workspace && !SearchInput && !TypeAhead");
+
+/// [`PLAYBACK`] minus the panels whose own left and right mean something:
+/// a tile wall moving its cursor across a row, a folder tree folding a
+/// branch. Only the seek pair sits here, since it's the only bare chord
+/// that collides; space stays on [`PLAYBACK`] so play/pause still works
+/// with a wall focused.
+const SEEK: Option<&str> = Some("Workspace && !SearchInput && !TypeAhead && !PanelNav");
 
 /// The plain workspace scope: anywhere in a workspace window, the search
 /// box included, since everything bound here has a modifier.
@@ -135,17 +142,24 @@ impl Command {
     }
 
     /// The context this chord binds under. Everything binds under the
-    /// command's own scope except a modified chord on [`PLAYBACK`], which
-    /// widens to the whole workspace: the search-box exclusion is there so
-    /// space and the arrows keep typing, and a chord holding ctrl, alt or
-    /// cmd was never going to reach the query anyway.
+    /// command's own scope except a modified chord on one of the narrowed
+    /// workspace scopes, which widens to the whole workspace: the
+    /// exclusions are there so space and the arrows keep reaching the query,
+    /// the phrase and the cursor, and a chord holding ctrl, alt or cmd was
+    /// never going to reach any of them anyway.
     fn scope(&self, chord: &str) -> Option<&'static str> {
-        if self.context == PLAYBACK && modified(chord) {
+        if narrowed(self.context) && modified(chord) {
             WORKSPACE
         } else {
             self.context
         }
     }
+}
+
+/// Whether a scope is [`WORKSPACE`] with exclusions carved out of it, the
+/// scopes a modified chord widens back out of.
+fn narrowed(scope: Option<&'static str>) -> bool {
+    scope == PLAYBACK || scope == SEEK
 }
 
 /// Whether a chord opens on a modified keystroke. Shift doesn't count:
@@ -182,6 +196,7 @@ macro_rules! command {
 #[cfg(target_os = "macos")]
 mod defaults {
     pub const SETTINGS: &[&str] = &["cmd-,", "ctrl-i"];
+    pub const PANEL_SETTINGS: &[&str] = &["cmd-shift-,"];
     pub const STATS: &[&str] = &["cmd-shift-s"];
     pub const QUICK_PLAY: &[&str] = &["cmd-p", "cmd-f"];
     pub const FOCUS_SEARCH: &[&str] = &["cmd-l"];
@@ -197,11 +212,13 @@ mod defaults {
     pub const NEXT_TRACK: &[&str] = &["cmd-right"];
     pub const PREVIOUS_TRACK: &[&str] = &["cmd-left"];
     pub const STOP: &[&str] = &["cmd-."];
+    pub const PLAY_RANDOM: &[&str] = &["cmd-r"];
 }
 
 #[cfg(not(target_os = "macos"))]
 mod defaults {
     pub const SETTINGS: &[&str] = &["ctrl-,", "ctrl-i"];
+    pub const PANEL_SETTINGS: &[&str] = &["ctrl-shift-,"];
     pub const STATS: &[&str] = &["ctrl-shift-s"];
     pub const QUICK_PLAY: &[&str] = &["ctrl-p", "ctrl-f"];
     pub const FOCUS_SEARCH: &[&str] = &["ctrl-l"];
@@ -217,6 +234,7 @@ mod defaults {
     pub const NEXT_TRACK: &[&str] = &["ctrl-right"];
     pub const PREVIOUS_TRACK: &[&str] = &["ctrl-left"];
     pub const STOP: &[&str] = &["ctrl-."];
+    pub const PLAY_RANDOM: &[&str] = &["ctrl-r"];
 }
 
 /// Everything rox binds. The page draws this in order within each group,
@@ -243,7 +261,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             "seek_backward",
             rox_i18n::t_static("keymap-seek-backward"),
             Group::Playback,
-            PLAYBACK,
+            SEEK,
             &["left"],
             SeekBackward,
             rox_i18n::t_static("keymap-seek-backward.description")
@@ -252,7 +270,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             "seek_forward",
             rox_i18n::t_static("keymap-seek-forward"),
             Group::Playback,
-            PLAYBACK,
+            SEEK,
             &["right"],
             SeekForward,
             rox_i18n::t_static("keymap-seek-forward.description")
@@ -285,6 +303,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             rox_i18n::t_static("keymap-previous-track.description")
         ),
         command!(
+            "play_random",
+            rox_i18n::t_static("keymap-play-random"),
+            Group::Playback,
+            WORKSPACE,
+            defaults::PLAY_RANDOM,
+            PlayRandom,
+            rox_i18n::t_static("keymap-play-random.description")
+        ),
+        command!(
             "type_ahead_next",
             rox_i18n::t_static("keymap-type-ahead-next"),
             Group::Browsing,
@@ -301,6 +328,24 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             &["shift-tab"],
             TypeAheadPrev,
             rox_i18n::t_static("keymap-type-ahead-prev.description")
+        ),
+        command!(
+            "next_tab",
+            rox_i18n::t_static("keymap-next-tab"),
+            Group::Browsing,
+            WORKSPACE,
+            &["ctrl-tab"],
+            NextTab,
+            rox_i18n::t_static("keymap-next-tab.description")
+        ),
+        command!(
+            "prev_tab",
+            rox_i18n::t_static("keymap-prev-tab"),
+            Group::Browsing,
+            WORKSPACE,
+            &["ctrl-shift-tab"],
+            PrevTab,
+            rox_i18n::t_static("keymap-prev-tab.description")
         ),
         command!(
             "new_window",
@@ -364,6 +409,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             defaults::SETTINGS,
             OpenSettings,
             rox_i18n::t_static("keymap-open-settings.description")
+        ),
+        command!(
+            "open_panel_settings",
+            rox_i18n::t_static("keymap-open-panel-settings"),
+            Group::Windows,
+            WORKSPACE,
+            defaults::PANEL_SETTINGS,
+            OpenPanelSettings,
+            rox_i18n::t_static("keymap-open-panel-settings.description")
         ),
         command!(
             "open_stats",
@@ -508,12 +562,13 @@ pub fn is_default(command: &Command, overrides: &BTreeMap<String, Vec<String>>) 
 }
 
 /// Whether two scopes can both be live at one moment. Unscoped is live
-/// everywhere and so overlaps anything. [`PLAYBACK`] is [`WORKSPACE`]
-/// minus the search box, a subset rather than a neighbour, so the two
-/// overlap wherever a workspace window has focus. Everything else here is
-/// a distinct window or editor and only overlaps itself.
+/// everywhere and so overlaps anything. [`PLAYBACK`] and [`SEEK`] are
+/// [`WORKSPACE`] with exclusions carved out, subsets rather than
+/// neighbours, so they overlap it and each other wherever a workspace
+/// window has focus. Everything else here is a distinct window or editor
+/// and only overlaps itself.
 fn overlaps(a: Option<&'static str>, b: Option<&'static str>) -> bool {
-    let widen = |scope| if scope == PLAYBACK { WORKSPACE } else { scope };
+    let widen = |scope| if narrowed(scope) { WORKSPACE } else { scope };
     a.is_none() || b.is_none() || widen(a) == widen(b)
 }
 
@@ -555,17 +610,37 @@ pub fn init(cx: &mut App) {
     apply(cx);
 }
 
+/// Each command's leading chord, written out the way a person reads it,
+/// keyed by command id. The menus trail their rows with this, and they
+/// rebuild every frame the dropdown is up, where a settings-file load has
+/// no place. [`apply`] refills it, so a rebind moves the menu label with
+/// the binding instead of leaving the two disagreeing.
+static SHORTCUTS: RwLock<BTreeMap<&'static str, String>> = RwLock::new(BTreeMap::new());
+
+/// What `id` is bound to, for a label beside the thing it runs. Only the
+/// first chord: aliases are real but a row has one slot, and the first is
+/// the one the defaults lead with.
+pub fn shortcut(id: &str) -> Option<String> {
+    SHORTCUTS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(id)
+        .cloned()
+}
+
 /// Rebuild the keymap from the file. Every edit below ends here.
 pub fn apply(cx: &mut App) {
     let overrides = Settings::load().keymap;
     let mut bindings = cx.global::<Foreign>().0.clone();
+    let mut shortcuts = BTreeMap::new();
     for command in COMMANDS.iter() {
-        bindings.extend(
-            chords(command, &overrides)
-                .iter()
-                .filter_map(|chord| command.binding(chord)),
-        );
+        let chords = chords(command, &overrides);
+        if let Some(chord) = chords.first() {
+            shortcuts.insert(command.id, display(chord));
+        }
+        bindings.extend(chords.iter().filter_map(|chord| command.binding(chord)));
     }
+    *SHORTCUTS.write().unwrap_or_else(PoisonError::into_inner) = shortcuts;
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
 }
@@ -814,8 +889,8 @@ mod tests {
             .iter()
             .find(|c| c.id == "seek_forward")
             .expect("seek_forward is bound");
-        assert_eq!(seek.context, PLAYBACK, "the fixture moved scope");
-        assert_eq!(seek.scope("right"), PLAYBACK);
+        assert_eq!(seek.context, SEEK, "the fixture moved scope");
+        assert_eq!(seek.scope("right"), SEEK);
         assert_eq!(seek.scope("ctrl-f"), WORKSPACE);
     }
 
@@ -841,12 +916,12 @@ mod tests {
         );
     }
 
-    /// Widening is scoped to the playback exclusion. A command already on
-    /// the plain workspace scope, or on the lyrics editor's, stays put no
-    /// matter what it's bound to.
+    /// Widening is scoped to the carved-out workspace scopes. A command
+    /// already on the plain workspace scope, or on the lyrics editor's,
+    /// stays put no matter what it's bound to.
     #[test]
     fn other_scopes_do_not_widen() {
-        for command in COMMANDS.iter().filter(|c| c.context != PLAYBACK) {
+        for command in COMMANDS.iter().filter(|c| !narrowed(c.context)) {
             assert_eq!(
                 command.scope("ctrl-f"),
                 command.context,

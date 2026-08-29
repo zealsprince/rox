@@ -1073,7 +1073,7 @@ impl ParticlesPanel {
             turbulence_scrub: ScrubState::default(),
             turb_scale_scrub: ScrubState::default(),
             turb_speed_scrub: ScrubState::default(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             value_edit: ValueEdit::default(),
             edit: false,
             drag: None,
@@ -1964,6 +1964,8 @@ impl Panel for ParticlesPanel {
         "particles"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
@@ -2071,7 +2073,11 @@ impl Panel for ParticlesPanel {
 impl Render for ParticlesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(window, cx))
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
 }
 

@@ -261,7 +261,7 @@ impl ShaderPanel {
             slot_scrubs: (0..surface::SLOTS).map(|_| ScrubState::default()).collect(),
             shader_name: panel_settings::ShaderNameField::default(),
             value_edit: ValueEdit::default(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _player_changed,
         }
@@ -894,6 +894,8 @@ impl Panel for ShaderPanel {
         "shader"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
@@ -997,7 +999,11 @@ impl Panel for ShaderPanel {
 impl Render for ShaderPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        panel::themed(&chrome, || self.body(cx).track_focus(&focus))
     }
 }
 

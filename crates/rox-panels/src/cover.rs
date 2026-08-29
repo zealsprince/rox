@@ -294,7 +294,7 @@ impl CoverArtPanel {
             rpm_scrub: ScrubState::default(),
             ramp_scrub: ScrubState::default(),
             value_edit: ValueEdit::default(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _player_changed,
             _selection_changed,
@@ -722,6 +722,8 @@ impl Panel for CoverArtPanel {
         "cover art"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
@@ -944,7 +946,11 @@ fn layer(
 impl Render for CoverArtPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(window, cx))
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        panel::themed(&chrome, || self.body(window, cx).track_focus(&focus))
     }
 }
 

@@ -21,8 +21,8 @@ use gpui_component::{
 };
 
 use super::{
-    ClosePanel, DockArea, DockPlacement, Panel, PanelControl, PanelEvent, PanelState, PanelStyle,
-    PanelView, StackPanel, ToggleZoom,
+    ClosePanel, DockArea, DockPlacement, NextTab, OpenPanelSettings, Panel, PanelControl,
+    PanelEvent, PanelState, PanelStyle, PanelView, PrevTab, StackPanel, ToggleZoom,
 };
 
 #[derive(Clone)]
@@ -1691,6 +1691,51 @@ impl TabPanel {
         .detach();
     }
 
+    /// rox addition: step to the next visible tab of this group, wrapping
+    /// at the end. `step` is +1 or -1. Only visible panels are candidates,
+    /// the same set the tab bar draws, so a hidden panel can't be cycled
+    /// onto a screen it isn't on.
+    fn cycle_tab(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let shown: Vec<usize> = (0..self.panels.len())
+            .filter(|&ix| self.panels[ix].visible(cx))
+            .collect();
+        if shown.len() < 2 {
+            return;
+        }
+        // The active index can point at a hidden panel, in which case
+        // active_panel falls through to the first visible one; start the
+        // step from where the tab bar actually shows the highlight.
+        let at = shown
+            .iter()
+            .position(|&ix| ix == self.active_ix)
+            .unwrap_or(0);
+        let next = (at as isize + step).rem_euclid(shown.len() as isize) as usize;
+        self.set_active_ix(shown[next], window, cx);
+    }
+
+    fn on_action_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_tab(1, window, cx);
+    }
+
+    fn on_action_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_tab(-1, window, cx);
+    }
+
+    /// rox addition: hand the chord to whichever panel this group is
+    /// showing. A panel with no settings ignores it, and the action stops
+    /// there rather than falling through to the group outside, which would
+    /// open the wrong panel's window.
+    fn on_action_panel_settings(
+        &mut self,
+        _: &OpenPanelSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.active_panel(cx) {
+            panel.open_settings(window, cx);
+        }
+    }
+
     fn on_action_close_panel(
         &mut self,
         _: &ClosePanel,
@@ -1729,6 +1774,12 @@ impl TabPanel {
     fn bind_actions(&self, cx: &mut Context<Self>) -> Div {
         v_flex().when(!self.collapsed, |this| {
             this.on_action(cx.listener(Self::on_action_close_panel))
+                // The tab step acts on the innermost group holding focus:
+                // action dispatch bubbles from the focused node outward, so
+                // a nested group answers before the one it sits in.
+                .on_action(cx.listener(Self::on_action_next_tab))
+                .on_action(cx.listener(Self::on_action_prev_tab))
+                .on_action(cx.listener(Self::on_action_panel_settings))
         })
     }
 }

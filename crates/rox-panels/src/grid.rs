@@ -278,6 +278,10 @@ pub struct GridPanel {
     selected: HashSet<usize>,
     /// Where a shift-extend grows from: the last plain or toggle click.
     anchor: Option<usize>,
+    /// The tile the arrow keys move, the head a shift-extend runs to. A
+    /// click sets it too, so picking up the keyboard after a click carries
+    /// on from where the pointer left off.
+    cursor: Option<usize>,
     /// The tile under the pointer, which shows the label overlay.
     hovered: Option<usize>,
     /// The cross-axis extent the grid last laid out for: the width while it
@@ -439,6 +443,7 @@ impl GridPanel {
             search,
             selected: HashSet::new(),
             anchor: None,
+            cursor: None,
             hovered: None,
             cross: px(0.),
             scroll: VirtualListScrollHandle::new(),
@@ -550,6 +555,7 @@ impl GridPanel {
         };
         self.selected = HashSet::from([cell_ix]);
         self.anchor = Some(cell_ix);
+        self.cursor = Some(cell_ix);
         self.publish_selection(cx);
         self.follow_playing(cx);
     }
@@ -610,6 +616,7 @@ impl GridPanel {
         self.cells.clear();
         self.selected.clear();
         self.anchor = None;
+        self.cursor = None;
         self.hovered = None;
         self.view = {
             let query = self.effective_query(cx);
@@ -925,6 +932,9 @@ impl GridPanel {
     /// from the anchor, cmd (ctrl elsewhere) toggles. The library's
     /// click rules, by tile. Publishes the selection either way.
     fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
+        // The arrows pick up from the tile the pointer last put down on,
+        // whichever click rule applied.
+        self.cursor = Some(ix);
         if modifiers.shift {
             let anchor = self.anchor.unwrap_or(ix);
             let (lo, hi) = (anchor.min(ix), anchor.max(ix));
@@ -979,25 +989,98 @@ impl GridPanel {
         if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
             return;
         }
-        // The escape ladder: a phrase drops first, since it's holding
-        // tab, then the selection.
-        if keystroke.key.as_str() == "escape" {
-            if !self.clear_type_ahead(cx) {
-                self.deselect(cx);
+        // Browsing by keyboard is browsing, so it restarts the idle clock
+        // the same as a scroll or a click.
+        self.touch_resume(cx);
+        let shift = keystroke.modifiers.shift;
+        let key = keystroke.key.as_str();
+        // The arrows walk the wall in both directions: one tile along a
+        // line, a whole line across it, which way round depending on how
+        // the wall packs.
+        if let Some(delta) = self.wall().step(key) {
+            self.move_cursor(delta, shift, cx);
+            return;
+        }
+        match key {
+            // The escape ladder: a phrase drops first, since it's holding
+            // tab, then the selection.
+            "escape" => {
+                if !self.clear_type_ahead(cx) {
+                    self.deselect(cx);
+                }
             }
+            "pageup" => self.move_cursor(-self.wall().page_step(), shift, cx),
+            "pagedown" => self.move_cursor(self.wall().page_step(), shift, cx),
+            "home" => self.set_cursor(0, shift, cx),
+            "end" => {
+                let last = self.cells.len().saturating_sub(1);
+                self.set_cursor(last, shift, cx);
+            }
+            "enter" => self.play_cursor(cx),
+            _ => {
+                let Some(text) = &keystroke.key_char else {
+                    return;
+                };
+                if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
+                    return;
+                }
+                // Consumed as type-ahead text: stop it here so it doesn't
+                // also match the workspace's space-bound TogglePlayback
+                // binding, which the grid otherwise inherits unscoped.
+                cx.stop_propagation();
+                self.type_to(text.clone(), cx);
+            }
+        }
+    }
+
+    /// Enter: a multi-selection plays exactly itself, a lone cursor plays
+    /// just its album, the way a double click on the tile would.
+    fn play_cursor(&mut self, cx: &mut Context<Self>) {
+        let mut ixs: Vec<usize> = self.selected.iter().copied().collect();
+        ixs.sort_unstable();
+        if ixs.len() > 1 {
+            self.play_many(ixs, cx);
+        } else if let Some(ix) = self.cursor.or_else(|| ixs.first().copied()) {
+            self.play(ix, cx);
+        }
+    }
+
+    /// Put the cursor on a tile and take the selection with it: shift runs
+    /// a range back to the anchor, a plain move picks the one tile. Scrolls
+    /// it into view, so the cursor never walks off screen.
+    fn set_cursor(&mut self, ix: usize, extend: bool, cx: &mut Context<Self>) {
+        if ix >= self.cells.len() {
             return;
         }
-        let Some(text) = &keystroke.key_char else {
+        self.cursor = Some(ix);
+        if extend {
+            let anchor = self.anchor.unwrap_or(ix);
+            let (lo, hi) = (anchor.min(ix), anchor.max(ix));
+            self.selected = (lo..=hi).collect();
+            self.anchor = Some(anchor);
+        } else {
+            self.selected = HashSet::from([ix]);
+            self.anchor = Some(ix);
+        }
+        self.publish_selection(cx);
+        self.scroll_to_cell(ix, cx);
+    }
+
+    /// Step the cursor by `delta` tiles, clamped to the wall. The first
+    /// press with no cursor lands on the edge the step heads toward, so an
+    /// arrow into a fresh panel picks something up rather than doing
+    /// nothing.
+    fn move_cursor(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
+        let len = self.cells.len();
+        if len == 0 {
             return;
+        }
+        let target = match self.cursor {
+            None if delta >= 0 => 0,
+            None => len - 1,
+            Some(cursor) => (cursor as isize + delta).clamp(0, len as isize - 1) as usize,
         };
-        if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
-            return;
-        }
-        // Consumed as type-ahead text: stop it here so it doesn't also
-        // match the workspace's space-bound TogglePlayback binding, which
-        // the grid otherwise inherits unscoped.
-        cx.stop_propagation();
-        self.type_to(text.clone(), cx);
+        self.set_cursor(target, extend, cx);
     }
 
     /// Ctrl/Cmd+A: every tile on the wall, anchored at the first.
@@ -1019,6 +1102,7 @@ impl GridPanel {
         }
         self.selected.clear();
         self.anchor = None;
+        self.cursor = None;
         self.publish_selection(cx);
         cx.notify();
     }
@@ -1078,6 +1162,7 @@ impl GridPanel {
         if let Some(ix) = hit {
             self.selected = HashSet::from([ix]);
             self.anchor = Some(ix);
+            self.cursor = Some(ix);
             self.publish_selection(cx);
             self.scroll_to_cell(ix, cx);
         }
@@ -1121,6 +1206,7 @@ impl GridPanel {
         if let Some(ix) = hit {
             self.selected = HashSet::from([ix]);
             self.anchor = Some(ix);
+            self.cursor = Some(ix);
             self.publish_selection(cx);
             self.scroll_to_cell(ix, cx);
         }
@@ -1921,6 +2007,8 @@ impl Panel for GridPanel {
         "album grid"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
@@ -2256,19 +2344,18 @@ impl GridPanel {
             .size_full()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            // Scopes the workspace's space-bound playback binding out while
-            // a type-ahead phrase is mid-flight, the same way the search
-            // box's own context does: bindings win over key listeners, so
-            // without this a space continuing a phrase would also toggle
-            // playback before on_panel_key ever saw the keystroke.
-            // While a phrase is up the panel carries its contexts, which
-            // scope the workspace's space binding out (only while the
-            // phrase is still taking keystrokes) and Root's tab traversal
-            // out (for as long as there's a phrase to cycle).
-            .when_some(
-                panel::type_ahead_context(&self.type_ahead, self.type_ahead_at),
-                |d, context| d.key_context(context),
-            )
+            // Bindings win over key listeners and an action stops
+            // propagation by default, so a key the workspace binds never
+            // reaches on_panel_key unless a context scopes the binding out.
+            // PanelNav is always on and takes back left and right from
+            // seek; the type-ahead pair joins it while a phrase is up, to
+            // take back space (only while the phrase is still absorbing
+            // keystrokes) and tab (for as long as there's a phrase to
+            // cycle).
+            .key_context(panel::panel_nav_context(
+                &self.type_ahead,
+                self.type_ahead_at,
+            ))
             // A press anywhere in the panel ends the phrase: the cursor
             // has moved by hand, so the cycle it was stepping is stale,
             // and tab belongs back with panel traversal. Capture phase,

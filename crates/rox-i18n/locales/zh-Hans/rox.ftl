@@ -1345,12 +1345,16 @@ keymap-open-quick-play = 快速播放
     .description = 在窗口上方唤出搜索即播的输入框
 keymap-open-settings = 打开设置
     .description = 打开这个窗口
+keymap-open-panel-settings = 面板设置
+    .description = 打开当前焦点面板的设置窗口
 keymap-open-stats = 打开统计
     .description = 打开收听统计窗口
 keymap-open-tasks = 任务
     .description = 显示 rox 正在后台做的事
 keymap-open-welcome = 欢迎
     .description = 重新打开欢迎窗口
+keymap-play-random = 随机播放
+    .description = 从库里随机抽一首曲目播放
 keymap-previous-track = 上一首
     .description = 回到上一首曲目
 keymap-quit = 退出
@@ -1375,6 +1379,10 @@ keymap-type-ahead-next = 下一个匹配
     .description = 跳到下一行与输入内容匹配的条目
 keymap-type-ahead-prev = 上一个匹配
     .description = 回到上一个与输入内容匹配的条目
+keymap-next-tab = 下一个标签页
+    .description = 显示当前焦点面板组中的下一个标签页
+keymap-prev-tab = 上一个标签页
+    .description = 显示当前焦点面板组中的上一个标签页
 
 ## Panel catalog
 panel-catalog-album-carousel = 专辑转盘

@@ -16,6 +16,11 @@ pub const TILE_DIM_MAX: f32 = 100.;
 /// extent stays predictable for the virtual list's item sizes.
 pub const TILE_LABEL_H: f32 = 40.;
 
+/// How many lines page up and page down cover. A wall shows a handful of
+/// lines at a usable tile size, so a page is a small number of them rather
+/// than the list panels' 25 rows.
+const PAGE_LINES: usize = 4;
+
 /// How far the dimmed tiles fade by default, in percent of fully hidden.
 pub fn default_dim() -> f32 {
     60.
@@ -183,6 +188,34 @@ impl WallLayout {
     pub fn desaturated(&self, ix: usize) -> bool {
         self.desaturate_playing && self.receded(ix)
     }
+
+    /// How far page up and page down move the cursor, in tiles: a fixed
+    /// number of lines, widened by however many lanes the wall is packing
+    /// at its current size.
+    pub fn page_step(&self) -> isize {
+        (PAGE_LINES * self.lanes()) as isize
+    }
+
+    /// How far an arrow key moves the cursor, or `None` for a key that
+    /// isn't a step on this wall. One tile along the line the arrow points
+    /// down, a whole line across it, and which arrow is which flips with
+    /// the wall's orientation: a vertical wall packs its lines left to
+    /// right, a horizontal one top to bottom.
+    pub fn step(&self, key: &str) -> Option<isize> {
+        let line = self.lanes() as isize;
+        let (along, across) = if self.vertical {
+            (("left", "right"), ("up", "down"))
+        } else {
+            (("up", "down"), ("left", "right"))
+        };
+        match key {
+            k if k == along.0 => Some(-1),
+            k if k == along.1 => Some(1),
+            k if k == across.0 => Some(-line),
+            k if k == across.1 => Some(line),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +238,30 @@ mod tests {
             playing: false,
             fallback_lanes: 5,
         }
+    }
+
+    #[test]
+    fn arrows_step_along_and_across_the_lines() {
+        let layout = wall();
+        assert_eq!(layout.step("right"), Some(1));
+        assert_eq!(layout.step("left"), Some(-1));
+        assert_eq!(layout.step("down"), Some(5), "a whole line down");
+        assert_eq!(layout.step("up"), Some(-5));
+        assert_eq!(layout.step("enter"), None);
+    }
+
+    /// A horizontal wall packs its lines top to bottom, so the pair swaps:
+    /// up and down walk one tile, left and right jump a column.
+    #[test]
+    fn a_horizontal_wall_swaps_the_arrow_pair() {
+        let layout = WallLayout {
+            vertical: false,
+            ..wall()
+        };
+        assert_eq!(layout.step("down"), Some(1));
+        assert_eq!(layout.step("up"), Some(-1));
+        assert_eq!(layout.step("right"), Some(5));
+        assert_eq!(layout.step("left"), Some(-5));
     }
 
     #[test]

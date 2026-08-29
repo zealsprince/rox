@@ -1440,12 +1440,16 @@ keymap-open-quick-play = Quick Play
     .description = Raise the search-and-play prompt over the window
 keymap-open-settings = Open Settings
     .description = Open this window
+keymap-open-panel-settings = Panel Settings
+    .description = Open the settings window for the focused panel
 keymap-open-stats = Open Statistics
     .description = Open the listening statistics window
 keymap-open-tasks = Tasks
     .description = Show what rox is working on in the background
 keymap-open-welcome = Welcome
     .description = Reopen the welcome window
+keymap-play-random = Play Random
+    .description = Draw a track at random from the library and play it
 keymap-previous-track = Previous Track
     .description = Go back to the previous track
 keymap-quit = Quit
@@ -1470,6 +1474,10 @@ keymap-type-ahead-next = Next Type-Ahead Match
     .description = Step to the next row matching what you typed
 keymap-type-ahead-prev = Previous Type-Ahead Match
     .description = Step back to the previous match of what you typed
+keymap-next-tab = Next Tab
+    .description = Show the next tab in the focused panel group
+keymap-prev-tab = Previous Tab
+    .description = Show the previous tab in the focused panel group
 
 ## Panel catalog
 

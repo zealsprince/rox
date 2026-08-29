@@ -1421,12 +1421,16 @@ keymap-open-quick-play = Lecture rapide
     .description = Afficher l'invite de lecture rapide par-dessus la fenêtre
 keymap-open-settings = Ouvrir les réglages
     .description = Ouvrir cette fenêtre
+keymap-open-panel-settings = Paramètres du panneau
+    .description = Ouvre la fenêtre de paramètres du panneau ciblé
 keymap-open-stats = Ouvrir les statistiques
     .description = Ouvrir la fenêtre des statistiques d'écoute
 keymap-open-tasks = Tâches
     .description = Afficher ce que rox fait en arrière-plan
 keymap-open-welcome = Bienvenue
     .description = Rouvrir la fenêtre de bienvenue
+keymap-play-random = Lecture aléatoire
+    .description = Tirer une piste au hasard dans la bibliothèque et la lire
 keymap-previous-track = Piste précédente
     .description = Revenir à la piste précédente
 keymap-quit = Quitter
@@ -1451,6 +1455,10 @@ keymap-type-ahead-next = Correspondance suivante
     .description = Aller à la ligne suivante qui correspond à ce qui est tapé
 keymap-type-ahead-prev = Correspondance précédente
     .description = Revenir à la correspondance précédente de ce qui est tapé
+keymap-next-tab = Onglet suivant
+    .description = Affiche l'onglet suivant du groupe de panneaux ciblé
+keymap-prev-tab = Onglet précédent
+    .description = Affiche l'onglet précédent du groupe de panneaux ciblé
 
 ## Panel catalog
 panel-catalog-album-carousel = Carrousel d'albums

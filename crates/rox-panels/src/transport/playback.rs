@@ -530,7 +530,7 @@ impl TransportPanel {
         TransportPanel {
             state,
             config,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             items_stash: None,
             last_fade: None,
@@ -1240,7 +1240,11 @@ impl PanelSettings for TransportPanel {
 impl Render for TransportPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        let body = panel::themed(&chrome, || self.body(window, cx));
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        let body = panel::themed(&chrome, || self.body(window, cx).track_focus(&focus));
         // The afterglow runs after the fade the observer was watching is
         // gone, so nothing else wakes this panel; it asks for its own
         // frames until the glow reaches zero.

@@ -44,6 +44,23 @@ use rox_viz::signal::Route;
 
 actions!(panel_settings, [Rename, SavePreset]);
 
+/// The [`Panel::open_settings`](rox_dock::Panel::open_settings) override
+/// for a panel that has settings, so the Panel Settings chord opens the
+/// same window its dropdown row does. Drop `opens_settings!();` into the
+/// panel's `impl Panel` block.
+///
+/// A macro rather than a blanket impl because [`open`] needs the panel's
+/// concrete type and Rust has no way to specialize the trait's default on
+/// "also implements [`PanelSettings`]".
+#[macro_export]
+macro_rules! opens_settings {
+    () => {
+        fn open_settings(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
+            $crate::panel_settings::open(cx.entity(), cx);
+        }
+    };
+}
+
 /// The key contexts the rename and save-as-preset windows scope their
 /// own bindings to.
 const RENAME_CONTEXT: &str = "PanelRename";

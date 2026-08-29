@@ -1761,6 +1761,8 @@ impl Panel for FolderTreePanel {
         "folder tree"
     }
 
+    rox_panel_api::opens_settings!();
+
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(
             self.config.chrome.title.as_deref(),
@@ -2050,19 +2052,18 @@ impl FolderTreePanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            // Scopes the workspace's space-bound playback binding out while
-            // a type-ahead phrase is mid-flight, the same way the search
-            // box's own context does: bindings win over key listeners, so
-            // without this a space continuing a phrase would also toggle
-            // playback before on_panel_key ever saw the keystroke.
-            // While a phrase is up the panel carries its contexts, which
-            // scope the workspace's space binding out (only while the
-            // phrase is still taking keystrokes) and Root's tab traversal
-            // out (for as long as there's a phrase to cycle).
-            .when_some(
-                panel::type_ahead_context(&self.type_ahead, self.type_ahead_at),
-                |d, context| d.key_context(context),
-            )
+            // Bindings win over key listeners and an action stops
+            // propagation by default, so a key the workspace binds never
+            // reaches on_panel_key unless a context scopes the binding out.
+            // PanelNav is always on and takes back left and right, which
+            // fold a branch here, from seek; the type-ahead pair joins it
+            // while a phrase is up, to take back space (only while the
+            // phrase is still absorbing keystrokes) and tab (for as long as
+            // there's a phrase to cycle).
+            .key_context(panel::panel_nav_context(
+                &self.type_ahead,
+                self.type_ahead_at,
+            ))
             // A press anywhere in the panel ends the phrase: the cursor
             // has moved by hand, so the cycle it was stepping is stale,
             // and tab belongs back with panel traversal. Capture phase,

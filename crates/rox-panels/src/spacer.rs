@@ -37,7 +37,7 @@ impl SpacerPanel {
         SpacerPanel {
             state,
             config,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
         }
     }
@@ -72,7 +72,11 @@ impl PanelSettings for SpacerPanel {
 impl Render for SpacerPanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body())
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        panel::themed(&chrome, || self.body().track_focus(&focus))
     }
 }
 
@@ -88,6 +92,8 @@ impl Panel for SpacerPanel {
     fn panel_name(&self) -> &'static str {
         "spacer"
     }
+
+    rox_panel_api::opens_settings!();
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         panel::title_text(

@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use rox_library::rusqlite::Connection;
-use rox_library::{embeddings, listens, store};
+use rox_library::{embeddings, listens, song, store};
 
 use crate::engine::{shuffle_head, shuffle_slice};
 
@@ -365,6 +365,12 @@ impl Provider for Radio {
     }
 }
 
+/// How far down the ranking the song guard is allowed to look while it fills
+/// the band. A library holding one song a hundred times over would otherwise
+/// walk the whole ranking to find a band's worth of distinct songs, and the
+/// tracks that far down don't sound like the seed any more anyway.
+const LOOKAHEAD: usize = 8;
+
 /// The acoustic half of the radio draw, empty when there's nothing to score
 /// against.
 fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
@@ -382,9 +388,36 @@ fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
         .map(|(id, _)| id)
         .filter(|id| !seen.contains(id))
         .collect();
-    shuffle_head(&mut ids, seed.count * BAND);
-    ids.truncate(seed.count);
-    ids
+    let band = seed.count * BAND;
+    let mut band_ids = one_per_song(conn, seed, &ids[..ids.len().min(band * LOOKAHEAD)], band);
+    // Nothing survived the guard, so the neighbourhood is one song and
+    // nothing else. Play it rather than hand back an empty batch and end the
+    // session over a library that only holds live records.
+    if band_ids.is_empty() {
+        ids.truncate(band);
+        band_ids = ids;
+    }
+    shuffle_head(&mut band_ids, band);
+    band_ids.truncate(seed.count);
+    band_ids
+}
+
+/// `candidates` thinned to one track per song (see [`rox_library::song`]),
+/// with every song the session has already played taken out.
+///
+/// This is what keeps a radio off a library's version pile: seventeen rips
+/// of one song all score as each other's nearest neighbour, so without it the
+/// band at the front of the ranking is that song and the batch plays it over
+/// and over. The tag identity does what the vectors can't, since by sound
+/// those really are the same track.
+fn one_per_song(conn: &Connection, seed: &Seed, candidates: &[i64], want: usize) -> Vec<i64> {
+    let mut lookup: Vec<i64> = candidates.to_vec();
+    lookup.extend(seed.recent.iter().copied());
+    let Ok(keys) = song::keys_for(conn, &lookup) else {
+        return candidates.to_vec();
+    };
+    let blocked = song::keys_of(&keys, seed.recent.iter().copied());
+    song::distinct(candidates, &keys, &blocked, want)
 }
 
 #[cfg(test)]
@@ -646,6 +679,72 @@ mod tests {
                 "the draw wandered past the tracks that share the tempo"
             );
         }
+    }
+
+    /// The version pile: a library holding one song many times over scores
+    /// every copy as every other copy's nearest neighbour, so the band at the
+    /// front of the ranking is that one song. The draw takes one of them and
+    /// spends the rest of the batch on music that isn't the seed again.
+    #[test]
+    fn radio_takes_one_copy_of_a_song_the_library_holds_many_times() {
+        const N: usize = 40;
+        // The first twelve tracks are all one song, tagged the way a real
+        // library tags them; the rest are ordinary distinct tracks.
+        const COPIES: usize = 12;
+        let conn = library(N);
+        let all = ids(&conn);
+        let versions = [
+            "Barracuda",
+            "Barracuda (Live)",
+            "Barracuda (Live In Japan)",
+            "Barracuda - Live",
+            "Barracuda [2010 Remaster]",
+        ];
+        for (step, id) in all.iter().enumerate().take(COPIES) {
+            conn.execute(
+                "UPDATE tracks SET artist = 'Heart', title = ?2 WHERE id = ?1",
+                rox_library::rusqlite::params![id, versions[step % versions.len()]],
+            )
+            .unwrap();
+        }
+        // Vectors that put the copies right on top of each other and the
+        // rest of the library further out, which is what the acoustic pass
+        // really does with a pile like this.
+        for (step, id) in all.iter().enumerate() {
+            let vec = match step < COPIES {
+                true => [1.0, step as f32 / 1000.0],
+                false => {
+                    let angle = step as f32 / N as f32 * std::f32::consts::TAU;
+                    [angle.cos(), angle.sin()]
+                }
+            };
+            embeddings::upsert(&conn, *id, MODEL, &vec).unwrap();
+        }
+        let count = 6;
+        let batch = picked(Radio.next(&conn, &seed(Scope::Library, vec![all[0]], count)));
+        assert_eq!(batch.len(), count);
+        let copies = batch.iter().filter(|id| all[..COPIES].contains(id)).count();
+        assert_eq!(copies, 0, "the draw came back with the seed's own song");
+    }
+
+    /// A library that holds nothing but versions of the playing song still
+    /// plays. The guard passes tracks over while there's anything else to
+    /// pick; it never ends the session over the last one.
+    #[test]
+    fn radio_plays_a_library_of_one_song_rather_than_falling_silent() {
+        let conn = library(6);
+        let all = ids(&conn);
+        for id in &all {
+            conn.execute(
+                "UPDATE tracks SET artist = 'Heart', title = 'Barracuda' WHERE id = ?1",
+                rox_library::rusqlite::params![id],
+            )
+            .unwrap();
+            embeddings::upsert(&conn, *id, MODEL, &[1.0, 0.0]).unwrap();
+        }
+        let batch = picked(Radio.next(&conn, &seed(Scope::Library, vec![all[0]], 3)));
+        assert_eq!(batch.len(), 3);
+        assert!(!batch.contains(&all[0]));
     }
 
     /// Every mode round-trips through the settings file, and anything the

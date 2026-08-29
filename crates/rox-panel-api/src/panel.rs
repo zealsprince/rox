@@ -52,10 +52,10 @@ pub use rox_panel_kit::{
     icon_control_sized, icon_toggles, items, justify, justify_v, language_picker, letter_initial,
     letter_rail, mode_list, paint_slider, picker, scrub_on_paint, setting_block, setting_row,
     setting_row_dyn, title_text, toggle, toggle_face, toggle_locked, tracking_section,
-    type_ahead_fade, type_ahead_grow, type_ahead_overlay, valign_row, value_slider_edit,
-    value_slider_edit_over, value_slider_edit_sized, window_body, workspace_body, Align,
-    FlickState, ModeSpec, ResumeIdle, ScrubState, SliderWidth, Tip, Tone, TrackedImage, VAlign,
-    ValueEdit,
+    type_ahead_context, type_ahead_fade, type_ahead_grow, type_ahead_hit, type_ahead_live,
+    type_ahead_overlay, type_ahead_scan, valign_row, value_slider_edit, value_slider_edit_over,
+    value_slider_edit_sized, window_body, workspace_body, Align, FlickState, ModeSpec, ResumeIdle,
+    ScrubState, SliderWidth, Tip, Tone, TrackedImage, VAlign, ValueEdit, TYPE_AHEAD_CYCLE_CONTEXT,
 };
 
 /// The shared entities every panel renders over: one player, one catalog,

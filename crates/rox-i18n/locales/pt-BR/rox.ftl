@@ -17,6 +17,8 @@ valign-middle = Meio
 valign-bottom = Base
 letter-rail-compact = Barra compacta
     .description = Limita a barra a uma única linha que rola em vez de quebrar
+letter-rail-side = Posição da barra
+    .description = Em qual borda da parede a barra fica
 
 ## Panel source and search rows
 source-track = Faixa
@@ -1770,8 +1772,10 @@ lyrics-line-falloff = Esmaecimento das linhas
     .description = Quanto cada linha escurece por passo de distância da linha ativa
 lyrics-line-spacing = Espaçamento das linhas
     .description = A distância entre as linhas sincronizadas, como múltiplo do tamanho do texto
+lyrics-look-again = Buscar de novo
 lyrics-mark-dots = Pontos
 lyrics-mark-note = Nota
+lyrics-marked-notice = Marcada sem letra
 lyrics-matcher-blocked-no-match = Nenhuma correspondência para aplicar
 lyrics-matcher-blocked-pick = Escolha uma correspondência para aplicar
 lyrics-matcher-blocked-saving = Salvando a letra...

@@ -17,6 +17,8 @@ valign-middle = Milieu
 valign-bottom = Bas
 letter-rail-compact = Rail compact
     .description = Limiter le rail à une seule ligne qui défile au lieu de passer à la ligne
+letter-rail-side = Position du rail
+    .description = Sur quel bord du mur le rail est accroché
 
 ## Panel source and search rows
 source-track = Piste
@@ -1826,8 +1828,10 @@ lyrics-line-falloff = Atténuation des lignes
     .description = De combien chaque ligne s'assombrit par cran d'écart avec la ligne active
 lyrics-line-spacing = Interligne
     .description = L'écart entre les lignes synchronisées, en multiple de la taille du texte
+lyrics-look-again = Chercher encore
 lyrics-mark-dots = Points
 lyrics-mark-note = Note
+lyrics-marked-notice = Marqué sans paroles
 lyrics-matcher-blocked-no-match = Aucune correspondance à appliquer
 lyrics-matcher-blocked-pick = Choisis une correspondance à appliquer
 lyrics-matcher-blocked-saving = Enregistrement des paroles...

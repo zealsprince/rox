@@ -32,6 +32,7 @@ use rox_library::cue::TrackKey;
 use rox_library::folders::{build_roots, node_at, sum_counts, Node};
 use rox_library::projection::FilterField;
 use rox_library::sort::natural_cmp;
+use rox_panel_api::actions::{TypeAheadNext, TypeAheadPrev};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
@@ -254,6 +255,9 @@ pub struct FolderTreePanel {
     _player_changed: Subscription,
     _search_events: Subscription,
     _selection_changed: Subscription,
+    /// Drops the phrase when focus leaves the panel, so tab goes back to
+    /// walking panels instead of cycling a phrase from a past visit.
+    _type_ahead_blur: Subscription,
 }
 
 impl FolderTreePanel {
@@ -304,10 +308,21 @@ impl FolderTreePanel {
         // skip the root seeding, so the tree comes back as it was left.
         let expanded: HashSet<String> = config.expanded.iter().cloned().collect();
         let seeded = !expanded.is_empty();
+        let focus = cx.focus_handle().tab_stop(true);
+        // The phrase outlives its badge, so it needs an end: leaving the
+        // panel drops it, which is also what hands tab back to traversal.
+        let panel = cx.weak_entity();
+        let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
+            panel
+                .update(cx, |this: &mut FolderTreePanel, cx| {
+                    this.clear_type_ahead(cx);
+                })
+                .ok();
+        });
         let mut this = FolderTreePanel {
             state,
             config,
-            focus: cx.focus_handle(),
+            focus,
             search,
             resync_box: false,
             selection_ids,
@@ -338,6 +353,7 @@ impl FolderTreePanel {
             _player_changed,
             _search_events,
             _selection_changed,
+            _type_ahead_blur,
         };
         this.rebuild(cx);
         // A duplicate opens with a track already playing; pick it up now
@@ -1019,6 +1035,11 @@ impl FolderTreePanel {
         // the idle clock the same as a scroll or a click.
         self.touch_resume(cx);
         match keystroke.key.as_str() {
+            // Escape drops a phrase, which is what hands tab back to
+            // panel traversal.
+            "escape" => {
+                self.clear_type_ahead(cx);
+            }
             "up" => self.move_cursor(-1, cx),
             "down" => self.move_cursor(1, cx),
             "home" => self.set_cursor(0, cx),
@@ -1085,9 +1106,13 @@ impl FolderTreePanel {
                 let Some(text) = &keystroke.key_char else {
                     return;
                 };
-                if self.type_ahead.is_empty() && text == " " {
+                if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
                     return;
                 }
+                // Consumed as type-ahead text: stop it here so it doesn't
+                // also match the workspace's space-bound TogglePlayback
+                // binding, which this panel otherwise inherits unscoped.
+                cx.stop_propagation();
                 self.type_to(text.clone(), cx);
             }
         }
@@ -1098,8 +1123,8 @@ impl FolderTreePanel {
     /// row first so refining a match stays put instead of skipping ahead.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
-        // The badge shows the phrase now and leaves when it expires; a miss
-        // below still updated the phrase, so repaint either way.
+        // The badge shows the phrase now and leaves when the window
+        // lapses; a miss below still updated it, so repaint either way.
         panel::type_ahead_fade(cx);
         cx.notify();
         let needle = self.type_ahead.to_lowercase();
@@ -1114,7 +1139,40 @@ impl FolderTreePanel {
         }
         let hit = (0..len)
             .map(|off| (start + off) % len)
-            .find(|&ix| self.visible[ix].label.to_lowercase().starts_with(&needle));
+            .find(|&ix| panel::type_ahead_hit(&self.visible[ix].label.to_lowercase(), &needle));
+        if let Some(ix) = hit {
+            self.set_cursor(ix, cx);
+        }
+    }
+
+    /// Drop the phrase, handing tab back to Root's panel traversal. True
+    /// when there was one, for the escape ladder.
+    fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.type_ahead.is_empty() {
+            return false;
+        }
+        self.type_ahead.clear();
+        self.type_ahead_at = None;
+        cx.notify();
+        true
+    }
+
+    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
+    /// off the cycle-scoped tab bindings. Deliberately leaves the window
+    /// stamp alone: the badge and the letter grouping belong to typing,
+    /// so a run of tabs steps silently rather than reviving them.
+    fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
+        if self.type_ahead.is_empty() {
+            return;
+        }
+        let len = self.visible.len();
+        if len == 0 {
+            return;
+        }
+        cx.notify();
+        let needle = self.type_ahead.to_lowercase();
+        let hit = panel::type_ahead_scan(len, self.cursor, back)
+            .find(|&ix| panel::type_ahead_hit(&self.visible[ix].label.to_lowercase(), &needle));
         if let Some(ix) = hit {
             self.set_cursor(ix, cx);
         }
@@ -1992,6 +2050,31 @@ impl FolderTreePanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
+            // Scopes the workspace's space-bound playback binding out while
+            // a type-ahead phrase is mid-flight, the same way the search
+            // box's own context does: bindings win over key listeners, so
+            // without this a space continuing a phrase would also toggle
+            // playback before on_panel_key ever saw the keystroke.
+            // While a phrase is up the panel carries its contexts, which
+            // scope the workspace's space binding out (only while the
+            // phrase is still taking keystrokes) and Root's tab traversal
+            // out (for as long as there's a phrase to cycle).
+            .when_some(
+                panel::type_ahead_context(&self.type_ahead, self.type_ahead_at),
+                |d, context| d.key_context(context),
+            )
+            // A press anywhere in the panel ends the phrase: the cursor
+            // has moved by hand, so the cycle it was stepping is stale,
+            // and tab belongs back with panel traversal. Capture phase,
+            // so rows and tiles that stop the press can't hide it.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                this.clear_type_ahead(cx);
+            }))
+            // Tab cycles the live phrase's matches, off the bindings the
+            // TypeAhead context above scopes in; with no phrase up, tab
+            // stays Root's focus traversal.
+            .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
+            .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
             .on_key_down(
                 cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_panel_key(event, cx)),
             )

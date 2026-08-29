@@ -2,7 +2,7 @@
 //! and every handler stay up in the app; only the types are here, so a
 //! panel's `on_action` and the workspace's binding name the same one.
 
-use gpui::actions;
+use gpui::{actions, App, KeyBinding};
 
 actions!(
     rox,
@@ -12,9 +12,34 @@ actions!(
         /// Nudge the playing track back, bound to the left arrow.
         SeekBackward,
         /// Nudge the playing track forward, bound to the right arrow.
-        SeekForward
+        SeekForward,
+        /// Step a panel's live type-ahead phrase to its next match,
+        /// bound to tab while a phrase is up.
+        TypeAheadNext,
+        /// The same backwards, bound to shift-tab.
+        TypeAheadPrev
     ]
 );
+
+/// The type-ahead cycle bindings; call once at startup. Scoped to the
+/// cycle context, which a panel carries for as long as it holds a phrase:
+/// gpui-component's Root binds bare tab to focus traversal, and the
+/// deeper context match wins while a phrase is up, handing tab back to
+/// traversal once the phrase is dropped.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new(
+            "tab",
+            TypeAheadNext,
+            Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            TypeAheadPrev,
+            Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT),
+        ),
+    ]);
+}
 
 actions!(
     lyrics,

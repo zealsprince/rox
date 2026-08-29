@@ -1053,8 +1053,48 @@ pub fn toggle_locked(on: bool) -> Div {
 }
 
 /// How long a run of keystrokes stays one type-ahead phrase: a pause past
-/// this starts the buffer over. Shared by every panel that jumps by prefix.
+/// this starts the buffer over. Shared by every panel that jumps by typing.
 pub const TYPE_AHEAD: Duration = Duration::from_millis(1000);
+
+/// The key context a panel carries while a type-ahead phrase is still
+/// taking keystrokes, scoping the workspace's space-bound playback binding
+/// out the same way a real text input's `"SearchInput"` context does.
+/// Gated on the window, not on the phrase: the phrase outlives its typing
+/// (see [`TYPE_AHEAD_CYCLE_CONTEXT`]), and holding this the whole time
+/// would carve playback out of the panel long after the typing stopped.
+pub const TYPE_AHEAD_CONTEXT: &str = "TypeAhead";
+
+/// The key context a panel carries for as long as it has a phrase at all,
+/// where the tab and shift-tab cycle bindings live. Outlives
+/// [`TYPE_AHEAD_CONTEXT`] by design: the badge and the letter grouping are
+/// a typing affordance and lapse with the window, but stepping through
+/// what you already typed stays available until the phrase is dropped
+/// (Escape, leaving the panel, starting another). Tab going quiet the
+/// moment the badge faded was the whole complaint.
+pub const TYPE_AHEAD_CYCLE_CONTEXT: &str = "TypeAheadCycle";
+
+/// The key context a panel should carry for its current type-ahead state,
+/// or None with no phrase up. Both contexts while the phrase is still
+/// taking keystrokes, the cycle one alone once the window has lapsed, so
+/// space goes back to play/pause on time while tab keeps cycling. gpui
+/// parses a space-separated string as several identifiers, the same shape
+/// the lyrics editor's `"SearchInput LyricsEdit"` uses.
+pub fn type_ahead_context(phrase: &str, at: Option<Instant>) -> Option<&'static str> {
+    if phrase.is_empty() {
+        None
+    } else if type_ahead_live(at) {
+        Some("TypeAhead TypeAheadCycle")
+    } else {
+        Some(TYPE_AHEAD_CYCLE_CONTEXT)
+    }
+}
+
+/// Whether a type-ahead phrase stamped at `at` is still within its window,
+/// i.e. still absorbing keystrokes rather than sitting expired. Panels use
+/// this both for the fade-out badge and to gate [`TYPE_AHEAD_CONTEXT`].
+pub fn type_ahead_live(at: Option<Instant>) -> bool {
+    at.is_some_and(|last| last.elapsed() < TYPE_AHEAD)
+}
 
 /// Grow or restart a type-ahead buffer for the keystroke `text`: within the
 /// window since the last stroke the letters build one phrase, past it the
@@ -1074,13 +1114,59 @@ pub fn type_ahead_grow(buffer: &mut String, at: &mut Option<Instant>, text: Stri
     grown
 }
 
+/// Whether `text` has a word starting with `needle`: at the front, or
+/// after any non-alphanumeric break, so "beat" finds both "Beat It" and
+/// "The Beatles". Shared by every panel that jumps by type-ahead.
+/// ASCII case-insensitive; callers whose text tables are pre-lowered pass
+/// those with a lowered needle and keep their Unicode folding.
+pub fn type_ahead_hit(text: &str, needle: &str) -> bool {
+    let mut boundary = true;
+    let mut at = 0;
+    for c in text.chars() {
+        if boundary
+            && text
+                .get(at..at + needle.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(needle))
+        {
+            return true;
+        }
+        boundary = !c.is_alphanumeric();
+        at += c.len_utf8();
+    }
+    false
+}
+
+/// The order a type-ahead step visits rows in: every index once, starting
+/// just past `from` (or at the edge with no cursor yet), wrapping,
+/// backwards when `back`. Tab and Shift+Tab cycle a live phrase's matches
+/// with this; the phrase's own growth keeps its per-panel include-current
+/// rules and doesn't use it.
+pub fn type_ahead_scan(len: usize, from: Option<usize>, back: bool) -> impl Iterator<Item = usize> {
+    let start = match (from, back) {
+        _ if len == 0 => 0,
+        (Some(ix), false) => (ix + 1) % len,
+        (Some(ix), true) => (ix + len - 1) % len,
+        (None, false) => 0,
+        (None, true) => len - 1,
+    };
+    (0..len).map(move |i| {
+        if back {
+            (start + len - i) % len
+        } else {
+            (start + i) % len
+        }
+    })
+}
+
 /// The phrase a panel's type-ahead is jumping by, as a small floating
 /// badge, so typing on a focused panel shows what it's matching instead of
 /// working invisibly. None once the window since the last stroke has
 /// passed; pair it with [`type_ahead_fade`] so the badge actually leaves
-/// when the phrase expires rather than waiting for the next repaint.
+/// when the phrase expires rather than waiting for the next repaint. Tab
+/// re-stamps the window while cycling matches, so the badge holds
+/// through a run of tabs.
 pub fn type_ahead_overlay(phrase: &str, at: Option<Instant>) -> Option<Div> {
-    if phrase.is_empty() || !at.is_some_and(|last| last.elapsed() < TYPE_AHEAD) {
+    if phrase.is_empty() || !type_ahead_live(at) {
         return None;
     }
     Some(
@@ -1189,9 +1275,12 @@ pub fn letter_rail<P: 'static>(
     })
 }
 
-/// Arm a repaint for when the current type-ahead phrase expires, so the
-/// overlay fades out on time. One task per keystroke; each just notifies
-/// once, and a stale one repaints a badge-less panel for free.
+/// Arm a repaint for when the current type-ahead window lapses, so the
+/// expiry actually shows: the badge leaves on time, and the panel's key
+/// context lets go of the keys the live phrase carves out (space from
+/// the playback binding, tab from Root's focus traversal) instead of
+/// holding them until something else painted. One task per keystroke;
+/// each just notifies once, and a stale one repaints for free.
 pub fn type_ahead_fade<P: 'static>(cx: &mut Context<P>) {
     cx.spawn(async move |this, cx| {
         cx.background_executor().timer(TYPE_AHEAD).await;
@@ -1199,6 +1288,7 @@ pub fn type_ahead_fade<P: 'static>(cx: &mut Context<P>) {
     })
     .detach();
 }
+
 /// The shared "tracking" section for a panel's Behavior page: the
 /// follow-playing toggle and, while it is on, the smooth-scrolling toggle,
 /// under one header so the library, the grids, and the art shelf all read
@@ -1568,4 +1658,42 @@ pub fn valign_row<P: 'static>(
             cx,
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{type_ahead_hit, type_ahead_scan};
+
+    #[test]
+    fn scan_steps_past_the_cursor_and_wraps() {
+        let forward: Vec<_> = type_ahead_scan(4, Some(1), false).collect();
+        assert_eq!(forward, [2, 3, 0, 1]);
+        let back: Vec<_> = type_ahead_scan(4, Some(1), true).collect();
+        assert_eq!(back, [0, 3, 2, 1]);
+    }
+
+    #[test]
+    fn scan_without_a_cursor_starts_at_the_edges() {
+        let forward: Vec<_> = type_ahead_scan(3, None, false).collect();
+        assert_eq!(forward, [0, 1, 2]);
+        let back: Vec<_> = type_ahead_scan(3, None, true).collect();
+        assert_eq!(back, [2, 1, 0]);
+        assert_eq!(type_ahead_scan(0, None, true).count(), 0);
+    }
+
+    #[test]
+    fn word_starts_match() {
+        assert!(type_ahead_hit("Beat It", "beat"));
+        assert!(type_ahead_hit("The Beatles", "beat"));
+        assert!(type_ahead_hit("The Beatles", "the bea"));
+        assert!(type_ahead_hit("Daft Punk", "punk"));
+        assert!(type_ahead_hit("AC/DC", "dc"));
+    }
+
+    #[test]
+    fn mid_word_does_not() {
+        assert!(!type_ahead_hit("The Beatles", "eat"));
+        assert!(!type_ahead_hit("Weekend", "end"));
+        assert!(!type_ahead_hit("Daft Punk", "aft"));
+    }
 }

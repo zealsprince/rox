@@ -15,9 +15,9 @@
 //! written files so their rows converge with what's on disk, duration and
 //! the rest the form never named included.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gpui::{
     actions, div, prelude::*, px, size, svg, App, Bounds, Context, Div, Entity, FocusHandle,
@@ -69,6 +69,12 @@ const FIELDS: &[(Field, &str, bool)] = &[
     // half points included.
     (Field::Rating, "rating", false),
 ];
+
+/// The most files a save writes at once. A commit is a clone, a verify,
+/// and a flush, so it's mostly disk rather than CPU, and past a handful of
+/// them in flight the drive is the job; the convert and analysis pools cap
+/// themselves at the same place for the same reason.
+const SAVE_WORKERS: usize = 4;
 
 /// How many display columns lead the table ahead of the editable
 /// [`FIELDS`] grid in the full column order. The file column is one of
@@ -1424,36 +1430,76 @@ impl TagEditor {
         cx.notify();
         let library = self.library.clone();
         cx.spawn_in(window, async move |this, cx| {
-            // One file per background hop, not the whole batch behind a
-            // single await: the count moves as each finishes, a slow file
-            // is visibly the one holding things up, and a cancel that closes
-            // the window ends the loop instead of grinding on unseen.
+            // Note the whole batch before any of it is written, so the watch
+            // events these writes trigger are suppressed rather than
+            // reindexed. One call up front instead of one per file: the
+            // suppression window is seconds long and a batch lands well
+            // inside it, and a per-file note would put a main-thread round
+            // trip in front of every commit. The apply_edits at the end
+            // notes them again for anything still in flight.
+            if library
+                .update(cx, |library, _| {
+                    library.note_self_write(edits.iter().map(|(edit, _)| edit.path.clone()))
+                })
+                .is_err()
+            {
+                return;
+            }
+            // The files are independent and a commit spends most of itself
+            // waiting on the disk, so they're written by a small pool over a
+            // shared queue rather than one at a time: a batch used to cost
+            // the sum of its files. Results come back over the channel as
+            // they land, so the count still moves a file at a time and a
+            // slow file holds up nothing but its own worker. Capped like the
+            // convert and analysis pools, since this is one drive.
+            let total = edits.len();
+            let queue = Arc::new(Mutex::new(
+                edits
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (edit, sub))| (ix, edit, sub))
+                    .collect::<VecDeque<_>>(),
+            ));
+            let (tx, rx) = async_channel::unbounded();
+            let count = std::thread::available_parallelism()
+                .map(|n| n.get() / 2)
+                .unwrap_or(1)
+                .clamp(1, SAVE_WORKERS)
+                .min(total);
+            let workers: Vec<_> = (0..count)
+                .map(|_| {
+                    let (queue, tx) = (queue.clone(), tx.clone());
+                    cx.background_executor().spawn(async move {
+                        loop {
+                            let next = queue.lock().unwrap().pop_front();
+                            let Some((ix, edit, sub)) = next else {
+                                break;
+                            };
+                            // Through the key: a cue track's edit stays in
+                            // the library, since its image belongs to the
+                            // whole disc.
+                            let result =
+                                writer::commit_key(&edit.path, sub, &edit.changes, &edit.pictures);
+                            // A closed window drops the receiver: stop
+                            // rather than write on into nothing.
+                            if tx.send((ix, edit, sub, result)).await.is_err() {
+                                break;
+                            }
+                        }
+                    })
+                })
+                .collect();
+            // The loop below owns the last sender; without this the recv
+            // never sees the queue run dry.
+            drop(tx);
             let mut committed: Vec<Edit> = Vec::new();
             let mut committed_subs: Vec<u16> = Vec::new();
             let mut failures = 0usize;
-            let mut first_error: Option<String> = None;
-            for (edit, sub) in edits {
-                // Note the write before it happens so the watch batch it
-                // triggers is suppressed, not reindexed. The apply_edits at
-                // the end notes too, but by then the suppression window has
-                // long passed for all but the last few files of a big batch.
-                if library
-                    .update(cx, |library, _| {
-                        library.note_self_write([edit.path.clone()])
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-                let (edit, result) = cx
-                    .background_executor()
-                    .spawn(async move {
-                        // Through the key: a cue track's edit stays in the
-                        // library, since its image belongs to the whole disc.
-                        let r = writer::commit_key(&edit.path, sub, &edit.changes, &edit.pictures);
-                        (edit, r)
-                    })
-                    .await;
+            // Kept with the index it came in at, so the file the error names
+            // is the first one in the list rather than whichever worker
+            // happened to fail first.
+            let mut first_error: Option<(usize, String)> = None;
+            while let Ok((ix, edit, sub, result)) = rx.recv().await {
                 match result {
                     Ok(()) => {
                         committed.push(edit);
@@ -1461,18 +1507,20 @@ impl TagEditor {
                     }
                     Err(e) => {
                         failures += 1;
-                        if first_error.is_none() {
+                        if first_error.as_ref().is_none_or(|(at, _)| ix < *at) {
                             let name = edit
                                 .path
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| edit.path.display().to_string());
-                            first_error = Some(format!("{name}: {e}"));
+                            first_error = Some((ix, format!("{name}: {e}")));
                         }
                     }
                 }
                 // A closed window (the user cancelled) drops the handle;
-                // stop rather than keep writing into nothing.
+                // stop rather than keep writing into nothing. The workers
+                // go with it, so nothing that hasn't started gets written
+                // and the commits already running finish on their own.
                 if this
                     .update(cx, |this, cx| {
                         this.save_done += 1;
@@ -1483,6 +1531,8 @@ impl TagEditor {
                     return;
                 }
             }
+            drop(workers);
+            let first_error = first_error.map(|(_, e)| e);
             this.update_in(cx, move |this, window, cx| {
                 // A written file's baseline follows the write, so a retry
                 // after a partial failure diffs against what's on disk

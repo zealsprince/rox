@@ -26,6 +26,7 @@ pub mod projection;
 pub mod rating;
 pub mod replaygain;
 pub mod scanner;
+pub mod song;
 pub mod sort;
 pub mod store;
 pub mod tag_source;

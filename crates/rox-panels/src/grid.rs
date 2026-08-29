@@ -32,7 +32,9 @@ use gpui_component::{h_virtual_list, v_virtual_list, Icon, Side, VirtualListScro
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
+use rox_library::projection::{Projection, QueryField, QUERY_FIELDS};
 use rox_library::sort::natural_cmp;
+use rox_panel_api::actions::{TypeAheadNext, TypeAheadPrev};
 use rox_panel_kit::config::{default_true, is_zero};
 use rox_panel_kit::wall::{default_dim, WallLayout, TILE_DIM_MAX, TILE_LABEL_H};
 use serde::{Deserialize, Serialize};
@@ -78,6 +80,17 @@ pub enum TitleAlign {
     Left,
     Center,
     Right,
+}
+
+/// Which edge of the wall the letter rail's gutter hangs on: the near
+/// edge (top for a row, left for a column) or the far one (bottom for a
+/// row, right for a column). Far by default, the rail's long-standing spot.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LetterSide {
+    Start,
+    #[default]
+    End,
 }
 
 /// What order the album tiles read in. Artist is the library's canonical
@@ -133,6 +146,10 @@ pub struct GridConfig {
     /// libraries whose scripts spill past one row of initials.
     #[serde(default)]
     pub letters_compact: bool,
+    /// Which edge of the wall the rail's gutter hangs on. The far edge by
+    /// default.
+    #[serde(default)]
+    pub letters_side: LetterSide,
     /// The preferred tile edge in px. The strip picks inside
     /// [`TILE_MIN`]..[`TILE_MAX`]; a typed size can go past the top.
     #[serde(default = "default_tile")]
@@ -199,6 +216,7 @@ impl Default for GridConfig {
             sort: GridSort::default(),
             letters: false,
             letters_compact: false,
+            letters_side: LetterSide::default(),
             tile: default_tile(),
             follow_playing: false,
             resume_playing: false,
@@ -337,6 +355,9 @@ pub struct GridPanel {
     _query_changed: Subscription,
     _selection_changed: Subscription,
     _player_changed: Subscription,
+    /// Drops the phrase when focus leaves the panel, so tab goes back to
+    /// walking panels instead of cycling a phrase from a past visit.
+    _type_ahead_blur: Subscription,
 }
 
 impl GridPanel {
@@ -398,6 +419,17 @@ impl GridPanel {
         // Follow-playing owns the position on launch, so it skips the saved
         // scroll; every other panel restores where it was left.
         let restore = (!config.follow_playing && config.scroll > 0).then_some(config.scroll);
+        let focus = cx.focus_handle().tab_stop(true);
+        // The phrase outlives its badge, so it needs an end: leaving the
+        // panel drops it, which is also what hands tab back to traversal.
+        let panel = cx.weak_entity();
+        let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
+            panel
+                .update(cx, |this: &mut GridPanel, cx| {
+                    this.clear_type_ahead(cx);
+                })
+                .ok();
+        });
         let mut this = GridPanel {
             state,
             config,
@@ -430,7 +462,7 @@ impl GridPanel {
             selection_ids,
             type_ahead: String::new(),
             type_ahead_at: None,
-            focus: cx.focus_handle(),
+            focus,
             tab_panel: None,
             _library_changed,
             _thumbs_changed,
@@ -438,6 +470,7 @@ impl GridPanel {
             _query_changed,
             _selection_changed,
             _player_changed,
+            _type_ahead_blur,
         };
         this.rebuild(cx);
         // A duplicate opens with a track already playing; pick it up now
@@ -678,6 +711,7 @@ impl GridPanel {
             .rposition(|&(_, ix)| ix <= first)
             .unwrap_or(0);
         let horizontal = self.axis() == Axis::Horizontal;
+        let start = self.config.letters_side == LetterSide::Start;
         let rail = panel::letter_rail(
             &self.letters,
             active,
@@ -694,7 +728,13 @@ impl GridPanel {
                 .flex_none()
                 .w_full()
                 .py(px(2.))
-                .border_t_1()
+                .map(|d| {
+                    if start {
+                        d.border_b_1()
+                    } else {
+                        d.border_t_1()
+                    }
+                })
                 .border_color(palette::border())
                 .child(rail)
         } else {
@@ -702,7 +742,13 @@ impl GridPanel {
                 .flex_none()
                 .h_full()
                 .px(px(2.))
-                .border_l_1()
+                .map(|d| {
+                    if start {
+                        d.border_r_1()
+                    } else {
+                        d.border_l_1()
+                    }
+                })
                 .border_color(palette::border())
                 .child(rail)
         })
@@ -918,7 +964,8 @@ impl GridPanel {
     }
 
     /// Browse from the keyboard while the wall is focused: plain typing
-    /// jumps to the album whose name starts with the phrase. Modifiers pass
+    /// jumps to the album a word of whose caption starts with the phrase,
+    /// name or artist, `field:` narrowing to one. Modifiers pass
     /// through so the workspace keeps its shortcuts, and a leading space
     /// stays its play/pause instead of starting a phrase with a blank.
     fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -932,16 +979,24 @@ impl GridPanel {
         if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
             return;
         }
+        // The escape ladder: a phrase drops first, since it's holding
+        // tab, then the selection.
         if keystroke.key.as_str() == "escape" {
-            self.deselect(cx);
+            if !self.clear_type_ahead(cx) {
+                self.deselect(cx);
+            }
             return;
         }
         let Some(text) = &keystroke.key_char else {
             return;
         };
-        if self.type_ahead.is_empty() && text == " " {
+        if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
             return;
         }
+        // Consumed as type-ahead text: stop it here so it doesn't also
+        // match the workspace's space-bound TogglePlayback binding, which
+        // the grid otherwise inherits unscoped.
+        cx.stop_propagation();
         self.type_to(text.clone(), cx);
     }
 
@@ -968,15 +1023,32 @@ impl GridPanel {
         cx.notify();
     }
 
+    /// Split a leading `field:` pin off the phrase, the query syntax's
+    /// vocabulary: `album:` or `title:` for the album name, `artist:` or
+    /// `albumartist:` for the artist. True means the artist. Fields with
+    /// no text on a tile fall through and the phrase reads literally.
+    fn type_ahead_pin(phrase: &str) -> Option<(bool, &str)> {
+        let (name, rest) = phrase.split_once(':')?;
+        let (_, field) = QUERY_FIELDS
+            .iter()
+            .find(|(known, _)| known.eq_ignore_ascii_case(name))?;
+        match field {
+            QueryField::Album | QueryField::Title => Some((false, rest)),
+            QueryField::Artist | QueryField::AlbumArtist => Some((true, rest)),
+            _ => None,
+        }
+    }
+
     /// Grow or restart the type-ahead phrase and jump to the album it names.
     /// A fresh phrase starts past the current selection, so the same letter
     /// steps to the next match; a grown one re-tests the current album so
-    /// refining a match stays put. Matches album names by prefix, the
-    /// caption's own text.
+    /// refining a match stays put. The phrase matches the start of any word
+    /// in the caption's two texts, the album name and the artist; a
+    /// `field:` pin narrows it to one.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
-        // The badge shows the phrase now and leaves when it expires; a miss
-        // below still updated the phrase, so repaint either way.
+        // The badge shows the phrase now and leaves when the window
+        // lapses; a miss below still updated it, so repaint either way.
         panel::type_ahead_fade(cx);
         cx.notify();
         let len = self.cells.len();
@@ -984,6 +1056,9 @@ impl GridPanel {
             return;
         }
         let needle = self.type_ahead.to_lowercase();
+        // A typed `field:` pin narrows the sweep to one of the tile's two
+        // texts; a plain phrase matches a word start in either.
+        let pin = Self::type_ahead_pin(&needle);
         // A grown phrase re-tests the current album; a fresh one starts past
         // it, so the same first letter steps to the next match.
         let anchor = self.selected.iter().copied().min().or(self.anchor);
@@ -995,18 +1070,9 @@ impl GridPanel {
         let hit = {
             let library = self.state.library.read(cx);
             library.projection().and_then(|projection| {
-                (0..len).map(|off| (start + off) % len).find(|&ix| {
-                    self.cells
-                        .get(ix)
-                        .and_then(|cell| self.view.get(cell.start))
-                        .and_then(|&row| {
-                            projection
-                                .albums
-                                .lower
-                                .get(projection.album[row as usize] as usize)
-                        })
-                        .is_some_and(|album| album.starts_with(&needle))
-                })
+                (0..len)
+                    .map(|off| (start + off) % len)
+                    .find(|&ix| self.type_hit(projection, ix, pin, &needle))
             })
         };
         if let Some(ix) = hit {
@@ -1014,6 +1080,81 @@ impl GridPanel {
             self.anchor = Some(ix);
             self.publish_selection(cx);
             self.scroll_to_cell(ix, cx);
+        }
+    }
+
+    /// Drop the phrase, handing tab back to Root's panel traversal. True
+    /// when there was one, for the escape ladder.
+    fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.type_ahead.is_empty() {
+            return false;
+        }
+        self.type_ahead.clear();
+        self.type_ahead_at = None;
+        cx.notify();
+        true
+    }
+
+    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
+    /// off the cycle-scoped tab bindings. Deliberately leaves the window
+    /// stamp alone: the badge and the letter grouping belong to typing,
+    /// so a run of tabs steps silently rather than reviving them.
+    fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
+        if self.type_ahead.is_empty() {
+            return;
+        }
+        let len = self.cells.len();
+        if len == 0 {
+            return;
+        }
+        cx.notify();
+        let needle = self.type_ahead.to_lowercase();
+        let pin = Self::type_ahead_pin(&needle);
+        let anchor = self.selected.iter().copied().min().or(self.anchor);
+        let hit = {
+            let library = self.state.library.read(cx);
+            library.projection().and_then(|projection| {
+                panel::type_ahead_scan(len, anchor, back)
+                    .find(|&ix| self.type_hit(projection, ix, pin, &needle))
+            })
+        };
+        if let Some(ix) = hit {
+            self.selected = HashSet::from([ix]);
+            self.anchor = Some(ix);
+            self.publish_selection(cx);
+            self.scroll_to_cell(ix, cx);
+        }
+    }
+
+    /// Whether one tile's caption matches the phrase, [`Self::type_to`]'s
+    /// rules: the pinned text alone when pinned, a word start in either
+    /// otherwise.
+    fn type_hit(
+        &self,
+        projection: &Projection,
+        ix: usize,
+        pin: Option<(bool, &str)>,
+        needle: &str,
+    ) -> bool {
+        let Some(&row) = self
+            .cells
+            .get(ix)
+            .and_then(|cell| self.view.get(cell.start))
+        else {
+            return false;
+        };
+        let i = row as usize;
+        let album = projection.albums.lower.get(projection.album[i] as usize);
+        let artist = projection
+            .album_artists
+            .lower
+            .get(projection.album_artist[i] as usize);
+        match pin {
+            Some((true, rest)) => artist.is_some_and(|text| panel::type_ahead_hit(text, rest)),
+            Some((false, rest)) => album.is_some_and(|text| panel::type_ahead_hit(text, rest)),
+            None => [album, artist]
+                .iter()
+                .any(|text| text.is_some_and(|text| panel::type_ahead_hit(text, needle))),
         }
     }
 
@@ -1614,6 +1755,18 @@ impl PanelSettings for GridPanel {
                         ),
                     ))
                     .when(self.config.letters, |d| {
+                        let side_icons: &'static [(&'static str, LetterSide)] =
+                            if self.axis() == Axis::Horizontal {
+                                &[
+                                    (icons::PANEL_TOP, LetterSide::Start),
+                                    (icons::PANEL_BOTTOM, LetterSide::End),
+                                ]
+                            } else {
+                                &[
+                                    (icons::PANEL_LEFT, LetterSide::Start),
+                                    (icons::PANEL_RIGHT, LetterSide::End),
+                                ]
+                            };
                         d.child(setting_row(
                             rox_i18n::t!("letter-rail-compact"),
                             Some(rox_i18n::t!("letter-rail-compact.description")),
@@ -1621,6 +1774,19 @@ impl PanelSettings for GridPanel {
                                 self.config.letters_compact,
                                 |this: &mut Self, on, cx| {
                                     this.config.letters_compact = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                        .child(setting_row(
+                            rox_i18n::t!("letter-rail-side"),
+                            Some(rox_i18n::t!("letter-rail-side.description")),
+                            panel::icon_choices(
+                                side_icons,
+                                self.config.letters_side,
+                                |this: &mut Self, side, cx| {
+                                    this.config.letters_side = side;
                                     cx.notify();
                                 },
                                 cx,
@@ -2090,6 +2256,31 @@ impl GridPanel {
             .size_full()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
+            // Scopes the workspace's space-bound playback binding out while
+            // a type-ahead phrase is mid-flight, the same way the search
+            // box's own context does: bindings win over key listeners, so
+            // without this a space continuing a phrase would also toggle
+            // playback before on_panel_key ever saw the keystroke.
+            // While a phrase is up the panel carries its contexts, which
+            // scope the workspace's space binding out (only while the
+            // phrase is still taking keystrokes) and Root's tab traversal
+            // out (for as long as there's a phrase to cycle).
+            .when_some(
+                panel::type_ahead_context(&self.type_ahead, self.type_ahead_at),
+                |d, context| d.key_context(context),
+            )
+            // A press anywhere in the panel ends the phrase: the cursor
+            // has moved by hand, so the cycle it was stepping is stale,
+            // and tab belongs back with panel traversal. Capture phase,
+            // so rows and tiles that stop the press can't hide it.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                this.clear_type_ahead(cx);
+            }))
+            // Tab cycles the live phrase's matches, off the bindings the
+            // TypeAhead context above scopes in; with no phrase up, tab
+            // stays Root's focus traversal.
+            .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
+            .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
             // Type-to-jump while the wall itself holds focus. The guard keeps
             // it off while the search box is focused, whose keys bubble up
             // through the toolbar child.
@@ -2353,15 +2544,21 @@ impl GridPanel {
         let content = match self.letter_rail(cx) {
             Some(gutter) => {
                 let row = self.axis() == Axis::Vertical;
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .flex()
-                    .map(|d| if row { d.flex_row() } else { d.flex_col() })
-                    .child(div().flex_1().min_w_0().min_h_0().flex().child(content))
-                    .child(gutter)
-                    .into_any_element()
+                let start = self.config.letters_side == LetterSide::Start;
+                let base = div().flex_1().min_h_0().min_w_0().flex().map(|d| {
+                    if row {
+                        d.flex_row()
+                    } else {
+                        d.flex_col()
+                    }
+                });
+                let wall = div().flex_1().min_w_0().min_h_0().flex().child(content);
+                if start {
+                    base.child(gutter).child(wall)
+                } else {
+                    base.child(wall).child(gutter)
+                }
+                .into_any_element()
             }
             None => content,
         };

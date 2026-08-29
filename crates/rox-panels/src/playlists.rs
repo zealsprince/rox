@@ -453,7 +453,7 @@ impl PlaylistsPanel {
             menu_row: None,
             refusal: None,
             scroll: UniformListScrollHandle::new(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _library_changed,
             _player_changed,

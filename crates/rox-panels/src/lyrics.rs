@@ -258,9 +258,12 @@ pub struct LyricsPanel {
     state: AppState,
     config: LyricsConfig,
     /// The loaded lyrics keyed by the track they belong to; None inside
-    /// means that track has none. Cleared on a library update or a
-    /// save, so the next render re-reads.
-    loaded: Option<(PathBuf, Option<Arc<Lyrics>>)>,
+    /// means that track has none. The flag is that track's "no lyrics"
+    /// mark, read with the sheet so the empty face can tell a marked
+    /// track from one nothing was ever found for without a stat per
+    /// frame. Cleared on a library update or a save, so the next render
+    /// re-reads.
+    loaded: Option<(PathBuf, Option<Arc<Lyrics>>, bool)>,
     /// The track a load is running for, so a render can tell "already
     /// fetching" from "needs a fetch".
     pending: Option<PathBuf>,
@@ -394,7 +397,7 @@ impl LyricsPanel {
     /// Make sure the lyrics for `path` are cached or on their way: read
     /// the file off the UI thread and swap the result in when done.
     fn ensure_loaded(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if self.loaded.as_ref().map(|(p, _)| p.as_path()) == Some(path)
+        if self.loaded.as_ref().map(|(p, ..)| p.as_path()) == Some(path)
             || self.pending.as_deref() == Some(path)
         {
             return;
@@ -404,11 +407,17 @@ impl LyricsPanel {
         let generation = self.generation;
         let path = path.to_path_buf();
         cx.spawn(async move |this, cx| {
-            let loaded = cx
+            let (loaded, marked) = cx
                 .background_executor()
                 .spawn({
                     let path = path.clone();
-                    async move { lyrics::load(&path, Some(&lyrics_dir())).map(Arc::new) }
+                    async move {
+                        let dir = lyrics_dir();
+                        (
+                            lyrics::load(&path, Some(&dir)).map(Arc::new),
+                            lyrics::marked_none(&path, Some(&dir)),
+                        )
+                    }
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -418,13 +427,13 @@ impl LyricsPanel {
                 this.pending = None;
                 // A different track's sheet reads from the top, not from
                 // wherever the previous track's scroll was.
-                if this.loaded.as_ref().map(|(p, _)| p.as_path()) != Some(path.as_path()) {
+                if this.loaded.as_ref().map(|(p, ..)| p.as_path()) != Some(path.as_path()) {
                     let base = this.scroll.0.borrow().base_handle.clone();
                     base.set_offset(Default::default());
                     this.text_scroll.set_offset(Default::default());
                     this.glide_to = None;
                 }
-                this.loaded = Some((path, loaded));
+                this.loaded = Some((path, loaded, marked));
                 cx.notify();
             })
             .ok();
@@ -437,8 +446,17 @@ impl LyricsPanel {
     fn lyrics_for(&self, path: &Path) -> Option<&Arc<Lyrics>> {
         self.loaded
             .as_ref()
-            .filter(|(p, _)| p == path)
-            .and_then(|(_, lyrics)| lyrics.as_ref())
+            .filter(|(p, ..)| p == path)
+            .and_then(|(_, lyrics, _)| lyrics.as_ref())
+    }
+
+    /// Whether `path` is marked as having no lyrics, from the last load
+    /// rather than a fresh look at the store, so the empty face costs no
+    /// IO however many frames it paints. False while a load is still out.
+    fn marked_for(&self, path: &Path) -> bool {
+        self.loaded
+            .as_ref()
+            .is_some_and(|(p, _, marked)| p == path && *marked)
     }
 
     /// The version of `raw` the synced face steps through: the same sheet with the
@@ -587,7 +605,7 @@ impl LyricsPanel {
         let path = key.path.as_path();
         // A different track needs a load and a fresh face; let the render
         // kick the fetch. Once it is loading, wait for the load's own notify.
-        if self.loaded.as_ref().map(|(p, _)| p.as_path()) != Some(path) {
+        if self.loaded.as_ref().map(|(p, ..)| p.as_path()) != Some(path) {
             return self.pending.as_deref() != Some(path);
         }
         let Some(lyrics) = self.lyrics_for(path).cloned() else {
@@ -676,7 +694,7 @@ impl LyricsPanel {
     /// other) shows on the next render. Lyrics aren't in the projection,
     /// so the lyrics reload broadcast is the panel's only signal to re-read.
     pub fn reload(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if self.loaded.as_ref().is_some_and(|(p, _)| p == path) {
+        if self.loaded.as_ref().is_some_and(|(p, ..)| p == path) {
             self.loaded = None;
         }
         cx.notify();
@@ -1261,6 +1279,11 @@ impl LyricsPanel {
     /// straight away. The whole face honors the panel's alignment, and once
     /// the panel is too short to stack the line over the button it flows
     /// them onto one row so both still show. Auto-search kicks off here too.
+    ///
+    /// A track marked as having no lyrics says so instead, and the search
+    /// turns into the way back out: the mark is what stops the lookups, so
+    /// offering the lookup under it would read as a face arguing with
+    /// itself. Lifting the mark hands the track to auto-search anyway.
     fn empty_face(&mut self, key: &TrackKey, cx: &mut Context<Self>) -> Div {
         self.maybe_auto_search(key, cx);
         let align = self.config.align;
@@ -1268,14 +1291,24 @@ impl LyricsPanel {
         // the line and button inline, so the first frame never flickers.
         let inline =
             self.empty_size.height > px(0.) && self.empty_size.height < px(EMPTY_INLINE_MAX_H);
+        let marked = self.marked_for(&key.path);
         let show_button = self.config.search_button && providers::lyrics_online();
         let button = show_button.then(|| {
-            settings_ui::small_button(
-                rox_i18n::t!("lyrics-search-online"),
-                icons::DOWNLOAD,
-                false,
-                cx.listener(|this, _, _, cx| this.open_match(cx)),
-            )
+            if marked {
+                settings_ui::small_button(
+                    rox_i18n::t!("lyrics-look-again"),
+                    icons::REFRESH_CW,
+                    false,
+                    cx.listener(|this, _, _, cx| this.unmark_none(cx)),
+                )
+            } else {
+                settings_ui::small_button(
+                    rox_i18n::t!("lyrics-search-online"),
+                    icons::DOWNLOAD,
+                    false,
+                    cx.listener(|this, _, _, cx| this.open_match(cx)),
+                )
+            }
         });
         // The track's name over the quiet line, so a wordless track still
         // says what it is. Title falls back to the file stem, the artist
@@ -1312,11 +1345,12 @@ impl LyricsPanel {
             )
         })
         .when(show_notice, |d| {
-            d.child(
-                div()
-                    .text_color(palette::text_faint())
-                    .child(rox_i18n::t!("lyrics-no-lyrics-notice")),
-            )
+            let notice = if marked {
+                rox_i18n::t!("lyrics-marked-notice")
+            } else {
+                rox_i18n::t!("lyrics-no-lyrics-notice")
+            };
+            d.child(div().text_color(palette::text_faint()).child(notice))
         })
         .when_some(button, |d, button| d.child(button))
         // A zero-layout canvas over the face reports its size so the next

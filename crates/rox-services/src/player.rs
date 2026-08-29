@@ -20,6 +20,7 @@ use rox_core::settings::{
 use rox_core::QUEUE_CAP;
 use rox_library::cue::{Span, TrackKey};
 use rox_library::embeddings;
+use rox_library::song;
 use rox_library::store;
 use rox_playback::continuation::{self, Pick};
 use rox_playback::engine::{self, shuffle_head, shuffle_slice, Cmd, LoopMode, StartQueue};
@@ -73,6 +74,19 @@ const SKIP_BAND_GROWTH: usize = 4;
 /// everything in the band still sounds like the seed. The same handful the
 /// skip band opens to, for the same reason.
 const SIMILAR_BAND: usize = 8;
+
+/// How far down the ranking the draw reads to fill that band. The band is
+/// one track per song (see [`song::distinct`]), and a library that holds a
+/// song seventeen times puts all seventeen at the front of the ranking, so
+/// reading exactly `SIMILAR_BAND` would find one song and call it a
+/// neighbourhood.
+const SIMILAR_POOL: usize = SIMILAR_BAND * 16;
+
+/// How many tracks apart the similarity ordering keeps two recordings of one
+/// song. The queue is the listener's, so nothing is dropped from it: the
+/// pile gets spread through the tail instead. Wide enough that a pile never
+/// reads as a run, short enough that the tail still sorts by sound.
+const SONG_SPACING: usize = 25;
 
 /// A random index below `len`, off the std hasher's per-process random
 /// keys; picking a track does not need a rand dependency.
@@ -187,6 +201,69 @@ fn fresh_band(near: &[(i64, f32)], seen: &HashSet<i64>) -> Vec<i64> {
         return near.iter().map(|&(id, _)| id).collect();
     }
     fresh
+}
+
+/// The ranking thinned to one track per song, nearest first, cut to
+/// `SIMILAR_BAND`: the seed's own song is out, so is anything the session has
+/// already heard a version of, and no two entries left are the same song as
+/// each other.
+///
+/// A library that holds one song many times over hands the acoustic ranking
+/// a pile of tracks that are each other's nearest neighbours, because by
+/// sound they really are the same track. Play Similar reading straight off
+/// the top of that would answer with the song it was asked about. The tag
+/// identity (see [`song`]) is the only thing that can tell them apart.
+///
+/// The whole ranking back means nothing survived, which is a neighbourhood
+/// of one song: the caller plays it rather than eating the press.
+fn one_per_song(
+    conn: &rox_library::rusqlite::Connection,
+    seed: i64,
+    seen: &HashSet<i64>,
+    near: &[(i64, f32)],
+) -> Vec<(i64, f32)> {
+    let candidates: Vec<i64> = near.iter().map(|&(id, _)| id).collect();
+    let mut lookup = candidates.clone();
+    lookup.push(seed);
+    lookup.extend(seen.iter().copied());
+    let Ok(keys) = song::keys_for(conn, &lookup) else {
+        return near.to_vec();
+    };
+    let blocked = song::keys_of(&keys, seen.iter().copied().chain([seed]));
+    let kept: HashSet<i64> = song::distinct(&candidates, &keys, &blocked, SIMILAR_BAND)
+        .into_iter()
+        .collect();
+    if kept.is_empty() {
+        return near.to_vec();
+    }
+    near.iter()
+        .copied()
+        .filter(|(id, _)| kept.contains(id))
+        .collect()
+}
+
+/// The song identity of the seed and of every ranked queue entry, keyed by
+/// entry id so the ordering can ask about a queue rather than about rows.
+///
+/// Entries whose row has no usable artist or title come back absent, which
+/// reads downstream as "nothing's duplicate": an untagged file keeps its
+/// place in the ranking rather than being spaced away from tracks it has no
+/// established relationship with.
+fn entry_songs(
+    conn: &rox_library::rusqlite::Connection,
+    seed: i64,
+    ranked: &[(u64, i64, f32)],
+) -> (Option<String>, HashMap<u64, String>) {
+    let mut lookup: Vec<i64> = ranked.iter().map(|&(_, id, _)| id).collect();
+    lookup.push(seed);
+    let Ok(keys) = song::keys_for(conn, &lookup) else {
+        return (None, HashMap::new());
+    };
+    let songs = ranked
+        .iter()
+        .filter_map(|&(entry, id, _)| Some((entry, keys.get(&id)?.clone())))
+        .collect();
+    (keys.get(&seed).cloned(), songs)
 }
 
 /// The slice of a `len` entry pool a draw at `at` plays inside: at most
@@ -1654,7 +1731,13 @@ impl Player {
                 .spawn(async move {
                     let conn = store::open(&db_path).ok()?;
                     let near =
-                        embeddings::nearest_ranked(&conn, seed, &model, SIMILAR_BAND).ok()?;
+                        embeddings::nearest_ranked(&conn, seed, &model, SIMILAR_POOL).ok()?;
+                    // One track per song, so a library holding the seed a
+                    // dozen times over doesn't answer "play something like
+                    // this" with the same song again. Nothing survived means
+                    // the neighbourhood is one song, and then the plain
+                    // nearest is the honest answer.
+                    let near = one_per_song(&conn, seed, &seen, &near);
                     // One out of the unheard part of the neighbourhood rather
                     // than the single nearest, so pressing twice moves
                     // somewhere instead of asking the same question again,
@@ -2538,19 +2621,34 @@ impl Player {
                 .background_executor()
                 .spawn(async move {
                     let conn = store::open(&db_path).ok()?;
-                    let scores: HashMap<i64, f32> = embeddings::ranked(&conn, seed?, &model)
+                    let seed = seed?;
+                    let scores: HashMap<i64, f32> = embeddings::ranked(&conn, seed, &model)
                         .ok()?
                         .into_iter()
                         .collect();
                     // Entries the library has no score for drop out of the
                     // ranking rather than sorting as zero, which would rate
                     // them above everything that genuinely sounds unalike.
-                    let mut ranked: Vec<(u64, f32)> = tail
+                    // The library id rides along, because the song identity
+                    // below is a tag question and a queue entry id is not a
+                    // row.
+                    let mut ranked: Vec<(u64, i64, f32)> = tail
                         .into_iter()
-                        .filter_map(|(entry, id)| Some((entry, *scores.get(&id)?)))
+                        .filter_map(|(entry, id)| Some((entry, id, *scores.get(&id)?)))
                         .collect();
-                    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-                    let mut ids: Vec<u64> = ranked.into_iter().map(|(entry, _)| entry).collect();
+                    ranked.sort_by(|a, b| b.2.total_cmp(&a.2));
+                    // Spread the version piles before the band picks off the
+                    // front. Sorting by sound alone puts every recording of
+                    // one song in a run, since by sound they are the same
+                    // track, and pressing Next then walks that run: the
+                    // studio cut, the live cut, the remaster, the second rip.
+                    // Nothing is dropped, because this queue is the
+                    // listener's; the copies just move down it.
+                    let (playing, songs) = entry_songs(&conn, seed, &ranked);
+                    let mut ids: Vec<u64> = ranked.into_iter().map(|(entry, _, _)| entry).collect();
+                    song::space(&mut ids, SONG_SPACING, playing.as_deref(), |entry| {
+                        songs.get(entry).map(String::as_str)
+                    });
                     // The band is the skip pressure: strictly nearest with a
                     // width of one, and a widening handful of the nearest
                     // shuffled among themselves after that. Shuffling the
@@ -2876,6 +2974,106 @@ pub fn observe_output<V: 'static>(player: &Entity<Player>, cx: &mut Context<V>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use rox_library::rusqlite::{params, Connection};
+
+    /// A library of tagged rows, ids in insertion order. Enough of the
+    /// schema for the song-identity lookups; nothing here scores anything.
+    fn tagged(rows: &[(&str, &str)]) -> (Connection, Vec<i64>) {
+        let conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let mut ids = Vec::new();
+        for (i, (artist, title)) in rows.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO tracks (path, title, artist, album, album_artist, genre, year,
+                    track_no, disc_no, duration_ms, size, mtime)
+                 VALUES (?1, ?2, ?3, 'al', ?3, 'g', 0, 1, 1, 200000, 0, 0)",
+                params![format!("/m/{i:03}.flac"), title, artist],
+            )
+            .unwrap();
+            ids.push(conn.last_insert_rowid());
+        }
+        (conn, ids)
+    }
+
+    /// The Barracuda case for Play Similar: the ranking is the seed's own
+    /// song over and over, and the press has to land somewhere else.
+    #[test]
+    fn a_similar_draw_leaves_the_seed_s_own_song_behind() {
+        let (conn, ids) = tagged(&[
+            ("Heart", "Barracuda"),
+            ("Heart", "Barracuda (Live)"),
+            ("Heart", "Barracuda (Live In Japan)"),
+            ("Heart", "Barracuda - Live"),
+            ("Heart", "Barracuda [2010 Remaster]"),
+            ("Heart", "Crazy On You"),
+            ("Heart", "Magic Man"),
+        ]);
+        // Nearest first, which is what the vectors really do here: every
+        // copy scores above the two tracks that aren't the same song.
+        let near: Vec<(i64, f32)> = ids
+            .iter()
+            .skip(1)
+            .enumerate()
+            .map(|(at, &id)| (id, 1.0 - at as f32 / 100.0))
+            .collect();
+        let band = one_per_song(&conn, ids[0], &HashSet::new(), &near);
+        assert_eq!(
+            band.iter().map(|&(id, _)| id).collect::<Vec<_>>(),
+            vec![ids[5], ids[6]],
+            "the draw stayed on the seed's own song"
+        );
+    }
+
+    /// A song the session already heard a version of is out of the band too,
+    /// which is what keeps pressing Play Similar from circling back.
+    #[test]
+    fn a_similar_draw_skips_a_song_the_session_already_heard() {
+        let (conn, ids) = tagged(&[
+            ("Heart", "Barracuda"),
+            ("Heart", "Crazy On You (Live)"),
+            ("Heart", "Magic Man"),
+        ]);
+        let near: Vec<(i64, f32)> = vec![(ids[1], 0.9), (ids[2], 0.8)];
+        // The studio "Crazy On You" isn't in this library at all; the
+        // session heard it as the live take's identity, which is the point.
+        let seen: HashSet<i64> = [ids[1]].into_iter().collect();
+        let band = one_per_song(&conn, ids[0], &seen, &near);
+        assert_eq!(
+            band.iter().map(|&(id, _)| id).collect::<Vec<_>>(),
+            vec![ids[2]]
+        );
+    }
+
+    /// A neighbourhood that is one song and nothing else still answers the
+    /// press. The guard passes tracks over, it never eats the button.
+    #[test]
+    fn a_similar_draw_on_nothing_but_copies_still_plays() {
+        let (conn, ids) = tagged(&[
+            ("Heart", "Barracuda"),
+            ("Heart", "Barracuda (Live)"),
+            ("Heart", "Barracuda - Live"),
+        ]);
+        let near: Vec<(i64, f32)> = vec![(ids[1], 0.99), (ids[2], 0.98)];
+        assert_eq!(one_per_song(&conn, ids[0], &HashSet::new(), &near).len(), 2);
+    }
+
+    /// The ordering side reads identities per queue entry, and the playing
+    /// track's own identity comes back with them so the spacing knows what
+    /// it must not follow.
+    #[test]
+    fn the_ordering_reads_a_song_identity_per_queue_entry() {
+        let (conn, ids) = tagged(&[
+            ("Heart", "Barracuda"),
+            ("Heart", "Barracuda (Live)"),
+            ("", ""),
+        ]);
+        let ranked = vec![(10u64, ids[1], 0.9), (11u64, ids[2], 0.8)];
+        let (playing, songs) = entry_songs(&conn, ids[0], &ranked);
+        let seed_key = playing.expect("a tagged seed has an identity");
+        assert_eq!(songs.get(&10), Some(&seed_key), "the live take is the song");
+        assert!(!songs.contains_key(&11), "an untagged row has no identity");
+    }
 
     /// No skips is the strict nearest; a run widens fast enough that a few
     /// presses reach past a genre rather than inching through it.

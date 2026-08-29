@@ -20,6 +20,8 @@ valign-middle = Middle
 valign-bottom = Bottom
 letter-rail-compact = Compact Rail
     .description = Keep the rail to a single line that scrolls instead of wrapping
+letter-rail-side = Rail Position
+    .description = Which edge of the wall the rail hangs on
 
 ## Panel source and search rows
 
@@ -1808,8 +1810,10 @@ lyrics-line-falloff = Line Falloff
     .description = How far each line dims per step away from the active one
 lyrics-line-spacing = Line Spacing
     .description = How far apart the synced lines are, as a multiple of the text size
+lyrics-look-again = Look Again
 lyrics-mark-dots = Dots
 lyrics-mark-note = Note
+lyrics-marked-notice = Marked as no lyrics
 lyrics-matcher-blocked-no-match = No match to apply
 lyrics-matcher-blocked-pick = Pick a match to apply
 lyrics-matcher-blocked-saving = Saving the words...

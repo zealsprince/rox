@@ -396,7 +396,7 @@ impl HistoryPanel {
             playing: None,
             menu_row: None,
             scroll: UniformListScrollHandle::new(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _history_changed,
             _library_changed,

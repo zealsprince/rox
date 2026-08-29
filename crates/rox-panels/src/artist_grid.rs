@@ -42,6 +42,7 @@ use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
 use rox_library::projection::{FilterField, FilterSet, Projection, SortKey, SymTable};
+use rox_panel_api::actions::{TypeAheadNext, TypeAheadPrev};
 use rox_panel_kit::config::{default_true, is_zero};
 use rox_panel_kit::wall::{default_dim, default_gap, WallLayout, TILE_DIM_MAX, TILE_LABEL_H};
 use serde::{Deserialize, Serialize};
@@ -49,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
-use crate::grid::TitleAlign;
+use crate::grid::{LetterSide, TitleAlign};
 use crate::panel::{
     self, setting_row, toggle, AppState, FlickState, PanelChrome, PanelSettings, ResumeIdle,
     ScrubState,
@@ -157,6 +158,18 @@ pub struct ArtistGridConfig {
     /// horizontally, columns filling the height.
     #[serde(default = "default_true")]
     pub vertical: bool,
+    /// A letter index rail in its own gutter along the wall's edge, each
+    /// initial a click that jumps to the first artist starting with it.
+    #[serde(default)]
+    pub letters: bool,
+    /// Keep the rail to one line that scrolls instead of wrapping, for
+    /// libraries whose scripts spill past one row of initials.
+    #[serde(default)]
+    pub letters_compact: bool,
+    /// Which edge of the wall the rail's gutter hangs on. The far edge by
+    /// default.
+    #[serde(default)]
+    pub letters_side: LetterSide,
     /// The preferred tile edge in px. The strip picks inside
     /// [`TILE_MIN`]..[`TILE_MAX`]; a typed size can go past the top.
     #[serde(default = "default_tile")]
@@ -228,6 +241,9 @@ impl Default for ArtistGridConfig {
             query_source: QuerySource::default(),
             group: ArtistGroup::default(),
             vertical: true,
+            letters: false,
+            letters_compact: false,
+            letters_side: LetterSide::default(),
             tile: default_tile(),
             pick_filters: true,
             portraits: false,
@@ -287,6 +303,13 @@ pub struct ArtistGridPanel {
     /// The artists of the current view, rebuilt on library updates and
     /// query changes.
     cells: Vec<Cell>,
+    /// The rail's letters, one entry per distinct initial, and the cell
+    /// index its group starts at.
+    letters: Vec<(SharedString, usize)>,
+    /// A rail click's clicked letter, pinned until a real scroll or another
+    /// jump lets the first-visible tile take over the rail's highlight
+    /// again.
+    letter_hold: Option<usize>,
     /// The query editor, the shared search box; `config.query` tracks its
     /// value via change events.
     search: Entity<SearchBox>,
@@ -364,6 +387,9 @@ pub struct ArtistGridPanel {
     _query_changed: Subscription,
     _selection_changed: Subscription,
     _player_changed: Subscription,
+    /// Drops the phrase when focus leaves the panel, so tab goes back to
+    /// walking panels instead of cycling a phrase from a past visit.
+    _type_ahead_blur: Subscription,
 }
 
 impl ArtistGridPanel {
@@ -426,11 +452,24 @@ impl ArtistGridPanel {
         // Follow-playing owns the position on launch, so it skips the saved
         // scroll; every other panel restores where it was left.
         let restore = (!config.follow_playing && config.scroll > 0).then_some(config.scroll);
+        let focus = cx.focus_handle().tab_stop(true);
+        // The phrase outlives its badge, so it needs an end: leaving the
+        // panel drops it, which is also what hands tab back to traversal.
+        let panel = cx.weak_entity();
+        let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
+            panel
+                .update(cx, |this: &mut ArtistGridPanel, cx| {
+                    this.clear_type_ahead(cx);
+                })
+                .ok();
+        });
         let mut this = ArtistGridPanel {
             state,
             config,
             view: Arc::new(Vec::new()),
             cells: Vec::new(),
+            letters: Vec::new(),
+            letter_hold: None,
             search,
             selected: HashSet::new(),
             anchor: None,
@@ -457,7 +496,7 @@ impl ArtistGridPanel {
             selection_ids,
             type_ahead: String::new(),
             type_ahead_at: None,
-            focus: cx.focus_handle(),
+            focus,
             tab_panel: None,
             _library_changed,
             _thumbs_changed,
@@ -466,6 +505,7 @@ impl ArtistGridPanel {
             _query_changed,
             _selection_changed,
             _player_changed,
+            _type_ahead_blur,
         };
         this.rebuild(cx);
         // A duplicate opens with a track already playing; pick it up now
@@ -525,6 +565,7 @@ impl ArtistGridPanel {
         let Some(cell_ix) = self.playing_ix else {
             return;
         };
+        self.letter_hold = None;
         // Both modes head for the same line through the per-frame stepping
         // in `body`: the line is the stable fact, its offset depends on a
         // layout that may still be settling.
@@ -700,9 +741,85 @@ impl ArtistGridPanel {
         // can't leave them pointing off the end.
         self.anchor = self.anchor.filter(|&ix| ix < self.cells.len());
         self.hovered = self.hovered.filter(|&ix| ix < self.cells.len());
+        // The rail's letters, one entry per distinct initial of the current
+        // grouping's names, in the same order the tiles already run.
+        self.letters.clear();
+        if let Some(projection) = self.state.library.read(cx).projection() {
+            let (_, table) = self.config.group.source(projection);
+            for (ix, cell) in self.cells.iter().enumerate() {
+                let name = table
+                    .lower
+                    .get(cell.sym as usize)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let letter = panel::letter_initial(name);
+                if self.letters.last().map(|(l, _)| l.as_ref()) != Some(letter.as_str()) {
+                    self.letters.push((SharedString::from(letter), ix));
+                }
+            }
+        }
         self.sync_picks(cx);
         self.playing_ix = self.playing_cell(cx);
         cx.notify();
+    }
+
+    /// The letter rail's gutter: its own strip beside the wall rather
+    /// than an overlay, so the letters never sit on top of the tiles.
+    /// The lit letter follows the first visible tile, except right after a
+    /// rail click: `letter_hold` pins it to the letter clicked until a real
+    /// scroll or another jump lets the first-visible tile take over again.
+    fn letter_rail(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.config.letters {
+            return None;
+        }
+        let first = self.letter_hold.unwrap_or_else(|| self.first_cell());
+        let active = self
+            .letters
+            .iter()
+            .rposition(|&(_, ix)| ix <= first)
+            .unwrap_or(0);
+        let horizontal = self.axis() == Axis::Horizontal;
+        let start = self.config.letters_side == LetterSide::Start;
+        let rail = panel::letter_rail(
+            &self.letters,
+            active,
+            horizontal,
+            self.config.letters_compact,
+            |this: &mut Self, first, cx| {
+                this.touch_resume(cx);
+                this.scroll_to_letter(first, cx);
+            },
+            cx,
+        )?;
+        Some(if horizontal {
+            div()
+                .flex_none()
+                .w_full()
+                .py(px(2.))
+                .map(|d| {
+                    if start {
+                        d.border_b_1()
+                    } else {
+                        d.border_t_1()
+                    }
+                })
+                .border_color(palette::border())
+                .child(rail)
+        } else {
+            div()
+                .flex_none()
+                .h_full()
+                .px(px(2.))
+                .map(|d| {
+                    if start {
+                        d.border_r_1()
+                    } else {
+                        d.border_l_1()
+                    }
+                })
+                .border_color(palette::border())
+                .child(rail)
+        })
     }
 
     /// Re-derive the outlined tiles from the shared filter's artist picks.
@@ -950,7 +1067,7 @@ impl ArtistGridPanel {
     }
 
     /// Browse from the keyboard while the wall is focused: plain typing
-    /// jumps to the artist whose name starts with the phrase. Modifiers
+    /// jumps to the artist with a word starting with the phrase. Modifiers
     /// pass through so the workspace keeps its shortcuts, and a leading
     /// space stays its play/pause.
     fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -961,16 +1078,24 @@ impl ArtistGridPanel {
         // Escape drops the picks. No select-all here: every artist picked
         // is the whole catalog anyway, and it would pour every name into
         // the shared filter.
+        // The escape ladder: a phrase drops first, since it's holding
+        // tab, then the selection.
         if keystroke.key.as_str() == "escape" {
-            self.deselect(cx);
+            if !self.clear_type_ahead(cx) {
+                self.deselect(cx);
+            }
             return;
         }
         let Some(text) = &keystroke.key_char else {
             return;
         };
-        if self.type_ahead.is_empty() && text == " " {
+        if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
             return;
         }
+        // Consumed as type-ahead text: stop it here so it doesn't also
+        // match the workspace's space-bound TogglePlayback binding, which
+        // the wall otherwise inherits unscoped.
+        cx.stop_propagation();
         self.type_to(text.clone(), cx);
     }
 
@@ -993,8 +1118,8 @@ impl ArtistGridPanel {
     /// artist so refining a match stays put.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
-        // The badge shows the phrase now and leaves when it expires; a miss
-        // below still updated the phrase, so repaint either way.
+        // The badge shows the phrase now and leaves when the window
+        // lapses; a miss below still updated it, so repaint either way.
         panel::type_ahead_fade(cx);
         cx.notify();
         let len = self.cells.len();
@@ -1013,9 +1138,55 @@ impl ArtistGridPanel {
             library.projection().and_then(|projection| {
                 let (_, table) = self.config.group.source(projection);
                 (0..len).map(|off| (start + off) % len).find(|&ix| {
-                    self.cells
-                        .get(ix)
-                        .is_some_and(|cell| table.lower[cell.sym as usize].starts_with(&needle))
+                    self.cells.get(ix).is_some_and(|cell| {
+                        panel::type_ahead_hit(&table.lower[cell.sym as usize], &needle)
+                    })
+                })
+            })
+        };
+        if let Some(ix) = hit {
+            self.selected = HashSet::from([ix]);
+            self.anchor = Some(ix);
+            self.publish(cx);
+            self.scroll_to_cell(ix, cx);
+        }
+    }
+
+    /// Drop the phrase, handing tab back to Root's panel traversal. True
+    /// when there was one, for the escape ladder.
+    fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.type_ahead.is_empty() {
+            return false;
+        }
+        self.type_ahead.clear();
+        self.type_ahead_at = None;
+        cx.notify();
+        true
+    }
+
+    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
+    /// off the cycle-scoped tab bindings. Deliberately leaves the window
+    /// stamp alone: the badge and the letter grouping belong to typing,
+    /// so a run of tabs steps silently rather than reviving them.
+    fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
+        if self.type_ahead.is_empty() {
+            return;
+        }
+        let len = self.cells.len();
+        if len == 0 {
+            return;
+        }
+        cx.notify();
+        let needle = self.type_ahead.to_lowercase();
+        let anchor = self.selected.iter().copied().min().or(self.anchor);
+        let hit = {
+            let library = self.state.library.read(cx);
+            library.projection().and_then(|projection| {
+                let (_, table) = self.config.group.source(projection);
+                panel::type_ahead_scan(len, anchor, back).find(|&ix| {
+                    self.cells.get(ix).is_some_and(|cell| {
+                        panel::type_ahead_hit(&table.lower[cell.sym as usize], &needle)
+                    })
                 })
             })
         };
@@ -1029,12 +1200,26 @@ impl ArtistGridPanel {
 
     /// Bring an artist's tile into view, centered on the scroll axis.
     /// Clears any pending glide or restore so the jump wins over an
-    /// automatic move.
+    /// automatic move, and releases a held rail letter since this jump
+    /// didn't come from it.
     fn scroll_to_cell(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.letter_hold = None;
+        self.scroll_to_cell_with(ix, ScrollStrategy::Center, cx);
+    }
+
+    /// Bring a letter's first artist to the top of the scroll axis rather
+    /// than centering it, and pin the rail's active letter to the one
+    /// clicked.
+    fn scroll_to_letter(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.letter_hold = Some(ix);
+        self.scroll_to_cell_with(ix, ScrollStrategy::Top, cx);
+    }
+
+    fn scroll_to_cell_with(&mut self, ix: usize, strategy: ScrollStrategy, cx: &mut Context<Self>) {
         self.glide_to = None;
         self.restore = None;
         let line = ix / self.lanes();
-        self.scroll.scroll_to_item(line, ScrollStrategy::Center);
+        self.scroll.scroll_to_item(line, strategy);
         cx.notify();
     }
 
@@ -1737,6 +1922,57 @@ impl PanelSettings for ArtistGridPanel {
                         ),
                     ))
                     .child(setting_row(
+                        rox_i18n::t!("grid-letter-rail"),
+                        Some(rox_i18n::t!("grid-letter-rail.description")),
+                        toggle(
+                            self.config.letters,
+                            |this: &mut Self, on, cx| {
+                                this.config.letters = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .when(self.config.letters, |d| {
+                        let side_icons: &'static [(&'static str, LetterSide)] =
+                            if self.axis() == Axis::Horizontal {
+                                &[
+                                    (icons::PANEL_TOP, LetterSide::Start),
+                                    (icons::PANEL_BOTTOM, LetterSide::End),
+                                ]
+                            } else {
+                                &[
+                                    (icons::PANEL_LEFT, LetterSide::Start),
+                                    (icons::PANEL_RIGHT, LetterSide::End),
+                                ]
+                            };
+                        d.child(setting_row(
+                            rox_i18n::t!("letter-rail-compact"),
+                            Some(rox_i18n::t!("letter-rail-compact.description")),
+                            toggle(
+                                self.config.letters_compact,
+                                |this: &mut Self, on, cx| {
+                                    this.config.letters_compact = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                        .child(setting_row(
+                            rox_i18n::t!("letter-rail-side"),
+                            Some(rox_i18n::t!("letter-rail-side.description")),
+                            panel::icon_choices(
+                                side_icons,
+                                self.config.letters_side,
+                                |this: &mut Self, side, cx| {
+                                    this.config.letters_side = side;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                    })
+                    .child(setting_row(
                         rox_i18n::t!("wall-tile-size"),
                         Some(rox_i18n::t!("wall-tile-size.description")),
                         settings_ui::scalar(
@@ -2192,6 +2428,31 @@ impl ArtistGridPanel {
             .size_full()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
+            // Scopes the workspace's space-bound playback binding out while
+            // a type-ahead phrase is mid-flight, the same way the search
+            // box's own context does: bindings win over key listeners, so
+            // without this a space continuing a phrase would also toggle
+            // playback before on_panel_key ever saw the keystroke.
+            // While a phrase is up the panel carries its contexts, which
+            // scope the workspace's space binding out (only while the
+            // phrase is still taking keystrokes) and Root's tab traversal
+            // out (for as long as there's a phrase to cycle).
+            .when_some(
+                panel::type_ahead_context(&self.type_ahead, self.type_ahead_at),
+                |d, context| d.key_context(context),
+            )
+            // A press anywhere in the panel ends the phrase: the cursor
+            // has moved by hand, so the cycle it was stepping is stale,
+            // and tab belongs back with panel traversal. Capture phase,
+            // so rows and tiles that stop the press can't hide it.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                this.clear_type_ahead(cx);
+            }))
+            // Tab cycles the live phrase's matches, off the bindings the
+            // TypeAhead context above scopes in; with no phrase up, tab
+            // stays Root's focus traversal.
+            .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
+            .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
             // Type-to-jump while the wall itself holds focus. The guard
             // keeps it off while the search box is focused, whose keys
             // bubble up through the toolbar child.
@@ -2293,6 +2554,7 @@ impl ArtistGridPanel {
                         window.focus(&this.focus);
                         this.glide_to = None;
                         this.restore = None;
+                        this.letter_hold = None;
                         this.flick.begin(event.position.along(axis));
                         this.touch_resume(cx);
                         cx.notify();
@@ -2302,6 +2564,7 @@ impl ArtistGridPanel {
                 // only restarts the idle clock and leaves the scroll itself
                 // to the list and the gap-filler below.
                 .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                    this.letter_hold = None;
                     this.touch_resume(cx);
                 }))
                 // A plain wheel only sends a vertical delta, and the list
@@ -2317,6 +2580,7 @@ impl ArtistGridPanel {
                         }
                         this.glide_to = None;
                         this.restore = None;
+                        this.letter_hold = None;
                         let base = this.scroll.base_handle().clone();
                         let offset = base.offset().apply_along(Axis::Horizontal, |x| x + delta.y);
                         base.set_offset(offset);
@@ -2415,6 +2679,29 @@ impl ArtistGridPanel {
                     }
                 })
                 .into_any_element()
+        };
+        // The rail rides in its own gutter beside the wall, so the wall
+        // shrinks to make room instead of the letters overlaying tiles.
+        let content = match self.letter_rail(cx) {
+            Some(gutter) => {
+                let row = self.axis() == Axis::Vertical;
+                let start = self.config.letters_side == LetterSide::Start;
+                let base = div().flex_1().min_h_0().min_w_0().flex().map(|d| {
+                    if row {
+                        d.flex_row()
+                    } else {
+                        d.flex_col()
+                    }
+                });
+                let wall = div().flex_1().min_w_0().min_h_0().flex().child(content);
+                if start {
+                    base.child(gutter).child(wall)
+                } else {
+                    base.child(wall).child(gutter)
+                }
+                .into_any_element()
+            }
+            None => content,
         };
         root.child(content)
             .when_some(self.error.clone(), |d, error| {

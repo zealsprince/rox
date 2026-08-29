@@ -36,14 +36,15 @@ use crate::workspace::{
 
 /// Bindings match key contexts along the focus path, so this scope holds
 /// anywhere inside a workspace window except while the library search box
-/// is focused: there space and arrows keep typing into the query.
+/// is focused, or a browsing panel's type-ahead phrase is mid-flight:
+/// there space and arrows keep typing into the query or the phrase instead.
 /// Bindings win over key listeners, so the exclusion hands the keys back.
 ///
 /// The exclusion is for bare chords only. A command rebound onto a
 /// modified chord widens to [`WORKSPACE`] at build time, since ctrl-f
 /// isn't anything the search box needs and losing the binding while you
 /// type is the whole complaint. See [`Command::binding`].
-const PLAYBACK: Option<&str> = Some("Workspace && !SearchInput");
+const PLAYBACK: Option<&str> = Some("Workspace && !SearchInput && !TypeAhead");
 
 /// The plain workspace scope: anywhere in a workspace window, the search
 /// box included, since everything bound here has a modifier.

@@ -1766,6 +1766,12 @@ impl Render for TabPanel {
             // keyboard zoom targets it. Capture phase, so tabs and panel
             // content that stop mouse events can't hide the click.
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                // The other half of the focus-ring story: a press means
+                // the ring goes, since it answers the keyboard only.
+                if crate::focus_visible() {
+                    crate::set_focus_visible(false);
+                    cx.refresh_windows();
+                }
                 let weak = cx.entity().downgrade();
                 _ = this
                     .dock_area
@@ -1828,6 +1834,25 @@ impl Render for TabPanel {
             )
             .child(self.render_title_bar(&state, window, cx))
             .child(self.render_active_panel(&state, window, cx))
+            // The focus ring, drawn once the keyboard put focus in this
+            // group. An overlay rather than a border on the root: a real
+            // border would take a pixel off the content and shift the
+            // whole panel every time focus arrived. Plain and
+            // uninteractive, so it registers no hitbox and nothing under
+            // it loses a click.
+            .when(
+                crate::focus_visible() && focus_handle.contains_focused(window, cx),
+                |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .border_1()
+                            .border_color(cx.theme().ring)
+                            .rounded(cx.theme().radius),
+                    )
+                },
+            )
             // Same structure as gpui-component's ContextMenu element: a
             // window-sized occluding layer swallows the dismissing click,
             // the inner anchored pins the menu to the pointer. The layer also

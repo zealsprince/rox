@@ -17,6 +17,8 @@ valign-middle = 中央
 valign-bottom = 下
 letter-rail-compact = コンパクトな文字インデックス
     .description = インデックスを折り返さず、1行に収めてスクロールする
+letter-rail-side = インデックスの位置
+    .description = 壁のどちらの端にインデックスを配置するか
 
 ## Panel source and search rows
 source-track = トラック
@@ -1694,8 +1696,10 @@ lyrics-line-falloff = 行の減衰
     .description = 現在行から 1 行離れるごとに、どれくらい暗くするか
 lyrics-line-spacing = 行間
     .description = 同期歌詞の行どうしの間隔。文字サイズに対する倍率
+lyrics-look-again = もう一度探す
 lyrics-mark-dots = 点
 lyrics-mark-note = 音符
+lyrics-marked-notice = 歌詞なしに設定済み
 lyrics-matcher-blocked-no-match = 適用できる候補がありません
 lyrics-matcher-blocked-pick = 適用する候補を選んでください
 lyrics-matcher-blocked-saving = 歌詞を保存中...

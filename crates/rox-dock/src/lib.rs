@@ -60,6 +60,21 @@ pub use tiles::*;
 
 pub fn init(cx: &mut App) {
     PanelRegistry::init(cx);
+    // Panels are tab stops, so tab walks between them, and a walk you
+    // can't see is a walk you can't follow. The ring that shows it
+    // answers the keyboard only, so something has to tell a tab from a
+    // press: this half notes the tab. A keystroke observer rather than a
+    // key listener, because gpui-component's Root binds tab and a
+    // binding's action consumes the key before any listener runs, while
+    // observers still fire for a consumed keystroke.
+    cx.observe_keystrokes(|event, _, cx| {
+        if event.keystroke.key != "tab" || focus_visible() {
+            return;
+        }
+        set_focus_visible(true);
+        cx.refresh_windows();
+    })
+    .detach();
 }
 
 actions!(rox_dock, [ToggleZoom, ClosePanel]);
@@ -101,6 +116,23 @@ pub fn set_resize_lock(on: bool) {
 /// off. What every resize handle asks before offering itself.
 pub fn resize_locked() -> bool {
     resize_lock() && !design_mode()
+}
+
+/// rox addition: whether focus last moved by keyboard rather than by a
+/// press, the `:focus-visible` gpui has no notion of. The tab panel's
+/// focus ring reads it, so a tab walk is visible and a click stays quiet;
+/// [`init`] sets it on a tab, and the tab panel clears it on any press.
+/// A static like the two above, since it's one flag for the whole app and
+/// every window agrees on it.
+static FOCUS_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+pub fn focus_visible() -> bool {
+    FOCUS_VISIBLE.load(Ordering::Relaxed)
+}
+
+/// Note how focus last moved. Repainting is the caller's.
+pub fn set_focus_visible(on: bool) {
+    FOCUS_VISIBLE.store(on, Ordering::Relaxed);
 }
 
 pub enum DockEvent {

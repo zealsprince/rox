@@ -16,6 +16,8 @@ valign-middle = 居中
 valign-bottom = 底部
 letter-rail-compact = 紧凑索引
     .description = 索引保持单行滚动而不换行
+letter-rail-side = 索引位置
+    .description = 索引悬挂在墙的哪一侧
 
 ## Panel source and search rows
 source-track = 曲目
@@ -1694,8 +1696,10 @@ lyrics-line-falloff = 逐行衰减
     .description = 离当前行每远一行暗多少
 lyrics-line-spacing = 行间距
     .description = 同步歌词各行隔多远，按文字大小的倍数算
+lyrics-look-again = 重新查找
 lyrics-mark-dots = 圆点
 lyrics-mark-note = 音符
+lyrics-marked-notice = 已标记为无歌词
 lyrics-matcher-blocked-no-match = 没有可应用的匹配
 lyrics-matcher-blocked-pick = 选一个匹配来应用
 lyrics-matcher-blocked-saving = 正在保存歌词…

@@ -37,6 +37,7 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::discs::{self, DiscCache, DiscShape, DiscStyle};
+use crate::grid::LetterSide;
 use crate::panel::{
     self, setting_row, toggle, AppState, FlickState, PanelChrome, PanelSettings, ResumeIdle,
     ScrubState,
@@ -191,6 +192,9 @@ pub struct ArtConfig {
     /// libraries whose scripts spill past one row of initials.
     #[serde(default)]
     pub letters_compact: bool,
+    /// Which edge of the shelf the rail hangs on. The far edge by default.
+    #[serde(default)]
+    pub letters_side: LetterSide,
     /// Where the hero's caption sits: over the shelf's top, right under
     /// the cover, along the panel's bottom, or nowhere.
     #[serde(default)]
@@ -237,6 +241,7 @@ impl Default for ArtConfig {
             perspective: true,
             letters: false,
             letters_compact: false,
+            letters_side: LetterSide::default(),
             label: LabelPos::default(),
             center: 0,
         }
@@ -496,7 +501,7 @@ impl ArtPanel {
             error: None,
             resync_box: false,
             selection_ids,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _library_changed,
             _thumbs_changed,
@@ -1611,9 +1616,9 @@ impl ArtPanel {
         let has_text = !album.is_empty() || !artist.is_empty();
         let anchor = div().absolute().left_0().right_0();
         let anchor = match pos {
-            LabelPos::Top => anchor.top(px(6.)),
+            // The rail owns whichever edge it's down on.
+            LabelPos::Top => anchor.top(px(if rail { 22. } else { 6. })),
             LabelPos::Center => anchor.top(px(below)),
-            // The rail owns the very bottom edge while it's down there.
             LabelPos::Bottom | LabelPos::Hidden => anchor.bottom(px(if rail { 22. } else { 6. })),
         };
         anchor.flex().flex_col().items_center().when(has_text, |d| {
@@ -1674,7 +1679,8 @@ impl ArtPanel {
 
     /// The letter rail along the shelf's edge: each initial once, a click
     /// jumping the carousel to its first album. Along the bottom for a
-    /// row, down the right for a column.
+    /// row, down the right for a column, unless `letters_side` swaps it
+    /// to the near edge instead.
     fn letter_rail(&self, axis: Axis, cx: &mut Context<Self>) -> Option<Div> {
         if !self.config.letters {
             return None;
@@ -1686,6 +1692,7 @@ impl ArtPanel {
             .iter()
             .rposition(|&(_, ix)| ix <= center)
             .unwrap_or(0);
+        let start = self.config.letters_side == LetterSide::Start;
         let rail = panel::letter_rail(
             &self.letters,
             active,
@@ -1698,21 +1705,22 @@ impl ArtPanel {
             cx,
         )?;
         // The strip positions itself only along its axis; the shelf hangs
-        // it on the bottom edge for a row, the right edge for a column.
+        // it on the bottom edge for a row, the right edge for a column,
+        // or the near edge of either when swapped.
         Some(if axis == Axis::Horizontal {
-            div()
-                .absolute()
-                .bottom(tokens::SPACE_XS)
-                .left_0()
-                .right_0()
-                .child(rail)
+            let rail = div().absolute().left_0().right_0().child(rail);
+            if start {
+                rail.top(tokens::SPACE_XS)
+            } else {
+                rail.bottom(tokens::SPACE_XS)
+            }
         } else {
-            div()
-                .absolute()
-                .right(tokens::SPACE_XS)
-                .top_0()
-                .bottom_0()
-                .child(rail)
+            let rail = div().absolute().top_0().bottom_0().child(rail);
+            if start {
+                rail.left(tokens::SPACE_XS)
+            } else {
+                rail.right(tokens::SPACE_XS)
+            }
         })
     }
 }
@@ -2017,6 +2025,18 @@ impl PanelSettings for ArtPanel {
                         ),
                     ))
                     .when(self.config.letters, |d| {
+                        let side_icons: &'static [(&'static str, LetterSide)] =
+                            if self.axis() == Axis::Horizontal {
+                                &[
+                                    (icons::PANEL_TOP, LetterSide::Start),
+                                    (icons::PANEL_BOTTOM, LetterSide::End),
+                                ]
+                            } else {
+                                &[
+                                    (icons::PANEL_LEFT, LetterSide::Start),
+                                    (icons::PANEL_RIGHT, LetterSide::End),
+                                ]
+                            };
                         d.child(setting_row(
                             rox_i18n::t!("letter-rail-compact"),
                             Some(rox_i18n::t!("letter-rail-compact.description")),
@@ -2024,6 +2044,19 @@ impl PanelSettings for ArtPanel {
                                 self.config.letters_compact,
                                 |this: &mut Self, on, cx| {
                                     this.config.letters_compact = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                        .child(setting_row(
+                            rox_i18n::t!("letter-rail-side"),
+                            Some(rox_i18n::t!("letter-rail-side.description")),
+                            panel::icon_choices(
+                                side_icons,
+                                self.config.letters_side,
+                                |this: &mut Self, side, cx| {
+                                    this.config.letters_side = side;
                                     cx.notify();
                                 },
                                 cx,
@@ -2478,10 +2511,16 @@ impl ArtPanel {
                 let d = ix as f32 - self.pos;
                 shelf = shelf.child(self.cover(ix as usize, d, hero, cx_px, cy_px, cx));
             }
-            // A horizontal rail sits on the bottom edge, so a Bottom label
-            // lifts above it.
-            let rail_below =
+            // A horizontal rail sits on the shelf's top or bottom edge, so
+            // a label sharing that edge lifts clear of it.
+            let rail_active =
                 self.config.letters && self.letters.len() >= 2 && axis == Axis::Horizontal;
+            let rail_start = self.config.letters_side == LetterSide::Start;
+            let rail_edge = match self.config.label {
+                LabelPos::Top => rail_active && rail_start,
+                LabelPos::Bottom | LabelPos::Hidden => rail_active && !rail_start,
+                LabelPos::Center => false,
+            };
             let shelf = if self.config.label == LabelPos::Hidden {
                 shelf
             } else {
@@ -2489,7 +2528,7 @@ impl ArtPanel {
                     center,
                     self.config.label,
                     cy_px + hero / 2.0 + 8.,
-                    rail_below,
+                    rail_edge,
                     cx,
                 ))
             };

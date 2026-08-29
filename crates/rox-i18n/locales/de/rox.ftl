@@ -16,6 +16,8 @@ valign-middle = Mitte
 valign-bottom = Unten
 letter-rail-compact = Kompakte Leiste
     .description = Die Leiste auf eine Zeile begrenzen, die scrollt statt umzubrechen
+letter-rail-side = Leistenposition
+    .description = An welcher Kante der Wand die Leiste hängt
 
 ## Panel source and search rows
 source-track = Titel
@@ -1749,8 +1751,10 @@ lyrics-line-falloff = Abdunklung
     .description = Wie stark jede Zeile pro Schritt weg von der aktiven abdunkelt
 lyrics-line-spacing = Zeilenabstand
     .description = Wie weit die synchronen Zeilen auseinanderliegen, als Vielfaches der Textgröße
+lyrics-look-again = Erneut suchen
 lyrics-mark-dots = Punkte
 lyrics-mark-note = Note
+lyrics-marked-notice = Als ohne Songtext markiert
 lyrics-matcher-blocked-no-match = Kein Treffer zum Übernehmen
 lyrics-matcher-blocked-pick = Einen Treffer zum Übernehmen wählen
 lyrics-matcher-blocked-saving = Speichere den Text...

@@ -16,6 +16,8 @@ valign-middle = По центру
 valign-bottom = Знизу
 letter-rail-compact = Компактна смуга
     .description = Обмежити смугу одним рядком із прокручуванням замість перенесення
+letter-rail-side = Положення смуги
+    .description = На якому боці стіни розташована смуга
 
 ## Panel source and search rows
 source-track = Трек
@@ -1771,8 +1773,10 @@ lyrics-line-falloff = Згасання рядків
     .description = Наскільки кожен рядок тьмяніє з кожним кроком від активного
 lyrics-line-spacing = Міжрядковий інтервал
     .description = Наскільки далеко стоять один від одного синхронізовані рядки, кратно розміру тексту
+lyrics-look-again = Шукати знову
 lyrics-mark-dots = Крапки
 lyrics-mark-note = Нота
+lyrics-marked-notice = Позначено: без тексту
 lyrics-matcher-blocked-no-match = Немає збігу, який застосувати
 lyrics-matcher-blocked-pick = Виберіть збіг, щоб застосувати
 lyrics-matcher-blocked-saving = Зберігаємо слова...

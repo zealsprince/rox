@@ -20,11 +20,12 @@ use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
 use gpui_component::{Icon, Side, Sizable, Size};
 use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
+use rox_panel_api::actions::{TypeAheadNext, TypeAheadPrev};
 
 use rox_core::fmt::{fmt_ago, fmt_ms, fmt_num};
 use rox_core::QUEUE_CAP;
 use rox_library::cue::TrackKey;
-use rox_library::projection::Projection;
+use rox_library::projection::{Projection, QueryField, QUERY_FIELDS};
 use rox_library::view::{self, Group, Grouping, Row, ViewSpec};
 
 use crate::assets::icons;
@@ -807,39 +808,90 @@ impl TrackTable {
         )
     }
 
-    /// The next row whose leading text starts with the typed prefix, from
-    /// the cursor on, wrapping. The leading text follows the active sort:
-    /// its column when it has text, the album artist for the canonical
-    /// order (what the grouping runs on), the track artist for sorts
-    /// without text of their own (duration). ASCII-insensitive, like
-    /// search.
+    /// Split a leading `field:` pin off a type-ahead phrase, the same
+    /// vocabulary the shared query's `field:"value"` terms use ([`QUERY_FIELDS`]),
+    /// so typing `artist:` narrows the jump to that column. Unrecognized
+    /// or non-textual prefixes (an unknown name, or a numeric-only field
+    /// like `rating:`) fall through and the whole phrase reads as one
+    /// literal, same as an unknown prefix in the query box.
+    fn type_ahead_pin(phrase: &str) -> Option<(&'static str, &str)> {
+        let (name, rest) = phrase.split_once(':')?;
+        let (_, field) = QUERY_FIELDS
+            .iter()
+            .find(|(known, _)| known.eq_ignore_ascii_case(name))?;
+        let key = match field {
+            QueryField::Title => "title",
+            QueryField::Artist => "artist",
+            QueryField::AlbumArtist => "album_artist",
+            QueryField::Album => "album",
+            QueryField::Genre => "genre",
+            QueryField::Codec => "codec",
+            QueryField::Year
+            | QueryField::Folder
+            | QueryField::Rating
+            | QueryField::Plays
+            | QueryField::Added => return None,
+        };
+        Some((key, rest))
+    }
+
+    /// The next row the typed phrase jumps to, from the cursor on,
+    /// wrapping. A plain phrase matches the start of any word in any of
+    /// the row's naming fields: title, artist, album artist, album. A
+    /// `field:` pin narrows it to one column, which is also how the
+    /// repeat-heavy fields (genre, codec) are reached: in the open sweep
+    /// they'd sit on nearly every row and bury the real hits. ASCII
+    /// case-insensitive, like search.
     fn find_prefix(&self, prefix: &str, include_current: bool, cx: &App) -> Option<usize> {
-        let library = self.state.library.read(cx);
-        let projection = library.projection()?;
         let len = self.view.len();
         if len == 0 {
             return None;
         }
-        let field = self.sort.as_ref().map(|(key, _)| key.as_ref());
         let start = match self.cursor {
             Some(cursor) if include_current => cursor,
             Some(cursor) => cursor + 1,
             None => 0,
         };
-        (0..len).map(|i| (start + i) % len).find(|&ix| {
+        self.find_in((0..len).map(move |i| (start + i) % len), prefix, cx)
+    }
+
+    /// The neighbouring match in either direction, for Tab and Shift+Tab
+    /// cycling a live phrase's hits.
+    fn find_step(&self, prefix: &str, back: bool, cx: &App) -> Option<usize> {
+        self.find_in(
+            panel::type_ahead_scan(self.view.len(), self.cursor, back),
+            prefix,
+            cx,
+        )
+    }
+
+    /// The first row along `order` the phrase matches, [`find_prefix`]'s
+    /// rules.
+    fn find_in(&self, order: impl Iterator<Item = usize>, prefix: &str, cx: &App) -> Option<usize> {
+        let library = self.state.library.read(cx);
+        let projection = library.projection()?;
+        let pin = Self::type_ahead_pin(prefix);
+        order.into_iter().find(|&ix| {
             let Some(row) = self.track_at(ix) else {
                 return false;
             };
             let v = projection.resolve(row);
-            let text = match field {
-                Some("title") => v.title,
-                Some("album") => v.album,
-                Some("album_artist") | None => v.album_artist,
-                Some("codec") => v.codec,
-                Some(_) => v.artist,
-            };
-            text.get(..prefix.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+            match pin {
+                Some((field, needle)) => {
+                    let text = match field {
+                        "title" => v.title,
+                        "artist" => v.artist,
+                        "album_artist" => v.album_artist,
+                        "album" => v.album,
+                        "genre" => v.genre,
+                        _ => v.codec,
+                    };
+                    panel::type_ahead_hit(text, needle)
+                }
+                None => [v.title, v.artist, v.album_artist, v.album]
+                    .iter()
+                    .any(|text| panel::type_ahead_hit(text, prefix)),
+            }
         })
     }
 
@@ -1549,6 +1601,9 @@ pub struct LibraryPanel {
     /// glide there instead of jumping.
     follow_playing: bool,
     smooth_follow: bool,
+    /// The row the last follow aimed at, so a catalog refresh that leaves
+    /// the playing track where it already was doesn't scroll there again.
+    followed_row: Option<usize>,
     /// Scroll back to the playing row on its own once the list has gone
     /// untouched a spell.
     resume_playing: bool,
@@ -1664,6 +1719,9 @@ pub struct LibraryPanel {
     /// Watches the portrait service for the artist grouping's header
     /// tiles, the artist wall's move: an arriving face repaints the rows.
     _portraits_changed: Subscription,
+    /// Drops the phrase when focus leaves the panel, so tab goes back to
+    /// walking panels instead of cycling a phrase from a past visit.
+    _type_ahead_blur: Subscription,
 }
 
 impl LibraryPanel {
@@ -1694,9 +1752,15 @@ impl LibraryPanel {
                 this.error = None;
                 this.refresh_view(cx);
                 // The catalog loads after a restored track starts, so the
-                // launch's follow waits for this first rebuild; rescans
-                // re-scroll to the playing row the same way.
-                if this.follow_playing {
+                // launch's follow waits for this first rebuild; a rescan
+                // that moves the playing row re-scrolls the same way. A
+                // refresh that leaves the row exactly where it was does
+                // not: a tag save reindexes the files it wrote and comes
+                // back through here, and that shouldn't yank the list off
+                // whatever the user was looking at.
+                if this.follow_playing
+                    && this.table.read(cx).delegate().playing_row != this.followed_row
+                {
                     this.follow_playing(cx);
                 }
                 cx.notify();
@@ -1814,11 +1878,22 @@ impl LibraryPanel {
         let _portraits_changed = cx.observe(&state.portraits, |this: &mut LibraryPanel, _, cx| {
             this.table.update(cx, |_, cx| cx.notify());
         });
+        let focus = cx.focus_handle().tab_stop(true);
+        // The phrase outlives its badge, so it needs an end: leaving the
+        // panel drops it, which is also what hands tab back to traversal.
+        let panel = cx.weak_entity();
+        let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
+            panel
+                .update(cx, |this: &mut LibraryPanel, cx| {
+                    this.clear_type_ahead(cx);
+                })
+                .ok();
+        });
         let mut this = LibraryPanel {
             state,
             table,
             query: config.query,
-            focus: cx.focus_handle(),
+            focus,
             search,
             show_search: config.search,
             query_source: config.query_source,
@@ -1831,6 +1906,7 @@ impl LibraryPanel {
             restore_scroll: (config.scroll_row > 0).then_some(config.scroll_row),
             follow_playing: config.follow_playing,
             smooth_follow: config.smooth_follow,
+            followed_row: None,
             resume_playing: config.resume_playing,
             resume_idle: ResumeIdle::default(),
             glide_to: None,
@@ -1882,6 +1958,7 @@ impl LibraryPanel {
             _player_changed,
             _thumbs_changed,
             _portraits_changed,
+            _type_ahead_blur,
         };
         this.refresh_view(cx);
         this.columns_shown = this.shown_columns(cx);
@@ -2027,6 +2104,7 @@ impl LibraryPanel {
     /// jump otherwise. Scroll only: the automatic follow never touches
     /// the selection, that's the menu jump's move.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
+        self.followed_row = self.table.read(cx).delegate().playing_row;
         if self.smooth_follow {
             if let Some(row) = self.table.read(cx).delegate().playing_row {
                 self.glide_to = Some(row);
@@ -2086,7 +2164,13 @@ impl LibraryPanel {
         self.touch_resume(cx);
         let shift = keystroke.modifiers.shift;
         match keystroke.key.as_str() {
-            "escape" => self.deselect(cx),
+            // The escape ladder: a phrase drops first, since it's
+            // holding tab, then the selection.
+            "escape" => {
+                if !self.clear_type_ahead(cx) {
+                    self.deselect(cx);
+                }
+            }
             "up" => self.move_cursor(-1, shift, cx),
             "down" => self.move_cursor(1, shift, cx),
             "pageup" => self.move_cursor(-PAGE_ROWS, shift, cx),
@@ -2113,9 +2197,13 @@ impl LibraryPanel {
                 };
                 // Space stays the workspace's play/pause; it never starts
                 // a jump, only continues one mid-phrase.
-                if self.type_ahead.is_empty() && text == " " {
+                if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
                     return;
                 }
+                // Consumed as type-ahead text: stop it here so it doesn't
+                // also match the workspace's space-bound TogglePlayback
+                // binding, which this panel otherwise inherits unscoped.
+                cx.stop_propagation();
                 self.type_to(text.clone(), cx);
             }
         }
@@ -2126,8 +2214,8 @@ impl LibraryPanel {
     /// stays put instead of skipping ahead.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
         let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
-        // The badge shows the phrase now and leaves when it expires; a miss
-        // below still updated the phrase, so repaint either way.
+        // The badge shows the phrase now and leaves when the window
+        // lapses; a miss below still updated it, so repaint either way.
         panel::type_ahead_fade(cx);
         cx.notify();
         let target = {
@@ -2137,6 +2225,51 @@ impl LibraryPanel {
         if let Some(ix) = target {
             self.set_cursor(ix, false, cx);
         }
+    }
+
+    /// Drop the phrase, handing tab back to Root's panel traversal. True
+    /// when there was one, for the escape ladder.
+    fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.type_ahead.is_empty() {
+            return false;
+        }
+        self.type_ahead.clear();
+        self.type_ahead_at = None;
+        cx.notify();
+        true
+    }
+
+    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
+    /// off the cycle-scoped tab bindings. Deliberately leaves the window
+    /// stamp alone: the badge and the letter grouping belong to typing,
+    /// so a run of tabs steps silently rather than reviving them.
+    fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
+        if self.type_ahead.is_empty() {
+            return;
+        }
+        cx.notify();
+        let target = {
+            let delegate = self.table.read(cx).delegate();
+            delegate.find_step(&self.type_ahead, back, cx)
+        };
+        if let Some(ix) = target {
+            self.set_cursor(ix, false, cx);
+        }
+    }
+
+    /// The type-ahead badge text: a `field:` pin shows as the column's
+    /// label in parens ahead of what's matching, so `artist:bea` reads
+    /// `(Artist) bea`; a plain phrase, matching any naming field, shows
+    /// bare. Empty while there's no phrase, same as the bare buffer, so
+    /// [`panel::type_ahead_overlay`]'s own emptiness check still hides
+    /// the badge.
+    fn type_ahead_display(&self) -> String {
+        if let Some((field, needle)) = TrackTable::type_ahead_pin(&self.type_ahead) {
+            if let Some(column) = columns::columns().iter().find(|c| c.key == field) {
+                return format!("({}) {}", column.label, needle);
+            }
+        }
+        self.type_ahead.clone()
     }
 
     /// Ctrl/Cmd+A: every track row of the current view, headers and disc
@@ -4066,6 +4199,31 @@ impl LibraryPanel {
             .flex_col()
             .bg(palette::bg_panel())
             .track_focus(&self.focus)
+            // Scopes the workspace's space-bound playback binding out while
+            // a type-ahead phrase is mid-flight, the same way the search
+            // box's own context does: bindings win over key listeners, so
+            // without this a space continuing a phrase would also toggle
+            // playback before on_panel_key ever saw the keystroke.
+            // While a phrase is up the panel carries its contexts, which
+            // scope the workspace's space binding out (only while the
+            // phrase is still taking keystrokes) and Root's tab traversal
+            // out (for as long as there's a phrase to cycle).
+            .when_some(
+                panel::type_ahead_context(&self.type_ahead, self.type_ahead_at),
+                |d, context| d.key_context(context),
+            )
+            // A press anywhere in the panel ends the phrase: the cursor
+            // has moved by hand, so the cycle it was stepping is stale,
+            // and tab belongs back with panel traversal. Capture phase,
+            // so rows and tiles that stop the press can't hide it.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                this.clear_type_ahead(cx);
+            }))
+            // Tab cycles the live phrase's matches, off the bindings the
+            // TypeAhead context above scopes in; with no phrase up, tab
+            // stays Root's focus traversal.
+            .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
+            .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.on_panel_key(event, window, cx)),
             )
@@ -4084,7 +4242,7 @@ impl LibraryPanel {
                 |d| d.child(self.toolbar(window, cx)),
             )
             .child(div().flex_1().min_h_0().relative().child(body).children(
-                panel::type_ahead_overlay(&self.type_ahead, self.type_ahead_at),
+                panel::type_ahead_overlay(&self.type_ahead_display(), self.type_ahead_at),
             ))
     }
 }

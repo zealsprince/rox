@@ -16,6 +16,8 @@ valign-middle = По центру
 valign-bottom = Снизу
 letter-rail-compact = Компактная полоса
     .description = Ограничить полосу одной строкой с прокруткой вместо переноса
+letter-rail-side = Положение полосы
+    .description = На какой стороне стены расположена полоса
 
 ## Panel source and search rows
 source-track = Трек
@@ -1761,8 +1763,10 @@ lyrics-line-falloff = Затухание строк
     .description = Насколько каждая строка тускнеет с каждым шагом от активной
 lyrics-line-spacing = Межстрочный интервал
     .description = Расстояние между синхронизированными строками, кратное размеру текста
+lyrics-look-again = Искать снова
 lyrics-mark-dots = Точки
 lyrics-mark-note = Нота
+lyrics-marked-notice = Отмечено: без текста
 lyrics-matcher-blocked-no-match = Нечего применять, совпадений нет
 lyrics-matcher-blocked-pick = Выберите совпадение, чтобы применить
 lyrics-matcher-blocked-saving = Сохранение слов...

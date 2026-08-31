@@ -855,10 +855,8 @@ impl ArtPanel {
             .iter()
             .find(|(known, _)| known.eq_ignore_ascii_case(name))?;
         match field {
-            QueryField::Album
-            | QueryField::Title => Some((false, rest)),
-            QueryField::Artist
-            | QueryField::AlbumArtist => Some((true, rest)),
+            QueryField::Album | QueryField::Title => Some((false, rest)),
+            QueryField::Artist | QueryField::AlbumArtist => Some((true, rest)),
             _ => None,
         }
     }
@@ -950,7 +948,11 @@ impl ArtPanel {
         pin: Option<(bool, &str)>,
         needle: &str,
     ) -> bool {
-        let Some(&row) = self.cells.get(ix).and_then(|cell| self.view.get(cell.start)) else {
+        let Some(&row) = self
+            .cells
+            .get(ix)
+            .and_then(|cell| self.view.get(cell.start))
+        else {
             return false;
         };
         let resolved = projection.resolve(row);

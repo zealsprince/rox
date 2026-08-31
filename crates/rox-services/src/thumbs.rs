@@ -88,7 +88,32 @@ pub struct Thumbs {
     /// The settle wait ahead of the next sweep; replaced (and so cancelled)
     /// by each catalog change, which folds a burst into one pass.
     sweep_settle: Option<Task<()>>,
+    /// Cumulative counters for `debug.thumbs`: never reset, so a caller
+    /// samples twice and takes the difference to get a rate. Diagnostic
+    /// only, not read anywhere else in the service.
+    stats: Stats,
     _library_changed: Subscription,
+}
+
+/// Cumulative activity counters, snapshotted for the `debug.thumbs` IPC
+/// method. Not wired to anything but that: a way to see, from outside the
+/// process, whether requests are still arriving and loads are still
+/// landing during a stall, without attaching a debugger.
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub struct Stats {
+    /// Total `get()` calls served, hit or miss.
+    pub requests: u64,
+    /// Total loads actually kicked off on the executor.
+    pub starts: u64,
+    /// Total loads that landed, filed by `land`.
+    pub lands: u64,
+    /// Loads asked for but declined because the pool was full or one for
+    /// that path was already running.
+    pub refused: u64,
+    /// Loads in flight right now, the pool gauge.
+    pub pending: usize,
+    /// Cache size right now.
+    pub entries: usize,
 }
 
 impl Thumbs {
@@ -119,7 +144,17 @@ impl Thumbs {
             generation: 0,
             sweep_cancel: Arc::new(AtomicBool::new(false)),
             sweep_settle: None,
+            stats: Stats::default(),
             _library_changed,
+        }
+    }
+
+    /// A snapshot of the cumulative counters, for `debug.thumbs`.
+    pub fn stats(&self) -> Stats {
+        Stats {
+            pending: self.pending.len(),
+            entries: self.entries.len(),
+            ..self.stats
         }
     }
 
@@ -131,6 +166,7 @@ impl Thumbs {
     /// the same cover rather than a blank tile.
     pub fn get(&mut self, path: &Path, cx: &mut Context<Self>) -> Thumb {
         self.clock += 1;
+        self.stats.requests += 1;
         if let Some(entry) = self.entries.get_mut(path) {
             entry.touch = self.clock;
             let answer = match &entry.image {
@@ -158,8 +194,10 @@ impl Thumbs {
             return;
         };
         if self.pending.contains(path) || self.pending.len() >= POOL {
+            self.stats.refused += 1;
             return;
         }
+        self.stats.starts += 1;
         self.pending.insert(path.to_path_buf());
         let generation = self.generation;
         let conn = conn.clone();
@@ -192,6 +230,7 @@ impl Thumbs {
     /// bitmap still on screen; only a cover that really changed releases
     /// the old one.
     fn land(&mut self, path: PathBuf, bytes: Option<Vec<u8>>, cx: &mut App) {
+        self.stats.lands += 1;
         let image = bytes.map(|b| Arc::new(Image::from_bytes(ImageFormat::Jpeg, b)));
         let retired = self
             .entries

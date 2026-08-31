@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use crate::group_head::{self, ArtSide, HeadPiece, Headers, TileFace};
 use crate::panel::{dedup, PanelChrome};
 use crate::query::shared_query::QuerySource;
-use crate::settings::ui as settings_ui;
 use crate::settings::GainModeSetting;
 
 /// One column the library can show: its stable key, header label, default
@@ -326,56 +325,19 @@ impl GroupBy {
     }
 }
 
-/// The slider bounds for the row and header-line heights, px at the stock
-/// font size, and the stock height itself: what the rows draw at out of
-/// the box, and the height whose text is the stock 1 rem (the row and
-/// header text scale off their height's ratio to this).
-pub const ROW_HEIGHT_MIN: f32 = 18.;
-pub const ROW_HEIGHT_MAX: f32 = 48.;
-pub const ROW_HEIGHT_STOCK: f32 = 30.;
-pub const HEAD_HEIGHT_MAX: f32 = 72.;
-
-/// The gap and margin sliders' ceilings, same units: the open space over
-/// and under a header block, and the cover tile's inset inside the block.
-pub const HEAD_GAP_MAX: f32 = 24.;
-pub const ART_MARGIN_MAX: f32 = 16.;
-
-/// The row spacing slider's ceiling: extra height grown into each row,
-/// which the row fills; the text keeps the size the row height sets.
-pub const ROW_SPACING_MAX: f32 = 32.;
-
-/// The header text slider's range and stock value, px at the stock font
-/// size. The stock is the 1 rem the lines drew before the knob existed.
-pub const HEAD_TEXT_MIN: f32 = 8.;
-pub const HEAD_TEXT_MAX: f32 = 32.;
-pub const HEAD_TEXT_STOCK: f32 = 16.;
+/// The row and header appearance bounds and their fold helpers live with
+/// the shared track columns now that the playlists panel wants the same
+/// knobs; the library reads them from here so its own call sites and the
+/// `columns::*` glob keep working.
+use crate::track_ui::track_columns::fold_row_height;
+pub use crate::track_ui::track_columns::{
+    fold_head_text, fold_margin, ART_MARGIN_MAX, HEAD_GAP_MAX, HEAD_HEIGHT_MAX, HEAD_LINE_SLOTS,
+    HEAD_TEXT_MAX, HEAD_TEXT_MIN, HEAD_TEXT_STOCK, ROW_HEIGHT_MAX, ROW_HEIGHT_MIN,
+    ROW_HEIGHT_STOCK, ROW_SPACING_MAX,
+};
 
 fn default_head_text() -> f32 {
     HEAD_TEXT_STOCK
-}
-
-/// A saved header text size read back clamped to the slider's range;
-/// nonsense in a hand-edited dump falls to the stock size.
-pub fn fold_head_text(v: f32) -> f32 {
-    if v.is_finite() {
-        v.clamp(
-            HEAD_TEXT_MIN,
-            settings_ui::ceiling(HEAD_TEXT_MIN, HEAD_TEXT_MAX),
-        )
-    } else {
-        HEAD_TEXT_STOCK
-    }
-}
-
-/// A saved margin knob read back clamped to the band its input allows,
-/// not the strip's own top, so a typed value is kept across a reload;
-/// nonsense in a hand-edited dump falls to zero.
-pub fn fold_margin(v: f32, max: f32) -> f32 {
-    if v.is_finite() {
-        v.clamp(0., settings_ui::ceiling(0., max))
-    } else {
-        0.
-    }
 }
 
 /// The saved row and header-line heights, the legacy density folded in: a
@@ -388,14 +350,8 @@ pub fn fold_row_heights(config: &LibraryConfig) -> (f32, f32) {
         Some(Density::Comfortable) => 40.,
         _ => ROW_HEIGHT_STOCK,
     };
-    let clamp = |v: Option<f32>, default: f32, max: f32| match v {
-        Some(v) if v.is_finite() => {
-            v.clamp(ROW_HEIGHT_MIN, settings_ui::ceiling(ROW_HEIGHT_MIN, max))
-        }
-        _ => default,
-    };
-    let row = clamp(config.row_height, stock, ROW_HEIGHT_MAX);
-    let head = clamp(config.head_height, row, HEAD_HEIGHT_MAX);
+    let row = fold_row_height(config.row_height, stock, ROW_HEIGHT_MAX);
+    let head = fold_row_height(config.head_height, row, HEAD_HEIGHT_MAX);
     (row, head)
 }
 
@@ -583,9 +539,6 @@ impl Default for LibraryConfig {
     }
 }
 
-/// How many expanded line slots the config holds and the editors show.
-pub const HEAD_LINE_SLOTS: usize = 3;
-
 /// The saved header composition folded to the editors' shape: the compact
 /// row, and exactly [`HEAD_LINE_SLOTS`] expanded lines. A layout saved
 /// before composition has the year and details toggles instead; those
@@ -712,9 +665,10 @@ pub fn sort_key(key: &str) -> Option<SortKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        fold_head_lines, mirror_sort, reword, settings_ui, track_columns, ColumnSort, ColumnSpec,
-        HeadPiece, LibraryConfig, SharedString, HEAD_HEIGHT_MAX, HEAD_LINE_SLOTS, ROW_HEIGHT_MIN,
+        fold_head_lines, mirror_sort, reword, track_columns, ColumnSort, ColumnSpec, HeadPiece,
+        LibraryConfig, SharedString, HEAD_HEIGHT_MAX, HEAD_LINE_SLOTS, ROW_HEIGHT_MIN,
     };
+    use crate::settings::ui as settings_ui;
 
     /// A language switch rewords the headers and leaves the layout alone.
     ///

@@ -4,12 +4,13 @@
 //! its catalog, or its windows. A builder takes what it draws and a
 //! handler to call, and the caller owns everything else.
 
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
     canvas, div, prelude::*, px, svg, Action, AnyElement, App, Bounds, Context, Div, Element,
-    Entity, Focusable as _, GlobalElementId, InspectorElementId, LayoutId, MouseButton,
+    ElementId, Entity, Focusable as _, GlobalElementId, InspectorElementId, LayoutId, MouseButton,
     MouseDownEvent, Pixels, Point, Rgba, SharedString, Stateful, Subscription, Window,
 };
 use gpui_component::button::Button;
@@ -502,6 +503,7 @@ pub fn setting_row_dyn(
     description: Option<SharedString>,
     control: impl IntoElement,
 ) -> Div {
+    let label = label.into();
     div()
         .flex()
         .flex_col()
@@ -513,8 +515,12 @@ pub fn setting_row_dyn(
                 .items_center()
                 .justify_between()
                 .gap(tokens::SPACE_MD)
-                .child(label.into())
-                .child(div().flex_none().child(control)),
+                .child(label.clone())
+                // The control slot is named after the row, which is what
+                // gives the switch or button inside it a name of its own:
+                // ids nest, so a bare "toggle" under this is unique to
+                // this row. See [`ui::control_focus`].
+                .child(div().id(ElementId::Name(label)).flex_none().child(control)),
         )
         .when_some(description, |d, description| {
             d.child(
@@ -696,60 +702,145 @@ pub enum SliderWidth {
     Fill,
 }
 
+/// How far one arrow key moves a strip whose caller hasn't worked out a
+/// step of its own: a fortieth of the span, so a slider crosses under a
+/// held key in about a second.
+pub const SLIDER_STEP: f32 = 0.025;
+
 /// The scrub strip alone: the shared slider chrome over a drag surface,
 /// applying the strip fraction live on click and drag. The row builders
 /// below pair it with their readout.
+///
+/// Focusable, so the strip is reachable by Tab and moves under the arrow
+/// keys: left and down step back, right and up step forward, Home and End
+/// go to the ends. `step` is how far one press moves it.
 fn slider_strip<P: 'static>(
     scrub: &ScrubState,
     fraction: f32,
     width: SliderWidth,
+    step: f32,
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
-) -> Div {
-    let entity = cx.entity();
-    div()
-        .map(|d| match width {
-            SliderWidth::Fixed => d.w(SLIDER_W).flex_none(),
-            SliderWidth::Fill => d.flex_1(),
-        })
-        .h(tokens::CONTROL_H)
-        .cursor_pointer()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener({
+) -> SliderStrip<P> {
+    SliderStrip {
+        scrub: scrub.clone(),
+        fraction,
+        width,
+        step,
+        entity: cx.entity(),
+        apply: Rc::new(apply),
+    }
+}
+
+/// What a strip does with a fraction it was moved to, held per strip.
+type ApplyFraction<P> = Rc<dyn Fn(&mut P, f32, &mut Context<P>)>;
+
+/// [`slider_strip`]'s element.
+#[derive(IntoElement)]
+struct SliderStrip<P: 'static> {
+    scrub: ScrubState,
+    fraction: f32,
+    width: SliderWidth,
+    step: f32,
+    /// The view the strip writes back to. A plain element renders with an
+    /// `App` rather than the view's own context, so the handlers go back
+    /// through the entity the way the drag already did.
+    entity: Entity<P>,
+    apply: ApplyFraction<P>,
+}
+
+impl<P: 'static> RenderOnce for SliderStrip<P> {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // The strip's identity is the scrub state's, which lives on the
+        // window that owns the slider and is already what a readout edit
+        // is tracked by.
+        let focus = ui::control_focus(
+            ElementId::NamedInteger("slider".into(), self.scrub.id() as u64),
+            window,
+            cx,
+        );
+        let focused = focus.is_focused(window);
+        let SliderStrip {
+            scrub,
+            fraction,
+            width,
+            step,
+            entity,
+            apply,
+        } = self;
+        div()
+            .map(|d| match width {
+                SliderWidth::Fixed => d.w(SLIDER_W).flex_none(),
+                SliderWidth::Fill => d.flex_1(),
+            })
+            .h(tokens::CONTROL_H)
+            .key_context(ui::CONTROL_CONTEXT)
+            .cursor_pointer()
+            .track_focus(&focus.tab_index(0).tab_stop(true))
+            .on_mouse_down(MouseButton::Left, {
                 let scrub = scrub.clone();
                 let apply = apply.clone();
-                move |this: &mut P, event: &MouseDownEvent, _, cx| {
+                let entity = entity.clone();
+                move |event: &MouseDownEvent, _, cx| {
+                    // Marks the click a pointer one, same as [`ui::pressable`]'s
+                    // own press; this slider wires the mouse down itself for
+                    // the drag rather than routing through pressable.
+                    ui::note_pointer_press(cx);
                     scrub.begin();
                     if let Some(fraction) = scrub.fraction(event.position.x) {
-                        apply(this, fraction, cx);
-                    }
-                    cx.notify();
-                }
-            }),
-        )
-        .child(
-            canvas(
-                {
-                    let scrub = scrub.clone();
-                    move |bounds, _, _| scrub.set_bounds(bounds)
-                },
-                {
-                    let scrub = scrub.clone();
-                    move |bounds, _, window, _| {
-                        paint_slider(fraction, false, bounds, window);
-                        scrub_on_paint(&scrub, window, {
-                            let entity = entity.clone();
-                            let apply = apply.clone();
-                            move |fraction, cx| {
-                                entity.update(cx, |this, cx| apply(this, fraction, cx));
-                            }
+                        entity.update(cx, |this, cx| {
+                            apply(this, fraction, cx);
+                            cx.notify();
                         });
                     }
-                },
+                }
+            })
+            .on_key_down({
+                let apply = apply.clone();
+                let entity = entity.clone();
+                move |event: &gpui::KeyDownEvent, _, cx| {
+                    // A held modifier is somebody else's chord.
+                    if event.keystroke.modifiers.modified() {
+                        return;
+                    }
+                    let moved = match event.keystroke.key.as_str() {
+                        "left" | "down" => fraction - step,
+                        "right" | "up" => fraction + step,
+                        "home" => 0.0,
+                        "end" => 1.0,
+                        _ => return,
+                    };
+                    entity.update(cx, |this, cx| {
+                        apply(this, moved.clamp(0.0, 1.0), cx);
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
+                }
+            })
+            .child(
+                canvas(
+                    {
+                        let scrub = scrub.clone();
+                        move |bounds, _, _| scrub.set_bounds(bounds)
+                    },
+                    {
+                        let scrub = scrub.clone();
+                        move |bounds, _, window, _| {
+                            paint_slider(fraction, false, bounds, window);
+                            scrub_on_paint(&scrub, window, {
+                                let entity = entity.clone();
+                                let apply = apply.clone();
+                                move |fraction, cx| {
+                                    entity.update(cx, |this, cx| apply(this, fraction, cx));
+                                }
+                            });
+                        }
+                    },
+                )
+                .size_full(),
             )
-            .size_full(),
-        )
+            .children(ui::focus_ring(focused, tokens::RADIUS, cx))
+    }
 }
 
 /// One in-flight readout edit across a panel's settings sliders: which
@@ -872,6 +963,7 @@ pub fn value_slider_edit_over<P: 'static>(
         edit_text,
         over,
         SliderWidth::Fixed,
+        SLIDER_STEP,
         to_fraction,
         apply,
         cx,
@@ -890,6 +982,9 @@ pub fn value_slider_edit_sized<P: 'static>(
     edit_text: String,
     over: f32,
     width: SliderWidth,
+    // How far one arrow key moves the strip; [`SLIDER_STEP`] where the
+    // caller has no better idea of what one press should be worth.
+    step: f32,
     to_fraction: impl Fn(f32) -> f32 + Clone + 'static,
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
@@ -904,7 +999,14 @@ pub fn value_slider_edit_sized<P: 'static>(
             SliderWidth::Fixed => d,
             SliderWidth::Fill => d.w_full(),
         })
-        .child(slider_strip(scrub, fraction, width, apply.clone(), cx));
+        .child(slider_strip(
+            scrub,
+            fraction,
+            width,
+            step,
+            apply.clone(),
+            cx,
+        ));
     if let Some(input) = edit.editing(scrub.id()) {
         // While the edit is live, a one-frame window handler (the
         // scrub_on_paint idiom) watches for a press outside the input and
@@ -1034,15 +1136,38 @@ fn toggle_track(on: bool) -> Div {
 
 /// An on/off switch: a pill track, the knob in the accent on the far side
 /// while on.
+///
+/// Keyboard-reachable like the buttons, and it takes its name from the
+/// [`setting_row`] around it rather than from an id of its own: a switch
+/// says nothing on its face, so the row's label is the only name it has.
 pub fn toggle<P: 'static>(
     on: bool,
     on_change: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
-) -> Div {
-    toggle_track(on).cursor_pointer().on_mouse_down(
-        MouseButton::Left,
-        cx.listener(move |this, _, _, cx| on_change(this, !on, cx)),
-    )
+) -> Toggle {
+    Toggle {
+        on,
+        on_change: Rc::new(cx.listener(move |this, _, _, cx| on_change(this, !on, cx))),
+    }
+}
+
+/// [`toggle`]'s element.
+#[derive(IntoElement)]
+pub struct Toggle {
+    on: bool,
+    on_change: ui::OnPress,
+}
+
+impl RenderOnce for Toggle {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = ui::control_focus("toggle", window, cx);
+        let focused = focus.is_focused(window);
+        let base = toggle_track(self.on)
+            .key_context(ui::CONTROL_CONTEXT)
+            .cursor_pointer()
+            .track_focus(&focus.tab_index(0).tab_stop(true));
+        ui::pressable(base, self.on_change).children(ui::focus_ring(focused, px(9.), cx))
+    }
 }
 
 /// A [`toggle`] the user can't flip: dimmed and inert, the same shape as the

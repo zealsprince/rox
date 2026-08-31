@@ -184,6 +184,13 @@ fn open_workspace_window(
         // The Wayland backend ignores the creation-time titlebar title;
         // only set_window_title reaches the compositor.
         rox_panel_api::windows::set_window_title(window, "rox");
+        // `WindowOptions::focus` already asks for this at creation, but
+        // some window managers grant the map and deny the raise: the
+        // window comes up on top with the keyboard still on whatever had
+        // it a moment ago. Only matters for New Window and Empty Window,
+        // opened from a window that already holds focus; on launch there's
+        // nothing else to steal it from, so this is a no-op there.
+        window.activate_window();
         // No WindowOptions field for this one, so the fresh window starts
         // with the platform default and takes the setting here.
         window.set_resize_border(resize_border());
@@ -297,10 +304,50 @@ fn tune_allocator() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn tune_allocator() {}
 
+/// A suspend/resume can take the Vulkan device down with it (#118: NVIDIA on
+/// X11), and a lost device can't draw another frame. The renderer detects it
+/// (a vendored gpui patch, z3) and hands the response to this handler:
+/// re-exec the binary in place. Same pid, same argv, so `--portable` and
+/// friends survive, and the launch restore brings the session back from its
+/// last persist. The single-instance socket file gets left behind, but the
+/// listener closes with the exec and the fresh claim treats an unanswered
+/// socket as stale and rebinds.
+///
+/// The uptime gate keeps a GPU that's dead at boot from turning this into an
+/// exec loop: a device lost this early means restarting won't help, so the
+/// renderer's exit fallback takes it from there.
+#[cfg(unix)]
+fn install_gpu_lost_restart() {
+    let booted = std::time::Instant::now();
+    gpui::set_gpu_device_lost_handler(move || {
+        use std::os::unix::process::CommandExt as _;
+        if booted.elapsed() < std::time::Duration::from_secs(60) {
+            log::error!("the GPU was lost right after launch, not restarting into it again");
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else {
+            log::error!("can't locate the running executable, not restarting");
+            return;
+        };
+        log::error!("restarting to get a fresh GPU device");
+        log::logger().flush();
+        let err = std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .exec();
+        // exec only returns on failure; the renderer's exit fallback runs.
+        log::error!("restart failed: {err}");
+    });
+}
+
+#[cfg(not(unix))]
+fn install_gpu_lost_restart() {}
+
 fn main() {
     // Allocator knobs go first: mallopt decides arena policy lazily as
     // threads first contend, so this has to beat every thread spawn.
     tune_allocator();
+    // The lost-GPU restart goes in before any renderer exists to need it.
+    install_gpu_lost_restart();
     // The settings model can't reach up into the workspace files it has to
     // drain on a pre-split launch, so it gets pointed at them first, before
     // anything reads a setting.
@@ -348,6 +395,7 @@ fn main() {
         // a bake so the look's backdrop shader is there from frame one.
         workspace::install_backdrop_shade();
         gpui_component::init(cx);
+        rox_panel_kit::ui::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
         tags::editor::init(cx);
@@ -360,6 +408,7 @@ fn main() {
         lyrics::edit::init(cx);
         lyrics::matcher::init(cx);
         cover::editor::init(cx);
+        settings::shader_confirm::init(cx);
         rox_panel_api::panel_settings::init(cx);
         // Last of the inits, and it has to stay last: a rebind rebuilds the
         // whole keymap, and this is where the bindings already registered

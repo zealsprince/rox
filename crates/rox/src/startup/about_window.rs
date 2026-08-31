@@ -21,7 +21,7 @@ use rox_core::settings::{self, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState};
-use rox_panel_kit::ui::{small_button, SECTION_GAP};
+use rox_panel_kit::ui::{small_button, SmallButton, SECTION_GAP};
 use rox_services::backdrop::WindowBackdrop;
 
 /// The project's home, where the source and the releases live.
@@ -193,7 +193,7 @@ impl AboutWindow {
     /// to notes; everywhere else (a distro package, a read-only home, a
     /// platform without an artifact) the page link is the whole offer,
     /// notify-only as before.
-    fn release_buttons(release: &updates::Release, cx: &mut Context<Self>) -> Vec<Div> {
+    fn release_buttons(release: &updates::Release, cx: &mut Context<Self>) -> Vec<SmallButton> {
         let url = release.url.clone();
         if updater::can_update() {
             let release = release.clone();
@@ -222,7 +222,7 @@ impl AboutWindow {
     }
 
     /// The check button, the row's resting state.
-    fn check_button(&self, cx: &mut Context<Self>) -> Div {
+    fn check_button(&self, cx: &mut Context<Self>) -> SmallButton {
         small_button(
             rox_i18n::t!("about-check-for-updates"),
             icons::REFRESH_CW,
@@ -305,7 +305,8 @@ impl Render for AboutWindow {
             // adds the notes link beside it. The updater's state outranks
             // the check's: once a download is running or done, that's the
             // story, whatever the last check said.
-            let (note, buttons): (Option<SharedString>, Vec<Div>) = match updater::status() {
+            let (note, buttons): (Option<SharedString>, Vec<SmallButton>) = match updater::status()
+            {
                 updater::Status::Applied { version } => (
                     Some(rox_i18n::t!("about-version-ready", version = version)),
                     vec![small_button(

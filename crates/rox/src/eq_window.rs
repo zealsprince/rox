@@ -870,6 +870,7 @@ impl EqWindow {
                 format!("{hz:.0}"),
                 1.0,
                 panel::SliderWidth::Fill,
+                panel::SLIDER_STEP,
                 freq_frac,
                 move |_: &mut Self, fraction, cx| {
                     player::set_eq_freq(band, frac_freq(fraction), cx);

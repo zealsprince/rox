@@ -148,7 +148,7 @@ impl<P: 'static> RouteEditor<'_, P> {
     /// The Add Route button, for the header of whatever section hosts the
     /// list. With every slot filled it dims and takes no press; the list
     /// explains why underneath.
-    pub fn add_button(&self, cx: &mut Context<P>) -> Div {
+    pub fn add_button(&self, cx: &mut Context<P>) -> settings_ui::SmallButton {
         let full = next_free_slot(self.routes).is_none();
         // A fresh route takes whatever signal the pool already has; with an
         // empty pool it arrives with none set, and the row points at the

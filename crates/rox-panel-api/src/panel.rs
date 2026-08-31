@@ -56,7 +56,7 @@ pub use rox_panel_kit::{
     type_ahead_overlay, type_ahead_scan, valign_row, value_slider_edit, value_slider_edit_over,
     value_slider_edit_sized, window_body, workspace_body, Align, FlickState, ModeSpec, ResumeIdle,
     ScrubState, SliderWidth, Tip, Tone, TrackedImage, VAlign, ValueEdit, PANEL_NAV_CONTEXT,
-    TYPE_AHEAD_CYCLE_CONTEXT,
+    SLIDER_STEP, TYPE_AHEAD_CYCLE_CONTEXT,
 };
 
 /// The shared entities every panel renders over: one player, one catalog,
@@ -790,6 +790,15 @@ fn open_window<V: 'static + Render>(
     };
     cx.open_window(options, move |window, cx| {
         crate::windows::set_window_title(window, &title);
+        // `WindowOptions::focus` is already the default true, but that's a
+        // creation-time request some window managers grant a plain map and
+        // deny a raise: the window comes up on top but the keys keep going
+        // to whatever had them a moment ago, so Tab and every other key
+        // reach nothing until a click claims the window by hand. Settings'
+        // own reopen path (activating a window that was merely hidden
+        // behind another) already makes this same explicit ask; a fresh
+        // window needs it too.
+        window.activate_window();
         let view = build(window, cx);
         cx.new(|cx| Root::new(view, window, cx))
     })

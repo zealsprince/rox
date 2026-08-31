@@ -1386,7 +1386,11 @@ impl TableDelegate for TrackTable {
             };
             let thumb =
                 crate::track_ui::track_columns::cover_thumb(&self.state, path.as_deref(), true, cx);
-            return crate::track_ui::track_columns::cover_cell(&thumb).into_any_element();
+            // The delegate's own row height, not the shared stock one: the
+            // cover square grows with the height knob like the rest of the
+            // table's rows do.
+            return crate::track_ui::track_columns::cover_cell(&thumb, self.row_height)
+                .into_any_element();
         }
         let cell = match key.as_ref() {
             "track" => cell

@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use gpui::{div, prelude::*, px, Context, Div, Entity, SharedString};
+use gpui::{div, prelude::*, px, Context, Div, Entity, KeyDownEvent, SharedString, Window};
 
 use crate::{embeddings, replaygain_job, tempo_job};
 use rox_core::settings::{AcousticSave, ReplayGainSave, Settings};
@@ -52,6 +52,11 @@ pub enum Pass {
 pub trait Host: 'static + Sized {
     fn prompt(&self) -> Option<&Prompt>;
     fn prompt_mut(&mut self) -> &mut Option<Prompt>;
+    /// Where the keyboard sits while the prompt is up. A key event only
+    /// reaches listeners along the path to whatever holds focus, so the
+    /// dialog takes it for as long as it's asking; the host lends it the
+    /// handle it shares with its own dialogs.
+    fn dialog_focus(&self) -> &gpui::FocusHandle;
     /// The host's click-to-type slider state, shared with its other sliders
     /// so only one value is ever being typed into.
     fn value_edit(&self) -> &panel::ValueEdit;
@@ -394,8 +399,9 @@ fn copy(prompt: &Prompt) -> Copy {
 /// at the root of its window body, over everything.
 ///
 /// Same scrim and layering as the settings window's overwrite confirm, and
-/// no click-away for the same reason: the buttons are the way out.
-pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
+/// no click-away for the same reason: the buttons and the keyboard's Enter
+/// and Escape are the ways out.
+pub fn overlay<V: Host>(this: &V, window: &mut Window, cx: &mut Context<V>) -> Option<Div> {
     let prompt = this.prompt()?;
     let cores = cores();
     let copy = copy(prompt);
@@ -433,6 +439,13 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
             cx.listener(|this: &mut V, _, _, cx| probe(this, cx)),
         )
     });
+    // The prompt holds the keyboard while it's asking, so Enter starts the
+    // pass and Escape backs out from wherever focus was. Not once the focus
+    // has moved inside it: Tab walks the prompt's own controls, and taking
+    // it back every frame would pin it to the scrim.
+    if !this.dialog_focus().contains_focused(window, cx) {
+        window.focus(this.dialog_focus());
+    }
     Some(
         div()
             .absolute()
@@ -441,6 +454,22 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
             .flex()
             .items_center()
             .justify_center()
+            .track_focus(this.dialog_focus())
+            .on_key_down(
+                cx.listener(|this: &mut V, event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.modifiers.modified() {
+                        return;
+                    }
+                    match event.keystroke.key.as_str() {
+                        "escape" => cancel(this, cx),
+                        // The buttons own Enter once one of them has focus; see
+                        // the note on the focus above.
+                        "enter" if this.dialog_focus().is_focused(window) => start(this, cx),
+                        _ => return,
+                    }
+                    cx.stop_propagation();
+                }),
+            )
             // Inset so the card keeps a margin in a window barely wider
             // than it, instead of running edge to edge.
             .p(tokens::SPACE_MD)
@@ -533,7 +562,7 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
                                             .items_center()
                                             .gap(tokens::SPACE_SM)
                                             .child(dialog_button(
-                                                "Cancel",
+                                                rox_i18n::t!("settings-common-cancel"),
                                                 false,
                                                 cx.listener(|this: &mut V, _, _, cx| {
                                                     cancel(this, cx)

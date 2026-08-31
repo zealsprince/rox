@@ -21,8 +21,9 @@ use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, size, svg, AnyElement, AnyWindowHandle, App, Axis, Bounds, ClipboardItem,
-    Context, Div, Entity, EntityId, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions,
-    Pixels, ScrollHandle, SharedString, Subscription, WeakEntity, Window, WindowHandle,
+    Context, Div, ElementId, Entity, EntityId, FocusHandle, Global, Hsla, MouseButton,
+    MouseDownEvent, PathPromptOptions, Pixels, ScrollHandle, SharedString, Stateful, Subscription,
+    WeakEntity, Window, WindowHandle,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -594,6 +595,16 @@ struct SettingsWindow {
     /// The confirm dialog waiting on the user, if any: an overwrite or a
     /// workspace apply. None when no dialog is up.
     pending: Option<Pending>,
+    /// The keyboard's home while a dialog is up, the confirm and the pass
+    /// prompt both. A key event only reaches listeners along the path to
+    /// whatever has focus, so a dialog that wants Enter and Escape has to
+    /// hold it.
+    dialog_focus: FocusHandle,
+    /// The window's own focus, claimed on open. Not a tab stop itself, so
+    /// the first Tab moves to the first control on the page; it exists
+    /// because a window with focus nowhere gets no keys at all, which is
+    /// what kept Tab and the search shortcut from working here.
+    focus: FocusHandle,
     /// The chords moved off their defaults, copied from the file so the
     /// Keymap page doesn't load settings per render. Every edit on that
     /// page writes the file and re-reads this.
@@ -821,6 +832,10 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let player = state.player.entity_id();
+        // Claimed here so the window has the keyboard from the moment it
+        // opens, the workspace window's move.
+        let focus = cx.focus_handle();
+        window.focus(&focus);
         let playback = state.player;
         let _player_changed = rox_services::player::observe_output(&playback, cx);
         let _player_view = rox_services::player::observe_view(&playback, cx);
@@ -1163,6 +1178,8 @@ impl SettingsWindow {
             primary_layout: settings.look.bundle.primary_layout.clone(),
             mini_layout: settings.look.bundle.mini_layout.clone(),
             pending: None,
+            dialog_focus: cx.focus_handle(),
+            focus: focus.clone(),
             check_updates: settings.check_updates,
             download_updates: settings.download_updates,
             ai_enabled: settings.ai_enabled,
@@ -3118,12 +3135,16 @@ impl SettingsWindow {
             .map(SharedString::from)
             .unwrap_or_else(|| rox_i18n::t!("settings-common-built-in"));
         div()
+            // Named after the pack, which names its buttons: every row
+            // here says Use and Open Folder. See
+            // `rox_panel_kit::ui::control_focus`.
+            .id(ElementId::Name(format!("icon-pack-row:{label}").into()))
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
             .py(tokens::SPACE_XS)
-            .child(div().flex_1().min_w_0().truncate().child(label))
+            .child(div().flex_1().min_w_0().truncate().child(label.clone()))
             .map(|d| {
                 if active {
                     d.child(
@@ -5100,7 +5121,13 @@ impl SettingsWindow {
 
     /// One row of the folder table: the path, its rollup numbers, and a
     /// remove control, inert while a scan runs.
-    fn folder_row(&self, root: &Path, stats: Stats, scanning: bool, cx: &mut Context<Self>) -> Div {
+    fn folder_row(
+        &self,
+        root: &Path,
+        stats: Stats,
+        scanning: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let path: SharedString = root.to_string_lossy().into_owned().into();
         let remove = icon_button(icons::CLOSE, scanning, {
             let root = root.to_path_buf();
@@ -5110,6 +5137,10 @@ impl SettingsWindow {
             })
         });
         div()
+            // Named after the folder, so the row's remove button is its
+            // own rather than every other row's. See
+            // `rox_panel_kit::ui::control_focus`.
+            .id(ElementId::Name(path.clone()))
             .flex()
             .flex_row()
             .items_center()
@@ -7177,7 +7208,7 @@ const TREE_ROW_GROUP: &str = "tree-row";
 /// Hide a tree row control until its row is hovered, so the tree reads
 /// as names at rest. The closed lock skips this in `panel_row`: it
 /// shows state worth seeing without a hover.
-fn reveal(control: Div) -> Div {
+fn reveal<E: Styled + InteractiveElement>(control: E) -> E {
     control
         .opacity(0.)
         .group_hover(TREE_ROW_GROUP, |style| style.opacity(1.))
@@ -7187,8 +7218,17 @@ fn reveal(control: Div) -> Div {
 /// the panel rows lead the page, with the move controls on the right
 /// edge when the node can move. Padded to the icon buttons' height so
 /// the tree keeps one rhythm with and without controls.
-fn chrome_row(depth: usize, label: &'static str, controls: Option<AnyElement>) -> AnyElement {
+fn chrome_row(
+    ix: usize,
+    depth: usize,
+    label: &'static str,
+    controls: Option<AnyElement>,
+) -> AnyElement {
     div()
+        // The tree's rows all carry the same arrows, so each is named
+        // after its place in the tree to keep them apart for the
+        // keyboard. See `rox_panel_kit::ui::control_focus`.
+        .id(ElementId::NamedInteger("tree-row".into(), ix as u64))
         .flex()
         .flex_row()
         .items_center()
@@ -7429,6 +7469,10 @@ impl pass_prompt::Host for SettingsWindow {
         &self.value_edit
     }
 
+    fn dialog_focus(&self) -> &FocusHandle {
+        &self.dialog_focus
+    }
+
     /// Everything the pages state about the passes, re-read at once: the
     /// counts a start just changed, the pace a probe just measured, and the
     /// worker counts the dialog's slider wrote.
@@ -7636,6 +7680,7 @@ impl Render for SettingsWindow {
 
             div()
                 .size_full()
+                .track_focus(&self.focus)
                 // The settings shortcut everywhere: focus goes to the
                 // search box, the Apple way in.
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -7686,10 +7731,10 @@ impl Render for SettingsWindow {
                 )
                 // The overwrite confirm floats over the whole window on its own
                 // occluding layer, last so it paints on top of the page.
-                .children(self.confirm_overlay(cx))
+                .children(self.confirm_overlay(window, cx))
                 // The pass prompt shares that layer. Only one of the two can
                 // be up: nothing on a page raises both.
-                .children(pass_prompt::overlay(self, cx))
+                .children(pass_prompt::overlay(self, window, cx))
                 .into_any_element()
         })
     }

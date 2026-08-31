@@ -95,7 +95,7 @@ use rox_services::selection::Selection;
 use rox_services::thumbs::Thumbs;
 use rox_viz::signal::{Route, SignalHub};
 
-mod menubar;
+pub(crate) mod menubar;
 pub(crate) mod native_menu;
 
 const MENU_BAR_H: f32 = 30.0;
@@ -2107,6 +2107,27 @@ pub enum WorkspaceStart {
 
 pub struct Workspace {
     open_menu: Option<usize>,
+    /// The menubar is taking keys: its access letters are underlined and the
+    /// arrows walk it. Armed by a clean Alt tap on a docked bar, or by the
+    /// double-tap that pins a hidden one. Off macOS only, where the bar
+    /// actually holds the menus.
+    menubar_keys: bool,
+    /// Which top menu the keyboard cursor sits on while [`Self::menubar_keys`]
+    /// is on. Independent of [`Self::open_menu`]: the cursor walks the bar
+    /// with nothing dropped down, and only opening one lines the two up.
+    menu_top: usize,
+    /// The keyboard cursor inside the open dropdown, as an entry index and
+    /// the row within it for the one entry kind that draws a run of them.
+    /// None until a key moves it, which is how a mouse-opened menu starts
+    /// with no row lit.
+    menu_slot: Option<menubar::NavSlot>,
+    /// The keyboard cursor inside the open flyout, by row. Rows there come
+    /// from disk (presets, workspaces) or the catalog, so there's no entry
+    /// index to hang it on.
+    menu_sub_slot: Option<usize>,
+    /// The keyboard cursor inside the panel picker's group flyout, the one
+    /// surface a level deeper than the rest.
+    menu_group_slot: Option<usize>,
     /// Which submenu entry of the open dropdown is flown out, by entry
     /// index. Hovering an entry moves it, closing the menu clears it.
     open_submenu: Option<usize>,
@@ -2176,6 +2197,10 @@ pub struct Workspace {
     active_layout: Option<String>,
     /// The layout save/apply dialog while it's up; dropped on close.
     layout_dialog: Option<LayoutDialog>,
+    /// The keyboard's home while a dialog is up. The dialog claims it on
+    /// open so Enter and Escape reach it wherever focus was, and hands it
+    /// back to the workspace on the way out.
+    dialog_focus: FocusHandle,
     /// Submits the save dialog's name field on Enter.
     _layout_input: Option<Subscription>,
     /// The quick-play modal while it's up; dropped on dismiss.
@@ -2626,6 +2651,11 @@ impl Workspace {
 
         let mut this = Workspace {
             open_menu: None,
+            menubar_keys: false,
+            menu_top: 0,
+            menu_slot: None,
+            menu_sub_slot: None,
+            menu_group_slot: None,
             open_submenu: None,
             open_subgroup: None,
             menu_surfaces: [None; 2],
@@ -2646,6 +2676,7 @@ impl Workspace {
             mini_layout,
             active_layout,
             layout_dialog: None,
+            dialog_focus: cx.focus_handle(),
             _layout_input: None,
             quick_play: None,
             _quick_play_dismissed: None,
@@ -3656,6 +3687,71 @@ impl Workspace {
         self.close_layout_dialog(window, cx);
     }
 
+    /// Enter and Escape while a dialog is up, and whether the key was the
+    /// dialog's. Taken in the capture phase: the dialog occludes the window,
+    /// so nothing under it should be seeing keys at all, and a focused search
+    /// box would otherwise eat Escape on its own clear-then-dismiss ladder
+    /// before the dialog ever heard it.
+    ///
+    /// Enter takes the yes. The two dialogs with a name field are the
+    /// exception, since the input commits on its own Enter, and so is an apply
+    /// that splits its yes in two: choosing between running a look's shaders
+    /// and leaving them out is the whole question there, so it gets a click.
+    fn dialog_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(dialog) = self.layout_dialog.as_ref() else {
+            return false;
+        };
+        if event.keystroke.modifiers.modified() {
+            return false;
+        }
+        if event.keystroke.key == "escape" {
+            self.close_layout_dialog(window, cx);
+            return true;
+        }
+        // Enter only while the dialog itself holds the keyboard. Tab from
+        // there lands on its own buttons, and once one has focus Enter
+        // belongs to it: a yes on a focused Cancel is the opposite of what
+        // was asked for.
+        if event.keystroke.key != "enter" || !self.dialog_focus.is_focused(window) {
+            return false;
+        }
+        /// Which button Enter presses. Named rather than called straight off
+        /// the dialog so the borrow above ends before the yes takes `self`.
+        enum Yes {
+            Overwrite,
+            Apply,
+            OverwriteWorkspace,
+            ApplyWorkspace,
+            CloseLocked,
+        }
+        let yes = match dialog {
+            LayoutDialog::Save(_) | LayoutDialog::SaveWorkspace(_) => None,
+            LayoutDialog::ConfirmOverwrite(_) => Some(Yes::Overwrite),
+            LayoutDialog::ConfirmApply(_) => Some(Yes::Apply),
+            LayoutDialog::ConfirmOverwriteWorkspace(_) => Some(Yes::OverwriteWorkspace),
+            LayoutDialog::ConfirmApplyWorkspace { card, .. } => {
+                (!card.splits_apply()).then_some(Yes::ApplyWorkspace)
+            }
+            LayoutDialog::ConfirmCloseLocked { .. } => Some(Yes::CloseLocked),
+        };
+        match yes {
+            Some(Yes::Overwrite) => self.overwrite_confirmed(window, cx),
+            Some(Yes::Apply) => self.apply_confirmed(window, cx),
+            Some(Yes::OverwriteWorkspace) => self.overwrite_workspace_confirmed(window, cx),
+            Some(Yes::ApplyWorkspace) => {
+                self.apply_workspace_confirmed(ApplyShaders::Skip, window, cx)
+            }
+            Some(Yes::CloseLocked) => self.close_locked_confirmed(window, cx),
+            None => return false,
+        }
+        true
+    }
+
     /// Drop the layout dialog and hand focus back to the workspace so the
     /// playback keys keep working.
     fn close_layout_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4275,9 +4371,26 @@ impl Workspace {
     /// occluding layer. The save card sets the `SearchInput` key context
     /// so space and arrows type into the name field instead of driving
     /// playback, the search boxes' trick.
-    fn layout_dialog_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn layout_dialog_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let dialog = self.layout_dialog.as_ref()?;
+        // The dialog holds the keyboard while it's up, unless the focus has
+        // already moved inside it, which Tab walking its buttons does. The
+        // two dialogs with a name field are left alone: the field takes
+        // focus as it opens, and it hasn't rendered here yet to be seen as
+        // inside anything.
+        let typing = matches!(
+            dialog,
+            LayoutDialog::Save(_) | LayoutDialog::SaveWorkspace(_)
+        );
+        if !typing && !self.dialog_focus.contains_focused(window, cx) {
+            window.focus(&self.dialog_focus);
+        }
         let card = div()
+            .track_focus(&self.dialog_focus)
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
@@ -4840,6 +4953,7 @@ impl Render for Workspace {
         // does a double-tap pin, which is the way to click the bar without a
         // modifier changing what the click means.
         let menubar_revealed = self.menubar_pinned
+            || self.menubar_keys
             || self.open_menu.is_some()
             || (window.modifiers().alt && !self.pointer_down);
         // Every panel in this window renders under its player's art tint,
@@ -4853,7 +4967,16 @@ impl Render for Workspace {
                 .flex_col()
                 .size_full()
                 .track_focus(&self.focus)
-                .key_context("Workspace")
+                // The armed menubar carries `MenuNav` so the playback bindings
+                // let go of space and the arrows: bindings beat key listeners,
+                // so the capture handler below would never see them otherwise.
+                // Same carve-out a focused search box and a live type-ahead
+                // phrase get.
+                .key_context(if self.menubar_keys {
+                    "Workspace MenuNav"
+                } else {
+                    "Workspace"
+                })
                 .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
                     this.state
                         .player
@@ -4903,11 +5026,6 @@ impl Render for Workspace {
                     if event.keystroke.key != "escape" || event.keystroke.modifiers.modified() {
                         return;
                     }
-                    if this.layout_dialog.is_some() {
-                        this.close_layout_dialog(window, cx);
-                        cx.stop_propagation();
-                        return;
-                    }
                     if this.unpin_menubar(cx) {
                         cx.stop_propagation();
                         return;
@@ -4919,9 +5037,16 @@ impl Render for Workspace {
                 // Any keystroke under a held Alt makes it a chord rather than
                 // the tap that pins the bar. Captured so a panel eating the key
                 // can't hide it; bare modifiers arrive as a modifiers change,
-                // not a keystroke, so Alt itself never gets here.
-                .capture_key_down(cx.listener(|this, _: &KeyDownEvent, _, _| {
+                // not a keystroke, so Alt itself never gets here. The same
+                // capture is where the armed menubar takes its keys, ahead of
+                // every panel's own listener.
+                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     this.cancel_alt_tap();
+                    // The dialog goes first: it sits over the menubar too, so
+                    // an armed bar behind it doesn't get to answer for it.
+                    if this.dialog_key(event, window, cx) || this.menu_key(event, window, cx) {
+                        cx.stop_propagation();
+                    }
                 }))
                 // Quit bypasses the window close hook, so dump the layout and
                 // frame here or a pending debounce and any window move since
@@ -4954,6 +5079,11 @@ impl Render for Workspace {
                     // which is what closing the menu should do anyway.
                     if event.position.y > px(MENU_BAR_H) {
                         this.unpin_menubar(cx);
+                        // The pointer taking over ends the keyboard's turn,
+                        // so the letters and the cursor go with it. A press
+                        // on an open dropdown lands here too, since that
+                        // hangs below the bar; its own handler still runs.
+                        this.drop_menu_keys(cx);
                     }
                     if !this.pointer_down {
                         this.pointer_down = true;
@@ -5071,7 +5201,7 @@ impl Render for Workspace {
                 })
                 // The layout save/apply dialog floats over everything, same as
                 // quick-play and for the same reasons: last child, not deferred.
-                .children(self.layout_dialog_overlay(cx).map(overlay_phase))
+                .children(self.layout_dialog_overlay(window, cx).map(overlay_phase))
                 // The queue modal floats the same way, last so it paints over
                 // the dock.
                 .children(self.queue_modal_overlay(cx).map(overlay_phase))

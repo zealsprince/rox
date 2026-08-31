@@ -231,6 +231,11 @@ impl SettingsWindow {
             .as_ref()
             .is_some_and(|card| card.name == name);
         div()
+            // Named after the workspace, which names its buttons: every
+            // row here says Apply and Export, and ids nest, so without
+            // this they'd all be the one control to the keyboard. See
+            // `rox_panel_kit::ui::control_focus`.
+            .id(ElementId::Name(format!("workspace-row:{name}").into()))
             .flex()
             .flex_row()
             .items_center()
@@ -625,6 +630,7 @@ impl SettingsWindow {
         let icon = crate::panel_presets::icon_for(&preset);
         let name = preset.name;
         div()
+            .id(ElementId::Name(format!("panel-preset-row:{name}").into()))
             .flex()
             .flex_row()
             .items_center()
@@ -666,6 +672,7 @@ impl SettingsWindow {
         let is_mini = self.mini_layout.as_deref() == Some(preset.name.as_str());
         let name = preset.name.clone();
         div()
+            .id(ElementId::Name(format!("preset-row:{name}").into()))
             .flex()
             .flex_row()
             .items_center()
@@ -880,11 +887,53 @@ impl SettingsWindow {
         }
     }
 
+    /// Enter and Escape on the confirm dialog, and whether the key was the
+    /// dialog's. Escape backs out; Enter takes the yes, except on an apply
+    /// that splits its yes in two, where choosing between running a look's
+    /// shaders and leaving them out is the whole question and so gets a click.
+    fn confirm_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(pending) = self.pending.as_ref() else {
+            return false;
+        };
+        if event.keystroke.modifiers.modified() {
+            return false;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                self.pending = None;
+                cx.notify();
+                true
+            }
+            // Only while the dialog itself holds the keyboard. Tab from
+            // here lands on the dialog's own buttons, and once one has
+            // focus Enter belongs to it: a yes on a focused Cancel is the
+            // opposite of what was asked for.
+            "enter" if self.dialog_focus.is_focused(window) => {
+                if matches!(pending, Pending::ApplyWorkspace { card, .. } if card.splits_apply()) {
+                    return false;
+                }
+                self.confirm_pending(ApplyShaders::Skip, window, cx);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The confirm dialog, up while a destructive action waits on the user:
     /// an overwrite or a workspace apply, each with its own wording. A scrim
-    /// occludes the page under it; the buttons are the only way out, no
-    /// click-away, so the action is deliberate.
-    pub(crate) fn confirm_overlay(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    /// occludes the page under it; the buttons and the keyboard's Enter and
+    /// Escape are the only ways out, no click-away, so the action is
+    /// deliberate.
+    pub(crate) fn confirm_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
         // A workspace apply reads out what's coming before it runs: who made
         // it, what they say it is, and any shader code inside it that this
         // machine has never approved.
@@ -946,6 +995,13 @@ impl SettingsWindow {
                 .text_color(palette::text_muted())
                 .child(text)
         };
+        // The dialog takes the keyboard while it's up, so Enter and Escape
+        // reach it from wherever focus was. Only when the focus isn't
+        // already inside it: Tab moves through the dialog's own buttons,
+        // and pulling it back here every frame would pin it to the scrim.
+        if !self.dialog_focus.contains_focused(window, cx) {
+            window.focus(&self.dialog_focus);
+        }
         Some(
             div()
                 .absolute()
@@ -954,6 +1010,12 @@ impl SettingsWindow {
                 .flex()
                 .items_center()
                 .justify_center()
+                .track_focus(&self.dialog_focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if this.confirm_key(event, window, cx) {
+                        cx.stop_propagation();
+                    }
+                }))
                 .bg(gpui::rgba(0x00000066))
                 .child(
                     div()
@@ -1127,6 +1189,7 @@ impl SettingsWindow {
                 .children(self.move_controls(&slot, cx))
                 .into_any_element();
             rows.push(chrome_row(
+                rows.len(),
                 depth,
                 match axis {
                     Axis::Horizontal => rox_i18n::t_static("settings-workspace-tree-split-row"),
@@ -1156,6 +1219,7 @@ impl SettingsWindow {
                 return;
             }
             rows.push(chrome_row(
+                rows.len(),
                 depth,
                 rox_i18n::t_static("settings-workspace-tree-tabs"),
                 self.move_controls(&slot, cx),
@@ -1186,7 +1250,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         let children = crate::composite::hosted_children(&panel, cx);
-        rows.push(self.panel_row(panel, depth, slot, cx));
+        rows.push(self.panel_row(rows.len(), panel, depth, slot, cx));
         if let Some(children) = children {
             for child in children {
                 match child {
@@ -1195,6 +1259,7 @@ impl SettingsWindow {
                     // down instead of stopping at the inner line.
                     Some(child) => self.panel_rows(child, depth + 1, TreeSlot::Hosted, rows, cx),
                     None => rows.push(chrome_row(
+                        rows.len(),
                         depth + 1,
                         rox_i18n::t_static("settings-workspace-tree-empty-slot"),
                         None,
@@ -1211,6 +1276,7 @@ impl SettingsWindow {
     /// dock never sees them, so neither applies.
     fn panel_row(
         &self,
+        ix: usize,
         panel: Arc<dyn PanelView>,
         depth: usize,
         slot: TreeSlot,
@@ -1225,6 +1291,10 @@ impl SettingsWindow {
         let locked = panel.locked(cx);
         let lock_panel = panel.clone();
         div()
+            // Named after its place in the tree, like the structure rows
+            // above it: two panels of the same kind carry the same
+            // controls otherwise.
+            .id(ElementId::NamedInteger("tree-row".into(), ix as u64))
             .flex()
             .flex_row()
             .items_center()
@@ -1296,7 +1366,7 @@ impl SettingsWindow {
     /// group for one of its own beside it; a split's child (a tab group
     /// or nested split) moves out into the enclosing split. Inert where
     /// there's no layer above: the root split's children stay put.
-    fn lift_button(&self, slot: &TreeSlot, cx: &mut Context<Self>) -> Div {
+    fn lift_button(&self, slot: &TreeSlot, cx: &mut Context<Self>) -> AnyElement {
         match slot {
             TreeSlot::Stack { stack, ix, .. } => {
                 let dock = self
@@ -1323,6 +1393,7 @@ impl SettingsWindow {
                         cx.notify();
                     }),
                 )
+                .into_any_element()
             }
             TreeSlot::Tabs { tabs, ix, .. } => {
                 let tabs = tabs.clone();
@@ -1339,8 +1410,9 @@ impl SettingsWindow {
                         cx.notify();
                     }),
                 )
+                .into_any_element()
             }
-            TreeSlot::Root | TreeSlot::Hosted => div(),
+            TreeSlot::Root | TreeSlot::Hosted => div().into_any_element(),
         }
     }
 
@@ -1355,7 +1427,7 @@ impl SettingsWindow {
         inert: bool,
         to_ix: usize,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> AnyElement {
         match slot {
             TreeSlot::Stack { stack, ix, .. } => {
                 let stack = stack.clone();
@@ -1368,6 +1440,7 @@ impl SettingsWindow {
                         cx.notify();
                     }),
                 )
+                .into_any_element()
             }
             TreeSlot::Tabs { tabs, ix, .. } => {
                 let tabs = tabs.clone();
@@ -1380,8 +1453,9 @@ impl SettingsWindow {
                         cx.notify();
                     }),
                 )
+                .into_any_element()
             }
-            TreeSlot::Root | TreeSlot::Hosted => div(),
+            TreeSlot::Root | TreeSlot::Hosted => div().into_any_element(),
         }
     }
 

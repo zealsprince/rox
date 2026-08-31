@@ -295,6 +295,11 @@
                                   "dim_playing": false,
                                   "dim": 60.0,
                                   "rounding": 0.0,
+                                  "tilt": -50.0,
+                                  "spacing": 85.0,
+                                  "stride": 10.0,
+                                  "recede": 20.0,
+                                  "visible": 9,
                                   "label": "bottom"
                                 }
                               }
@@ -528,7 +533,8 @@
                           ],
                           "search": false,
                           "query_source": "global",
-                          "query": ""
+                          "query": "",
+                          "row_height": 24.0
                         }
                       }
                     },

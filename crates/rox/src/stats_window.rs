@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui::{
     div, img, linear_color_stop, linear_gradient, prelude::*, px, relative, size, svg, AnyElement,
     App, Bounds, Context, Div, FontWeight, Global, Image, ObjectFit, ScrollHandle, SharedString,
-    Subscription, Window, WindowHandle,
+    Stateful, Subscription, Window, WindowHandle,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
@@ -419,7 +419,7 @@ impl StatsWindow {
     /// The recency overview: one card per trailing window, whatever the
     /// range knob is set to. The window the knob is on takes the accent,
     /// which ties the rest of the page to a card.
-    fn listens_section(&self) -> Div {
+    fn listens_section(&self) -> Stateful<Div> {
         let cards = [
             (rox_i18n::t_static("stats-range-week"), self.data.week),
             (rox_i18n::t_static("stats-range-month"), self.data.month),
@@ -442,7 +442,7 @@ impl StatsWindow {
     /// the accent ramp by height. Hovering a bucket reads its count and
     /// age out in the caption row, which otherwise names the span's
     /// ends.
-    fn chart_section(&self, cx: &mut Context<Self>) -> Div {
+    fn chart_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         if self.data.range_total == 0 {
             return section(
                 rox_i18n::t!("stats-section-listens-over-time"),
@@ -506,7 +506,7 @@ impl StatsWindow {
         rows: &[NamePlays],
         shape: ArtShape,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Stateful<Div> {
         let mut body = div().flex().flex_col().gap(px(2.));
         if rows.is_empty() {
             body = body.child(empty_note(self.range));
@@ -578,7 +578,7 @@ impl StatsWindow {
     /// The genres you played most as the genre wall's own cards: each
     /// one's deterministic color under its own geometry, the name and
     /// count set on it. Clicking a card plays the genre.
-    fn genre_section(&self, rows: &[NamePlays], cx: &mut Context<Self>) -> Div {
+    fn genre_section(&self, rows: &[NamePlays], cx: &mut Context<Self>) -> Stateful<Div> {
         if rows.is_empty() {
             return section(
                 rox_i18n::t!("stats-section-top-genres"),
@@ -680,7 +680,7 @@ impl StatsWindow {
 
     /// The newest listens in range: the cover, the title over artist and
     /// album, how long ago on the right.
-    fn recents_section(&self, cx: &mut Context<Self>) -> Div {
+    fn recents_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -805,20 +805,20 @@ fn rank(ix: usize) -> Div {
 /// quiet placeholder in the same shape, so an arriving image fills without
 /// shifting the row. The rounding is applied to the image itself: gpui
 /// content masks stay rectangular, so a round frame under a square image
-/// would paint over its own corners.
+/// would paint over its own corners. The square box around it does the
+/// cropping, since `Cover` overruns the image element on the art's long
+/// side and the image can't mask its own overrun.
 fn art_frame(image: Option<Arc<Image>>, shape: ArtShape, name: &str, side: gpui::Pixels) -> Div {
     let round = |element: gpui::Img| match shape {
         ArtShape::Circle => element.rounded_full(),
         ArtShape::Square => element.rounded(tokens::RADIUS),
     };
     let content: AnyElement = match image {
-        Some(image) => round(
-            img(image)
-                .size(side)
-                .overflow_hidden()
-                .object_fit(ObjectFit::Cover),
-        )
-        .into_any_element(),
+        Some(image) => div()
+            .size(side)
+            .overflow_hidden()
+            .child(round(img(image).size_full().object_fit(ObjectFit::Cover)))
+            .into_any_element(),
         // A face falls back to its initial, a record to the music glyph:
         // a wall of identical placeholders tells you nothing.
         None => {

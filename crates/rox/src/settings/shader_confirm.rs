@@ -13,8 +13,8 @@
 //! shader it exists to undo.
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, Entity, EntityId, Global, Subscription,
-    WeakEntity, Window, WindowHandle,
+    actions, div, prelude::*, px, size, App, Bounds, Context, Entity, EntityId, FocusHandle,
+    Global, KeyBinding, Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::Root;
 
@@ -104,6 +104,19 @@ pub fn open(
     .detach();
 }
 
+/// The window's own key context, so Enter keeps and Escape reverts.
+const CONTEXT: &str = "ShaderConfirm";
+
+actions!(shader_confirm, [Keep, Revert]);
+
+/// Bind the confirm's two answers; call once at startup.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", Keep, Some(CONTEXT)),
+        KeyBinding::new("escape", Revert, Some(CONTEXT)),
+    ]);
+}
+
 struct ShaderConfirm {
     /// The config from before the apply, what a revert restores: the enable
     /// switch and the three ways a source gets picked (the file, the inline
@@ -120,6 +133,9 @@ struct ShaderConfirm {
     /// Set by Keep alone. The release hook reads it to tell a confirmed
     /// close from every other way the window can go away.
     kept: bool,
+    /// The window's keyboard home, taken on open so Enter and Escape land
+    /// on the two buttons. Nothing else in here is focusable.
+    focus: FocusHandle,
     /// The caller's after-revert refresh, taken by the release hook.
     on_reverted: Option<OnReverted>,
     /// This window pumps its own frames, so the backdrop needs its own
@@ -142,6 +158,7 @@ impl ShaderConfirm {
             now_art,
             backdrop: WindowBackdrop::default(),
             kept: false,
+            focus: cx.focus_handle(),
             on_reverted: Some(Box::new(on_reverted)),
             _backdrop_changed,
         }
@@ -165,11 +182,21 @@ impl Render for ShaderConfirm {
         // Tinted and focus-claimed like every other child window.
         let player = self.player;
         palette::note_focus(player, window.is_window_active(), cx);
+        // The window is one question with two answers, so it holds the
+        // keyboard: Enter keeps, Escape reverts.
+        window.focus(&self.focus);
         panel::window_body(player, || {
             div()
                 .flex()
                 .flex_col()
                 .size_full()
+                .track_focus(&self.focus)
+                .key_context(CONTEXT)
+                .on_action(cx.listener(|this, _: &Keep, _, cx| {
+                    this.kept = true;
+                    this.close(cx);
+                }))
+                .on_action(cx.listener(|this, _: &Revert, _, cx| this.close(cx)))
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()

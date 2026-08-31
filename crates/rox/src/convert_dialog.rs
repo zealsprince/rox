@@ -956,7 +956,7 @@ impl ConvertDialog {
                         cx.listener(|this, _, window, cx| this.convert(window, cx)),
                     ))
                     .child(settings_ui::small_button(
-                        "Cancel",
+                        rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|this, _, window, cx| {

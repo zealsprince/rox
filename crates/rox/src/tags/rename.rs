@@ -872,7 +872,7 @@ impl RenameFiles {
                     // own rename, so stopping leaves the files that moved
                     // where they moved to and the rest where they were.
                     .child(small_button(
-                        "Cancel",
+                        rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|this, _, window, cx| {

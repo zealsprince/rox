@@ -2,11 +2,12 @@
 //! One album centered and square, its neighbors shrinking, turning, and
 //! tucking behind it toward both edges, so browsing reads as flipping
 //! through a rack of covers. A row that scrolls left and right by default,
-//! or a column that scrolls up and down by a setting. gpui has no real 3D,
-//! so the turn is faked:
-//! off-center covers scale down, compress horizontally (ObjectFit::Fill),
-//! and darken with distance, which gives the depth without a perspective
-//! transform the toolkit can't do. It shares the album grid's whole model,
+//! or a column that scrolls up and down by a setting. The turn is a real
+//! projection through the sprite pipeline, a keystone at the angle the
+//! tilt setting names, since gpui has no 3D of its own to ask for one.
+//! Turned off, the shelf stays flat and square and lets the distance
+//! shrink and the depth light carry the rack instead. It shares the album
+//! grid's whole model,
 //! one entry per album in the library's canonical order, textures through
 //! the shared artwork service, the same search, follow-playing, dim, and
 //! play rules; the difference is shape. Per the workspace rule, a browsing
@@ -20,8 +21,9 @@ use std::time::Instant;
 use gpui::{
     canvas, div, hsla, img, point, prelude::*, px, relative, size, svg, Along, AnyElement, App,
     Axis, Bounds, BoxShadow, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    ImageSource, KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, Pixels,
-    RenderImage, ScrollWheelEvent, SharedString, Size, Subscription, WeakEntity, Window,
+    ImageSource, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ObjectFit, Pixels, RenderImage, ScrollWheelEvent, SharedString, Size, Subscription, WeakEntity,
+    Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Side};
@@ -29,6 +31,8 @@ use image::Frame;
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
+use rox_library::projection::{Projection, QueryField, QUERY_FIELDS};
+use rox_panel_api::actions::{TypeAheadNext, TypeAheadPrev};
 use rox_panel_kit::config::{default_true, is_zero};
 use rox_panel_kit::wall::{default_dim, TILE_DIM_MAX};
 use serde::{Deserialize, Serialize};
@@ -53,28 +57,55 @@ use crate::thumbs::Thumb;
 /// square cover all the way into a circle.
 const TILE_ROUNDING_MAX: f32 = 100.;
 
-/// Covers drawn to each side of the centered one. Past this they would be
-/// off the panel edge or too small to read, so the carousel stops there.
-const VIS: i64 = 5;
+/// Covers drawn to each side of the centered one, and the most the setting
+/// will draw. Every cover past the count is off the shelf, so the deeper
+/// the rack the more work each frame costs for less and less that reads.
+const VIS: u8 = 5;
+const VIS_MAX: f32 = 16.;
 
 /// How much each step out from center shrinks a cover, multiplied per unit
 /// of distance, floored at [`MIN_SCALE`].
 const SHRINK: f32 = 0.86;
 const MIN_SCALE: f32 = 0.5;
 
-/// The first flank's center, in units of the hero's edge: under the hero's
-/// half so the neighbor tucks behind it.
-const SHIFT0: f32 = 0.56;
-/// Each further cover's step past the first, same units.
-const STEP: f32 = 0.30;
+/// The first flank's center, in percent of the hero's edge, and the range
+/// the setting scrubs it across. Under 100 the neighbor tucks behind the
+/// hero; past it the flanks clear the hero and leave it standing in its own
+/// space, the way NekoRoX's shelf sat.
+const SHIFT0: f32 = 56.;
+const SHIFT_MIN: f32 = 20.;
+const SHIFT_MAX: f32 = 140.;
+/// Each further cover's step past the first, same units, and the range its
+/// own setting scrubs across. This one also sets the drag mapping: it's how
+/// far the shelf travels per cover.
+const STEP: f32 = 30.;
+const STEP_MIN: f32 = 5.;
+const STEP_MAX: f32 = 100.;
 
-/// A turned cover's width as a fraction of its height: the horizontal
-/// squash that fakes the rotation away from the viewer.
-const TURN_EDGE: f32 = 0.4;
+/// How dark the shading over a fully turned cover goes, as a fraction of
+/// the panel's background: the light the shelf reads as coming from the
+/// front.
+const TURN_SCRIM: f32 = 90. / 255.;
 
-/// How fast covers fade with distance from center, and the floor they hold.
-const FADE: f32 = 0.16;
-const MIN_OP: f32 = 0.2;
+/// How much of the way into the background the deepest cover in the rack
+/// sits, in percent of full brightness: 100 leaves the whole shelf lit
+/// evenly, 0 sinks the back of it into the panel. The covers between the
+/// center and the back share the distance evenly, so at the shipped 20
+/// over five covers each step costs 16 points, which is the ramp the
+/// carousel has always had.
+const RECEDE: f32 = 20.;
+
+/// How much of a cover's own step the last one in the rack spends fading
+/// out: the ramp that carries it to nothing right as it leaves the window,
+/// so covers arrive and leave instead of popping.
+const EDGE_FADE: f32 = 1.0;
+/// Below this a cover is too faint to mean anything, so it stops taking
+/// clicks and hovers along with it.
+const HIT_OP: f32 = 0.08;
+
+/// Covers past the shelf's own depth that get their artwork and disc bake
+/// started early, so they arrive dressed instead of catching up on screen.
+const WARM: i64 = 4;
 
 /// The label strip's height under the hero, reserved out of the panel so
 /// the covers sit above it.
@@ -89,10 +120,13 @@ const REFL_OP: f32 = 0.45;
 const REFL_GAP: f32 = 2.;
 
 /// The perspective turn: how far a flank cover rotates about its cross
-/// axis, in radians, and the projection's focal length in hero edges.
-/// The tilt reaches its full angle one step out, like the squash it
-/// replaces.
-const TILT: f32 = 0.96;
+/// axis, in degrees, the range the setting scrubs it across, and the
+/// projection's focal length in hero edges. The tilt reaches its full angle
+/// one step out and holds it from there. Past 85 a cover is edge-on
+/// and gone, so the strip stops short of it either way: negative swings the
+/// far edge toward you instead of the inner one, and the rack turns outward.
+const TILT: f32 = 55.;
+const TILT_MAX: f32 = 85.;
 const FOCAL: f32 = 2.8;
 
 /// Wheel travel, in px, that advances the carousel by one cover.
@@ -180,10 +214,38 @@ pub struct ArtConfig {
     #[serde(default)]
     pub disc_style: DiscStyle,
     /// Turn the side covers in real 3D: a projected keystone through the
-    /// sprite pipeline instead of the flat squash. On by default; off is
-    /// the old squash-and-scrim look, which also keeps art rounding.
+    /// sprite pipeline. On by default; off leaves the rack flat and
+    /// square, carried by the distance shrink and the depth light alone,
+    /// which is also the only mode where art rounding applies.
     #[serde(default = "default_true")]
     pub perspective: bool,
+    /// How far a flank cover turns away from you, in degrees. Only the
+    /// perspective projection reads it; nothing turns with it off.
+    #[serde(default = "default_tilt")]
+    pub tilt: f32,
+    /// How far the first flank sits from the hero, in percent of the hero's
+    /// edge. Low values tuck the neighbors behind the hero, high ones push
+    /// them off it and pad the center cover on both sides.
+    #[serde(default = "default_spacing")]
+    pub spacing: f32,
+    /// The gap between the covers behind the first flank, in percent of the
+    /// hero's edge: how tightly the rack stacks once it's past the center.
+    /// It's also the drag mapping, so a wider stack scrolls further per
+    /// cover.
+    #[serde(default = "default_stride")]
+    pub stride: f32,
+    /// Covers drawn to each side of the center. The last one fades out as
+    /// it leaves, so a low count reads as a short shelf rather than a
+    /// clipped one.
+    #[serde(default = "default_visible")]
+    pub visible: u8,
+    /// How lit the deepest cover in the rack is, in percent. It's painted
+    /// as a wash toward the panel's own background rather than as
+    /// transparency: the covers behind the hero overlap each other, and
+    /// see-through ones would show the rack's whole stack through the
+    /// nearest face.
+    #[serde(default = "default_recede")]
+    pub recede: f32,
     /// A letter rail along the shelf's edge: the album artists' initials,
     /// each a click that jumps the carousel to its first album.
     #[serde(default)]
@@ -203,6 +265,28 @@ pub struct ArtConfig {
     /// reopens the shelf where it was left. A cell index.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub center: usize,
+}
+
+/// The shelf's shipped turn and spacing, for the configs that predate the
+/// knobs and for a reset.
+fn default_tilt() -> f32 {
+    TILT
+}
+
+fn default_spacing() -> f32 {
+    SHIFT0
+}
+
+fn default_stride() -> f32 {
+    STEP
+}
+
+fn default_visible() -> u8 {
+    VIS
+}
+
+fn default_recede() -> f32 {
+    RECEDE
 }
 
 /// Where the hero's caption goes. Center, the default, hangs it right
@@ -239,6 +323,11 @@ impl Default for ArtConfig {
             glow: false,
             disc_style: DiscStyle::Off,
             perspective: true,
+            tilt: default_tilt(),
+            spacing: default_spacing(),
+            stride: default_stride(),
+            visible: default_visible(),
+            recede: default_recede(),
             letters: false,
             letters_compact: false,
             letters_side: LetterSide::default(),
@@ -275,6 +364,23 @@ fn quad_aabb(quad: &[[f32; 2]; 4]) -> (f32, f32, f32, f32) {
     (min_x, min_y, max_x - min_x, max_y - min_y)
 }
 
+/// Whether a point sits inside a convex quad, corners in order. Every
+/// edge crossed with the point has to lean the same way; a keystone and a
+/// plain rect are both convex, so the one test covers the shelf's shapes.
+/// A point on an edge counts as in, which is what a click on the seam
+/// between two covers wants.
+fn inside(quad: &[[f32; 2]; 4], p: [f32; 2]) -> bool {
+    let (mut left, mut right) = (false, false);
+    for i in 0..4 {
+        let a = quad[i];
+        let b = quad[(i + 1) % 4];
+        let side = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+        left |= side > 0.;
+        right |= side < 0.;
+    }
+    !(left && right)
+}
+
 /// The centered square of an image as the fractional source rect
 /// `paint_image_quad` crops to: what `ObjectFit::Cover` shows in the
 /// shelf's square boxes, since thumbs cap their longest side rather than
@@ -307,8 +413,11 @@ struct Placement {
     top: f32,
     w: f32,
     h: f32,
-    /// The distance fade, before the dim mode multiplies in.
+    /// The window-edge fade, before the dim mode multiplies in. The only
+    /// transparency in the shelf's own depth cue.
     fade: f32,
+    /// How far the cover has sunk into the background, painted as a wash.
+    recede: f32,
     /// How far the cover has turned away: 0 at the hero, 1 a full step out.
     turn: f32,
 }
@@ -361,6 +470,15 @@ pub struct ArtPanel {
     /// hosts panels cached, so a resize repaints without re-rendering; a
     /// measuring canvas compares against this and notifies on drift.
     size: Size<Pixels>,
+    /// The shelf's top-left in window coordinates, measured by the same
+    /// canvas: what turns a pointer position into the shelf-space the
+    /// covers are laid out in.
+    origin: gpui::Point<Pixels>,
+    /// Every painted cover's outline in shelf space, nearest first. A
+    /// turned cover's box holds a good deal of floor it doesn't cover, so
+    /// the click has to land on the shape rather than on the box gpui
+    /// hit-tests; this is what it lands on.
+    hits: Vec<(usize, [[f32; 2]; 4])>,
     /// The drag-to-scrub state: press anywhere, drag to spin the shelf,
     /// release to coast and snap. A drag past its dead zone swallows the
     /// cover click.
@@ -385,6 +503,13 @@ pub struct ArtPanel {
     rounding_scrub: ScrubState,
     /// The dim amount slider's scrub strip, same window.
     dim_scrub: ScrubState,
+    /// The turn angle, hero spacing, stack stride, and cover count strips,
+    /// same window.
+    tilt_scrub: ScrubState,
+    spacing_scrub: ScrubState,
+    stride_scrub: ScrubState,
+    visible_scrub: ScrubState,
+    recede_scrub: ScrubState,
     /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
     /// A failed play, shown in a strip until the next play succeeds.
@@ -395,6 +520,11 @@ pub struct ArtPanel {
     /// The tracks this panel is pinned to while following the selection.
     /// Runtime only: a restore re-pins from whatever is picked then.
     selection_ids: Vec<i64>,
+    /// The type-ahead phrase and when its last keystroke landed, so typing
+    /// while the shelf has focus jumps to the album by prefix, and a quick
+    /// run of keys grows one phrase instead of restarting each stroke.
+    type_ahead: String,
+    type_ahead_at: Option<Instant>,
     focus: FocusHandle,
     /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -404,6 +534,9 @@ pub struct ArtPanel {
     _query_changed: Subscription,
     _selection_changed: Subscription,
     _player_changed: Subscription,
+    /// Drops the phrase when focus leaves the panel, so tab goes back to
+    /// walking panels instead of cycling a phrase from a past visit.
+    _type_ahead_blur: Subscription,
 }
 
 impl ArtPanel {
@@ -469,6 +602,17 @@ impl ArtPanel {
         } else {
             config.center
         } as f32;
+        let focus = cx.focus_handle().tab_stop(true);
+        // The phrase outlives its badge, so it needs an end: leaving the
+        // panel drops it, which is also what hands tab back to traversal.
+        let panel = cx.weak_entity();
+        let _type_ahead_blur = window.on_focus_out(&focus, cx, move |_, _, cx| {
+            panel
+                .update(cx, |this: &mut ArtPanel, cx| {
+                    this.clear_type_ahead(cx);
+                })
+                .ok();
+        });
         let mut this = ArtPanel {
             state,
             config,
@@ -486,6 +630,8 @@ impl ArtPanel {
             publish_pending: false,
             wheel: 0.,
             size: Size::default(),
+            origin: gpui::Point::default(),
+            hits: Vec::new(),
             flick: FlickState::default(),
             last_tick: Instant::now(),
             resume_idle: ResumeIdle::default(),
@@ -497,11 +643,18 @@ impl ArtPanel {
             centered: Some(start as usize),
             rounding_scrub: ScrubState::default(),
             dim_scrub: ScrubState::default(),
+            tilt_scrub: ScrubState::default(),
+            spacing_scrub: ScrubState::default(),
+            stride_scrub: ScrubState::default(),
+            visible_scrub: ScrubState::default(),
+            recede_scrub: ScrubState::default(),
             value_edit: panel::ValueEdit::default(),
             error: None,
             resync_box: false,
             selection_ids,
-            focus: cx.focus_handle().tab_stop(true),
+            type_ahead: String::new(),
+            type_ahead_at: None,
+            focus,
             tab_panel: None,
             _library_changed,
             _thumbs_changed,
@@ -509,6 +662,7 @@ impl ArtPanel {
             _query_changed,
             _selection_changed,
             _player_changed,
+            _type_ahead_blur,
         };
         this.rebuild(cx);
         // A duplicate opens with a track already playing; pick it up now
@@ -662,8 +816,8 @@ impl ArtPanel {
             "right" | "down" => self.step_cover(1, cx),
             // A page is the covers actually on screen to one side, so it
             // lands the shelf just past what you were looking at.
-            "pageup" => self.step_cover(-VIS, cx),
-            "pagedown" => self.step_cover(VIS, cx),
+            "pageup" => self.step_cover(-self.visible(), cx),
+            "pagedown" => self.step_cover(self.visible(), cx),
             "home" => self.center_on(0, cx),
             "end" => self.center_on(self.cells.len().saturating_sub(1), cx),
             "enter" => {
@@ -672,7 +826,140 @@ impl ArtPanel {
                     self.play(ix, cx);
                 }
             }
-            _ => {}
+            "escape" => {
+                self.clear_type_ahead(cx);
+            }
+            _ => {
+                let Some(text) = &keystroke.key_char else {
+                    return;
+                };
+                if text == " " && !panel::type_ahead_live(self.type_ahead_at) {
+                    return;
+                }
+                // Consumed as type-ahead text: stop it here so it doesn't
+                // also match the workspace's space-bound TogglePlayback
+                // binding, which the shelf otherwise inherits unscoped.
+                cx.stop_propagation();
+                self.type_to(text.clone(), cx);
+            }
+        }
+    }
+
+    /// Split a leading `field:` pin off the phrase, the query syntax's
+    /// vocabulary: `album:` or `title:` for the album name, `artist:` or
+    /// `albumartist:` for the artist. Fields with no text on a cover fall
+    /// through and the phrase reads literally.
+    fn type_ahead_pin(phrase: &str) -> Option<(bool, &str)> {
+        let (name, rest) = phrase.split_once(':')?;
+        let (_, field) = QUERY_FIELDS
+            .iter()
+            .find(|(known, _)| known.eq_ignore_ascii_case(name))?;
+        match field {
+            QueryField::Album
+            | QueryField::Title => Some((false, rest)),
+            QueryField::Artist
+            | QueryField::AlbumArtist => Some((true, rest)),
+            _ => None,
+        }
+    }
+
+    /// Grow or restart the type-ahead phrase and center the cover it names.
+    /// A fresh phrase starts past the current cover, so the same letter
+    /// steps to the next match; a grown one re-tests the current cover so
+    /// refining a match stays put. The phrase matches the start of any word
+    /// in the cover's album name or artist; a `field:` pin narrows it to
+    /// one.
+    fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
+        let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
+        // The badge shows the phrase now and leaves when the window
+        // lapses; a miss below still updated it, so repaint either way.
+        panel::type_ahead_fade(cx);
+        cx.notify();
+        let len = self.cells.len();
+        if len == 0 {
+            return;
+        }
+        let needle = self.type_ahead.to_lowercase();
+        let pin = Self::type_ahead_pin(&needle);
+        // A grown phrase re-tests the centered cover; a fresh one starts
+        // past it, so the same first letter steps to the next match.
+        let start = match grown.then_some(self.goal.round().max(0.) as usize) {
+            Some(ix) => ix,
+            None => (self.goal.round().max(0.) as usize + 1).min(len.saturating_sub(1)),
+        };
+        let hit = {
+            let library = self.state.library.read(cx);
+            library.projection().and_then(|projection| {
+                (0..len)
+                    .map(|off| (start + off) % len)
+                    .find(|&ix| self.type_hit(projection, ix, pin, &needle))
+            })
+        };
+        if let Some(ix) = hit {
+            self.center_on(ix, cx);
+        }
+    }
+
+    /// Drop the phrase, handing tab back to Root's panel traversal. True
+    /// when there was one, for the escape ladder.
+    fn clear_type_ahead(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.type_ahead.is_empty() {
+            return false;
+        }
+        self.type_ahead.clear();
+        self.type_ahead_at = None;
+        cx.notify();
+        true
+    }
+
+    /// Step to the phrase's neighbouring match, Tab's cycle, dispatched
+    /// off the cycle-scoped tab bindings. Deliberately leaves the window
+    /// stamp alone: the badge belongs to typing, so a run of tabs steps
+    /// silently rather than reviving it.
+    fn type_step(&mut self, back: bool, cx: &mut Context<Self>) {
+        if self.type_ahead.is_empty() {
+            return;
+        }
+        let len = self.cells.len();
+        if len == 0 {
+            return;
+        }
+        cx.notify();
+        let needle = self.type_ahead.to_lowercase();
+        let pin = Self::type_ahead_pin(&needle);
+        let anchor = Some(self.goal.round().max(0.) as usize);
+        let hit = {
+            let library = self.state.library.read(cx);
+            library.projection().and_then(|projection| {
+                panel::type_ahead_scan(len, anchor, back)
+                    .find(|&ix| self.type_hit(projection, ix, pin, &needle))
+            })
+        };
+        if let Some(ix) = hit {
+            self.center_on(ix, cx);
+        }
+    }
+
+    /// Whether one cover's album matches the phrase, [`Self::type_to`]'s
+    /// rules: the pinned text alone when pinned, a word start in either
+    /// otherwise.
+    fn type_hit(
+        &self,
+        projection: &Projection,
+        ix: usize,
+        pin: Option<(bool, &str)>,
+        needle: &str,
+    ) -> bool {
+        let Some(&row) = self.cells.get(ix).and_then(|cell| self.view.get(cell.start)) else {
+            return false;
+        };
+        let resolved = projection.resolve(row);
+        let album = resolved.album;
+        let artist = resolved.album_artist;
+        match pin {
+            Some((true, rest)) => panel::type_ahead_hit(artist, rest),
+            Some((false, rest)) => panel::type_ahead_hit(album, rest),
+            None => panel::type_ahead_hit(album, needle) || panel::type_ahead_hit(artist, needle),
         }
     }
 
@@ -970,7 +1257,14 @@ impl ArtPanel {
         // The cap along the scroll axis: the fit keeps the first flanks
         // inside the panel, fill spends the whole axis on the hero and
         // lets the flanks clip at the edge.
-        let cap = if self.config.fill { 1.0 } else { 0.42 };
+        // Wider spacing throws the flanks further out, so the fit trades
+        // hero size back for them in the same proportion; it never spends
+        // more of the axis than fill would.
+        let cap = if self.config.fill {
+            1.0
+        } else {
+            (0.42 * SHIFT0 / self.config.spacing.max(1.)).min(1.0)
+        };
         match self.axis() {
             // A row: covers as tall as the band, capped by the width.
             Axis::Horizontal => (avail_h * 0.9 / floor).min(w * cap),
@@ -983,7 +1277,13 @@ impl ArtPanel {
     /// Px of drag along the scroll axis per cover of travel, the coast and
     /// pointer mapping.
     fn step_px(&self) -> f32 {
-        (self.hero_side() * STEP).max(1.)
+        (self.hero_side() * self.config.stride / 100.).max(1.)
+    }
+
+    /// Covers drawn to each side of the center. At least one, or the shelf
+    /// is a single cover with nothing to browse.
+    fn visible(&self) -> i64 {
+        self.config.visible.max(1) as i64
     }
 
     /// Whether cover `ix` is in the receded set: the covers the focus
@@ -1060,7 +1360,7 @@ impl ArtPanel {
     /// the div actually ends up.
     fn quad_canvas(
         quad: [[f32; 2]; 4],
-        image: Arc<gpui::Image>,
+        image: Option<Arc<gpui::Image>>,
         bake: Option<Arc<RenderImage>>,
         grayscale: bool,
         fade: [f32; 4],
@@ -1076,13 +1376,19 @@ impl ArtPanel {
                 };
                 let data = match &bake {
                     Some(bake) => Some((bake.clone(), full)),
-                    None => ImageSource::from(image.clone())
-                        .use_data(None, window, cx)
-                        .and_then(|result| result.ok())
-                        .map(|data| {
-                            let source = square_source(&data);
-                            (data, source)
-                        }),
+                    // No bake to paint: a plain cover always has an image
+                    // to fall back to; the disc styles' own placeholder
+                    // path never reaches here without one either, since
+                    // `blank_disc` stands in as a bake, not as this.
+                    None => image.as_ref().and_then(|image| {
+                        ImageSource::from(image.clone())
+                            .use_data(None, window, cx)
+                            .and_then(|result| result.ok())
+                            .map(|data| {
+                                let source = square_source(&data);
+                                (data, source)
+                            })
+                    }),
                 };
                 let Some((data, mut source)) = data else {
                     return;
@@ -1112,6 +1418,47 @@ impl ArtPanel {
         .into_any_element()
     }
 
+    /// Start the disc bakes for the covers just off the shelf, so they're
+    /// finished before those covers scroll on. A bake claimed on a cover's
+    /// first paint lands a beat after it, which is why a scrolling shelf
+    /// shows flat art that pops into discs behind the pointer; the bake is
+    /// only a few milliseconds, so a few covers of lead is enough to cover
+    /// any speed a hand scrolls at. Everything here is a cache hit once
+    /// warmed: a claimed path is skipped, a finished one is served.
+    fn warm_discs(&mut self, cx: &mut Context<Self>) {
+        if self.config.disc_style == DiscStyle::Off {
+            return;
+        }
+        let last = self.cells.len().saturating_sub(1) as i64;
+        let reach = self.visible() + WARM;
+        let center = self.pos.round() as i64;
+        let lo = (center - reach).clamp(0, last);
+        let hi = (center + reach).clamp(0, last);
+        // Outward from the center, so when the pool is full the slots have
+        // already gone to the covers nearest the eye. Walking the window in
+        // index order would hand them to whichever end of the shelf happens
+        // to sort first, which is the wrong end half the time.
+        let mut window: Vec<i64> = (lo..=hi).collect();
+        window.sort_by_key(|ix| (ix - center).abs());
+        for ix in window {
+            let ix = ix as usize;
+            let Some(path) = self.art_path(ix, cx) else {
+                continue;
+            };
+            // The thumb is the bake's input, so this warms the loads a step
+            // ahead too; a miss just reports Pending and the next frame
+            // picks the bake up once it lands.
+            let Thumb::Ready(image) = self
+                .state
+                .thumbs
+                .update(cx, |thumbs, cx| thumbs.get(&path, cx))
+            else {
+                continue;
+            };
+            self.disc_of(path, image, cx);
+        }
+    }
+
     /// Pick the disc dress-up. The bakes are per style, so flipping it
     /// throws the cache and the shelf re-bakes as covers come into view.
     fn set_disc_style(&mut self, style: DiscStyle, cx: &mut Context<Self>) {
@@ -1122,6 +1469,58 @@ impl ArtPanel {
         cx.notify();
     }
 
+    /// The only real transparency a cover gets: the ramp that empties the
+    /// last one as it crosses the window's edge. The window runs a cover
+    /// deeper than the count, which is the room the ramp needs; without it
+    /// the outermost cover would blink in and out at full strength.
+    fn edge_fade(&self, a: f32) -> f32 {
+        let depth = self.visible() as f32;
+        ((depth + EDGE_FADE - a) / EDGE_FADE).clamp(0., 1.)
+    }
+
+    /// How far into the background a cover at distance `a` has sunk, 0 at
+    /// the center to 1 gone. The center is always full, the deepest cover
+    /// lands on the setting, and the rack divides the distance evenly, so
+    /// the shelf reads the same depth however many covers deep it runs.
+    /// This is a wash the covers paint over their own faces, never
+    /// transparency: a receded cover still hides the one behind it.
+    fn recede(&self, a: f32) -> f32 {
+        let depth = self.visible() as f32;
+        let back = (self.config.recede / 100.).clamp(0., 1.);
+        1.0 - (1.0 - (1.0 - back) * (a / depth)).clamp(back, 1.0)
+    }
+
+    /// A cover's outline in shelf space: the projected keystone with
+    /// perspective on, the flat rect with it off. Corners run the same way
+    /// round either way, so the containment test doesn't care which it got.
+    fn outline(&self, d: f32, hero: f32, cx_px: f32, cy_px: f32) -> [[f32; 2]; 4] {
+        if self.config.perspective {
+            return self.quad(d, hero, cx_px, cy_px);
+        }
+        let p = self.placement(d, hero, cx_px, cy_px);
+        [
+            [p.left, p.top],
+            [p.left + p.w, p.top],
+            [p.left + p.w, p.top + p.h],
+            [p.left, p.top + p.h],
+        ]
+    }
+
+    /// The cover a pointer is over, in window coordinates: the nearest one
+    /// whose outline holds the point. The list is built nearest-first as
+    /// the shelf paints, so the first hit is the one on top, the same
+    /// cover the eye picks.
+    fn hit(&self, at: gpui::Point<Pixels>) -> Option<usize> {
+        let p = [
+            f32::from(at.x - self.origin.x),
+            f32::from(at.y - self.origin.y),
+        ];
+        self.hits
+            .iter()
+            .find(|(_, quad)| inside(quad, p))
+            .map(|(ix, _)| *ix)
+    }
+
     /// A cover's box at distance `d` from the center: position, size, the
     /// distance fade before the dim mode multiplies in, and how far the
     /// cover has turned away. The cover and its reflection read the same
@@ -1130,26 +1529,32 @@ impl ArtPanel {
     fn placement(&self, d: f32, hero: f32, cx_px: f32, cy_px: f32) -> Placement {
         let a = d.abs();
         let scale = SHRINK.powf(a).max(MIN_SCALE);
-        // The turn ramps in over the first step out and holds; a turned
-        // cover is compressed to TURN_EDGE of its face along the scroll axis.
-        let turn = a.clamp(0., 1.);
-        let turn_factor = 1.0 - turn * (1.0 - TURN_EDGE);
-        // The face across the scroll axis keeps the scale; the one along it
-        // squashes with the turn. A row squashes the width, a column the
-        // height, so either way the cover looks turned away from you.
-        let cross_size = hero * scale;
-        let along_size = cross_size * turn_factor;
-        let off = Self::offset_units(d) * hero;
+        // Only the projection turns a cover. The flat shelf used to fake
+        // one by squashing the face along the scroll axis, which stretched
+        // the art into a letterbox and read as a squeezed cover rather
+        // than a turned one; it keeps its covers square and lets the
+        // scale and the depth light carry the distance instead. The turn
+        // still rides along for the projection's own shading.
+        let turn = if self.config.perspective {
+            a.clamp(0., 1.)
+        } else {
+            0.
+        };
+        // Square either way: the box is the hero's edge taken down by the
+        // distance shrink.
+        let side = hero * scale;
+        let off = self.offset_units(d) * hero;
         let (cover_x, cover_y, w, h) = match self.axis() {
-            Axis::Horizontal => (cx_px + off, cy_px, along_size, cross_size),
-            Axis::Vertical => (cx_px, cy_px + off, cross_size, along_size),
+            Axis::Horizontal => (cx_px + off, cy_px, side, side),
+            Axis::Vertical => (cx_px, cy_px + off, side, side),
         };
         Placement {
             left: cover_x - w / 2.0,
             top: cover_y - h / 2.0,
             w,
             h,
-            fade: (1.0 - a * FADE).max(MIN_OP),
+            fade: self.edge_fade(a),
+            recede: self.recede(a),
             turn,
         }
     }
@@ -1158,16 +1563,16 @@ impl ArtPanel {
     /// the texture's top-left, in shelf coordinates. The cover rotates
     /// about its cross axis through its center, inner edge toward the
     /// viewer, and projects with a focal length a few covers deep: the
-    /// keystone the squash was faking. The shrink keeps the near edge
+    /// keystone a flat shelf can't draw. The shrink keeps the near edge
     /// under the hero's height, so the flanks never outgrow the band.
     fn quad(&self, d: f32, hero: f32, cx_px: f32, cy_px: f32) -> [[f32; 2]; 4] {
         let a = d.abs();
         let scale = SHRINK.powf(a).max(MIN_SCALE);
         let half = hero * scale / 2.0;
-        let theta = TILT * a.clamp(0., 1.) * d.signum();
+        let theta = self.config.tilt.to_radians() * a.clamp(0., 1.) * d.signum();
         let (sin, cos) = theta.sin_cos();
         let focal = hero * FOCAL;
-        let off = Self::offset_units(d) * hero;
+        let off = self.offset_units(d) * hero;
         // An edge at offset `u` along the scroll axis is at depth
         // u * sin, so the inner edge swings toward the viewer and grows
         // while the outer one recedes.
@@ -1204,16 +1609,36 @@ impl ArtPanel {
     }
 
     /// A cover's center offset from the hero, in units of the hero's edge:
-    /// the first neighbor tucks under the hero's half, each further one
-    /// steps out past it.
-    fn offset_units(d: f32) -> f32 {
+    /// the first neighbor sits where the spacing knob puts it, each further
+    /// one steps out past that by a fixed stride, so widening the hero's
+    /// gap doesn't pull the whole stack apart with it.
+    fn offset_units(&self, d: f32) -> f32 {
         let s = d.signum();
         let a = d.abs();
+        let shift = self.config.spacing / 100.;
         if a <= 1.0 {
-            s * SHIFT0 * a
+            s * shift * a
         } else {
-            s * (SHIFT0 + STEP * (a - 1.0))
+            s * (shift + self.config.stride / 100. * (a - 1.0))
         }
+    }
+
+    /// The quiet stand-in for art that isn't ready to show yet, whatever
+    /// the reason: no thumb, no track, or (with a disc style on) a thumb
+    /// that hasn't finished its bake.
+    fn placeholder() -> AnyElement {
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                svg()
+                    .path(icons::MUSIC)
+                    .size(px(24.))
+                    .text_color(palette::text_faint()),
+            )
+            .into_any_element()
     }
 
     /// One cover in the carousel: placed absolutely by its distance `d` from
@@ -1247,13 +1672,19 @@ impl ArtPanel {
             w: flat_w,
             h: flat_h,
             fade,
+            recede,
             turn,
         } = self.placement(d, hero, cx_px, cy_px);
         let opacity = fade * dim;
+        // The turn's shading and the depth wash are one coat: two alphas
+        // over the same background compose to this, so the darker of them
+        // leads and neither doubles the other.
+        let scrim = 1.0 - (1.0 - turn * TURN_SCRIM) * (1.0 - recede);
+        let wash = palette::alpha(palette::bg_root(), (scrim * 255.) as u8);
         let disc_on = self.config.disc_style != DiscStyle::Off;
         let persp = self.config.perspective;
         // With perspective on the div spans the keystone's box and the
-        // canvas inside paints the real shape; off, the flat squash rect.
+        // canvas inside paints the real shape; off, the flat square box.
         let quad = persp.then(|| self.quad(d, hero, cx_px, cy_px));
         let (left, top, w, h) = match &quad {
             Some(quad) => quad_aabb(quad),
@@ -1280,64 +1711,88 @@ impl ArtPanel {
                 .update(cx, |thumbs, cx| thumbs.get(path, cx)),
             None => Thumb::Missing,
         };
-        // The disc face once its bake finishes; until then the flat thumb
-        // stands in behind the pill crop, so scrubbing never flashes.
-        let baked = match (&thumb, &path, disc_on) {
-            (Thumb::Ready(image), Some(path), true) => {
-                self.disc_of(path.clone(), image.clone(), cx)
+        // The disc face once its own bake finishes; short of that, the
+        // style's own blank plate, so a disc-dressed cover never shows a
+        // flat square pretending to be a disc, nor waits on anything
+        // per-album before it reads as a disc at all. The blank needs no
+        // work of its own (built once, shared, never touches the pool in
+        // `warm_discs`), so it's there the instant the style turns on,
+        // whether or not this cover's own thumb has even loaded yet.
+        let baked = if disc_on {
+            match (&thumb, &path) {
+                (Thumb::Ready(image), Some(path)) => self.disc_of(path.clone(), image.clone(), cx),
+                _ => None,
             }
-            _ => None,
-        };
-        // The hero keeps its aspect (Cover crops to the square); turned
-        // covers Fill, which stretches the whole art into the compressed
-        // box, the foreshortening along the scroll axis that reads as a turn.
-        let fit = if is_hero {
-            ObjectFit::Cover
+            .or_else(|| discs::blank_disc(self.config.disc_style))
         } else {
-            ObjectFit::Fill
+            None
         };
+        // Every flat cover keeps its aspect and crops to its square box.
+        // The flanks used to Fill instead, stretching the art into the
+        // squashed box that faked their turn; without the squash there's
+        // nothing to stretch into and the hero's own fit is right for all
+        // of them.
+        let fit = ObjectFit::Cover;
         let desaturated = self.desaturated(ix);
         let disc_shown = baked.is_some();
-        let quad_painted = quad.is_some() && matches!(thumb, Thumb::Ready(_));
-        let content: AnyElement = match (&quad, thumb, baked) {
-            // The keystone: the canvas paints the face onto the projected
-            // quad, and the wash bakes the turn scrim into the sprite,
-            // shaped to the quad the way an overlay div can't be.
-            (Some(quad), Thumb::Ready(image), bake) => {
-                let wash = palette::alpha(palette::bg_root(), (turn * 90.) as u8).into();
+        // Whether there's actual art (a bake, real or blank, or a loaded
+        // thumb) for this cell at all, as opposed to the bare "nothing
+        // here yet" placeholder. The turn and depth wash exist to shade
+        // art; laid over the placeholder's already-dim icon and backdrop
+        // instead, it read as the placeholder itself losing opacity the
+        // further out it sat; the placeholder holds one flat brightness
+        // wherever it lands instead.
+        let has_content = disc_shown || matches!(thumb, Thumb::Ready(_));
+        let quad_painted = quad.is_some() && has_content;
+        let content: AnyElement = match (quad, thumb, baked) {
+            // A disc face (real or the blank stand-in) through the
+            // keystone: the wash bakes the turn scrim and the depth into
+            // the sprite, shaped to the quad the way an overlay div can't
+            // be. No thumb needed here; the bake carries its own pixels.
+            (Some(quad), _, Some(bake)) => {
                 let rel = quad.map(|[x, y]| [x - left, y - top]);
-                Self::quad_canvas(rel, image, bake, desaturated, [1.; 4], wash, None)
+                Self::quad_canvas(
+                    rel,
+                    None,
+                    Some(bake),
+                    desaturated,
+                    [1.; 4],
+                    wash.into(),
+                    None,
+                )
+            }
+            // No disc style: the keystone paints the flat thumb itself.
+            (Some(quad), Thumb::Ready(image), None) => {
+                let rel = quad.map(|[x, y]| [x - left, y - top]);
+                Self::quad_canvas(
+                    rel,
+                    Some(image),
+                    None,
+                    desaturated,
+                    [1.; 4],
+                    wash.into(),
+                    None,
+                )
             }
             // The bake is square with the disc touching its edges and
-            // holding its own alpha, so the fill stretch turns it with the
-            // box and nothing needs clipping into shape.
-            (None, Thumb::Ready(_), Some(disc)) => img(disc)
+            // holding its own alpha, so the fill stretch turns it with
+            // the box and nothing needs clipping into shape.
+            (None, _, Some(disc)) => img(disc)
                 .size_full()
                 .object_fit(ObjectFit::Fill)
                 .grayscale(desaturated)
                 .into_any_element(),
             (None, Thumb::Ready(image), None) => img(image)
                 .size_full()
-                // Cover only crops if something masks it; gpui paints the
-                // overrun otherwise, and the hero would spill onto the
-                // covers turned beside it.
+                // Cover only crops if something masks it; gpui paints
+                // the overrun otherwise, and the hero would spill onto
+                // the covers turned beside it.
                 .overflow_hidden()
                 .object_fit(fit)
                 .grayscale(desaturated)
                 .rounded(radius)
                 .into_any_element(),
-            _ => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    svg()
-                        .path(icons::MUSIC)
-                        .size(px(24.))
-                        .text_color(palette::text_faint()),
-                )
-                .into_any_element(),
+            _ => Self::placeholder(),
         };
         div()
             .id(ix)
@@ -1365,46 +1820,18 @@ impl ArtPanel {
                     spread_radius: px(0.),
                 }])
             })
+            // Hover and click are the shelf's, not the cover's: a turned
+            // cover's box carries floor it doesn't paint, and gpui hands
+            // the box the pointer. The shelf tests the outlines instead.
             .cursor_pointer()
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                let target = hovered.then_some(ix);
-                if this.hovered != target && (this.hovered == Some(ix) || *hovered) {
-                    this.hovered = target;
-                    cx.notify();
-                }
-            }))
-            // A press might start a scrub; the click acts on release, and a
-            // scrub that traveled isn't a click.
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
-                    if this.flick.scrolled() {
-                        return;
-                    }
-                    this.focus.focus(window);
-                    if event.click_count > 1 {
-                        this.play(ix, cx);
-                        this.navigate(ix, cx);
-                    } else {
-                        // Center it and select it; the settle republishes,
-                        // this makes the click feel immediate.
-                        this.select_only(ix, cx);
-                        this.navigate(ix, cx);
-                    }
-                }),
-            )
             .child(content)
-            // A dark scrim deepens with the turn, so an angled cover reads as
-            // lit from the front like the hero. Perspective covers have the
-            // same shading in their wash instead.
-            .when(!quad_painted && turn > 0.02, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .rounded(radius)
-                        .bg(palette::alpha(palette::bg_root(), (turn * 90.) as u8)),
-                )
+            // The same coat the keystone bakes in, as an overlay: it
+            // deepens with the turn and with the cover's distance back, so
+            // an angled cover reads as lit from the front like the hero and
+            // a deep one sits in the panel's shadow without going
+            // see-through.
+            .when(!quad_painted && has_content && scrim > 0.008, |d| {
+                d.child(div().absolute().inset_0().rounded(radius).bg(wash))
             })
             .when(is_hero && self.selected.contains(&ix), |d| {
                 d.child(
@@ -1443,8 +1870,9 @@ impl ArtPanel {
             .state
             .thumbs
             .update(cx, |thumbs, cx| thumbs.get(&path, cx));
-        let Thumb::Ready(image) = thumb else {
-            return None;
+        let image = match thumb {
+            Thumb::Ready(image) => Some(image),
+            _ => None,
         };
         let Placement {
             left,
@@ -1452,8 +1880,14 @@ impl ArtPanel {
             w,
             h,
             fade,
+            recede,
             turn: _,
         } = self.placement(d, hero, cx_px, cy_px);
+        // The mirror takes its cover's depth as the same wash, so the floor
+        // sinks back with the rack instead of thinning out under it. The
+        // turn's own shading stays off the floor: a mirror is already the
+        // dim half of the reflection.
+        let wash = palette::alpha(palette::bg_root(), (recede * 255.) as u8).into();
         // The dim as the cover painted it; before a first paint the target
         // stands in, read-only, so the mirror never races the fade.
         let dim = self
@@ -1461,15 +1895,22 @@ impl ArtPanel {
             .get(ix)
             .and_then(|cell| cell.dim)
             .unwrap_or_else(|| self.dim_target(ix));
-        // The mirror shows what its cover shows: the disc face once that
-        // bake has finished (read-only here, the cover above claims the
-        // bakes), the flat thumb until then.
+        // The mirror shows what its cover shows: the real disc face once
+        // that bake has finished (read-only here, the cover above claims
+        // the bakes), the style's own blank plate short of that, same as
+        // the cover reads it. Nothing to paint at all only when there's
+        // neither a disc bake nor a thumb.
         let disc_on = self.config.disc_style != DiscStyle::Off;
         let baked = if disc_on {
-            self.discs.ready(&path)
+            self.discs
+                .ready(&path)
+                .or_else(|| discs::blank_disc(self.config.disc_style))
         } else {
             None
         };
+        if baked.is_none() && image.is_none() {
+            return None;
+        }
         // The cover's quad, or its flat rect used as one: either way the
         // mirror is the same paint call, corners and fade doing the work
         // the strip-and-scrim used to.
@@ -1546,7 +1987,7 @@ impl ArtPanel {
                         baked.clone(),
                         desaturated,
                         fade_corners,
-                        palette::alpha(palette::bg_root(), 0).into(),
+                        wash,
                         Some(axis),
                     )),
             )
@@ -1817,18 +2258,6 @@ impl PanelSettings for ArtPanel {
                                 },
                                 cx,
                             ),
-                        ))
-                        .child(setting_row(
-                            rox_i18n::t!("art-fill-panel"),
-                            Some(rox_i18n::t!("art-fill-panel.description")),
-                            toggle(
-                                self.config.fill,
-                                |this: &mut Self, on, cx| {
-                                    this.config.fill = on;
-                                    cx.notify();
-                                },
-                                cx,
-                            ),
                         )),
                 ))
                 .child(crate::query::shared_query::search_section(
@@ -1961,6 +2390,102 @@ impl PanelSettings for ArtPanel {
                             self.config.perspective,
                             |this: &mut Self, on, cx| {
                                 this.config.perspective = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    // Nothing turns without the projection, so the angle
+                    // has nothing to say; the toggle's own description is
+                    // where that's spelled out.
+                    .when(self.config.perspective, |page| {
+                        page.child(setting_row(
+                            rox_i18n::t!("art-tilt"),
+                            Some(rox_i18n::t!("art-tilt.description")),
+                            settings_ui::scalar(
+                                &self.tilt_scrub,
+                                &self.value_edit,
+                                self.config.tilt,
+                                settings_ui::span(-TILT_MAX, TILT_MAX, "°").hard(),
+                                |this: &mut Self, value, cx| {
+                                    this.config.tilt = value;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                    })
+                    // Sizing sits with the rest of the shelf's geometry
+                    // rather than off on the behavior page: how big the
+                    // hero gets, then how the rack around it is spaced and
+                    // counted.
+                    .child(setting_row(
+                        rox_i18n::t!("art-fill-panel"),
+                        Some(rox_i18n::t!("art-fill-panel.description")),
+                        toggle(
+                            self.config.fill,
+                            |this: &mut Self, on, cx| {
+                                this.config.fill = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        rox_i18n::t!("art-spacing"),
+                        Some(rox_i18n::t!("art-spacing.description")),
+                        settings_ui::scalar(
+                            &self.spacing_scrub,
+                            &self.value_edit,
+                            self.config.spacing,
+                            settings_ui::span(SHIFT_MIN, SHIFT_MAX, "%").hard(),
+                            |this: &mut Self, value, cx| {
+                                this.config.spacing = value;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        rox_i18n::t!("art-stride"),
+                        Some(rox_i18n::t!("art-stride.description")),
+                        settings_ui::scalar(
+                            &self.stride_scrub,
+                            &self.value_edit,
+                            self.config.stride,
+                            settings_ui::span(STEP_MIN, STEP_MAX, "%").hard(),
+                            |this: &mut Self, value, cx| {
+                                this.config.stride = value;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        rox_i18n::t!("art-recede"),
+                        Some(rox_i18n::t!("art-recede.description")),
+                        settings_ui::scalar(
+                            &self.recede_scrub,
+                            &self.value_edit,
+                            self.config.recede,
+                            settings_ui::span(0., 100., "%").hard(),
+                            |this: &mut Self, value, cx| {
+                                this.config.recede = value;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        rox_i18n::t!("art-visible"),
+                        Some(rox_i18n::t!("art-visible.description")),
+                        settings_ui::scalar(
+                            &self.visible_scrub,
+                            &self.value_edit,
+                            self.config.visible as f32,
+                            settings_ui::span(1., VIS_MAX, "").hard(),
+                            |this: &mut Self, value, cx| {
+                                this.config.visible = value.round().clamp(1., VIS_MAX) as u8;
                                 cx.notify();
                             },
                             cx,
@@ -2450,10 +2975,12 @@ impl ArtPanel {
         // step here; the rest of the shelf stays frozen off-screen, where its
         // opacity doesn't show, until it scrolls back on. A big library's
         // off-shelf covers cost nothing. Frames only while one is moving.
+        self.warm_discs(cx);
+
         let dim_step = 1.0 - (0.08_f32).powf(dt * 10.0);
         let last = self.cells.len().saturating_sub(1) as i64;
-        let lo = (self.pos.floor() as i64 - VIS).clamp(0, last);
-        let hi = (self.pos.ceil() as i64 + VIS).clamp(0, last);
+        let lo = (self.pos.floor() as i64 - self.visible()).clamp(0, last);
+        let hi = (self.pos.ceil() as i64 + self.visible()).clamp(0, last);
         for ix in lo..=hi {
             self.dimming.insert(ix as usize);
         }
@@ -2498,8 +3025,19 @@ impl ArtPanel {
             // Bindings win over key listeners and an action stops
             // propagation by default, so the workspace's left and right
             // would seek instead of ever reaching the listener below.
-            // PanelNav takes the pair back while the shelf holds focus.
-            .key_context(panel::PANEL_NAV_CONTEXT)
+            // PanelNav takes the pair back while the shelf holds focus; the
+            // type-ahead pair joins it while a phrase is up, to take back
+            // space (only while the phrase is still absorbing keystrokes)
+            // and tab (for as long as there's a phrase to cycle).
+            .key_context(panel::panel_nav_context(
+                &self.type_ahead,
+                self.type_ahead_at,
+            ))
+            // Tab cycles the live phrase's matches, off the bindings the
+            // TypeAhead context above scopes in; with no phrase up, tab
+            // stays Root's focus traversal.
+            .on_action(cx.listener(|this, _: &TypeAheadNext, _, cx| this.type_step(false, cx)))
+            .on_action(cx.listener(|this, _: &TypeAheadPrev, _, cx| this.type_step(true, cx)))
             // Arrow browsing while the shelf itself holds focus. The guard
             // keeps it off while the search box is focused, whose keys
             // bubble up through the toolbar child.
@@ -2545,16 +3083,37 @@ impl ArtPanel {
 
             // The visible window around the center, painted far covers first
             // so the nearer ones stack on top and take the clicks.
-            let lo = (self.pos.floor() as i64 - VIS).max(0);
-            let hi = (self.pos.ceil() as i64 + VIS).min(self.cells.len() as i64 - 1);
+            let lo = (self.pos.floor() as i64 - self.visible()).max(0);
+            let hi = (self.pos.ceil() as i64 + self.visible()).min(self.cells.len() as i64 - 1);
             let mut order: Vec<i64> = (lo..=hi).collect();
             order.sort_by(|a, b| {
                 let da = (*b as f32 - self.pos).abs();
                 let db = (*a as f32 - self.pos).abs();
                 da.partial_cmp(&db).unwrap()
             });
+            // The pointer map for this frame, nearest cover first, the paint
+            // order read backwards. A cover on its way out of the window is
+            // too faint to aim at, so it drops out of the map before it
+            // stops painting.
+            self.hits = order
+                .iter()
+                .rev()
+                .filter_map(|&ix| {
+                    let d = ix as f32 - self.pos;
+                    (self.edge_fade(d.abs()) >= HIT_OP)
+                        .then(|| (ix as usize, self.outline(d, hero, cx_px, cy_px)))
+                })
+                .collect();
 
-            let mut shelf = div().relative().flex_1().min_h_0().overflow_hidden();
+            // The id is what buys the shelf its hover state: leaving it is
+            // the only way the pointer stops being over a cover without a
+            // move event to say so.
+            let mut shelf = div()
+                .id("art-shelf")
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden();
             if self.config.glow {
                 shelf = shelf.child(self.glow(hero, cx_px, cy_px));
             }
@@ -2603,6 +3162,9 @@ impl ArtPanel {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        // A press has moved the cursor by hand, so any
+                        // cycle the phrase was stepping is stale.
+                        this.clear_type_ahead(cx);
                         this.flick.begin(event.position.along(axis));
                         this.coasting = true;
                         this.publish_pending = true;
@@ -2610,6 +3172,47 @@ impl ArtPanel {
                         cx.notify();
                     }),
                 )
+                // The cover click, resolved against the outlines: a press
+                // that traveled was a scrub, and a press on the floor
+                // between two covers is neither cover's.
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                        if this.flick.scrolled() {
+                            return;
+                        }
+                        let Some(ix) = this.hit(event.position) else {
+                            return;
+                        };
+                        this.focus.focus(window);
+                        if event.click_count > 1 {
+                            this.play(ix, cx);
+                            this.navigate(ix, cx);
+                        } else {
+                            // Center it and select it; the settle
+                            // republishes, this makes the click feel
+                            // immediate.
+                            this.select_only(ix, cx);
+                            this.navigate(ix, cx);
+                        }
+                    }),
+                )
+                // Hover lights a cover back up under the focus effects and
+                // aims the context menu, so it follows the same outlines.
+                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                    let target = this.hit(event.position);
+                    if this.hovered != target {
+                        this.hovered = target;
+                        cx.notify();
+                    }
+                }))
+                // Off the shelf entirely there's no move event to clear it.
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    if !*hovered && this.hovered.is_some() {
+                        this.hovered = None;
+                        cx.notify();
+                    }
+                }))
                 // The wheel steps the carousel a cover at a time, banking the
                 // sub-step travel so a trackpad's small deltas still count.
                 // The scroll axis leads; a plain vertical wheel still drives
@@ -2654,6 +3257,13 @@ impl ArtPanel {
                             move |bounds: Bounds<Pixels>, _, cx| {
                                 if let Some(this) = weak.upgrade() {
                                     this.update(cx, |this, cx| {
+                                        // The origin rides along: the
+                                        // pointer arrives in window space
+                                        // and the outlines are in the
+                                        // shelf's. No notify on a move
+                                        // alone; nothing about the layout
+                                        // changed.
+                                        this.origin = bounds.origin;
                                         if this.size != bounds.size {
                                             this.size = bounds.size;
                                             cx.notify();
@@ -2684,6 +3294,10 @@ impl ArtPanel {
                     .size_full(),
                 )
                 .children(self.letter_rail(axis, cx))
+                .children(panel::type_ahead_overlay(
+                    &self.type_ahead,
+                    self.type_ahead_at,
+                ))
                 // The shelf's right-click menu, keyed off the hovered cover
                 // since the builder gets no position: the hovered cover is
                 // selected first so the menu acts on what's highlighted. Off

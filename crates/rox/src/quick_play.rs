@@ -526,7 +526,7 @@ impl QuickPlay {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| this.play(ix, cx)),
                     )
-                    .when(show_cover, |d| d.child(track_columns::cover_cell(&cover)))
+                    .when(show_cover, |d| d.child(track_columns::cover_cell(&cover, track_columns::ROW_HEIGHT_STOCK)))
                     .child(
                         div()
                             .flex_1()

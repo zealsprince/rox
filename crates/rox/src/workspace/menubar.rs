@@ -7,6 +7,36 @@ use super::*;
 
 use gpui::MouseDownEvent;
 
+/// Where the keyboard cursor sits inside an open dropdown: the entry it's
+/// on, plus the row within it for the one entry kind that draws a run of
+/// them (a catalog section with no group of its own). A position rather
+/// than a flat row count, so the renderer can compare against it while
+/// walking entries, without counting what came before.
+pub(crate) type NavSlot = (usize, Option<usize>);
+
+/// What Enter on the row under the cursor does. The flyouts' rows come off
+/// disk and out of the catalog rather than the static table, so there's no
+/// single action type that covers them.
+pub(crate) enum NavRun {
+    Action(MenuAction),
+    Layout(String, LayoutTarget),
+    Workspace(String, WorkspaceTarget),
+    Preset(String, PanelTarget),
+    PanelWindow(&'static PanelDef),
+    /// The "New..." rows, which open a save dialog rather than run.
+    SaveLayout,
+    SaveWorkspace,
+}
+
+/// One row the cursor can land on: something to run, or a surface to step
+/// into. `Open` carries the index that level's `open_*` field wants, which
+/// isn't the row's own position once headings and hidden sections have been
+/// skipped.
+pub(crate) enum NavRow {
+    Run(NavRun),
+    Open(usize),
+}
+
 /// Where the Application menu's three project links go. The issue form is
 /// the chooser rather than a blank issue, so a report arrives on a template.
 const ISSUES_URL: &str = "https://github.com/zealsprince/rox/issues/new/choose";
@@ -114,17 +144,57 @@ impl Workspace {
         }
     }
 
-    /// The modifiers changed, which is where the pin comes from: a
-    /// double-tap of Alt leaves a hidden menubar up.
+    /// The modifiers changed, which is where the pin and the access letters
+    /// come from. A docked bar arms on a single clean tap of Alt and drops
+    /// again on the next one. A hidden bar has nothing to arm until it's up,
+    /// so there the pair does both at once: pin the bar and arm it.
     pub(crate) fn note_modifiers(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
-        if self
+        let tap = self
             .alt_tap
-            .note(modifiers, Instant::now(), self.pointer_down)
-        {
+            .note(modifiers, Instant::now(), self.pointer_down);
+        if tap == AltTapKind::None {
+            return;
+        }
+        if !settings::hide_menubar() {
+            self.set_menu_keys(!self.menubar_keys, cx);
+            return;
+        }
+        if tap == AltTapKind::DoubleTap {
             self.menubar_pinned = !self.menubar_pinned;
             self.menubar_touched = false;
+            self.set_menu_keys(self.menubar_pinned, cx);
             cx.notify();
         }
+    }
+
+    /// Arm or drop the menubar's keyboard mode: the access letters, the
+    /// cursor, and the `MenuNav` context that hands space and the arrows
+    /// back from the playback bindings. Dropping it closes whatever the
+    /// keyboard opened. Never arms on macOS, where the menus live in the
+    /// system bar and this row has no buttons to walk.
+    fn set_menu_keys(&mut self, on: bool, cx: &mut Context<Self>) {
+        let on = on && !cfg!(target_os = "macos");
+        if self.menubar_keys == on {
+            return;
+        }
+        self.menubar_keys = on;
+        if on {
+            self.menu_top = self.open_menu.unwrap_or(0);
+        } else {
+            self.close_menus(cx);
+        }
+        cx.notify();
+    }
+
+    /// Drop the keyboard mode from outside the Alt path: a click that takes
+    /// the bar back to the mouse, or an Escape at the end of its ladder.
+    /// Reports whether there was one to drop.
+    pub(crate) fn drop_menu_keys(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.menubar_keys {
+            return false;
+        }
+        self.set_menu_keys(false, cx);
+        true
     }
 
     /// A key or a button went down under the held Alt, so it's a chord or a
@@ -137,14 +207,410 @@ impl Workspace {
     /// Drop a pinned menubar. Reports whether there was one, so escape can
     /// stop at the bar instead of falling through to what it backs out of
     /// next.
+    ///
+    /// The keyboard mode goes with it. On a hidden bar the pin is what holds
+    /// the row on screen, and an armed bar keeps it up on its own, so leaving
+    /// the letters behind would strand the bar over the dock with nothing but
+    /// Escape to clear it.
     pub(crate) fn unpin_menubar(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.menubar_pinned {
             return false;
         }
         self.menubar_pinned = false;
         self.menubar_touched = false;
+        self.set_menu_keys(false, cx);
         cx.notify();
         true
+    }
+
+    /// A keystroke offered to the menubar while it's taking keys. Reports
+    /// whether it was used, which is the caller's cue to stop the event: the
+    /// bar has the keyboard until Escape gives it back, so a letter must not
+    /// also land in whatever panel holds focus underneath.
+    ///
+    /// Bindings beat key listeners, so the bar's `MenuNav` context is what
+    /// really hands space and the arrows over (see `keymap::PLAYBACK`); this
+    /// only sees what nothing bound took first.
+    pub(crate) fn menu_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.menubar_keys {
+            return false;
+        }
+        let modifiers = event.keystroke.modifiers;
+        // A real chord still belongs to whatever binds it. Shift doesn't
+        // count: it's how you type a capital, and the letters match either
+        // way.
+        if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+            return false;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.menu_escape(cx),
+            "up" => self.menu_step(-1, cx),
+            "down" => self.menu_step(1, cx),
+            "left" => self.menu_out(cx),
+            "right" => self.menu_in(cx),
+            "enter" | "space" => self.menu_enter(window, cx),
+            key => {
+                if let Some(index) = mnemonic_menu(key) {
+                    self.open_top(index, cx);
+                }
+            }
+        }
+        // Everything else is swallowed rather than passed down. The bar was
+        // armed on purpose and Escape is the way out of it, so a stray key
+        // reaching the panel underneath would be the surprise.
+        true
+    }
+
+    /// Escape's ladder: back out one surface at a time, then off the bar. A
+    /// hidden bar was pinned up by the same double-tap that armed it, so the
+    /// last rung drops both.
+    fn menu_escape(&mut self, cx: &mut Context<Self>) {
+        if self.open_subgroup.is_some() {
+            self.open_subgroup = None;
+            self.menu_group_slot = None;
+            cx.notify();
+        } else if self.open_submenu.is_some() {
+            self.open_flyout(None);
+            cx.notify();
+        } else if self.open_menu.is_some() {
+            self.close_menus(cx);
+        } else {
+            self.set_menu_keys(false, cx);
+            self.unpin_menubar(cx);
+        }
+    }
+
+    /// Up and down: move the cursor within the deepest open surface,
+    /// wrapping at both ends. With nothing dropped down they open the
+    /// cursor's menu instead, down at its first row and up at its last.
+    fn menu_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.open_menu.is_none() {
+            self.open_top(self.menu_top, cx);
+            if delta < 0 {
+                self.menu_slot = self.menu_rows().last().map(|(slot, _)| *slot);
+                cx.notify();
+            }
+            return;
+        }
+        if self.open_subgroup.is_some() {
+            self.menu_group_slot = step_index(self.menu_group_slot, delta, self.group_rows().len());
+        } else if self.open_submenu.is_some() {
+            self.menu_sub_slot = step_index(self.menu_sub_slot, delta, self.flyout_rows().len());
+        } else {
+            let rows = self.menu_rows();
+            let at = self
+                .menu_slot
+                .and_then(|slot| rows.iter().position(|(row, _)| *row == slot));
+            self.menu_slot = step_index(at, delta, rows.len()).map(|i| rows[i].0);
+        }
+        cx.notify();
+    }
+
+    /// Left: back out of a flyout, or step to the menu before this one.
+    fn menu_out(&mut self, cx: &mut Context<Self>) {
+        if self.open_subgroup.is_some() {
+            self.open_subgroup = None;
+            self.menu_group_slot = None;
+        } else if self.open_submenu.is_some() {
+            self.open_flyout(None);
+        } else if self.open_menu.is_some() {
+            self.open_top(self.step_top(-1), cx);
+            return;
+        } else {
+            self.menu_top = self.step_top(-1);
+        }
+        cx.notify();
+    }
+
+    /// Right: step into the flyout under the cursor, or on a row that has
+    /// none, on to the next menu. Inside the panel picker's group flyout
+    /// there's nothing deeper to step into, so it holds still.
+    fn menu_in(&mut self, cx: &mut Context<Self>) {
+        if self.open_subgroup.is_some() {
+            return;
+        }
+        if self.open_submenu.is_some() {
+            if let Some(NavRow::Open(group)) = self.row_at(self.flyout_rows(), self.menu_sub_slot) {
+                self.open_subgroup = Some(group);
+                self.menu_group_slot = (!self.group_rows().is_empty()).then_some(0);
+                cx.notify();
+            }
+            return;
+        }
+        if self.open_menu.is_some() {
+            if let Some(NavRow::Open(entry)) = self.current_row() {
+                self.open_flyout(Some(entry));
+                self.menu_sub_slot = (!self.flyout_rows().is_empty()).then_some(0);
+                cx.notify();
+            } else {
+                self.open_top(self.step_top(1), cx);
+            }
+            return;
+        }
+        self.menu_top = self.step_top(1);
+        cx.notify();
+    }
+
+    /// Enter: run the row under the cursor, or open it when it's a flyout.
+    /// With nothing dropped down it drops the cursor's menu, same as down.
+    fn menu_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open_menu.is_none() {
+            self.open_top(self.menu_top, cx);
+            return;
+        }
+        let row = if self.open_subgroup.is_some() {
+            self.row_at(self.group_rows(), self.menu_group_slot)
+        } else if self.open_submenu.is_some() {
+            self.row_at(self.flyout_rows(), self.menu_sub_slot)
+        } else {
+            self.current_row()
+        };
+        match row {
+            Some(NavRow::Run(run)) => self.nav_run(run, window, cx),
+            Some(NavRow::Open(_)) => self.menu_in(cx),
+            None => {}
+        }
+    }
+
+    /// Drop the menu at `index` under the keyboard, cursor on its first row.
+    fn open_top(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.close_menus(cx);
+        self.menu_top = index;
+        self.open_menu = Some(index);
+        self.menu_slot = self.menu_rows().first().map(|(slot, _)| *slot);
+        cx.notify();
+    }
+
+    /// The menu one step along the bar from the cursor's, wrapping.
+    fn step_top(&self, delta: isize) -> usize {
+        let len = MENUS.len() as isize;
+        (self.menu_top as isize + delta).rem_euclid(len) as usize
+    }
+
+    /// Run what the keyboard picked, then get off the bar: the mouse rows do
+    /// the same, and leaving the letters up over a window that just opened
+    /// would keep eating its keys.
+    fn nav_run(&mut self, run: NavRun, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_menu_keys(false, cx);
+        self.run_nav(run, window, cx);
+    }
+
+    /// Do what a picked row says, whichever menu picked it. The menu panel
+    /// comes straight here: it has no access letters to put away first, so
+    /// there's nothing for it in the step above.
+    pub(crate) fn run_nav(&mut self, run: NavRun, window: &mut Window, cx: &mut Context<Self>) {
+        match run {
+            NavRun::Action(action) => self.run(action, window, cx),
+            NavRun::Layout(name, target) => self.run_layout(name, target, cx),
+            NavRun::Workspace(name, target) => self.run_workspace(name, target, cx),
+            NavRun::Preset(name, target) => self.run_panel_preset(name, target, window, cx),
+            NavRun::PanelWindow(def) => self.open_panel_window(def, window, cx),
+            NavRun::SaveLayout => self.open_save_dialog(window, cx),
+            NavRun::SaveWorkspace => self.open_save_workspace_dialog(window, cx),
+        }
+    }
+
+    /// The row a cursor index picks out of a flyout's list.
+    fn row_at(&self, rows: Vec<NavRow>, at: Option<usize>) -> Option<NavRow> {
+        nav_row_at(rows, at)
+    }
+
+    /// The dropdown row the cursor sits on.
+    fn current_row(&self) -> Option<NavRow> {
+        let slot = self.menu_slot?;
+        self.menu_rows()
+            .into_iter()
+            .find(|(row, _)| *row == slot)
+            .map(|(_, row)| row)
+    }
+
+    /// The open dropdown's rows in draw order.
+    fn menu_rows(&self) -> Vec<(NavSlot, NavRow)> {
+        self.open_menu.map(menu_entry_rows).unwrap_or_default()
+    }
+
+    /// The open flyout's rows in draw order.
+    fn flyout_rows(&self) -> Vec<NavRow> {
+        match (self.open_menu, self.open_submenu) {
+            (Some(menu), Some(entry)) => submenu_rows(menu, entry),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The open group flyout's rows in draw order.
+    fn group_rows(&self) -> Vec<NavRow> {
+        self.open_subgroup.map(subgroup_rows).unwrap_or_default()
+    }
+}
+
+/// The row a cursor index picks out of a flyout's list.
+pub(crate) fn nav_row_at(rows: Vec<NavRow>, at: Option<usize>) -> Option<NavRow> {
+    rows.into_iter().nth(at?)
+}
+
+/// The dropdown rows of the menu at `menu` in draw order, each with the slot
+/// the cursor uses for it. Headings and gated-off sections contribute none,
+/// which is what makes stepping skip past them.
+///
+/// Off the table and an index rather than off menubar state, because the menu
+/// panel draws the same `MENUS` a level deeper and walks it with the same
+/// three functions. One reading of the table, so the keyboard can't come to a
+/// different answer in the two places.
+pub(crate) fn menu_entry_rows(menu: usize) -> Vec<(NavSlot, NavRow)> {
+    let Some(menu) = MENUS.get(menu) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for (i, entry) in menu.entries.iter().enumerate() {
+        match entry {
+            MenuEntry::Item(item) => {
+                rows.push(((i, None), NavRow::Run(NavRun::Action(item.action))))
+            }
+            MenuEntry::Section(_) => {}
+            MenuEntry::Panels(section) if !section_shows(section) => {}
+            // A bare section draws a run of rows in place, so its slots
+            // carry the row within the entry as well as the entry.
+            MenuEntry::Panels(section) if section.group.is_none() => {
+                rows.extend(section.panels.iter().enumerate().map(|(j, def)| {
+                    (
+                        (i, Some(j)),
+                        NavRow::Run(NavRun::Action(MenuAction::OpenPanel(def))),
+                    )
+                }))
+            }
+            _ => rows.push(((i, None), NavRow::Open(i))),
+        }
+    }
+    rows
+}
+
+/// The rows of the flyout hanging off entry `entry` of the menu at `menu`, in
+/// draw order, read from the same lists the flyout drew from so the two walk
+/// in step. The note an empty flyout shows isn't a row, and never sits beside
+/// one.
+pub(crate) fn submenu_rows(menu: usize, entry: usize) -> Vec<NavRow> {
+    let Some(entry) = MENUS.get(menu).and_then(|menu| menu.entries.get(entry)) else {
+        return Vec::new();
+    };
+    match entry {
+        MenuEntry::Panels(section) => section
+            .panels
+            .iter()
+            .map(|def| NavRow::Run(NavRun::Action(MenuAction::OpenPanel(def))))
+            .collect(),
+        MenuEntry::LayoutsSubmenu {
+            target, with_new, ..
+        } => {
+            let mut rows = Vec::new();
+            if *with_new {
+                rows.push(NavRow::Run(NavRun::SaveLayout));
+            }
+            rows.extend(
+                rox_core::settings::layouts::all(&Settings::load())
+                    .into_iter()
+                    .map(|preset| NavRow::Run(NavRun::Layout(preset.name, *target))),
+            );
+            rows
+        }
+        MenuEntry::WorkspacesSubmenu {
+            target, with_new, ..
+        } => {
+            let mut rows = Vec::new();
+            if *with_new {
+                rows.push(NavRow::Run(NavRun::SaveWorkspace));
+            }
+            let mut entries = crate::workspaces::all();
+            if *target == WorkspaceTarget::Overwrite {
+                entries.retain(|entry| !entry.builtin);
+            }
+            rows.extend(
+                entries
+                    .into_iter()
+                    .map(|entry| NavRow::Run(NavRun::Workspace(entry.name, *target))),
+            );
+            rows
+        }
+        MenuEntry::PresetsSubmenu { target, .. } => panel_presets::saved()
+            .into_iter()
+            .map(|preset| NavRow::Run(NavRun::Preset(preset.name, *target)))
+            .collect(),
+        MenuEntry::PanelWindowsSubmenu { .. } => {
+            let mut rows = Vec::new();
+            // Group 0 is the presets when there are any, the same
+            // numbering the picker draws with.
+            if !panel_presets::saved().is_empty() {
+                rows.push(NavRow::Open(0));
+            }
+            for (i, section) in catalog::sections().enumerate() {
+                match section.group {
+                    None => rows.extend(
+                        section
+                            .panels
+                            .iter()
+                            .map(|def| NavRow::Run(NavRun::PanelWindow(def))),
+                    ),
+                    Some(_) => rows.push(NavRow::Open(i + 1)),
+                }
+            }
+            rows
+        }
+        MenuEntry::Item(_) | MenuEntry::Section(_) => Vec::new(),
+    }
+}
+
+/// The rows of the picker group at `group`, the one surface a level deeper
+/// than the rest: the panel picker's presets group, or one catalog group.
+pub(crate) fn subgroup_rows(group: usize) -> Vec<NavRow> {
+    let presets = panel_presets::saved();
+    if group == 0 {
+        return presets
+            .into_iter()
+            .map(|preset| NavRow::Run(NavRun::Preset(preset.name, PanelTarget::NewWindow)))
+            .collect();
+    }
+    catalog::sections()
+        .nth(group - 1)
+        .map(|section| {
+            section
+                .panels
+                .iter()
+                .map(|def| NavRow::Run(NavRun::PanelWindow(def)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl Workspace {
+    /// Whether the keyboard cursor sits on the dropdown row at `slot`.
+    fn nav_on(&self, entry: usize, row: Option<usize>) -> bool {
+        self.menu_slot == Some((entry, row))
+    }
+
+    /// Whether the cursor sits on the open flyout's row at `row`.
+    fn nav_sub(&self, row: usize) -> bool {
+        self.menu_sub_slot == Some(row)
+    }
+
+    /// Whether the cursor sits on the flyout row that opens `group`, the
+    /// picker's group headers. They're addressed by their place in the
+    /// flyout, not by the group number they carry.
+    fn nav_on_group(&self, group: usize) -> bool {
+        matches!(
+            self.row_at(self.flyout_rows(), self.menu_sub_slot),
+            Some(NavRow::Open(open)) if open == group
+        )
+    }
+
+    /// Whether the cursor sits on `row` of the picker group `group`, the one
+    /// surface a level deeper than the rest. Group rows are built whether or
+    /// not their group is open, so the group has to match too.
+    fn nav_group(&self, group: usize, row: usize) -> bool {
+        self.open_subgroup == Some(group) && self.menu_group_slot == Some(row)
     }
 
     /// The pointer crossing the pinned bar's edge. Entering arms the pin,
@@ -166,9 +632,14 @@ impl Workspace {
         &self,
         index: usize,
         menu: &'static Menu,
+        letter: Option<std::ops::Range<usize>>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let open = self.open_menu == Some(index);
+        // The keyboard cursor lights the button the same way an open menu
+        // does, so walking the bar with the arrows reads as one cursor
+        // whether or not anything is dropped down.
+        let cursor = self.menubar_keys && self.menu_top == index;
         div()
             .relative()
             .h_full()
@@ -176,32 +647,25 @@ impl Workspace {
             .flex()
             .items_center()
             .cursor_pointer()
-            .when(open, |d| d.bg(palette::bg_control_active()))
+            .when(open || cursor, |d| d.bg(palette::bg_control_active()))
             .hover(|d| d.bg(palette::bg_menu_hover()))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.open_menu = if this.open_menu == Some(index) {
-                        None
-                    } else {
-                        Some(index)
-                    };
-                    this.open_submenu = None;
-                    this.open_subgroup = None;
-                    cx.notify();
+                    let reopen = this.open_menu != Some(index);
+                    this.close_menus(cx);
+                    if reopen {
+                        this.open_menu = Some(index);
+                        this.menu_top = index;
+                    }
                 }),
             )
             // Clicking anywhere outside this button closes its menu; a click
             // that lands on a dropdown item still runs the item's handler.
             .when(open, |d| {
-                d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.open_menu = None;
-                    this.open_submenu = None;
-                    this.open_subgroup = None;
-                    cx.notify();
-                }))
+                d.on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menus(cx)))
             })
-            .child(rox_i18n::t!(menu.label))
+            .child(menu_label(menu.label, letter))
             .when(open, |d| d.child(deferred(self.dropdown(menu, cx))))
     }
     /// The menubar row: the mini toggle, the menus, and the status side.
@@ -224,12 +688,14 @@ impl Workspace {
             .children(self.traffic_lights(window, cx))
             .children(self.mini_button(cx))
             .when(!native_menus, |d| {
-                d.children(
-                    MENUS
-                        .iter()
-                        .enumerate()
-                        .map(|(i, menu)| self.menu_button(i, menu, cx)),
-                )
+                // The letters are only worked out while they're on show, so
+                // the common frame doesn't pay for five locale lookups and a
+                // dedup pass.
+                let letters = self.menubar_keys.then(mnemonics).unwrap_or_default();
+                d.children(MENUS.iter().enumerate().map(|(i, menu)| {
+                    let letter = letters.get(i).cloned().flatten().map(|(range, _)| range);
+                    self.menu_button(i, menu, letter, cx)
+                }))
             })
             // The empty middle is a drag handle, so a decorations-off
             // window still moves by its menu bar. The move is the
@@ -472,11 +938,11 @@ impl Workspace {
                         // sibling submenu left open.
                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                             if *hovered && this.open_submenu.is_some() {
-                                this.open_submenu = None;
-                                this.open_subgroup = None;
+                                this.open_flyout(None);
                                 cx.notify();
                             }
                         }))
+                        .when(self.nav_on(i, None), nav_lit)
                         .into_any_element(),
                     MenuEntry::Section(label) => menu_section(label).into_any_element(),
                     // A gated-off section draws nothing rather than an
@@ -494,11 +960,11 @@ impl Workspace {
                                     .id(("panel-entry", j))
                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                         if *hovered && this.open_submenu.is_some() {
-                                            this.open_submenu = None;
-                                            this.open_subgroup = None;
+                                            this.open_flyout(None);
                                             cx.notify();
                                         }
                                     }))
+                                    .when(self.nav_on(i, Some(j)), nav_lit)
                             }))
                             .into_any_element(),
                         Some((label, icon)) => self
@@ -561,10 +1027,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
-                    this.open_menu = None;
-                    this.open_submenu = None;
-                    this.open_subgroup = None;
-                    cx.notify();
+                    this.close_menus(cx);
                     this.run(action, window, cx);
                 }),
             )
@@ -627,12 +1090,11 @@ impl Workspace {
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
             .cursor_pointer()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on(index, None), nav_lit)
             .hover(|d| d.bg(palette::bg_control_hover_opaque()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_submenu != Some(index) {
-                    this.open_submenu = Some(index);
-                    this.open_subgroup = None;
+                    this.open_flyout(Some(index));
                     cx.notify();
                 }
             }))
@@ -677,11 +1139,10 @@ impl Workspace {
                         .border_color(palette::border_light())
                         .shadow_md()
                         .occlude()
-                        .children(
-                            panels
-                                .iter()
-                                .map(|def| self.action_item(panel_menu_item(def), cx)),
-                        ),
+                        .children(panels.iter().enumerate().map(|(row, def)| {
+                            self.action_item(panel_menu_item(def), cx)
+                                .when(self.nav_sub(row), nav_lit)
+                        })),
                 )
             })
     }
@@ -707,12 +1168,11 @@ impl Workspace {
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
             .cursor_pointer()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on(index, None), nav_lit)
             .hover(|d| d.bg(palette::bg_control_hover_opaque()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_submenu != Some(index) {
-                    this.open_submenu = Some(index);
-                    this.open_subgroup = None;
+                    this.open_flyout(Some(index));
                     cx.notify();
                 }
             }))
@@ -757,7 +1217,7 @@ impl Workspace {
                     .shadow_md()
                     .occlude();
                 if with_new {
-                    flyout = flyout.child(self.save_new_item(cx));
+                    flyout = flyout.child(self.save_new_item(cx).when(self.nav_sub(0), nav_lit));
                 }
                 if presets.is_empty() {
                     // The Save flyout still has its New row, so only the
@@ -772,11 +1232,11 @@ impl Workspace {
                         );
                     }
                 } else {
-                    flyout = flyout.children(
-                        presets
-                            .into_iter()
-                            .map(|preset| self.layout_item(preset.name, target, cx)),
-                    );
+                    flyout =
+                        flyout.children(presets.into_iter().enumerate().map(|(row, preset)| {
+                            self.layout_item(preset.name, target, cx)
+                                .when(self.nav_sub(row + usize::from(with_new)), nav_lit)
+                        }));
                 }
                 d.child(flyout)
             })
@@ -784,7 +1244,7 @@ impl Workspace {
 
     /// The Save flyout's leading row: opens the save dialog for a fresh
     /// preset, closing the menu first like every other flyout row.
-    fn save_new_item(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn save_new_item(&self, cx: &mut Context<Self>) -> Div {
         div()
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
@@ -793,9 +1253,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
-                    this.open_menu = None;
-                    this.open_submenu = None;
-                    this.open_subgroup = None;
+                    this.close_menus(cx);
                     this.open_save_dialog(window, cx);
                 }),
             )
@@ -815,12 +1273,7 @@ impl Workspace {
     /// A preset row in a layouts flyout: closes the menu, then does the
     /// flyout's thing with the named preset: open a window, overwrite it
     /// with the current arrangement, or apply it here behind a confirm.
-    fn layout_item(
-        &self,
-        name: String,
-        target: LayoutTarget,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn layout_item(&self, name: String, target: LayoutTarget, cx: &mut Context<Self>) -> Div {
         let label = SharedString::from(name.clone());
         div()
             .px(tokens::SPACE_MD)
@@ -830,10 +1283,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.open_menu = None;
-                    this.open_submenu = None;
-                    this.open_subgroup = None;
-                    cx.notify();
+                    this.close_menus(cx);
                     this.run_layout(name.clone(), target, cx);
                 }),
             )
@@ -862,7 +1312,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let open = self.open_submenu == Some(index);
-        submenu_shell(index, label, icon, open, cx).when(open, |d| {
+        let lit = open || self.nav_on(index, None);
+        submenu_shell(index, label, icon, lit, cx).when(open, |d| {
             // Read the presets only once the flyout opens, not on every
             // parent-menu paint.
             let presets = panel_presets::saved();
@@ -870,11 +1321,10 @@ impl Workspace {
             d.child(if presets.is_empty() {
                 flyout.child(flyout_note(rox_i18n::t!("menu-no-presets")))
             } else {
-                flyout.children(
-                    presets
-                        .into_iter()
-                        .map(|preset| self.preset_item(preset, target, cx)),
-                )
+                flyout.children(presets.into_iter().enumerate().map(|(row, preset)| {
+                    self.preset_item(preset, target, cx)
+                        .when(self.nav_sub(row), nav_lit)
+                }))
             })
         })
     }
@@ -892,7 +1342,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let open = self.open_submenu == Some(index);
-        submenu_shell(index, label, icon, open, cx).when(open, |d| {
+        let lit = open || self.nav_on(index, None);
+        submenu_shell(index, label, icon, lit, cx).when(open, |d| {
             let presets = panel_presets::saved();
             // This flyout hosts the group flyouts, so it captures its own
             // bounds for their side decision.
@@ -903,7 +1354,11 @@ impl Workspace {
             if !presets.is_empty() {
                 let rows = presets
                     .into_iter()
-                    .map(|preset| self.preset_item(preset, PanelTarget::NewWindow, cx))
+                    .enumerate()
+                    .map(|(row, preset)| {
+                        self.preset_item(preset, PanelTarget::NewWindow, cx)
+                            .when(self.nav_group(0, row), nav_lit)
+                    })
                     .collect();
                 flyout = flyout.child(self.panel_window_group(
                     0,
@@ -917,7 +1372,11 @@ impl Workspace {
                 let rows = section
                     .panels
                     .iter()
-                    .map(|def| self.panel_window_item(def, cx))
+                    .enumerate()
+                    .map(|(row, def)| {
+                        self.panel_window_item(def, cx)
+                            .when(self.nav_group(i + 1, row), nav_lit)
+                    })
                     .collect::<Vec<_>>();
                 flyout = match section.group {
                     // A bare section is a run of plain rows in place, the
@@ -950,11 +1409,12 @@ impl Workspace {
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
             .cursor_pointer()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on_group(index), nav_lit)
             .hover(|d| d.bg(palette::bg_control_hover_opaque()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_subgroup != Some(index) {
                     this.open_subgroup = Some(index);
+                    this.menu_group_slot = None;
                     cx.notify();
                 }
             }))
@@ -1032,9 +1492,23 @@ impl Workspace {
     /// every row that runs something does first.
     fn close_menus(&mut self, cx: &mut Context<Self>) {
         self.open_menu = None;
+        self.menu_slot = None;
         self.open_submenu = None;
+        self.menu_sub_slot = None;
         self.open_subgroup = None;
+        self.menu_group_slot = None;
         cx.notify();
+    }
+
+    /// Move the flyout open off the dropdown entry at `index`, or shut it
+    /// with None. The keyboard cursor goes with it: a hover that lands
+    /// somewhere else must not leave a highlight behind in a list it no
+    /// longer belongs to.
+    fn open_flyout(&mut self, index: Option<usize>) {
+        self.open_submenu = index;
+        self.menu_sub_slot = None;
+        self.open_subgroup = None;
+        self.menu_group_slot = None;
     }
 
     /// A workspaces flyout: like [`Workspace::layouts_submenu_row`] but its
@@ -1059,12 +1533,11 @@ impl Workspace {
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
             .cursor_pointer()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on(index, None), nav_lit)
             .hover(|d| d.bg(palette::bg_control_hover_opaque()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_submenu != Some(index) {
-                    this.open_submenu = Some(index);
-                    this.open_subgroup = None;
+                    this.open_flyout(Some(index));
                     cx.notify();
                 }
             }))
@@ -1115,7 +1588,10 @@ impl Workspace {
                     .shadow_md()
                     .occlude();
                 if with_new {
-                    flyout = flyout.child(self.save_new_workspace_item(cx));
+                    flyout = flyout.child(
+                        self.save_new_workspace_item(cx)
+                            .when(self.nav_sub(0), nav_lit),
+                    );
                 }
                 if entries.is_empty() {
                     // The Save flyout still has its New row, so only the
@@ -1130,9 +1606,11 @@ impl Workspace {
                         );
                     }
                 } else {
-                    flyout = flyout.children(entries.into_iter().map(|entry| {
-                        self.workspace_item(entry.name, entry.title, entry.builtin, target, cx)
-                    }));
+                    flyout =
+                        flyout.children(entries.into_iter().enumerate().map(|(row, entry)| {
+                            self.workspace_item(entry.name, entry.title, entry.builtin, target, cx)
+                                .when(self.nav_sub(row + usize::from(with_new)), nav_lit)
+                        }));
                 }
                 d.child(flyout)
             })
@@ -1140,7 +1618,7 @@ impl Workspace {
 
     /// The Save Workspace flyout's leading row: opens the save dialog for a
     /// fresh bundle, closing the menu first like every other flyout row.
-    fn save_new_workspace_item(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn save_new_workspace_item(&self, cx: &mut Context<Self>) -> Div {
         div()
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
@@ -1149,9 +1627,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
-                    this.open_menu = None;
-                    this.open_submenu = None;
-                    this.open_subgroup = None;
+                    this.close_menus(cx);
                     this.open_save_workspace_dialog(window, cx);
                 }),
             )
@@ -1178,7 +1654,7 @@ impl Workspace {
         builtin: bool,
         target: WorkspaceTarget,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> Div {
         let label = title;
         div()
             .px(tokens::SPACE_MD)
@@ -1188,9 +1664,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.open_menu = None;
-                    this.open_submenu = None;
-                    this.open_subgroup = None;
+                    this.close_menus(cx);
                     this.run_workspace(name.clone(), target, cx);
                 }),
             )
@@ -1235,7 +1709,7 @@ fn submenu_shell(
     index: usize,
     label: &'static str,
     icon: &'static str,
-    open: bool,
+    lit: bool,
     cx: &mut Context<Workspace>,
 ) -> gpui::Stateful<Div> {
     div()
@@ -1244,12 +1718,11 @@ fn submenu_shell(
         .px(tokens::SPACE_MD)
         .py(tokens::SPACE_XS)
         .cursor_pointer()
-        .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+        .when(lit, nav_lit)
         .hover(|d| d.bg(palette::bg_control_hover_opaque()))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if *hovered && this.open_submenu != Some(index) {
-                this.open_submenu = Some(index);
-                this.open_subgroup = None;
+                this.open_flyout(Some(index));
                 cx.notify();
             }
         }))
@@ -1326,10 +1799,23 @@ pub(crate) struct AltTap {
     tapped_at: Option<Instant>,
 }
 
+/// What an Alt release amounted to. A docked bar arms its access letters on
+/// the single tap; a hidden one waits for the pair, since the first tap of
+/// that pair has no bar to arm yet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AltTapKind {
+    /// Not a tap at all: a chord, a drag, or a hold.
+    None,
+    /// A clean tap with no partner in the window before it.
+    Tap,
+    /// The second of a pair, close enough behind the first to make one.
+    DoubleTap,
+}
+
 impl AltTap {
-    /// Feed the tracker a modifiers change. Reports true on the release that
-    /// completes a double-tap, which is the caller's cue to toggle the pin.
-    fn note(&mut self, modifiers: Modifiers, now: Instant, pointer_down: bool) -> bool {
+    /// Feed the tracker a modifiers change. Reports what the release it
+    /// completed amounted to, which is what the caller acts on.
+    fn note(&mut self, modifiers: Modifiers, now: Instant, pointer_down: bool) -> AltTapKind {
         if modifiers.alt {
             let alone = !modifiers.control
                 && !modifiers.shift
@@ -1340,21 +1826,21 @@ impl AltTap {
             } else if self.held_since.is_none() {
                 self.held_since = Some(now);
             }
-            return false;
+            return AltTapKind::None;
         }
         let Some(held) = self.held_since.take() else {
             self.tapped_at = None;
-            return false;
+            return AltTapKind::None;
         };
         if now.duration_since(held) > ALT_TAP_MAX {
             self.tapped_at = None;
-            return false;
+            return AltTapKind::None;
         }
         match self.tapped_at.take() {
-            Some(first) if now.duration_since(first) <= ALT_DOUBLE_TAP => true,
+            Some(first) if now.duration_since(first) <= ALT_DOUBLE_TAP => AltTapKind::DoubleTap,
             _ => {
                 self.tapped_at = Some(now);
-                false
+                AltTapKind::Tap
             }
         }
     }
@@ -1365,6 +1851,86 @@ impl AltTap {
         self.held_since = None;
         self.tapped_at = None;
     }
+}
+
+/// The next cursor index in a list of `len` rows, wrapping at both ends.
+/// With the cursor not on a row yet it lands on the first, or the last
+/// stepping backwards.
+pub(crate) fn step_index(at: Option<usize>, delta: isize, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let Some(at) = at else {
+        return Some(if delta < 0 { len - 1 } else { 0 });
+    };
+    Some((at as isize + delta).rem_euclid(len as isize) as usize)
+}
+
+/// The access letter each top menu answers to, in `MENUS` order: where it
+/// sits in the translated label, and the key that reaches it. First letter
+/// where it's free, the next unclaimed one where it isn't, which is how
+/// Window and Workspace end up on W and o. None once a label has nothing
+/// left unclaimed; that menu keeps its keyboard route through the arrows.
+///
+/// Off the translated text rather than the message key, so the underline is
+/// on the letter you actually press whatever the locale.
+fn mnemonics() -> Vec<Option<(std::ops::Range<usize>, char)>> {
+    let mut taken: Vec<char> = Vec::new();
+    MENUS
+        .iter()
+        .map(|menu| {
+            let label = rox_i18n::t_static(menu.label);
+            let hit = label.char_indices().find_map(|(at, c)| {
+                let key = c.to_lowercase().next()?;
+                (c.is_alphanumeric() && !taken.contains(&key)).then(|| (at..at + c.len_utf8(), key))
+            });
+            if let Some((_, key)) = &hit {
+                taken.push(*key);
+            }
+            hit
+        })
+        .collect()
+}
+
+/// The top menu a bare keypress opens, by its access letter. gpui hands
+/// letters over as one-character keys, so anything longer is some other key
+/// and matches nothing.
+fn mnemonic_menu(key: &str) -> Option<usize> {
+    let mut chars = key.chars();
+    let pressed = chars.next().filter(|_| chars.next().is_none())?;
+    mnemonics()
+        .iter()
+        .position(|hit| hit.as_ref().is_some_and(|(_, c)| *c == pressed))
+}
+
+/// A top menu's label, with its access letter underlined while the bar is
+/// taking keys. A plain string the rest of the time, which is every frame
+/// nobody has tapped Alt.
+fn menu_label(label: &'static str, letter: Option<std::ops::Range<usize>>) -> AnyElement {
+    let text = rox_i18n::t!(label);
+    match letter {
+        None => text.into_any_element(),
+        Some(range) => gpui::StyledText::new(text)
+            .with_highlights([(
+                range,
+                gpui::HighlightStyle {
+                    underline: Some(gpui::UnderlineStyle {
+                        thickness: px(1.),
+                        color: None,
+                        wavy: false,
+                    }),
+                    ..Default::default()
+                },
+            )])
+            .into_any_element(),
+    }
+}
+
+/// The wash under the row the keyboard cursor is on. The same one hover
+/// paints, so the pointer and the arrows share one cursor between them
+/// rather than lighting two rows at once.
+pub(crate) fn nav_lit<T: Styled>(d: T) -> T {
+    d.bg(palette::bg_control_hover_opaque())
 }
 
 /// A clickable flyout row: the padding, hover, and icon-then-label layout
@@ -1380,6 +1946,69 @@ fn menu_row(on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static)
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_SM)
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::*;
+
+    /// The source locale, which is what a test run resolves against. A
+    /// translation is free to run a label out of free letters; that menu
+    /// keeps its keyboard route through the arrows.
+    #[test]
+    fn every_menu_gets_a_letter_of_its_own() {
+        let letters = mnemonics();
+        assert_eq!(letters.len(), MENUS.len());
+        let mut seen = Vec::new();
+        for (menu, hit) in MENUS.iter().zip(&letters) {
+            let label = rox_i18n::t_static(menu.label);
+            let (range, key) = hit
+                .as_ref()
+                .unwrap_or_else(|| panic!("{label} ran out of free letters"));
+            assert_eq!(
+                label[range.clone()].to_lowercase(),
+                key.to_string(),
+                "{label} underlines a letter it doesn't answer to"
+            );
+            assert!(
+                !seen.contains(key),
+                "{label} took a letter already spoken for"
+            );
+            seen.push(*key);
+        }
+    }
+
+    #[test]
+    fn a_letter_opens_the_menu_it_underlines() {
+        for (i, hit) in mnemonics().iter().enumerate() {
+            let (_, key) = hit.as_ref().expect("every menu has a letter");
+            assert_eq!(mnemonic_menu(&key.to_string()), Some(i));
+        }
+    }
+
+    #[test]
+    fn a_named_key_is_not_a_letter() {
+        // gpui hands named keys over spelled out, and "escape" starting with
+        // an e must not read as the e menu.
+        assert_eq!(mnemonic_menu("escape"), None);
+        assert_eq!(mnemonic_menu("enter"), None);
+    }
+
+    #[test]
+    fn stepping_wraps_at_both_ends() {
+        assert_eq!(step_index(Some(2), 1, 3), Some(0));
+        assert_eq!(step_index(Some(0), -1, 3), Some(2));
+        // A cursor left behind by a list that has since shrunk still lands
+        // somewhere in the new one rather than off the end.
+        assert_eq!(step_index(Some(9), 1, 3), Some(1));
+    }
+
+    #[test]
+    fn stepping_onto_a_fresh_list_starts_at_the_near_end() {
+        assert_eq!(step_index(None, 1, 3), Some(0));
+        assert_eq!(step_index(None, -1, 3), Some(2));
+        assert_eq!(step_index(None, 1, 0), None);
+    }
 }
 
 #[cfg(test)]
@@ -1399,7 +2028,7 @@ mod alt_tap_tests {
 
     /// Press and release Alt at the given offsets from a fixed start, so the
     /// timings are the test's to pick rather than the clock's.
-    fn tap(tracker: &mut AltTap, base: Instant, down: u64, up: u64) -> bool {
+    fn tap(tracker: &mut AltTap, base: Instant, down: u64, up: u64) -> AltTapKind {
         tracker.note(alt(), base + Duration::from_millis(down), false);
         tracker.note(none(), base + Duration::from_millis(up), false)
     }
@@ -1408,8 +2037,8 @@ mod alt_tap_tests {
     fn two_quick_taps_fire() {
         let base = Instant::now();
         let mut tracker = AltTap::default();
-        assert!(!tap(&mut tracker, base, 0, 50));
-        assert!(tap(&mut tracker, base, 200, 250));
+        assert_eq!(tap(&mut tracker, base, 0, 50), AltTapKind::Tap);
+        assert_eq!(tap(&mut tracker, base, 200, 250), AltTapKind::DoubleTap);
     }
 
     #[test]
@@ -1418,18 +2047,18 @@ mod alt_tap_tests {
         // tap again and only the fourth toggles back.
         let base = Instant::now();
         let mut tracker = AltTap::default();
-        assert!(!tap(&mut tracker, base, 0, 50));
-        assert!(tap(&mut tracker, base, 100, 150));
-        assert!(!tap(&mut tracker, base, 200, 250));
-        assert!(tap(&mut tracker, base, 300, 350));
+        assert_eq!(tap(&mut tracker, base, 0, 50), AltTapKind::Tap);
+        assert_eq!(tap(&mut tracker, base, 100, 150), AltTapKind::DoubleTap);
+        assert_eq!(tap(&mut tracker, base, 200, 250), AltTapKind::Tap);
+        assert_eq!(tap(&mut tracker, base, 300, 350), AltTapKind::DoubleTap);
     }
 
     #[test]
     fn a_slow_second_tap_misses_the_window() {
         let base = Instant::now();
         let mut tracker = AltTap::default();
-        assert!(!tap(&mut tracker, base, 0, 50));
-        assert!(!tap(&mut tracker, base, 900, 950));
+        assert_eq!(tap(&mut tracker, base, 0, 50), AltTapKind::Tap);
+        assert_eq!(tap(&mut tracker, base, 900, 950), AltTapKind::Tap);
     }
 
     #[test]
@@ -1437,8 +2066,8 @@ mod alt_tap_tests {
         // The plain reveal: Alt down, the bar floats, Alt up a second later.
         let base = Instant::now();
         let mut tracker = AltTap::default();
-        assert!(!tap(&mut tracker, base, 0, 1000));
-        assert!(!tap(&mut tracker, base, 1100, 1150));
+        assert_eq!(tap(&mut tracker, base, 0, 1000), AltTapKind::None);
+        assert_eq!(tap(&mut tracker, base, 1100, 1150), AltTapKind::Tap);
     }
 
     #[test]
@@ -1452,8 +2081,11 @@ mod alt_tap_tests {
             ..Default::default()
         };
         tracker.note(chord, base, false);
-        assert!(!tracker.note(none(), base + Duration::from_millis(50), false));
-        assert!(!tap(&mut tracker, base, 100, 150));
+        assert_eq!(
+            tracker.note(none(), base + Duration::from_millis(50), false),
+            AltTapKind::None
+        );
+        assert_eq!(tap(&mut tracker, base, 100, 150), AltTapKind::Tap);
     }
 
     #[test]
@@ -1462,10 +2094,13 @@ mod alt_tap_tests {
         // are chords, so the release that follows isn't a tap.
         let base = Instant::now();
         let mut tracker = AltTap::default();
-        assert!(!tap(&mut tracker, base, 0, 50));
+        assert_eq!(tap(&mut tracker, base, 0, 50), AltTapKind::Tap);
         tracker.note(alt(), base + Duration::from_millis(100), false);
         tracker.cancel();
-        assert!(!tracker.note(none(), base + Duration::from_millis(150), false));
+        assert_eq!(
+            tracker.note(none(), base + Duration::from_millis(150), false),
+            AltTapKind::None
+        );
     }
 
     #[test]
@@ -1474,8 +2109,11 @@ mod alt_tap_tests {
         // move, not a tap, however short it is.
         let base = Instant::now();
         let mut tracker = AltTap::default();
-        assert!(!tap(&mut tracker, base, 0, 50));
+        assert_eq!(tap(&mut tracker, base, 0, 50), AltTapKind::Tap);
         tracker.note(alt(), base + Duration::from_millis(100), true);
-        assert!(!tracker.note(none(), base + Duration::from_millis(150), false));
+        assert_eq!(
+            tracker.note(none(), base + Duration::from_millis(150), false),
+            AltTapKind::None
+        );
     }
 }

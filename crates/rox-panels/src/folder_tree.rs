@@ -1410,9 +1410,11 @@ impl FolderTreePanel {
                             }),
                     )
                     .child(match cover {
-                        Some(thumb) => track_columns::cover_cell(&Some(thumb))
-                            .flex_none()
-                            .into_any_element(),
+                        Some(thumb) => {
+                            track_columns::cover_cell(&Some(thumb), track_columns::ROW_HEIGHT_STOCK)
+                                .flex_none()
+                                .into_any_element()
+                        }
                         None => svg()
                             .path(icons::FOLDER)
                             .size(px(12.))
@@ -1511,9 +1513,11 @@ impl FolderTreePanel {
                     // their folder's children.
                     .child(div().flex_none().w(px(16.)))
                     .child(match cover {
-                        Some(thumb) => track_columns::cover_cell(&Some(thumb))
-                            .flex_none()
-                            .into_any_element(),
+                        Some(thumb) => {
+                            track_columns::cover_cell(&Some(thumb), track_columns::ROW_HEIGHT_STOCK)
+                                .flex_none()
+                                .into_any_element()
+                        }
                         None => svg()
                             .path(icons::MUSIC)
                             .size(px(12.))

@@ -529,7 +529,7 @@ impl TagRepair {
     /// heading over the virtualized list. Rows stream in during a scan, so
     /// the list shows as soon as `found` has anything, before the scan
     /// finishes.
-    fn results(&self, cx: &mut Context<Self>) -> Div {
+    fn results(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         if self.found.is_empty() {
             let message = if !self.scanned {
                 rox_i18n::t!("tags-repair-scan-hint")
@@ -668,7 +668,7 @@ impl TagRepair {
 
     /// The scope pills under a heading with the Scan button, and the count
     /// a running scan moves.
-    fn header(&self, cx: &mut Context<Self>) -> Div {
+    fn header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let busy = self.scanning || self.repairing;
         let controls = div()
             .flex()
@@ -797,7 +797,7 @@ impl TagRepair {
                         cx.listener(|this, _, window, cx| this.repair(window, cx)),
                     ))
                     .child(small_button(
-                        "Cancel",
+                        rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|_, _, window, _| window.remove_window()),

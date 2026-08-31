@@ -841,6 +841,10 @@ impl HistoryPanel {
                             ix,
                             &mut self.albums[g as usize],
                             headers,
+                            &track_columns::HeadSlot::stock(
+                                &track_columns::stock_name_pieces(headers),
+                                &track_columns::stock_head_look(),
+                            ),
                             &self.state,
                             cx,
                         )
@@ -850,6 +854,10 @@ impl HistoryPanel {
                         track_columns::album_meta_row(
                             ix,
                             &mut self.albums[g as usize],
+                            &track_columns::HeadSlot::stock(
+                                &crate::group_head::stock_meta_line(),
+                                &track_columns::stock_head_look(),
+                            ),
                             &self.state,
                             cx,
                         )
@@ -939,7 +947,7 @@ impl HistoryPanel {
             if !self.column_shown(col.key) {
                 continue;
             }
-            let c = match track_columns::cell(col.key, &cell, &self.state) {
+            let c = match track_columns::cell(col.key, &cell, &self.state, ROW_H, false) {
                 Some(c) => c,
                 // Last Played is the record's own column; the rest, plays
                 // included, are shared. Blank when there is nothing to say.

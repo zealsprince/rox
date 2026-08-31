@@ -5,9 +5,12 @@
 //! scalar slider, and the palette editor's role grid. Page content stays
 //! with each window; only the shell is here.
 
+use std::rc::Rc;
+
 use gpui::{
-    div, prelude::*, px, svg, AnyElement, App, Context, Div, ElementId, Interactivity, MouseButton,
-    MouseDownEvent, Pixels, ScrollHandle, SharedString, Stateful, StyleRefinement, Window,
+    div, prelude::*, px, svg, AnyElement, App, Context, Div, ElementId, FocusHandle, Global,
+    Interactivity, KeyDownEvent, MouseButton, Pixels, ScrollHandle, SharedString, Stateful,
+    StyleRefinement, Window,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::Selectable;
@@ -15,6 +18,20 @@ use gpui_component::Selectable;
 use rox_design::assets::icons;
 use rox_design::palette::{self, Side, Sides, ROLES};
 use rox_design::tokens;
+
+/// A control was pressed. The pointer and the keyboard both arrive here,
+/// so a handler is written once and answers either.
+///
+/// Its own type rather than gpui's `ClickEvent` because these controls
+/// don't take ids: two buttons under one parent saying the same thing
+/// would share gpui's click state, and a shared pending press is a click
+/// that goes missing. A press carries nothing a handler has ever wanted
+/// anyway, so nothing is lost by saying so.
+pub struct Press;
+
+/// What a control does when it's pressed. Held behind an `Rc` because the
+/// pointer and the keyboard each need their own handle on it.
+pub type OnPress = Rc<dyn Fn(&Press, &mut Window, &mut App)>;
 
 use crate as panel;
 use crate::ScrubState;
@@ -134,7 +151,7 @@ pub fn nav_item<P: 'static>(
     picked: bool,
     on_pick: impl Fn(&mut P, &mut Window, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
-) -> Div {
+) -> NavRow {
     nav_row(label, icon, picked, false, on_pick, cx)
 }
 
@@ -147,7 +164,7 @@ pub fn nav_item_quiet<P: 'static>(
     picked: bool,
     on_pick: impl Fn(&mut P, &mut Window, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
-) -> Div {
+) -> NavRow {
     nav_row(label, icon, picked, true, on_pick, cx)
 }
 
@@ -158,30 +175,80 @@ fn nav_row<P: 'static>(
     quiet: bool,
     on_pick: impl Fn(&mut P, &mut Window, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
-) -> Div {
-    let ink = if quiet {
-        palette::text_muted()
-    } else {
-        palette::text()
-    };
-    div()
-        .px(tokens::SPACE_MD)
-        .py(tokens::SPACE_XS)
-        .rounded(tokens::RADIUS)
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(tokens::SPACE_SM)
-        .cursor_pointer()
-        .when(picked, |d| d.bg(palette::bg_control_active()))
-        .when(!picked, |d| d.hover(|d| d.bg(palette::bg_menu_hover())))
-        .when(quiet, |d| d.text_color(palette::text_muted()))
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, window, cx| on_pick(this, window, cx)),
-        )
-        .child(svg().path(icon).size(px(14.)).flex_none().text_color(ink))
-        .child(label.into())
+) -> NavRow {
+    let label = label.into();
+    NavRow {
+        id: ElementId::Name(format!("nav:{label}").into()),
+        base: div()
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_XS)
+            .rounded(tokens::RADIUS)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .cursor_pointer()
+            .when(picked, |d| d.bg(palette::bg_control_active()))
+            .when(quiet, |d| d.text_color(palette::text_muted())),
+        label,
+        icon,
+        picked,
+        quiet,
+        on_pick: Rc::new(cx.listener(move |this, _, window, cx| on_pick(this, window, cx))),
+    }
+}
+
+/// A sidebar row's element; see [`nav_item`]. Styles applied to it go to
+/// the row.
+#[derive(IntoElement)]
+pub struct NavRow {
+    id: ElementId,
+    base: Div,
+    label: SharedString,
+    icon: &'static str,
+    picked: bool,
+    quiet: bool,
+    on_pick: OnPress,
+}
+
+impl Styled for NavRow {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for NavRow {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+impl RenderOnce for NavRow {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let ink = if self.quiet {
+            palette::text_muted()
+        } else {
+            palette::text()
+        };
+        let focus = control_focus(self.id.clone(), window, cx);
+        let focused = focus.is_focused(window);
+        let picked = self.picked;
+        let base = self
+            .base
+            .key_context(CONTROL_CONTEXT)
+            .track_focus(&focus.tab_index(0).tab_stop(true))
+            .when(!picked, |d| d.hover(|d| d.bg(palette::bg_menu_hover())));
+        pressable(base, self.on_pick)
+            .child(
+                svg()
+                    .path(self.icon)
+                    .size(px(14.))
+                    .flex_none()
+                    .text_color(ink),
+            )
+            .child(self.label)
+            .children(focus_ring(focused, tokens::RADIUS, cx))
+    }
 }
 
 /// A hairline between nav rows, for the point where the list stops being
@@ -263,7 +330,7 @@ pub fn section(
     label: impl Into<SharedString>,
     trailing: Option<AnyElement>,
     body: impl IntoElement,
-) -> Div {
+) -> Stateful<Div> {
     section_with_icon(None, label, trailing, body)
 }
 
@@ -274,7 +341,7 @@ pub fn section_with_control(
     control: AnyElement,
     trailing: Option<AnyElement>,
     body: impl IntoElement,
-) -> Div {
+) -> Stateful<Div> {
     build_section(None, label, Some(control), trailing, body)
 }
 
@@ -286,7 +353,7 @@ pub fn section_with_icon(
     label: impl Into<SharedString>,
     trailing: Option<AnyElement>,
     body: impl IntoElement,
-) -> Div {
+) -> Stateful<Div> {
     build_section(icon, label, None, trailing, body)
 }
 
@@ -296,8 +363,14 @@ fn build_section(
     control: Option<AnyElement>,
     trailing: Option<AnyElement>,
     body: impl IntoElement,
-) -> Div {
+) -> Stateful<Div> {
+    let label = label.into();
     div()
+        // Named after its heading, which names everything inside it: ids
+        // nest, so the Clear button in one section and the Clear button in
+        // the next stop being the same control as far as the keyboard is
+        // concerned. See [`control_focus`].
+        .id(ElementId::Name(label.clone()))
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
@@ -327,7 +400,7 @@ fn build_section(
                                     .text_color(palette::text_muted()),
                             )
                         })
-                        .child(label.into())
+                        .child(label)
                         .when_some(control, |d, control| d.child(control)),
                 )
                 .when_some(trailing, |d, trailing| d.child(trailing)),
@@ -421,7 +494,7 @@ impl PageBody {
 /// One titled section of a page, already filtered: the body is `None`
 /// when the query dropped every row.
 pub struct Section {
-    body: Option<Div>,
+    body: Option<Stateful<Div>>,
     hits: usize,
 }
 
@@ -623,6 +696,122 @@ pub fn nested(body: impl IntoElement) -> Div {
         .child(div().flex_1().child(body))
 }
 
+/// A control's keyboard side: the focus handle it keeps between frames,
+/// held by the window under a name the control gives itself, so calling one
+/// up doesn't mean inventing an id for it at every call site.
+///
+/// Wearing one of these is the whole of being keyboard-reachable. gpui reads
+/// the handle to put the control in the window's tab order, and it turns
+/// Enter or Space on a focused control into a click of its own accord, so
+/// nothing here has to handle keys.
+///
+/// `FocusHandle::tab_index` and `tab_stop` are two different switches: the
+/// index alone still inserts the handle into the order, just flagged as one
+/// Tab skips over. Every call site chains both onto the handle this returns
+/// (`.tab_index(0).tab_stop(true)`) before handing it to `track_focus`, or
+/// the control sits in the tree and never gets a turn.
+///
+/// Two controls in one window under the same name share a handle: Tab stops
+/// at the first and both light. Where a page repeats a label, the caller
+/// names the control instead through the builder's `keyed`.
+pub fn control_focus(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> FocusHandle {
+    window
+        .use_keyed_state(id.into(), cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone()
+}
+
+/// The key context a focused control carries, so the window's bare
+/// playback chords let go of the keys the control needs: Space to press
+/// it, the arrows to move a slider. Same carve-out a focused search box
+/// gets, and it's only in the dispatch path while the control actually
+/// holds focus, so playback keeps the keys the rest of the time.
+pub const CONTROL_CONTEXT: &str = "FocusedControl";
+
+/// Wire a control's press: the pointer on the way down, and Enter or
+/// Space while the control holds focus. Both go to the one handler.
+///
+/// The keys are taken here rather than left to gpui's own keyboard click,
+/// which only fires for elements carrying an id; see [`Press`] for why
+/// these don't take one.
+pub(crate) fn pressable<E: InteractiveElement>(element: E, on_press: OnPress) -> E {
+    let keys = on_press.clone();
+    element
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            // gpui focuses a track_focus element on the same press, so mark
+            // the focus it's about to grab a pointer one before that lands:
+            // see [`focus_visible`].
+            note_pointer_press(cx);
+            on_press(&Press, window, cx)
+        })
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if event.keystroke.modifiers.modified() {
+                return;
+            }
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                keys(&Press, window, cx);
+                cx.stop_propagation();
+            }
+        })
+}
+
+/// Whether the app's next focus change was reached by keyboard, gpui's
+/// stand-in for CSS's `:focus-visible`: gpui itself doesn't tell a keyboard
+/// focus from a pointer one apart, so this tracks it by hand. A keystroke
+/// anywhere sets it, [`pressable`]'s own press clears it, so tabbing through
+/// a page rings every stop while a click on one shows nothing but the click.
+///
+/// App-wide rather than per-window: whichever window last took a key or a
+/// click is the one the user's hands were just at, and every window's
+/// controls read the one flag.
+struct FocusVisible(bool);
+
+impl Global for FocusVisible {}
+
+/// Arms the focus-visible tracking [`focus_ring`] reads. Call once at
+/// startup; the interceptor runs for the app's life.
+pub fn init(cx: &mut App) {
+    cx.set_global(FocusVisible(true));
+    cx.intercept_keystrokes(|_, _, cx| cx.set_global(FocusVisible(true)))
+        .detach();
+}
+
+/// Whether a control that holds focus should show for it. Reads true before
+/// [`init`] runs (tests, and the sliver of startup before it's called),
+/// since showing a ring nobody asked to hide is the safe default.
+fn focus_visible(cx: &App) -> bool {
+    cx.try_global::<FocusVisible>().map(|v| v.0).unwrap_or(true)
+}
+
+/// Marks the next focus a pointer one, so the ring it lands on stays dark.
+/// [`pressable`] calls this itself; a control that wires its own mouse down
+/// instead of going through `pressable` (the settings slider's drag) calls
+/// it directly.
+pub(crate) fn note_pointer_press(cx: &mut App) {
+    cx.set_global(FocusVisible(false));
+}
+
+/// The ring a focused control wears, as a child that sits just outside its
+/// bounds. Outside rather than a border of its own so a control is the same
+/// size focused as not: a ring that pushed the layout around would make
+/// tabbing through a page shuffle it. Only wears it while focus is visible
+/// (see [`focus_visible`]); a mouse click still focuses the control, just
+/// without a ring nothing else marks.
+pub fn focus_ring(focused: bool, radius: Pixels, cx: &App) -> Option<Div> {
+    (focused && focus_visible(cx)).then(|| {
+        div()
+            .absolute()
+            .flex_none()
+            .inset(-RING)
+            .border(RING)
+            .rounded(radius + RING)
+            .border_color(palette::alpha(palette::accent(), 0xaa))
+    })
+}
+
+/// How wide the focus ring draws, and how far outside the control it sits.
+const RING: Pixels = px(1.5);
+
 /// The settings windows' text button, at the section header's scale
 /// where they all appear: an icon leading its label; inert ones
 /// dim and drop the click.
@@ -630,36 +819,94 @@ pub fn small_button(
     label: impl Into<SharedString>,
     icon: &'static str,
     inert: bool,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .flex_none()
-        .items_center()
-        .gap(tokens::SPACE_XS)
-        .px(tokens::SPACE_SM)
-        .py(px(2.))
-        .text_xs()
-        .rounded(tokens::RADIUS)
-        .bg(palette::bg_control())
-        .map(|d| {
-            if inert {
-                d.opacity(0.5)
-            } else {
-                d.hover(|d| d.bg(palette::bg_control_hover()))
-                    .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, on_click)
-            }
-        })
-        .child(
-            svg()
-                .path(icon)
-                .size(px(12.))
-                .flex_none()
-                .text_color(palette::text()),
-        )
-        .child(label.into())
+    on_click: impl Fn(&Press, &mut Window, &mut App) + 'static,
+) -> SmallButton {
+    let label = label.into();
+    SmallButton {
+        // The label and the glyph together name the button, which is what
+        // the focus handle is kept under.
+        id: ElementId::Name(format!("{label}:{icon}").into()),
+        base: div()
+            .flex()
+            .flex_row()
+            .flex_none()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .px(tokens::SPACE_SM)
+            .py(px(2.))
+            .text_xs()
+            .rounded(tokens::RADIUS)
+            .bg(palette::bg_control())
+            .when(inert, |d| d.opacity(0.5)),
+        label,
+        icon,
+        inert,
+        on_click: Rc::new(on_click),
+    }
+}
+
+/// [`small_button`]'s element. Styles applied to it go to the button
+/// itself, so a caller wanting a different fill just says `.bg(..)`.
+#[derive(IntoElement)]
+pub struct SmallButton {
+    id: ElementId,
+    base: Div,
+    label: SharedString,
+    icon: &'static str,
+    inert: bool,
+    on_click: OnPress,
+}
+
+impl SmallButton {
+    /// Name this button, for a page that has more than one button saying the
+    /// same thing. See [`control_focus`].
+    pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = id.into();
+        self
+    }
+}
+
+impl Styled for SmallButton {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for SmallButton {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+impl RenderOnce for SmallButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = control_focus(self.id.clone(), window, cx);
+        let focused = focus.is_focused(window);
+        let inert = self.inert;
+        self.base
+            .key_context(CONTROL_CONTEXT)
+            .map(|d| {
+                if inert {
+                    d
+                } else {
+                    pressable(
+                        d.track_focus(&focus.tab_index(0).tab_stop(true))
+                            .hover(|d| d.bg(palette::bg_control_hover()))
+                            .cursor_pointer(),
+                        self.on_click,
+                    )
+                }
+            })
+            .child(
+                svg()
+                    .path(self.icon)
+                    .size(px(12.))
+                    .flex_none()
+                    .text_color(palette::text()),
+            )
+            .child(self.label)
+            .children(focus_ring(focused, tokens::RADIUS, cx))
+    }
 }
 
 /// A confirm-dialog button: the primary one reads as a filled accent
@@ -668,26 +915,81 @@ pub fn small_button(
 pub fn dialog_button(
     label: impl Into<SharedString>,
     primary: bool,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .flex_none()
-        .px(tokens::SPACE_MD)
-        .py(tokens::SPACE_XS)
-        .rounded(tokens::RADIUS)
-        .cursor_pointer()
-        .map(|d| {
-            if primary {
-                d.bg(palette::accent())
-                    .text_color(palette::text_on_accent())
-                    .hover(|d| d.opacity(0.9))
-            } else {
-                d.bg(palette::bg_control())
-                    .hover(|d| d.bg(palette::bg_control_hover()))
-            }
-        })
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(label.into())
+    on_click: impl Fn(&Press, &mut Window, &mut App) + 'static,
+) -> DialogButton {
+    let label = label.into();
+    DialogButton {
+        id: ElementId::Name(label.clone()),
+        base: div()
+            .flex_none()
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_XS)
+            .rounded(tokens::RADIUS)
+            .cursor_pointer()
+            .map(|d| {
+                if primary {
+                    d.bg(palette::accent())
+                        .text_color(palette::text_on_accent())
+                } else {
+                    d.bg(palette::bg_control())
+                }
+            }),
+        label,
+        primary,
+        on_click: Rc::new(on_click),
+    }
+}
+
+/// [`dialog_button`]'s element. Styles applied to it go to the button.
+#[derive(IntoElement)]
+pub struct DialogButton {
+    id: ElementId,
+    base: Div,
+    label: SharedString,
+    primary: bool,
+    on_click: OnPress,
+}
+
+impl DialogButton {
+    /// Name this button; see [`SmallButton::keyed`].
+    pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = id.into();
+        self
+    }
+}
+
+impl Styled for DialogButton {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for DialogButton {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+impl RenderOnce for DialogButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = control_focus(self.id.clone(), window, cx);
+        let focused = focus.is_focused(window);
+        let primary = self.primary;
+        let base = self
+            .base
+            .key_context(CONTROL_CONTEXT)
+            .track_focus(&focus.tab_index(0).tab_stop(true))
+            .map(|d| {
+                if primary {
+                    d.hover(|d| d.opacity(0.9))
+                } else {
+                    d.hover(|d| d.bg(palette::bg_control_hover()))
+                }
+            });
+        pressable(base, self.on_click)
+            .child(self.label)
+            .children(focus_ring(focused, tokens::RADIUS, cx))
+    }
 }
 
 /// A [`dialog_button`] with a leading icon, for the secondary action that
@@ -697,35 +999,89 @@ pub fn dialog_icon_button(
     label: impl Into<SharedString>,
     icon: &'static str,
     inert: bool,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .flex_none()
-        .items_center()
-        .gap(tokens::SPACE_XS)
-        .px(tokens::SPACE_MD)
-        .py(tokens::SPACE_XS)
-        .rounded(tokens::RADIUS)
-        .bg(palette::bg_control())
-        .map(|d| {
-            if inert {
-                d.opacity(0.5)
-            } else {
-                d.hover(|d| d.bg(palette::bg_control_hover()))
-                    .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, on_click)
-            }
-        })
-        .child(
-            svg()
-                .path(icon)
-                .size(px(14.))
-                .flex_none()
-                .text_color(palette::text()),
-        )
-        .child(label.into())
+    on_click: impl Fn(&Press, &mut Window, &mut App) + 'static,
+) -> DialogIconButton {
+    let label = label.into();
+    DialogIconButton {
+        id: ElementId::Name(format!("{label}:{icon}").into()),
+        base: div()
+            .flex()
+            .flex_row()
+            .flex_none()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_XS)
+            .rounded(tokens::RADIUS)
+            .bg(palette::bg_control())
+            .when(inert, |d| d.opacity(0.5)),
+        label,
+        icon,
+        inert,
+        on_click: Rc::new(on_click),
+    }
+}
+
+/// [`dialog_icon_button`]'s element. Styles applied to it go to the button.
+#[derive(IntoElement)]
+pub struct DialogIconButton {
+    id: ElementId,
+    base: Div,
+    label: SharedString,
+    icon: &'static str,
+    inert: bool,
+    on_click: OnPress,
+}
+
+impl DialogIconButton {
+    /// Name this button; see [`SmallButton::keyed`].
+    pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = id.into();
+        self
+    }
+}
+
+impl Styled for DialogIconButton {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for DialogIconButton {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+impl RenderOnce for DialogIconButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = control_focus(self.id.clone(), window, cx);
+        let focused = focus.is_focused(window);
+        let inert = self.inert;
+        self.base
+            .key_context(CONTROL_CONTEXT)
+            .map(|d| {
+                if inert {
+                    d
+                } else {
+                    pressable(
+                        d.track_focus(&focus.tab_index(0).tab_stop(true))
+                            .hover(|d| d.bg(palette::bg_control_hover()))
+                            .cursor_pointer(),
+                        self.on_click,
+                    )
+                }
+            })
+            .child(
+                svg()
+                    .path(self.icon)
+                    .size(px(14.))
+                    .flex_none()
+                    .text_color(palette::text()),
+            )
+            .child(self.label)
+            .children(focus_ring(focused, tokens::RADIUS, cx))
+    }
 }
 
 /// How wide a select field draws unless the caller says otherwise: room
@@ -859,28 +1215,81 @@ impl RenderOnce for SelectField {
 pub fn icon_button(
     icon: &'static str,
     inert: bool,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .flex_none()
-        .p(tokens::SPACE_XS)
-        .rounded(tokens::RADIUS)
-        .map(|d| {
-            if inert {
-                d.opacity(0.5)
-            } else {
-                d.hover(|d| d.bg(palette::bg_control()))
-                    .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, on_click)
-            }
-        })
-        .child(
-            svg()
-                .path(icon)
-                .size(px(14.))
-                .flex_none()
-                .text_color(palette::text()),
-        )
+    on_click: impl Fn(&Press, &mut Window, &mut App) + 'static,
+) -> IconButton {
+    IconButton {
+        // A glyph and nothing else, so the glyph is the name. A row of
+        // these repeating down a table is the case `keyed` exists for.
+        id: ElementId::Name(icon.into()),
+        base: div()
+            .flex_none()
+            .p(tokens::SPACE_XS)
+            .rounded(tokens::RADIUS)
+            .when(inert, |d| d.opacity(0.5)),
+        icon,
+        inert,
+        on_click: Rc::new(on_click),
+    }
+}
+
+/// [`icon_button`]'s element. Styles applied to it go to the button.
+#[derive(IntoElement)]
+pub struct IconButton {
+    id: ElementId,
+    base: Div,
+    icon: &'static str,
+    inert: bool,
+    on_click: OnPress,
+}
+
+impl IconButton {
+    /// Name this button; see [`SmallButton::keyed`].
+    pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = id.into();
+        self
+    }
+}
+
+impl Styled for IconButton {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for IconButton {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+impl RenderOnce for IconButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = control_focus(self.id.clone(), window, cx);
+        let focused = focus.is_focused(window);
+        let inert = self.inert;
+        self.base
+            .key_context(CONTROL_CONTEXT)
+            .map(|d| {
+                if inert {
+                    d
+                } else {
+                    pressable(
+                        d.track_focus(&focus.tab_index(0).tab_stop(true))
+                            .hover(|d| d.bg(palette::bg_control()))
+                            .cursor_pointer(),
+                        self.on_click,
+                    )
+                }
+            })
+            .child(
+                svg()
+                    .path(self.icon)
+                    .size(px(14.))
+                    .flex_none()
+                    .text_color(palette::text()),
+            )
+            .children(focus_ring(focused, tokens::RADIUS, cx))
+    }
 }
 
 /// How far past a strip's top a typed value may go, as a multiple of
@@ -950,6 +1359,15 @@ impl Span {
         (value - self.min) / (self.max - self.min)
     }
 
+    /// How far one arrow key moves this strip: the smallest step its
+    /// readout can show, since a press that doesn't change the number
+    /// reads as a dead key. Never finer than a hundredth of the span
+    /// either, or crossing a wide range would be a hundred presses.
+    fn step(&self) -> f32 {
+        let smallest = 10f32.powi(-(self.decimals as i32)) / (self.max - self.min);
+        smallest.max(0.01)
+    }
+
     /// The value a strip fraction stands for, rounded to the decimals the
     /// readout shows, so the applied value matches the one on screen.
     fn value(&self, fraction: f32) -> f32 {
@@ -1012,6 +1430,7 @@ pub fn scalar_sized<P: 'static>(
         format!("{:.*}", span.decimals, value),
         span.over,
         width,
+        span.step(),
         move |typed| span.unclamped(typed),
         move |this, fraction, cx| apply(this, span.value(fraction), cx),
         cx,

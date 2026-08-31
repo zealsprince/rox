@@ -8,15 +8,18 @@
 //! the builder holds its handle.
 
 use gpui::{
-    anchored, canvas, deferred, div, prelude::*, px, svg, AnyElement, App, Bounds, Context, Div,
-    EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels, Point, SharedString,
-    WeakEntity, Window,
+    anchored, canvas, deferred, div, point, prelude::*, px, svg, AnyElement, App, Bounds, Context,
+    Div, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Pixels,
+    Point, SharedString, WeakEntity, Window,
 };
 use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::panel_catalog::PanelDef;
+use crate::workspace::menubar::{
+    menu_entry_rows, nav_lit, nav_row_at, step_index, subgroup_rows, submenu_rows, NavRow, NavSlot,
+};
 use crate::workspace::{
     flyout_leftward, flyout_side, menu_item_display, menu_section, panel_menu_item, section_shows,
     shortcut_for, signal_marked, LayoutTarget, Menu, MenuAction, MenuEntry, MenuItem, PanelTarget,
@@ -67,6 +70,22 @@ pub struct MenuPanel {
     /// they draw. The next frame's flyouts read them to pick a side, the
     /// same measure-then-decide the gpui-component menus run on.
     menu_surfaces: [Option<Bounds<Pixels>>; 3],
+    /// The button's painted bounds, so a menu dropped from the keyboard can
+    /// hang off its corner the way a clicked one hangs off the pointer.
+    button_bounds: Option<Bounds<Pixels>>,
+    /// The keyboard cursor on the root menu's list of top menus. Held apart
+    /// from `open_top` so the arrows can walk the list without flying every
+    /// menu out on the way past; None while the pointer is driving.
+    nav_top: Option<usize>,
+    /// The cursor inside the open top menu's dropdown. Some is also what says
+    /// the keyboard has stepped in, which is what puts up and down on those
+    /// rows instead of the root's.
+    nav_slot: Option<NavSlot>,
+    /// The cursor inside the open nested flyout.
+    nav_sub: Option<usize>,
+    /// The cursor inside the panel picker's open group, the one surface a
+    /// level deeper than the rest.
+    nav_group: Option<usize>,
     /// The window width at the last menu paint, the other half of the side
     /// decision.
     menu_viewport_w: Pixels,
@@ -83,13 +102,18 @@ impl MenuPanel {
             state,
             workspace,
             config,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             open_at: None,
             open_top: None,
             open_sub: None,
             open_subgroup: None,
             menu_surfaces: [None; 3],
+            button_bounds: None,
+            nav_top: None,
+            nav_slot: None,
+            nav_sub: None,
+            nav_group: None,
             menu_viewport_w: Pixels::ZERO,
         }
     }
@@ -119,12 +143,46 @@ impl MenuPanel {
         flyout_leftward(&self.menu_surfaces, level, self.menu_viewport_w)
     }
 
-    fn open_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+    fn open_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         self.open_at = Some(position);
         self.open_top = None;
         self.open_sub = None;
         self.open_subgroup = None;
+        self.nav_top = None;
+        self.nav_slot = None;
+        self.nav_sub = None;
+        self.nav_group = None;
+        // A menu opened by pointer keeps the keyboard on the panel, so the
+        // arrows can take over from the mouse mid-way through.
+        window.focus(&self.focus);
         cx.notify();
+    }
+
+    /// Drop the menu from the keyboard: pinned under the button's own corner
+    /// rather than the pointer, cursor on the first top menu. Before the
+    /// first paint there are no bounds to hang it off, and the window's own
+    /// corner is where an unpinned menu lands anyway.
+    fn open_from_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let at = self
+            .button_bounds
+            .map(|bounds| point(bounds.origin.x, bounds.bottom()))
+            .unwrap_or_default();
+        self.open_menu(at, window, cx);
+        self.nav_top = Some(0);
+    }
+
+    /// A paint-time capture of the button's bounds, the anchor a keyboard
+    /// open hangs the menu off.
+    fn button_capture(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        canvas(
+            move |bounds, _, cx| {
+                view.update(cx, |this, _| this.button_bounds = Some(bounds));
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
     }
 
     /// Close the whole overlay: the root menu and any open flyout under it.
@@ -133,7 +191,243 @@ impl MenuPanel {
         self.open_top = None;
         self.open_sub = None;
         self.open_subgroup = None;
+        self.nav_top = None;
+        self.nav_slot = None;
+        self.nav_sub = None;
+        self.nav_group = None;
         cx.notify();
+    }
+
+    /// Drop the top menu at `index` and put the keyboard cursor on it. What a
+    /// hover does, and what stepping the root list does once one is already
+    /// down.
+    fn open_top_at(&mut self, index: usize) {
+        self.open_top = Some(index);
+        self.nav_top = Some(index);
+        self.nav_slot = None;
+        self.open_flyout(None);
+    }
+
+    /// Move the flyout open off the dropdown entry at `index`, or shut it with
+    /// None. The keyboard cursor goes with it: a hover that lands somewhere
+    /// else must not leave a highlight behind in a list it no longer belongs
+    /// to.
+    fn open_flyout(&mut self, index: Option<usize>) {
+        self.open_sub = index;
+        self.nav_sub = None;
+        self.open_subgroup = None;
+        self.nav_group = None;
+    }
+
+    /// A keystroke while the panel holds focus. Closed, Space or Enter drops
+    /// the menu; open, the arrows walk it and Enter runs the row under the
+    /// cursor. Reports whether it was used, the caller's cue to stop the
+    /// event: an open menu owns the keyboard until it's backed out of, so a
+    /// stray key must not also land in whatever sits underneath.
+    ///
+    /// The panel's key context is what really hands Space and the arrows over
+    /// (see `keymap::PLAYBACK`); bindings beat key listeners, so this only
+    /// sees what nothing bound took first.
+    fn on_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = event.keystroke.modifiers;
+        // A real chord still belongs to whatever binds it.
+        if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+            return false;
+        }
+        let key = event.keystroke.key.as_str();
+        if self.open_at.is_none() {
+            // Down as well as the press pair, so the menu answers the key
+            // that means "open this" on a dropdown anywhere else.
+            if matches!(key, "enter" | "space" | "down") {
+                self.open_from_key(window, cx);
+                return true;
+            }
+            return false;
+        }
+        match key {
+            "escape" => self.nav_escape(cx),
+            "up" => self.nav_step(-1, cx),
+            "down" => self.nav_step(1, cx),
+            "left" => self.nav_out(cx),
+            "right" => self.nav_in(cx),
+            "enter" | "space" => self.nav_enter(window, cx),
+            _ => {}
+        }
+        true
+    }
+
+    /// Escape's ladder: back out one surface at a time, then shut the menu.
+    fn nav_escape(&mut self, cx: &mut Context<Self>) {
+        if self.open_subgroup.is_some() {
+            self.open_subgroup = None;
+            self.nav_group = None;
+        } else if self.open_sub.is_some() {
+            self.open_flyout(None);
+        } else if self.open_top.is_some() {
+            self.open_top = None;
+            self.nav_slot = None;
+        } else {
+            self.close(cx);
+            return;
+        }
+        cx.notify();
+    }
+
+    /// Up and down: walk the deepest surface the keyboard has stepped into,
+    /// wrapping at both ends. At the root that's the list of top menus, and
+    /// once one is down the step takes its flyout along, so the arrows read
+    /// the menus rather than walking past a stale one.
+    fn nav_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.open_subgroup.is_some() {
+            self.nav_group = step_index(self.nav_group, delta, self.group_rows().len());
+        } else if self.open_sub.is_some() {
+            self.nav_sub = step_index(self.nav_sub, delta, self.sub_rows().len());
+        } else if self.nav_slot.is_some() {
+            let rows = self.menu_rows();
+            let at = self
+                .nav_slot
+                .and_then(|slot| rows.iter().position(|(row, _)| *row == slot));
+            self.nav_slot = step_index(at, delta, rows.len()).map(|i| rows[i].0);
+        } else if let Some(top) = step_index(self.nav_top, delta, MENUS.len()) {
+            match self.open_top {
+                Some(_) => self.open_top_at(top),
+                None => self.nav_top = Some(top),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Left: back out one surface. The root's own level has nothing above it,
+    /// so there it shuts the menu.
+    fn nav_out(&mut self, cx: &mut Context<Self>) {
+        if self.open_subgroup.is_some() {
+            self.open_subgroup = None;
+            self.nav_group = None;
+        } else if self.open_sub.is_some() {
+            self.open_flyout(None);
+        } else if self.nav_slot.is_some() {
+            self.nav_slot = None;
+        } else {
+            self.close(cx);
+            return;
+        }
+        cx.notify();
+    }
+
+    /// Right: step into the surface under the cursor. At the root that's the
+    /// top menu's dropdown, deeper it's a row's own flyout. Inside the
+    /// picker's group flyout there's nothing left to step into, so it holds
+    /// still.
+    fn nav_in(&mut self, cx: &mut Context<Self>) {
+        if self.open_subgroup.is_some() {
+            return;
+        }
+        if self.open_sub.is_some() {
+            if let Some(NavRow::Open(group)) = nav_row_at(self.sub_rows(), self.nav_sub) {
+                self.open_subgroup = Some(group);
+                self.nav_group = (!self.group_rows().is_empty()).then_some(0);
+                cx.notify();
+            }
+            return;
+        }
+        if self.nav_slot.is_some() {
+            if let Some(NavRow::Open(entry)) = self.current_row() {
+                self.open_flyout(Some(entry));
+                self.nav_sub = (!self.sub_rows().is_empty()).then_some(0);
+                cx.notify();
+            }
+            return;
+        }
+        // At the root: drop the cursor's menu and land on its first row.
+        self.open_top_at(self.nav_top.unwrap_or(0));
+        self.nav_slot = self.menu_rows().first().map(|(slot, _)| *slot);
+        cx.notify();
+    }
+
+    /// Enter: run the row under the cursor, or open it when it's a surface.
+    fn nav_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let row = if self.open_subgroup.is_some() {
+            nav_row_at(self.group_rows(), self.nav_group)
+        } else if self.open_sub.is_some() {
+            nav_row_at(self.sub_rows(), self.nav_sub)
+        } else if self.nav_slot.is_some() {
+            self.current_row()
+        } else {
+            self.nav_in(cx);
+            return;
+        };
+        match row {
+            // The menu goes away first, the same order the mouse rows run in.
+            Some(NavRow::Run(run)) => {
+                self.close(cx);
+                let Some(ws) = self.workspace.upgrade() else {
+                    return;
+                };
+                ws.update(cx, |ws, cx| ws.run_nav(run, window, cx));
+            }
+            Some(NavRow::Open(_)) => self.nav_in(cx),
+            None => {}
+        }
+    }
+
+    /// The dropdown row the cursor sits on.
+    fn current_row(&self) -> Option<NavRow> {
+        let slot = self.nav_slot?;
+        self.menu_rows()
+            .into_iter()
+            .find(|(row, _)| *row == slot)
+            .map(|(_, row)| row)
+    }
+
+    /// The open top menu's rows in draw order, off the same table the
+    /// menubar's keyboard reads.
+    fn menu_rows(&self) -> Vec<(NavSlot, NavRow)> {
+        self.open_top.map(menu_entry_rows).unwrap_or_default()
+    }
+
+    /// The open nested flyout's rows in draw order.
+    fn sub_rows(&self) -> Vec<NavRow> {
+        match (self.open_top, self.open_sub) {
+            (Some(menu), Some(entry)) => submenu_rows(menu, entry),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The open picker group's rows in draw order.
+    fn group_rows(&self) -> Vec<NavRow> {
+        self.open_subgroup.map(subgroup_rows).unwrap_or_default()
+    }
+
+    /// Whether the cursor sits on the dropdown row at `slot`.
+    fn nav_on(&self, entry: usize, row: Option<usize>) -> bool {
+        self.nav_slot == Some((entry, row))
+    }
+
+    /// Whether the cursor sits on the open flyout's row at `row`.
+    fn nav_on_sub(&self, row: usize) -> bool {
+        self.nav_sub == Some(row)
+    }
+
+    /// Whether the cursor sits on the flyout row that opens `group`, the
+    /// picker's group headers. They're addressed by their place in the
+    /// flyout, not by the group number they carry.
+    fn nav_on_group(&self, group: usize) -> bool {
+        matches!(
+            nav_row_at(self.sub_rows(), self.nav_sub),
+            Some(NavRow::Open(open)) if open == group
+        )
+    }
+
+    /// Whether the cursor sits on `row` of the picker group `group`. Group
+    /// rows are built whether or not their group is open, so the group has to
+    /// match too.
+    fn nav_in_group(&self, group: usize, row: usize) -> bool {
+        self.open_subgroup == Some(group) && self.nav_group == Some(row)
     }
 
     /// The root menu: one submenu row per top menu, each flying its full
@@ -163,12 +457,10 @@ impl MenuPanel {
             .id(("menu-top", index))
             .relative()
             .justify_between()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_top == Some(index), nav_lit)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_top != Some(index) {
-                    this.open_top = Some(index);
-                    this.open_sub = None;
-                    this.open_subgroup = None;
+                    this.open_top_at(index);
                     cx.notify();
                 }
             }))
@@ -190,12 +482,12 @@ impl MenuPanel {
                     MenuEntry::Item(item) => self
                         .action_row(*item, cx)
                         .id(("menu-entry", i))
+                        .when(self.nav_on(i, None), nav_lit)
                         // Sliding onto a plain item retracts a flyout a
                         // sibling group left open.
                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                             if *hovered && this.open_sub.is_some() {
-                                this.open_sub = None;
-                                this.open_subgroup = None;
+                                this.open_flyout(None);
                                 cx.notify();
                             }
                         }))
@@ -214,10 +506,10 @@ impl MenuPanel {
                             .children(section.panels.iter().enumerate().map(|(j, def)| {
                                 self.action_row(panel_menu_item(def), cx)
                                     .id(("panel-entry", j))
+                                    .when(self.nav_on(i, Some(j)), nav_lit)
                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                         if *hovered && this.open_sub.is_some() {
-                                            this.open_sub = None;
-                                            this.open_subgroup = None;
+                                            this.open_flyout(None);
                                             cx.notify();
                                         }
                                     }))
@@ -332,11 +624,10 @@ impl MenuPanel {
             .id(("menu-group", index))
             .relative()
             .justify_between()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on(index, None), nav_lit)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_sub != Some(index) {
-                    this.open_sub = Some(index);
-                    this.open_subgroup = None;
+                    this.open_flyout(Some(index));
                     cx.notify();
                 }
             }))
@@ -346,11 +637,10 @@ impl MenuPanel {
                 d.child(
                     flyout_side(dropdown(px(160.)).absolute(), self.flyout_left(1))
                         .top(px(-5.))
-                        .children(
-                            panels
-                                .iter()
-                                .map(|def| self.action_row(panel_menu_item(def), cx)),
-                        ),
+                        .children(panels.iter().enumerate().map(|(row, def)| {
+                            self.action_row(panel_menu_item(def), cx)
+                                .when(self.nav_on_sub(row), nav_lit)
+                        })),
                 )
             })
     }
@@ -373,11 +663,10 @@ impl MenuPanel {
             .id(("menu-layouts", index))
             .relative()
             .justify_between()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on(index, None), nav_lit)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_sub != Some(index) {
-                    this.open_sub = Some(index);
-                    this.open_subgroup = None;
+                    this.open_flyout(Some(index));
                     cx.notify();
                 }
             }))
@@ -389,7 +678,7 @@ impl MenuPanel {
                 let mut flyout =
                     flyout_side(dropdown(px(180.)).absolute(), self.flyout_left(1)).top(px(-5.));
                 if with_new {
-                    flyout = flyout.child(self.new_row(cx));
+                    flyout = flyout.child(self.new_row(cx).when(self.nav_on_sub(0), nav_lit));
                 }
                 if presets.is_empty() {
                     // The Save flyout still has its New row, so only the
@@ -404,11 +693,11 @@ impl MenuPanel {
                         );
                     }
                 } else {
-                    flyout = flyout.children(
-                        presets
-                            .into_iter()
-                            .map(|preset| self.preset_row(preset.name, target, cx)),
-                    );
+                    flyout =
+                        flyout.children(presets.into_iter().enumerate().map(|(row, preset)| {
+                            self.preset_row(preset.name, target, cx)
+                                .when(self.nav_on_sub(row + usize::from(with_new)), nav_lit)
+                        }));
                 }
                 d.child(flyout)
             })
@@ -478,11 +767,10 @@ impl MenuPanel {
                             .child(rox_i18n::t!("menu-panel-no-presets")),
                     )
                 } else {
-                    flyout.children(
-                        presets
-                            .into_iter()
-                            .map(|preset| self.preset_panel_row(preset, target, cx)),
-                    )
+                    flyout.children(presets.into_iter().enumerate().map(|(row, preset)| {
+                        self.preset_panel_row(preset, target, cx)
+                            .when(self.nav_on_sub(row), nav_lit)
+                    }))
                 })
             })
     }
@@ -512,7 +800,11 @@ impl MenuPanel {
                 if !presets.is_empty() {
                     let rows = presets
                         .into_iter()
-                        .map(|preset| self.preset_panel_row(preset, PanelTarget::NewWindow, cx))
+                        .enumerate()
+                        .map(|(row, preset)| {
+                            self.preset_panel_row(preset, PanelTarget::NewWindow, cx)
+                                .when(self.nav_in_group(0, row), nav_lit)
+                        })
                         .collect();
                     flyout = flyout.child(self.panel_window_group(
                         0,
@@ -526,7 +818,11 @@ impl MenuPanel {
                     let rows = section
                         .panels
                         .iter()
-                        .map(|def| self.panel_window_row(def, cx))
+                        .enumerate()
+                        .map(|(row, def)| {
+                            self.panel_window_row(def, cx)
+                                .when(self.nav_in_group(i + 1, row), nav_lit)
+                        })
                         .collect::<Vec<_>>();
                     flyout = match section.group {
                         None => flyout.children(rows),
@@ -555,10 +851,11 @@ impl MenuPanel {
             .id(("panel-window-group", index))
             .relative()
             .justify_between()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on_group(index), nav_lit)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_subgroup != Some(index) {
                     this.open_subgroup = Some(index);
+                    this.nav_group = None;
                     cx.notify();
                 }
             }))
@@ -632,11 +929,10 @@ impl MenuPanel {
             .id(("menu-entry", index))
             .relative()
             .justify_between()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on(index, None), nav_lit)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_sub != Some(index) {
-                    this.open_sub = Some(index);
-                    this.open_subgroup = None;
+                    this.open_flyout(Some(index));
                     cx.notify();
                 }
             }))
@@ -664,11 +960,10 @@ impl MenuPanel {
             .id(("menu-workspaces", index))
             .relative()
             .justify_between()
-            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .when(open || self.nav_on(index, None), nav_lit)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_sub != Some(index) {
-                    this.open_sub = Some(index);
-                    this.open_subgroup = None;
+                    this.open_flyout(Some(index));
                     cx.notify();
                 }
             }))
@@ -687,7 +982,8 @@ impl MenuPanel {
                 let mut flyout =
                     flyout_side(dropdown(px(180.)).absolute(), self.flyout_left(1)).top(px(-5.));
                 if with_new {
-                    flyout = flyout.child(self.new_workspace_row(cx));
+                    flyout =
+                        flyout.child(self.new_workspace_row(cx).when(self.nav_on_sub(0), nav_lit));
                 }
                 if entries.is_empty() {
                     // The Save flyout still has its New row, so only the
@@ -702,9 +998,11 @@ impl MenuPanel {
                         );
                     }
                 } else {
-                    flyout = flyout.children(entries.into_iter().map(|entry| {
-                        self.workspace_row(entry.name, entry.title, entry.builtin, target, cx)
-                    }));
+                    flyout =
+                        flyout.children(entries.into_iter().enumerate().map(|(row, entry)| {
+                            self.workspace_row(entry.name, entry.title, entry.builtin, target, cx)
+                                .when(self.nav_on_sub(row + usize::from(with_new)), nav_lit)
+                        }));
                 }
                 d.child(flyout)
             })
@@ -773,6 +1071,7 @@ impl MenuPanel {
             .px(tokens::SPACE_MD)
             .child(
                 div()
+                    .relative()
                     .size(px(24.))
                     .rounded(tokens::RADIUS)
                     .flex()
@@ -782,10 +1081,11 @@ impl MenuPanel {
                     .hover(|d| d.bg(palette::bg_control_hover()))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                            this.open_menu(event.position, cx);
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.open_menu(event.position, window, cx);
                         }),
                     )
+                    .child(self.button_capture(cx))
                     .child(
                         svg()
                             .path(icons::MENU)
@@ -931,7 +1231,32 @@ impl PanelSettings for MenuPanel {
 impl Render for MenuPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(window, cx))
+        // The panel is a focus stop: a click puts the keyboard here and
+        // tab walks to it, which is also what puts its tab group on the
+        // focus path for the tab-cycle chord.
+        let focus = self.focus.clone();
+        // An open menu carries `MenuNav` and a closed one `FocusedControl`,
+        // both carve-outs the window's bare playback chords respect (see
+        // `keymap::PLAYBACK`). Bindings beat key listeners, so without one
+        // space would play a track rather than reach the handler below, and
+        // the arrows would seek. A key context only counts while the element
+        // holding it is on the focus path, so playback keeps the keys
+        // whenever this panel doesn't have them.
+        let context = if self.open_at.is_some() {
+            "MenuNav"
+        } else {
+            rox_panel_kit::ui::CONTROL_CONTEXT
+        };
+        panel::themed(&chrome, || {
+            self.body(window, cx)
+                .track_focus(&focus)
+                .key_context(context)
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if this.on_key(event, window, cx) {
+                        cx.stop_propagation();
+                    }
+                }))
+        })
     }
 }
 

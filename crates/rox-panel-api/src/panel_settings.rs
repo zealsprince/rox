@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use gpui::{
     actions, div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
-    Focusable as _, Global, Hsla, KeyBinding, MouseDownEvent, PathPromptOptions, ScrollHandle,
-    SharedString, Subscription, WeakEntity, Window, WindowHandle,
+    Focusable as _, Global, Hsla, KeyBinding, PathPromptOptions, ScrollHandle, SharedString,
+    Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -56,7 +56,11 @@ actions!(panel_settings, [Rename, SavePreset]);
 macro_rules! opens_settings {
     () => {
         fn open_settings(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
-            $crate::panel_settings::open(cx.entity(), cx);
+            // Deferred: `open` reads the panel through its entity handle,
+            // and this method runs while that same entity is still
+            // leased for this update, so reading it here would panic.
+            let panel = cx.entity();
+            cx.defer(move |cx| $crate::panel_settings::open(panel, cx));
         }
     };
 }
@@ -201,8 +205,8 @@ pub fn pending_shader(
     id: &'static str,
     source: &str,
     path: Option<&Path>,
-    approve: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    turn_off: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    approve: impl Fn(&settings_ui::Press, &mut Window, &mut App) + 'static,
+    turn_off: impl Fn(&settings_ui::Press, &mut Window, &mut App) + 'static,
 ) -> Div {
     let lines: Vec<String> = source
         .lines()

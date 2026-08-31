@@ -444,7 +444,7 @@ impl LyricsMatch {
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),
                     ))
                     .child(settings_ui::small_button(
-                        "Cancel",
+                        rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,
                         self.saving,
                         cx.listener(|_, _, window, _| window.remove_window()),

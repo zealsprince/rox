@@ -39,22 +39,26 @@ use crate::workspace::{
 
 /// Bindings match key contexts along the focus path, so this scope holds
 /// anywhere inside a workspace window except while the library search box
-/// is focused, or a browsing panel's type-ahead phrase is mid-flight:
-/// there space and arrows keep typing into the query or the phrase instead.
-/// Bindings win over key listeners, so the exclusion hands the keys back.
+/// is focused, a browsing panel's type-ahead phrase is mid-flight, the
+/// menubar is taking keys, or a button or slider has been tabbed to:
+/// there space and arrows keep typing into the query or the phrase, walk
+/// the menus, or press the control, instead. Bindings win over key
+/// listeners, so the exclusion hands the keys back.
 ///
 /// The exclusion is for bare chords only. A command rebound onto a
 /// modified chord widens to [`WORKSPACE`] at build time, since ctrl-f
 /// isn't anything the search box needs and losing the binding while you
 /// type is the whole complaint. See [`Command::binding`].
-const PLAYBACK: Option<&str> = Some("Workspace && !SearchInput && !TypeAhead");
+const PLAYBACK: Option<&str> =
+    Some("Workspace && !SearchInput && !TypeAhead && !MenuNav && !FocusedControl");
 
 /// [`PLAYBACK`] minus the panels whose own left and right mean something:
 /// a tile wall moving its cursor across a row, a folder tree folding a
 /// branch. Only the seek pair sits here, since it's the only bare chord
 /// that collides; space stays on [`PLAYBACK`] so play/pause still works
 /// with a wall focused.
-const SEEK: Option<&str> = Some("Workspace && !SearchInput && !TypeAhead && !PanelNav");
+const SEEK: Option<&str> =
+    Some("Workspace && !SearchInput && !TypeAhead && !MenuNav && !PanelNav && !FocusedControl");
 
 /// The plain workspace scope: anywhere in a workspace window, the search
 /// box included, since everything bound here has a modifier.
@@ -218,7 +222,7 @@ mod defaults {
 #[cfg(not(target_os = "macos"))]
 mod defaults {
     pub const SETTINGS: &[&str] = &["ctrl-,", "ctrl-i"];
-    pub const PANEL_SETTINGS: &[&str] = &["ctrl-shift-,"];
+    pub const PANEL_SETTINGS: &[&str] = &["ctrl-<"];
     pub const STATS: &[&str] = &["ctrl-shift-s"];
     pub const QUICK_PLAY: &[&str] = &["ctrl-p", "ctrl-f"];
     pub const FOCUS_SEARCH: &[&str] = &["ctrl-l"];

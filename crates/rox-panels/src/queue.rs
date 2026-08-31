@@ -1094,6 +1094,10 @@ impl QueuePanel {
                             ix,
                             &mut self.albums[g as usize],
                             headers,
+                            &track_columns::HeadSlot::stock(
+                                &track_columns::stock_name_pieces(headers),
+                                &track_columns::stock_head_look(),
+                            ),
                             &self.state,
                             cx,
                         )
@@ -1103,6 +1107,10 @@ impl QueuePanel {
                         track_columns::album_meta_row(
                             ix,
                             &mut self.albums[g as usize],
+                            &track_columns::HeadSlot::stock(
+                                &crate::group_head::stock_meta_line(),
+                                &track_columns::stock_head_look(),
+                            ),
                             &self.state,
                             cx,
                         )
@@ -1250,7 +1258,7 @@ impl QueuePanel {
             if !has_track && (col.key == "rating" || col.key == "favourite") {
                 continue;
             }
-            if let Some(c) = track_columns::cell(col.key, &cell, &self.state) {
+            if let Some(c) = track_columns::cell(col.key, &cell, &self.state, ROW_H, false) {
                 row = row.child(c);
             }
         }
@@ -1664,7 +1672,7 @@ impl QueuePanel {
                                 .text_color(palette::accent()),
                         )
                 } else {
-                    match track_columns::cell(col.key, &cell, &self.state) {
+                    match track_columns::cell(col.key, &cell, &self.state, ROW_H, false) {
                         Some(c) => c,
                         None => continue,
                     }

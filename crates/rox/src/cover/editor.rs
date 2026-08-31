@@ -16,7 +16,7 @@ use std::sync::Arc;
 use gpui::{
     actions, div, img, prelude::*, px, size, App, Bounds, Context, Div, Entity, FocusHandle,
     Global, Image, ImageFormat, KeyBinding, MouseButton, ObjectFit, PathPromptOptions,
-    SharedString, Subscription, Window, WindowHandle,
+    SharedString, Stateful, Subscription, Window, WindowHandle,
 };
 use gpui_component::Root;
 
@@ -606,7 +606,7 @@ impl CoverEditor {
 
     /// The selection as a list: the display line filling left, the duration
     /// right, one hairline row per track, the tag editor's track section.
-    fn track_section(&self) -> Div {
+    fn track_section(&self) -> Stateful<Div> {
         let mut body = div().flex().flex_col();
         for track in &self.tracks {
             body = body.child(
@@ -640,7 +640,7 @@ impl CoverEditor {
 
     /// The cover art section: the slot cards under a header with the online
     /// search in it.
-    fn cover_section(&self, cx: &mut Context<Self>) -> Div {
+    fn cover_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         // The online search is placed in the header as a tool of the section
         // it fills, gated on a cover-art provider being on, and sets the
         // front cover on apply.
@@ -748,7 +748,7 @@ impl CoverEditor {
                     // every original intact whether the batch finished or
                     // not.
                     .child(settings_ui::small_button(
-                        "Cancel",
+                        rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|_, _, window, _| window.remove_window()),

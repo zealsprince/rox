@@ -178,7 +178,7 @@ impl PlaylistNameWindow {
                         cx.listener(|this, _, window, cx| this.commit(window, cx)),
                     ))
                     .child(small_button(
-                        "Cancel",
+                        rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|_, _, window, _| window.remove_window()),

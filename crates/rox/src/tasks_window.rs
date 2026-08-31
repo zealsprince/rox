@@ -31,8 +31,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, prelude::*, px, relative, size, App, Bounds, Context, Div, Entity, EntityId, Global,
-    ScrollHandle, SharedString, Stateful, Subscription, WeakEntity, Window, WindowHandle,
+    div, prelude::*, px, relative, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
+    FocusHandle, Global, ScrollHandle, SharedString, Stateful, Subscription, WeakEntity, Window,
+    WindowHandle,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
@@ -641,6 +642,13 @@ struct TasksWindow {
     /// The prompt slider's click-to-type state. One per window, since only
     /// one value is ever being typed into.
     value_edit: panel::ValueEdit,
+    /// The keyboard's home while the prompt is up, so Enter and Escape reach
+    /// it.
+    dialog_focus: FocusHandle,
+    /// The window's own focus, claimed on open. Not a tab stop itself, so
+    /// the first Tab moves to the first control; it's here because a window
+    /// holding focus nowhere never sees a key.
+    focus: FocusHandle,
     /// The row list's scroll position, shared with the scrollbar.
     scroll: ScrollHandle,
 }
@@ -658,6 +666,10 @@ impl pass_prompt::Host for TasksWindow {
 
     fn value_edit(&self) -> &panel::ValueEdit {
         &self.value_edit
+    }
+
+    fn dialog_focus(&self) -> &FocusHandle {
+        &self.dialog_focus
     }
 
     fn pass_changed(&mut self, cx: &mut Context<Self>) {
@@ -706,6 +718,8 @@ impl TasksWindow {
                 ]
             })
             .unwrap_or_default();
+        let focus = cx.focus_handle();
+        window.focus(&focus);
         let mut this = TasksWindow {
             player,
             library: library.map(|library| library.downgrade()),
@@ -717,6 +731,8 @@ impl TasksWindow {
             facts: Facts::default(),
             prompt: None,
             value_edit: panel::ValueEdit::default(),
+            dialog_focus: cx.focus_handle(),
+            focus: focus.clone(),
             scroll: ScrollHandle::new(),
         };
         this.read_facts(cx);
@@ -1182,7 +1198,7 @@ impl TasksWindow {
         running: Option<&Snapshot>,
         blocked: bool,
         cx: &mut Context<Self>,
-    ) -> Option<Div> {
+    ) -> Option<AnyElement> {
         let live = self.library();
         if let Some(snapshot) = running {
             let stopping = snapshot.stopping;
@@ -1190,47 +1206,56 @@ impl TasksWindow {
             // Only the scan needs the catalog to be stopped through, so only
             // its button goes inert when the workspace is gone.
             let inert = stopping || (library.is_none() && job == Job::Scan);
-            return Some(settings_ui::small_button(
-                if stopping {
-                    rox_i18n::t!("tasks-stopping")
-                } else {
-                    rox_i18n::t!("tasks-stop")
-                },
-                icons::STOP,
-                inert,
-                cx.listener(move |_, _, _, cx| job.stop(library.as_ref(), cx)),
-            ));
+            return Some(
+                settings_ui::small_button(
+                    if stopping {
+                        rox_i18n::t!("tasks-stopping")
+                    } else {
+                        rox_i18n::t!("tasks-stop")
+                    },
+                    icons::STOP,
+                    inert,
+                    cx.listener(move |_, _, _, cx| job.stop(library.as_ref(), cx)),
+                )
+                .into_any_element(),
+            );
         }
         let (label, icon) = job.start_label()?;
-        Some(settings_ui::small_button(
-            label,
-            icon,
-            blocked || live.is_none(),
-            cx.listener(move |this: &mut Self, _, _, cx| this.start(job, cx)),
-        ))
+        Some(
+            settings_ui::small_button(
+                label,
+                icon,
+                blocked || live.is_none(),
+                cx.listener(move |this: &mut Self, _, _, cx| this.start(job, cx)),
+            )
+            .into_any_element(),
+        )
     }
 
     /// The X that clears a finished dynamic row. Only there once the job
     /// has stopped: a running one has a Stop beside it, and the two are
     /// different enough that they shouldn't both be there. Standing rows
     /// never have one, since there's nothing to clear them to.
-    fn dismiss(&self, job: Job, running: bool, cx: &mut Context<Self>) -> Option<Div> {
+    fn dismiss(&self, job: Job, running: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
         if running || job.start_label().is_some() {
             return None;
         }
-        Some(settings_ui::icon_button(
-            icons::CLOSE,
-            false,
-            // The standing rows returned above, so this is the only kind
-            // that reaches here.
-            cx.listener(move |_, _, _, cx| match job {
-                Job::LovedImport => import::dismiss(cx),
-                Job::Convert => convert::dismiss(cx),
-                Job::Bake => bake::dismiss(cx),
-                // The standing rows have no X to reach this.
-                _ => {}
-            }),
-        ))
+        Some(
+            settings_ui::icon_button(
+                icons::CLOSE,
+                false,
+                // The standing rows returned above, so this is the only kind
+                // that reaches here.
+                cx.listener(move |_, _, _, cx| match job {
+                    Job::LovedImport => import::dismiss(cx),
+                    Job::Convert => convert::dismiss(cx),
+                    Job::Bake => bake::dismiss(cx),
+                    // The standing rows have no X to reach this.
+                    _ => {}
+                }),
+            )
+            .into_any_element(),
+        )
     }
 
     /// Set a job going. The scan starts on the press, the same as the
@@ -1294,6 +1319,7 @@ impl Render for TasksWindow {
         panel::window_body(player, || {
             div()
                 .size_full()
+                .track_focus(&self.focus)
                 .flex()
                 .flex_col()
                 .bg(palette::bg_elevated())
@@ -1315,7 +1341,7 @@ impl Render for TasksWindow {
                 )
                 // The start prompt floats over the rows on its own occluding
                 // layer, last so it paints on top of them.
-                .children(pass_prompt::overlay(self, cx))
+                .children(pass_prompt::overlay(self, window, cx))
                 .into_any_element()
         })
     }

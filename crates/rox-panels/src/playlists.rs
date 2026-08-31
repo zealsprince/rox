@@ -20,11 +20,13 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui::{
-    div, prelude::*, px, svg, uniform_list, App, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, PathPromptOptions,
-    SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity, Window,
+    div, prelude::*, px, rems, svg, uniform_list, App, Context, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent,
+    PathPromptOptions, Pixels, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful,
+    Subscription, UniformListScrollHandle, WeakEntity, Window,
 };
 use gpui_component::button::Button;
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -37,19 +39,41 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::continuation;
 use crate::design::{palette, tokens};
-use crate::group_head::Headers;
-use crate::panel::{self, AppState, PanelChrome, PanelSettings};
+use crate::group_head::{self, ArtSide, HeadPiece, Headers};
+use crate::panel::{self, AppState, PanelChrome, PanelSettings, ResumeIdle, ScrubState};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::selection::SelectionEvent;
+use crate::settings::ui as settings_ui;
 use crate::track_ui::track_cells;
-use crate::track_ui::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
+use crate::track_ui::track_columns::{
+    self, Column, ColumnHost, GroupTrack, HeadSlot, HeadingHost, ART_MARGIN_MAX, HEAD_GAP_MAX,
+    HEAD_HEIGHT_MAX, HEAD_TEXT_MAX, HEAD_TEXT_MIN, HEAD_TEXT_STOCK, ROW_HEIGHT_MAX, ROW_HEIGHT_MIN,
+    ROW_HEIGHT_STOCK, ROW_SPACING_MAX,
+};
 use rox_library::playlists::{PlaylistKind, PlaylistTrack};
 use rox_library::projection::{parse_query, FilterSet, Filterable, Term};
+use rox_panel_kit::config::default_true;
 
-/// One row's height; the list is a uniform_list, so every row is the same.
-const ROW_H: f32 = 30.;
+/// The heading tiles' rounding knob ceiling, the library panel's scale.
+const ART_ROUNDING_MAX: f32 = 24.;
+
+/// The knob's stock value as serde's default, so a layout saved before the
+/// text-size slider opens at the size its headings already drew.
+fn default_head_text() -> f32 {
+    HEAD_TEXT_STOCK
+}
+
+/// The row height an unset config folds to. The tree opens denser than the
+/// library's own [`ROW_HEIGHT_STOCK`]: a playlist is browsed in short bursts
+/// between its tracks and the rest of the library, not read from top to
+/// bottom, so the tighter row earns back screen space a saved layout hasn't
+/// asked to keep at the library's height. [`row_font_scale`] still measures
+/// against the shared stock, not this one, so the text at this default reads
+/// the same slightly-reduced size a manual height this low would draw
+/// anywhere else.
+const ROW_HEIGHT_DEFAULT: f32 = 24.;
 
 /// The track columns, in render order. The number and name lead, the rating
 /// and favourite controls trail, the tag columns go between. Which show is
@@ -145,6 +169,85 @@ pub struct PlaylistsConfig {
     /// The panel's own query, kept while following the shared one.
     #[serde(default)]
     pub query: String,
+    /// The track rows' height, px at the stock font size; the app font
+    /// scale and the panel override multiply it at render.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_height: Option<f32>,
+    /// One heading line's height, same scaling. Unlike the library table's,
+    /// this can only shrink a line inside the row the list already gives
+    /// it: see [`PlaylistsPanel::line_px`] for why the tree can't grow one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_height: Option<f32>,
+    /// Extra height grown into each row, which the row fills; breathing
+    /// room without growing the text.
+    #[serde(default)]
+    pub row_spacing: f32,
+    /// The heading lines' text size, px at the stock font size. Free of
+    /// the line height, so the cover tile grows without dragging the text.
+    #[serde(default = "default_head_text")]
+    pub head_text: f32,
+    /// The heading tiles' corner radius, in px.
+    #[serde(default)]
+    pub art_rounding: f32,
+    /// Which side of the heading block the cover tile sits on.
+    #[serde(default)]
+    pub art_side: ArtSide,
+    /// The cover tile's inset from the block edges, px at the stock font
+    /// size; the tile shrinks to keep the square.
+    #[serde(default)]
+    pub art_margin: f32,
+    /// Open space carved off the top of each heading block, same units;
+    /// the list shows through, so a block reads apart from the run above.
+    #[serde(default)]
+    pub header_gap_above: f32,
+    /// The same under the block, before its own tracks.
+    #[serde(default)]
+    pub header_gap_below: f32,
+    /// Show the expanded headings' cover tile.
+    #[serde(default = "default_true")]
+    pub header_art: bool,
+    /// Draw the heading rows on the list background instead of the raised
+    /// Elevated tint. A role, not a color, so song theming moves the
+    /// headings together with the list.
+    #[serde(default)]
+    pub header_flush: bool,
+    /// The compact heading's composed row, left to right; empty falls back
+    /// to the stock packing.
+    #[serde(default)]
+    pub header_compact: Vec<HeadPiece>,
+    /// The expanded block's two composed lines, the name row and the meta
+    /// row under it. The tree's heading is those two rows and no others
+    /// (see [`Row`]), so unlike the library there's no line count to set,
+    /// only what goes on each. Empty falls back to the stock line.
+    #[serde(default)]
+    pub header_name_line: Vec<HeadPiece>,
+    #[serde(default)]
+    pub header_meta_line: Vec<HeadPiece>,
+    /// Draw the plays column as a small count with a faint dash beside it,
+    /// the classic playlist tick, instead of the plain readout.
+    #[serde(default)]
+    pub compact_plays: bool,
+    /// Tint every other track row so a long list scans.
+    #[serde(default = "default_true")]
+    pub stripes: bool,
+    /// Draw the hairline under each row.
+    #[serde(default = "default_true")]
+    pub row_borders: bool,
+    /// Scroll to the playing track's row when the track changes.
+    #[serde(default)]
+    pub follow_playing: bool,
+    /// After the tree goes untouched for a spell, scroll back to the
+    /// playing row on its own.
+    #[serde(default)]
+    pub resume_playing: bool,
+    /// Glide there instead of jumping.
+    #[serde(default)]
+    pub smooth_follow: bool,
+    /// The row at the top of the viewport, so a relaunch reopens the tree
+    /// where it was left. An index, not pixels, so it survives a height
+    /// change; it drifts if the catalog shifts under it.
+    #[serde(default)]
+    pub scroll_row: usize,
 }
 
 // Hand-written over derived so the columns default to the registry set and
@@ -161,8 +264,49 @@ impl Default for PlaylistsConfig {
             search: false,
             query_source: QuerySource::default(),
             query: String::new(),
+            row_height: None,
+            head_height: None,
+            row_spacing: 0.,
+            head_text: HEAD_TEXT_STOCK,
+            art_rounding: 0.,
+            art_side: ArtSide::default(),
+            art_margin: 0.,
+            header_gap_above: 0.,
+            header_gap_below: 0.,
+            header_art: true,
+            header_flush: false,
+            header_compact: Vec::new(),
+            header_name_line: Vec::new(),
+            header_meta_line: Vec::new(),
+            compact_plays: false,
+            stripes: true,
+            row_borders: true,
+            follow_playing: false,
+            resume_playing: false,
+            smooth_follow: false,
+            scroll_row: 0,
         }
     }
+}
+
+/// The saved heading composition folded to the three lines the tree draws:
+/// the compact row, and the expanded block's name and meta lines. An empty
+/// list means "never edited", which reads back as the stock arrangement, so
+/// a layout from before the editors looks unchanged. Hand-edited lists come
+/// back deduped against the piece registry.
+fn fold_head_lines(config: &PlaylistsConfig) -> (Vec<HeadPiece>, Vec<HeadPiece>, Vec<HeadPiece>) {
+    let fold = |saved: &[HeadPiece], stock: fn() -> Vec<HeadPiece>| {
+        if saved.is_empty() {
+            stock()
+        } else {
+            panel::dedup(group_head::PIECES, saved.to_vec())
+        }
+    };
+    (
+        fold(&config.header_compact, group_head::stock_compact),
+        fold(&config.header_name_line, group_head::stock_name_line),
+        fold(&config.header_meta_line, group_head::stock_meta_line),
+    )
 }
 
 /// A flattened tree row: a playlist header, or one of its tracks.
@@ -365,6 +509,65 @@ pub struct PlaylistsPanel {
     /// take and why. Cleared on the next refresh, so it lasts as long as the
     /// tree that earned it.
     refusal: Option<SharedString>,
+    /// The track rows' height and the extra each row fills, px at the
+    /// stock font size; together they make the stride the uniform list
+    /// lays every row out at.
+    row_height: f32,
+    row_spacing: f32,
+    /// One heading line's height and the lines' text size, same units.
+    head_height: f32,
+    head_text: f32,
+    /// The heading tiles' corner radius, which side of the block they sit
+    /// on, and their inset inside it.
+    art_rounding: f32,
+    art_side: ArtSide,
+    art_margin: f32,
+    /// The open space carved off the top and bottom of a heading block.
+    header_gap_above: f32,
+    header_gap_below: f32,
+    /// Show the expanded headings' cover tile, and draw the heading rows
+    /// on the list background instead of the raised tint.
+    header_art: bool,
+    header_flush: bool,
+    /// The composed pieces each heading line draws: the compact mode's one
+    /// row, and the expanded block's name and meta rows.
+    header_compact: Vec<HeadPiece>,
+    header_name_line: Vec<HeadPiece>,
+    header_meta_line: Vec<HeadPiece>,
+    /// The plays column's compact face, the striping, and the row hairline.
+    compact_plays: bool,
+    stripes: bool,
+    row_borders: bool,
+    /// The settings sliders' scrub strips, and the one readout being typed
+    /// into across them.
+    row_scrub: ScrubState,
+    row_spacing_scrub: ScrubState,
+    head_scrub: ScrubState,
+    head_text_scrub: ScrubState,
+    art_scrub: ScrubState,
+    art_margin_scrub: ScrubState,
+    header_gap_above_scrub: ScrubState,
+    header_gap_below_scrub: ScrubState,
+    value_edit: panel::ValueEdit,
+    /// Scroll to the playing track's row on a track change, and whether to
+    /// glide there instead of jumping.
+    follow_playing: bool,
+    smooth_follow: bool,
+    /// The row the last follow aimed at, so a refresh that leaves the
+    /// playing track where it already was doesn't scroll there again.
+    followed_row: Option<usize>,
+    /// Scroll back to the playing row once the tree has gone untouched a
+    /// spell, and the idle clock that decides when.
+    resume_playing: bool,
+    resume_idle: ResumeIdle,
+    /// The row the follow glide is headed to, stepped each frame in
+    /// [`PlaylistsPanel::body`] and cleared on arrival, plus its last tick.
+    glide_to: Option<usize>,
+    glide_tick: Instant,
+    /// The saved scroll row waiting for rows to restore against. The
+    /// catalog loads after the panel builds, so the first non-empty tree
+    /// consumes this; None once applied.
+    restore_scroll: Option<usize>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -433,9 +636,17 @@ impl PlaylistsPanel {
                 this.on_selection_changed(event.source, cx);
             },
         );
+        // The saved heights and margins read back clamped to the bands
+        // their inputs allow, so a typed value survives the reload and a
+        // hand-edited dump can't hand the render a nonsense height. The
+        // heading line defaults to the row height, the library's rule.
+        let row_height =
+            track_columns::fold_row_height(config.row_height, ROW_HEIGHT_DEFAULT, ROW_HEIGHT_MAX);
+        let head_height =
+            track_columns::fold_row_height(config.head_height, row_height, HEAD_HEIGHT_MAX);
+        let (header_compact, header_name_line, header_meta_line) = fold_head_lines(&config);
         let mut this = PlaylistsPanel {
             state,
-            config,
             search,
             resync_box: false,
             selection_ids,
@@ -452,6 +663,41 @@ impl PlaylistsPanel {
             anchor: None,
             menu_row: None,
             refusal: None,
+            row_height,
+            row_spacing: track_columns::fold_margin(config.row_spacing, ROW_SPACING_MAX),
+            head_height,
+            head_text: track_columns::fold_head_text(config.head_text),
+            art_rounding: config.art_rounding,
+            art_side: config.art_side,
+            art_margin: track_columns::fold_margin(config.art_margin, ART_MARGIN_MAX),
+            header_gap_above: track_columns::fold_margin(config.header_gap_above, HEAD_GAP_MAX),
+            header_gap_below: track_columns::fold_margin(config.header_gap_below, HEAD_GAP_MAX),
+            header_art: config.header_art,
+            header_flush: config.header_flush,
+            header_compact,
+            header_name_line,
+            header_meta_line,
+            compact_plays: config.compact_plays,
+            stripes: config.stripes,
+            row_borders: config.row_borders,
+            row_scrub: ScrubState::default(),
+            row_spacing_scrub: ScrubState::default(),
+            head_scrub: ScrubState::default(),
+            head_text_scrub: ScrubState::default(),
+            art_scrub: ScrubState::default(),
+            art_margin_scrub: ScrubState::default(),
+            header_gap_above_scrub: ScrubState::default(),
+            header_gap_below_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
+            follow_playing: config.follow_playing,
+            smooth_follow: config.smooth_follow,
+            followed_row: None,
+            resume_playing: config.resume_playing,
+            resume_idle: ResumeIdle::default(),
+            glide_to: None,
+            glide_tick: Instant::now(),
+            restore_scroll: (config.scroll_row > 0).then_some(config.scroll_row),
+            config,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
@@ -606,7 +852,53 @@ impl PlaylistsPanel {
         }
         self.menu_row = None;
         self.refusal = None;
+        // The saved scroll restores against the first tree with rows in it:
+        // the catalog loads after the panel builds, so earlier refreshes
+        // (the empty initial load) keep it pending. Strict, so it lands
+        // even if the panel is in a background tab until then.
+        if let Some(row) = self.restore_scroll {
+            if !self.rows.is_empty() {
+                self.restore_scroll = None;
+                self.scroll.scroll_to_item_strict(row, ScrollStrategy::Top);
+            }
+        }
+        // A rebuild that moves the playing track re-scrolls; one that
+        // leaves it exactly where it was does not, or a rating edit
+        // elsewhere would yank the tree off whatever you were looking at.
+        if self.follow_playing && self.playing_row() != self.followed_row {
+            self.follow_playing(cx);
+        }
         cx.notify();
+    }
+
+    /// The panel's live config, for the layout dump and for duplicates: the
+    /// stored config with the knobs the render reads folded back in, since
+    /// those live on the panel once it's built.
+    fn config(&self) -> PlaylistsConfig {
+        PlaylistsConfig {
+            row_height: Some(self.row_height),
+            head_height: Some(self.head_height),
+            row_spacing: self.row_spacing,
+            head_text: self.head_text,
+            art_rounding: self.art_rounding,
+            art_side: self.art_side,
+            art_margin: self.art_margin,
+            header_gap_above: self.header_gap_above,
+            header_gap_below: self.header_gap_below,
+            header_art: self.header_art,
+            header_flush: self.header_flush,
+            header_compact: self.header_compact.clone(),
+            header_name_line: self.header_name_line.clone(),
+            header_meta_line: self.header_meta_line.clone(),
+            compact_plays: self.compact_plays,
+            stripes: self.stripes,
+            row_borders: self.row_borders,
+            follow_playing: self.follow_playing,
+            resume_playing: self.resume_playing,
+            smooth_follow: self.smooth_follow,
+            scroll_row: self.scroll_row(),
+            ..self.config.clone()
+        }
     }
 
     /// Put up the one-line refusal a smart playlist's edits get. Nothing
@@ -675,7 +967,165 @@ impl PlaylistsPanel {
             .and_then(|now| self.state.library.read(cx).id_for_key(&now.key));
         if playing != self.playing {
             self.playing = playing;
+            if self.follow_playing {
+                self.follow_playing(cx);
+            }
             cx.notify();
+        }
+    }
+
+    /// The first row holding the playing track. A track can sit in more
+    /// than one open playlist, so the follow aims at the topmost copy
+    /// rather than trying to guess which one you meant.
+    fn playing_row(&self) -> Option<usize> {
+        let id = self.playing?;
+        self.rows
+            .iter()
+            .position(|row| matches!(row, Row::Track(t) if t.track_id == id))
+    }
+
+    /// Scroll the playing row into view: a glide when smooth is on, the
+    /// jump otherwise. Scroll only, never the selection: chasing the player
+    /// shouldn't quietly change what Delete would drop.
+    fn follow_playing(&mut self, cx: &mut Context<Self>) {
+        self.followed_row = self.playing_row();
+        let Some(row) = self.followed_row else {
+            return;
+        };
+        if self.smooth_follow {
+            self.glide_to = Some(row);
+        } else {
+            self.scroll.scroll_to_item(row, ScrollStrategy::Center);
+        }
+        cx.notify();
+    }
+
+    /// A scroll, click, or keystroke: restart the idle clock and arm a
+    /// wake, so the tree scrolls back to the playing row once you step
+    /// away. A no-op unless the resume is on, so an off panel spends
+    /// nothing per gesture.
+    fn touch_resume(&mut self, cx: &mut Context<Self>) {
+        if self.resume_playing {
+            self.resume_idle.touch(cx, Self::resume_to_playing);
+        }
+    }
+
+    /// What the idle wake does. The clock only fires once the tree has gone
+    /// untouched a full window, a gesture in between having pushed it out,
+    /// so there's no extra idle check to make here.
+    fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
+        if self.resume_playing {
+            self.follow_playing(cx);
+        }
+    }
+
+    /// The tree row at the top of the viewport, for the layout dump. Every
+    /// row is one stride tall (the list is uniform), so the offset divides
+    /// straight into an index. A restore still pending reports its target,
+    /// so a panel that never painted round-trips its position instead of
+    /// dropping to zero.
+    fn scroll_row(&self) -> usize {
+        if let Some(row) = self.restore_scroll {
+            return row;
+        }
+        let offset = -self.scroll.0.borrow().base_handle.offset().y;
+        if offset <= px(0.) {
+            return 0;
+        }
+        // A dump runs outside the panel's render, so the render-time
+        // thread-local font scale isn't in scope; read this panel's own
+        // override off its theme instead, or the offset-to-row math stops
+        // matching the rows on screen.
+        let panel_scale = self
+            .config
+            .chrome
+            .theme
+            .font_scale
+            .map(|s| s.clamp(palette::PANEL_FONT_SCALE_MIN, palette::PANEL_FONT_SCALE_MAX))
+            .unwrap_or(1.0);
+        let stride = (self.row_height + self.row_spacing) * palette::font_scale() * panel_scale;
+        if stride <= 0. {
+            return 0;
+        }
+        (f32::from(offset) / stride) as usize
+    }
+
+    /// The stride the uniform list lays every row out at: the row height
+    /// plus the spacing the row itself fills (background, hairline, and hit
+    /// area included), scaled with the app font.
+    fn row_px(&self) -> Pixels {
+        palette::scaled_px(self.row_height + self.row_spacing)
+    }
+
+    /// The track rows' text size as a rem factor: the stock height keeps
+    /// the stock 1 rem and the text follows the height knob from there,
+    /// floored so a dense tree stays legible. The library table's rule.
+    fn row_font_scale(&self) -> f32 {
+        (self.row_height / ROW_HEIGHT_STOCK).clamp(0.8, 1.8)
+    }
+
+    /// How many rows a heading block spans: the name line alone compact,
+    /// the name and meta pair expanded. Fixed by [`Row`]'s two heading
+    /// variants, unlike the library's composable line count.
+    fn head_lines(&self) -> f32 {
+        if self.config.headers == Headers::Expanded {
+            2.
+        } else {
+            1.
+        }
+    }
+
+    fn gap_above_px(&self) -> Pixels {
+        palette::scaled_px(self.header_gap_above)
+    }
+
+    fn gap_below_px(&self) -> Pixels {
+        palette::scaled_px(self.header_gap_below)
+    }
+
+    /// One heading line's drawn height.
+    ///
+    /// A `uniform_list` lays every row out at one measured height, so the
+    /// tree can't hand a heading line a row of its own size the way the
+    /// library table's per-row height hook does. The block keeps the rows
+    /// it already had and the line is drawn as a strip inside them, which
+    /// makes this knob a shrink: it takes a line below the track height
+    /// and saturates at the room the block has, rather than growing the
+    /// block and painting out over the tracks around it. The gaps come off
+    /// the same room, so a block is always exactly its rows tall.
+    fn line_px(&self) -> Pixels {
+        let lines = self.head_lines();
+        let room = f32::from(self.row_px()) * lines
+            - f32::from(self.gap_above_px())
+            - f32::from(self.gap_below_px());
+        px(f32::from(palette::scaled_px(self.head_height))
+            .min(room / lines)
+            .max(0.))
+    }
+
+    /// The edge length of an expanded heading's cover tile: the drawn
+    /// lines' full height less the tile's own margin, so the art squares
+    /// off against the text at any line height.
+    fn tile_side(&self) -> Pixels {
+        let side = f32::from(self.line_px()) * self.head_lines()
+            - f32::from(palette::scaled_px(self.art_margin)) * 2.;
+        px(side.max(0.))
+    }
+
+    /// The heading knobs packaged for the shared surface. The year and
+    /// details switches stay on: the composed lines already hold those
+    /// choices.
+    fn head_look(&self) -> group_head::HeadLook {
+        group_head::HeadLook {
+            tile_side: self.tile_side(),
+            show_art: self.header_art,
+            show_year: true,
+            show_details: true,
+            line_px: self.line_px(),
+            art_side: self.art_side,
+            art_margin: palette::scaled_px(self.art_margin),
+            art_rounding: self.art_rounding,
+            font_scale: self.head_text / HEAD_TEXT_STOCK,
         }
     }
 
@@ -974,6 +1424,9 @@ impl PlaylistsPanel {
     /// Delete or Backspace drops the selected members. Ctrl+A takes every
     /// visible track; Escape drops the selection.
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        // Keying the tree is browsing too, so it restarts the idle clock
+        // the same as a scroll or a click.
+        self.touch_resume(cx);
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
         if modifiers.secondary() && key == "a" {
@@ -1097,13 +1550,17 @@ impl PlaylistsPanel {
         div()
             .id(("playlist-head", ix))
             .w_full()
-            .h(palette::scaled_px(ROW_H))
+            .h(self.row_px())
+            .text_size(rems(self.row_font_scale()))
             .px(tokens::SPACE_SM)
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
             .cursor_pointer()
+            .when(self.row_borders, |d| {
+                d.border_b_1().border_color(palette::border())
+            })
             .hover(|d| d.bg(palette::bg_control_hover()))
             // A header is a drop target: tracks dropped on it move there.
             .drag_over::<TrackDrag>(|style, _, _, _| {
@@ -1202,16 +1659,59 @@ impl PlaylistsPanel {
             )
     }
 
-    /// An album run's name line, through the shared heading surface: Expanded
-    /// opens the cover tile, Compact packs the one line.
+    /// An album run's name line, through the shared heading surface:
+    /// Expanded opens the cover tile and draws the configured name line,
+    /// Compact packs the configured one-row composition instead.
     fn album_row(&mut self, ix: usize, g: u32, cx: &mut Context<Self>) -> Stateful<Div> {
         let headers = self.config.headers;
-        track_columns::album_name_row(ix, &mut self.albums[g as usize], headers, &self.state, cx)
+        let expanded = headers == Headers::Expanded;
+        let look = self.head_look();
+        let pieces = if expanded {
+            self.header_name_line.clone()
+        } else {
+            self.header_compact.clone()
+        };
+        let slot = HeadSlot {
+            pieces: &pieces,
+            look: &look,
+            row_px: self.row_px(),
+            // The block's content starts under its top gap; the rest of
+            // the row shows the list, which is what opens the gap.
+            content_top: self.gap_above_px(),
+            flush: self.header_flush,
+        };
+        // Compact, this row is the whole block, so it carries the hairline;
+        // expanded, the meta line under it does and the pair reads as one.
+        let border = self.row_borders && !expanded;
+        track_columns::album_name_row(
+            ix,
+            &mut self.albums[g as usize],
+            headers,
+            &slot,
+            &self.state,
+            cx,
+        )
+        .when(border, |d| d.border_b_1().border_color(palette::border()))
     }
 
-    /// The run's meta line, the Expanded block's second row.
+    /// The run's meta line, the Expanded block's second row. Its strip
+    /// climbs back up to meet the name line: the name only drew its own
+    /// line height inside a row that may be taller, so the meta line starts
+    /// where that one ended rather than at its own row's top.
     fn album_meta_row(&mut self, ix: usize, g: u32, cx: &mut Context<Self>) -> Stateful<Div> {
-        track_columns::album_meta_row(ix, &mut self.albums[g as usize], &self.state, cx)
+        let look = self.head_look();
+        let pieces = self.header_meta_line.clone();
+        let row_px = self.row_px();
+        let slot = HeadSlot {
+            pieces: &pieces,
+            look: &look,
+            row_px,
+            content_top: self.gap_above_px() + look.line_px - row_px,
+            flush: self.header_flush,
+        };
+        let border = self.row_borders;
+        track_columns::album_meta_row(ix, &mut self.albums[g as usize], &slot, &self.state, cx)
+            .when(border, |d| d.border_b_1().border_color(palette::border()))
     }
 
     fn track_row(
@@ -1242,7 +1742,10 @@ impl PlaylistsPanel {
             // library table's route.
             .group(track_cells::ROW_GROUP)
             .w_full()
-            .h(palette::scaled_px(ROW_H))
+            .h(self.row_px())
+            // The cells inherit this, so the text follows the row height
+            // knob instead of floating small in a tall row.
+            .text_size(rems(self.row_font_scale()))
             // Indented under its header, past the chevron column.
             .pl(px(28.))
             .pr(tokens::SPACE_SM)
@@ -1251,6 +1754,16 @@ impl PlaylistsPanel {
             .items_center()
             .gap(tokens::SPACE_SM)
             .cursor_pointer()
+            .when(self.row_borders, |d| {
+                d.border_b_1().border_color(palette::border())
+            })
+            // The zebra tint goes under the selection and playing washes,
+            // which paint over it, so a lit row reads the same on either
+            // stripe. Keyed on the tree row index like the library table's,
+            // so the banding runs unbroken through the headings.
+            .when(self.stripes && !ix.is_multiple_of(2), |d| {
+                d.bg(palette::alpha(palette::bg_elevated(), 0x80))
+            })
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
             .when(playing && !selected, |d| {
                 d.bg(palette::alpha(palette::highlight(), 0x12))
@@ -1339,12 +1852,326 @@ impl PlaylistsPanel {
         };
         for col in columns() {
             if self.column_shown(col.key) {
-                if let Some(c) = track_columns::cell(col.key, &cell, &self.state) {
+                if let Some(c) = track_columns::cell(
+                    col.key,
+                    &cell,
+                    &self.state,
+                    self.row_height,
+                    self.compact_plays,
+                ) {
                     row = row.child(c);
                 }
             }
         }
         row
+    }
+
+    /// Take an appearance knob's new value: repaint, and nudge the dock to
+    /// persist the layout, since none of these reach it on their own. The
+    /// tree's rows never move for a look knob, so nothing rebuilds.
+    fn restyle(&mut self, cx: &mut Context<Self>) {
+        self.request_layout_save(cx);
+        cx.notify();
+    }
+
+    /// The Appearance page's Rows section: the track rows' shape and the
+    /// two washes that make a long list scan.
+    fn rows_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let (row_height, row_spacing) = (self.row_height, self.row_spacing);
+        settings_ui::section(
+            rox_i18n::t!("library-section-rows"),
+            None,
+            div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-row-height"),
+                    Some(rox_i18n::t!("library-row-height.description")),
+                    settings_ui::scalar(
+                        &self.row_scrub,
+                        &self.value_edit,
+                        row_height,
+                        settings_ui::span(ROW_HEIGHT_MIN, ROW_HEIGHT_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.row_height = value;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-row-spacing"),
+                    Some(rox_i18n::t!("library-row-spacing.description")),
+                    settings_ui::scalar(
+                        &self.row_spacing_scrub,
+                        &self.value_edit,
+                        row_spacing,
+                        settings_ui::span(0., ROW_SPACING_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.row_spacing = value;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-stripes"),
+                    Some(rox_i18n::t!("library-stripes.description")),
+                    panel::toggle(
+                        self.stripes,
+                        |this: &mut Self, on, cx| {
+                            this.stripes = on;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-row-borders"),
+                    Some(rox_i18n::t!("library-row-borders.description")),
+                    panel::toggle(
+                        self.row_borders,
+                        |this: &mut Self, on, cx| {
+                            this.row_borders = on;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-compact-plays"),
+                    Some(rox_i18n::t!("library-compact-plays.description")),
+                    panel::toggle(
+                        self.compact_plays,
+                        |this: &mut Self, on, cx| {
+                            this.compact_plays = on;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                )),
+        )
+        .into_any_element()
+    }
+
+    /// The Appearance page's Headings section: how a heading block is
+    /// shaped, and what each of its lines holds.
+    ///
+    /// The composition editors are one well per line rather than the
+    /// library's add-a-line rows: the tree's heading is [`Row::Album`] and
+    /// [`Row::AlbumMeta`] and nothing else, so there's no line count to
+    /// offer, only what goes on the lines there are.
+    fn headings_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let expanded = self.config.headers == Headers::Expanded;
+        let (head_height, head_text) = (self.head_height, self.head_text);
+        let (gap_above, gap_below) = (self.header_gap_above, self.header_gap_below);
+        settings_ui::section(
+            rox_i18n::t!("library-headers"),
+            None,
+            div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-line-height"),
+                    Some(rox_i18n::t!("playlists-line-height-description")),
+                    settings_ui::scalar(
+                        &self.head_scrub,
+                        &self.value_edit,
+                        head_height,
+                        settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.head_height = value;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-text-size"),
+                    Some(rox_i18n::t!("library-text-size.description")),
+                    settings_ui::scalar(
+                        &self.head_text_scrub,
+                        &self.value_edit,
+                        head_text,
+                        settings_ui::span(HEAD_TEXT_MIN, HEAD_TEXT_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.head_text = value;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-flush-background"),
+                    Some(rox_i18n::t!("library-flush-background.description")),
+                    panel::toggle(
+                        self.header_flush,
+                        |this: &mut Self, on, cx| {
+                            this.header_flush = on;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-gap-above"),
+                    Some(rox_i18n::t!("library-gap-above.description")),
+                    settings_ui::scalar(
+                        &self.header_gap_above_scrub,
+                        &self.value_edit,
+                        gap_above,
+                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.header_gap_above = value;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-gap-below"),
+                    Some(rox_i18n::t!("library-gap-below.description")),
+                    settings_ui::scalar(
+                        &self.header_gap_below_scrub,
+                        &self.value_edit,
+                        gap_below,
+                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.header_gap_below = value;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                // Compact draws one line, Expanded the name and meta pair,
+                // so only the wells the active mode actually paints show.
+                .when(!expanded, |d| {
+                    d.child(panel::setting_block(
+                        rox_i18n::t!("library-header-row"),
+                        Some(rox_i18n::t!("library-header-row.description")),
+                        None,
+                        panel::arrange_editor(
+                            "playlists-head-compact",
+                            group_head::PIECES,
+                            &self.header_compact,
+                            |this: &mut Self, items, cx| {
+                                this.header_compact = items;
+                                this.restyle(cx);
+                            },
+                            cx,
+                        ),
+                    ))
+                })
+                .when(expanded, |d| {
+                    d.child(panel::setting_block(
+                        rox_i18n::t!("playlists-name-line"),
+                        Some(rox_i18n::t!("playlists-name-line-description")),
+                        None,
+                        panel::arrange_editor(
+                            "playlists-head-name",
+                            group_head::PIECES,
+                            &self.header_name_line,
+                            |this: &mut Self, items, cx| {
+                                this.header_name_line = items;
+                                this.restyle(cx);
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_block(
+                        rox_i18n::t!("playlists-meta-line"),
+                        Some(rox_i18n::t!("playlists-meta-line-description")),
+                        None,
+                        panel::arrange_editor(
+                            "playlists-head-meta",
+                            group_head::PIECES,
+                            &self.header_meta_line,
+                            |this: &mut Self, items, cx| {
+                                this.header_meta_line = items;
+                                this.restyle(cx);
+                            },
+                            cx,
+                        ),
+                    ))
+                }),
+        )
+        .into_any_element()
+    }
+
+    /// The Appearance page's Art section: the heading tile's own knobs.
+    /// Always shown, whatever the heading mode, so flipping the mode never
+    /// sends you hunting for a row that moved.
+    fn art_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let (rounding, margin) = (self.art_rounding, self.art_margin);
+        settings_ui::section(
+            rox_i18n::t!("head-piece-art"),
+            None,
+            div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .child(panel::setting_row(
+                    rox_i18n::t!("head-piece-art"),
+                    Some(rox_i18n::t!("playlists-art-description")),
+                    panel::toggle(
+                        self.header_art,
+                        |this: &mut Self, on, cx| {
+                            this.header_art = on;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-art-rounding"),
+                    Some(rox_i18n::t!("library-art-rounding.description")),
+                    settings_ui::scalar(
+                        &self.art_scrub,
+                        &self.value_edit,
+                        rounding,
+                        settings_ui::span(0., ART_ROUNDING_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.art_rounding = value;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-art-position"),
+                    Some(rox_i18n::t!("library-art-position.description")),
+                    panel::choices_shared(
+                        &[
+                            (rox_i18n::t!("side-left"), ArtSide::Left),
+                            (rox_i18n::t!("side-right"), ArtSide::Right),
+                        ],
+                        self.art_side,
+                        |this: &mut Self, side, cx| {
+                            this.art_side = side;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-art-margin"),
+                    Some(rox_i18n::t!("library-art-margin.description")),
+                    settings_ui::scalar(
+                        &self.art_margin_scrub,
+                        &self.value_edit,
+                        margin,
+                        settings_ui::span(0., ART_MARGIN_MAX, " px"),
+                        |this: &mut Self, value, cx| {
+                            this.art_margin = value;
+                            this.restyle(cx);
+                        },
+                        cx,
+                    ),
+                )),
+        )
+        .into_any_element()
     }
 
     /// The panel menu's New Playlist entry, shared by the dropdown and the
@@ -1507,20 +2334,81 @@ impl PanelSettings for PlaylistsPanel {
             .into_any_element()
     }
 
-    /// The Behavior page's search section: show the box, and follow the
-    /// shared query or filter by the panel's own.
+    /// The Behavior page: the search section (show the box, and follow the
+    /// shared query or filter by the panel's own), then whether the tree
+    /// chases the playing track.
     fn behavior(
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        Some(crate::query::shared_query::search_section(
-            self.config.search,
-            |this: &mut Self, on, cx| this.set_search(on, cx),
-            self.config.query_source,
-            |this: &mut Self, source, cx| this.pick_query_source(source, cx),
-            cx,
-        ))
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(settings_ui::SECTION_GAP)
+                .child(crate::query::shared_query::search_section(
+                    self.config.search,
+                    |this: &mut Self, on, cx| this.set_search(on, cx),
+                    self.config.query_source,
+                    |this: &mut Self, source, cx| this.pick_query_source(source, cx),
+                    cx,
+                ))
+                .child(panel::tracking_section(
+                    self.follow_playing,
+                    rox_i18n::t!("library-follow-description"),
+                    |this: &mut Self, on, cx| {
+                        this.follow_playing = on;
+                        // Catch up right away instead of waiting for the
+                        // next track change.
+                        if on {
+                            this.follow_playing(cx);
+                        }
+                        this.restyle(cx);
+                    },
+                    self.resume_playing,
+                    rox_i18n::t!("library-resume-description"),
+                    |this: &mut Self, on, cx| {
+                        this.resume_playing = on;
+                        this.restyle(cx);
+                    },
+                    self.smooth_follow,
+                    rox_i18n::t!("library-smooth-description"),
+                    |this: &mut Self, on, cx| {
+                        this.smooth_follow = on;
+                        this.restyle(cx);
+                    },
+                    cx,
+                ))
+                .into_any_element(),
+        )
+    }
+
+    /// The panel's own rows on the shared Appearance page: what shapes the
+    /// track rows and the album headings over them. Stored on the config
+    /// because they shape the content rather than the panel frame; the View
+    /// page keeps what shows (columns, heading mode).
+    fn appearance(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let headings = self.config.headers != Headers::Off;
+        let rows = self.rows_section(cx);
+        // The heading look only matters while headings show; the mode
+        // itself is on the View page beside the columns.
+        let heading_rows = headings.then(|| self.headings_section(cx));
+        let art = self.art_section(cx);
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(settings_ui::SECTION_GAP)
+                .child(rows)
+                .children(heading_rows)
+                .child(art)
+                .into_any_element(),
+        )
     }
 }
 
@@ -1596,7 +2484,7 @@ impl Panel for PlaylistsPanel {
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(
-            serde_json::to_value(self.config.clone()).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(self.config()).unwrap_or(serde_json::Value::Null),
         );
         state
     }
@@ -1662,7 +2550,7 @@ impl Panel for PlaylistsPanel {
             |this, window, cx| {
                 let (state, config) = {
                     let panel = this.read(cx);
-                    (panel.state.clone(), panel.config.clone())
+                    (panel.state.clone(), panel.config())
                 };
                 PlaylistsPanel::new(state, config, window, cx)
             },
@@ -1708,13 +2596,47 @@ impl PlaylistsPanel {
             self.resync_box = false;
             self.sync_query_box(window, cx);
         }
+        // The follow glide eases toward the playing row, stepped here in
+        // render one frame at a time until it arrives, the library panel's
+        // idiom. Every row is one stride tall, so the target comes off the
+        // index times the stride rather than a per-row bounds lookup.
+        let dt = self.glide_tick.elapsed().as_secs_f32().min(0.05);
+        self.glide_tick = Instant::now();
+        if let Some(row) = self.glide_to {
+            let handle = self.scroll.0.borrow().base_handle.clone();
+            let stride = self.row_px();
+            let target =
+                panel::glide_target_at(&handle, gpui::Axis::Vertical, stride * row as f32, stride);
+            match target {
+                // A rebuild can strand the target past the tree's end;
+                // drop the glide instead of animating forever.
+                _ if row >= self.rows.len() => self.glide_to = None,
+                Some(target)
+                    if !panel::glide_step_axis(&handle, gpui::Axis::Vertical, target, dt) =>
+                {
+                    self.glide_to = None
+                }
+                // Not laid out yet, or still moving: keep going.
+                _ => window.request_animation_frame(),
+            }
+        }
         let root = div()
             .size_full()
             .flex()
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)));
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)))
+            // Any scroll or press over the tree counts as browsing; the
+            // stamps only restart the idle clock, leaving the scroll and
+            // the click to the rows underneath, so nothing acts twice.
+            .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                this.touch_resume(cx);
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.touch_resume(cx)),
+            );
         let searching = !self.applied_query.is_empty() || !self.applied_filter.is_empty();
         let content = if self.rows.is_empty() {
             // A search that hit nothing reads differently from an empty tree.
@@ -1918,5 +2840,48 @@ impl PlaylistsPanel {
             // but keep the match total: fall back to the panel menu.
             Some(Row::Album(_) | Row::AlbumMeta(_)) | None => self.dropdown_menu(menu, window, cx),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fold_head_lines, PlaylistsConfig};
+    use crate::group_head::{self, HeadPiece};
+
+    /// A layout from before the composition editors has no saved lines, so
+    /// the three read back as the stock arrangement and its headings look
+    /// unchanged. A saved line is used as-is, deduped against the registry:
+    /// a hand-edited dump naming the album twice would otherwise draw it
+    /// twice.
+    #[test]
+    fn empty_lines_fall_back_to_stock_and_saved_ones_dedupe() {
+        let config = PlaylistsConfig::default();
+        let (compact, name, meta) = fold_head_lines(&config);
+        assert!(compact == group_head::stock_compact());
+        assert!(name == group_head::stock_name_line());
+        assert!(meta == group_head::stock_meta_line());
+
+        let config: PlaylistsConfig = serde_json::from_str(
+            r#"{"header_name_line": ["artist", "spacer", "year", "artist"],
+                "header_meta_line": ["album"]}"#,
+        )
+        .unwrap();
+        let (compact, name, meta) = fold_head_lines(&config);
+        assert!(compact == group_head::stock_compact());
+        assert!(name == vec![HeadPiece::Artist, HeadPiece::Spacer, HeadPiece::Year]);
+        assert!(meta == vec![HeadPiece::Album]);
+    }
+
+    /// The saved composition round-trips: what comes out of a dump reads
+    /// back as the same lines, so a layout save doesn't quietly reshape the
+    /// headings on the next launch.
+    #[test]
+    fn composed_lines_round_trip() {
+        let config: PlaylistsConfig =
+            serde_json::from_str(r#"{"header_compact": ["album", "spacer", "time"]}"#).unwrap();
+        let saved = serde_json::to_value(&config).unwrap();
+        let back: PlaylistsConfig = serde_json::from_value(saved).unwrap();
+        assert!(back.header_compact == config.header_compact);
+        assert!(fold_head_lines(&back) == fold_head_lines(&config));
     }
 }

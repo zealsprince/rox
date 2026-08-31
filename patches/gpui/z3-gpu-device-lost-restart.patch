@@ -1,0 +1,99 @@
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -17,9 +17,30 @@
+ use media::core_video::CVMetalTextureCache;
+ use std::collections::HashMap;
+ use std::sync::Arc;
++// rox patch: the device-lost bail in wait_for_gpu needs a clock and a place
++// to hold the app's handler, see there.
++use std::sync::OnceLock;
++use std::time::{Duration, Instant};
+ 
+ const MAX_FRAME_TIME_MS: u32 = 10000;
+ 
++// rox patch: how long a stalled GPU gets to come back before we stop waiting
++// on it. Six of the timeouts above.
++const MAX_GPU_HANG_TIME: Duration = Duration::from_secs(60);
++
++// rox patch: what to do about a GPU that's gone for good, installed by the
++// app. See wait_for_gpu for when it fires.
++static GPU_DEVICE_LOST_HANDLER: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
++
++/// rox patch: install the response to a lost GPU device. wait_for_gpu calls
++/// it once it's given up on the frame fence, from whichever thread was
++/// drawing. Re-execing the process is the intended move; a handler that
++/// declines by returning (or no handler at all) falls back to exiting,
++/// because nothing can be drawn from here. First install wins.
++pub fn set_gpu_device_lost_handler(handler: impl Fn() + Send + Sync + 'static) {
++    let _ = GPU_DEVICE_LOST_HANDLER.set(Box::new(handler));
++}
++
+ #[repr(C)]
+ #[derive(Clone, Copy, Pod, Zeroable)]
+ struct GlobalParams {
+@@ -791,7 +812,35 @@
+                 "your device information is: {:?}",
+                 self.gpu.device_information()
+             );
+-            while !self.gpu.wait_for(&last_sp, MAX_FRAME_TIME_MS) {}
++            // rox patch: upstream retries here forever. blade reports a lost
++            // device and an expired timeout the same way, as a bare false from
++            // wait_for, so when a suspend/resume tears the Vulkan device out
++            // from under us the timeline semaphore can never reach this frame's
++            // value and the loop never ends. It's on the main thread, so the
++            // window stops answering and the process has to be killed (#118).
++            // Keep waiting on a GPU that's merely stalled, but give up on one
++            // that's gone.
++            let deadline = Instant::now() + MAX_GPU_HANG_TIME;
++            while Instant::now() < deadline {
++                let waited = Instant::now();
++                if self.gpu.wait_for(&last_sp, MAX_FRAME_TIME_MS) {
++                    return;
++                }
++                // A wait that comes back well inside its own timeout didn't
++                // time out, it errored, and the only error that reaches us
++                // here is a lost device. No amount of asking again fixes that.
++                if waited.elapsed() < Duration::from_millis(MAX_FRAME_TIME_MS as u64) / 2 {
++                    break;
++                }
++            }
++            log::error!(
++                "the GPU never came back, so the device looks lost. That's what a suspend/resume does on some drivers. Nothing can be drawn from here."
++            );
++            if let Some(handler) = GPU_DEVICE_LOST_HANDLER.get() {
++                handler();
++            }
++            log::error!("exiting instead of hanging");
++            std::process::exit(1);
+         }
+     }
+ 
+--- a/src/platform/blade.rs
++++ b/src/platform/blade.rs
+@@ -9,3 +9,6 @@
+ pub(crate) use blade_atlas::*;
+ pub(crate) use blade_context::*;
+ pub(crate) use blade_renderer::*;
++// rox patch: the device-lost handler registration is app-facing; the rest of
++// the renderer stays crate-private.
++pub use blade_renderer::set_gpu_device_lost_handler;
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -17,6 +17,17 @@
+ ))]
+ mod blade;
+ 
++// rox patch: surface the device-lost handler registration wherever the blade
++// module exists, so the app can install its restart.
++#[cfg(any(
++    all(
++        any(target_os = "linux", target_os = "freebsd"),
++        any(feature = "x11", feature = "wayland")
++    ),
++    all(target_os = "macos", feature = "macos-blade")
++))]
++pub use blade::set_gpu_device_lost_handler;
++
+ #[cfg(any(test, feature = "test-support"))]
+ mod test;
+ 

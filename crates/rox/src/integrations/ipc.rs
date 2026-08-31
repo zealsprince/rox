@@ -247,6 +247,15 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
         "debug.settings" => {
             serde_json::to_value(rox_core::settings::Settings::load()).map_err(RpcError::app)
         }
+        // The artwork service's cumulative counters: requests served,
+        // loads started/landed/refused, current pool depth and cache
+        // size. Never reset, so two samples a few seconds apart and their
+        // difference is the rate; a scroll that stalls shows here as
+        // requests still climbing while lands stall, or as requests
+        // themselves going flat.
+        "debug.thumbs" => {
+            serde_json::to_value(state.thumbs.read(cx).stats()).map_err(RpcError::app)
+        }
         "debug.panels" => panel_tree(cx),
         // Apply a workspace to the front window by name, the welcome tiles'
         // path. Debug scope: lets a script step through looks without

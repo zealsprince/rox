@@ -479,6 +479,12 @@ fn mosaic_content(thumbs: &[Thumb], rounding: f32, grayed: bool) -> AnyElement {
 /// The tile's placement frame, shared by the single cover and the mosaic:
 /// the block-spanning square at its margin on the configured side, lifted
 /// past the block rows already painted.
+///
+/// The square is also the crop. `Cover` scales the art until it fills the
+/// tile, so a sleeve that isn't square overruns the tile on its long side,
+/// and that overrun paints over the track rows above and below the block.
+/// The clip has to sit on this box rather than on the image, the way the
+/// mosaic's `cell` already does it.
 fn tile_frame(
     content: AnyElement,
     side: Pixels,
@@ -501,6 +507,7 @@ fn tile_frame(
                 .w(side)
                 .h(side)
                 .top(margin - lift)
+                .overflow_hidden()
                 .child(content),
         )
         .into_any_element()
@@ -512,10 +519,9 @@ fn tile_frame(
 /// the track info panel's art piece.
 ///
 /// `Cover` scales the art until it fills the square, which leaves the odd
-/// side hanging outside the element. gpui hands `paint_image` those larger
-/// bounds and masks nothing on its own, so a sleeve that isn't square
-/// spills over the track rows above and below the block. The crop is ours
-/// to make: `overflow_hidden` puts the mask back at the square's edge.
+/// side hanging outside the element. The crop is the caller's to make, on
+/// the sized box this goes into: `overflow_hidden` here is the image
+/// masking against its own grown bounds, which crops nothing.
 pub fn art_content(thumb: Thumb, rounding: f32, icon_px: f32, grayed: bool) -> AnyElement {
     match thumb {
         Thumb::Ready(image) => img(image)
@@ -685,12 +691,17 @@ pub fn line_content(
                 row = flush_stats(row, &mut stats);
                 if let Some(thumb) = &head.thumb {
                     let side = look.line_px - tokens::SPACE_XS * 2.;
-                    row = row.child(div().flex_none().w(side).h(side).child(art_content(
-                        thumb.clone(),
-                        look.art_rounding,
-                        12.,
-                        false,
-                    )));
+                    // The square carries the crop, same as the block tile:
+                    // a non-square sleeve's `Cover` overrun would otherwise
+                    // paint out over the line's text.
+                    row = row.child(
+                        div()
+                            .flex_none()
+                            .w(side)
+                            .h(side)
+                            .overflow_hidden()
+                            .child(art_content(thumb.clone(), look.art_rounding, 12., false)),
+                    );
                 }
             }
         }

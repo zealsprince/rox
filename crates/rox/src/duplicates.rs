@@ -972,15 +972,20 @@ fn group_matches(group: &DupGroup, query: &str) -> bool {
 
 /// A member's cover tile: the thumbnail once it's ready, a placeholder
 /// note glyph while it loads or when the file has none. The thumbnail
-/// service's tiles are square, so covers line the rows up.
+/// store hands back the art at its own aspect, so the square box does the
+/// cropping and covers line the rows up whatever shape the sleeve is.
 fn cover_tile(thumb: Thumb) -> Div {
     let side = px(COVER);
     div().flex_none().flex().items_center().child(match thumb {
-        Thumb::Ready(image) => img(image)
+        Thumb::Ready(image) => div()
             .size(side)
             .overflow_hidden()
-            .object_fit(ObjectFit::Cover)
-            .rounded(px(3.))
+            .child(
+                img(image)
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .rounded(px(3.)),
+            )
             .into_any_element(),
         _ => div()
             .size(side)

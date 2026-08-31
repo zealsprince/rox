@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{
     actions, div, prelude::*, px, size, svg, App, Bounds, Context, Div, Entity, FocusHandle,
-    Focusable as _, Global, KeyBinding, MouseButton, ScrollHandle, SharedString, Subscription,
-    WeakEntity, Window, WindowHandle,
+    Focusable as _, Global, KeyBinding, MouseButton, ScrollHandle, SharedString, Stateful,
+    Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
@@ -1762,7 +1762,7 @@ impl TagEditor {
     /// what the section shows; save and cancel belong to the window and
     /// are in its footer. The table's columns pick through a right click
     /// on their headers, the library table's convention.
-    fn tags_section(&self, cx: &mut Context<Self>) -> Div {
+    fn tags_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         // The online lookup is the form's alone, single-track only: the
         // compare matches on one track's tags, so a batch has no one
         // query, and in the table every row has its own. Gated on
@@ -1943,7 +1943,7 @@ impl TagEditor {
                     // every original intact whether the batch finished or
                     // not.
                     .child(settings_ui::small_button(
-                        "Cancel",
+                        rox_i18n::t!("settings-common-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|this, _, window, cx| {

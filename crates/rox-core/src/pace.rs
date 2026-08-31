@@ -209,8 +209,15 @@ mod tests {
     }
 
     /// The one place the count is spelled out, so "1 workers" never ships.
+    ///
+    /// Locked and pinned to a fixed locale like `workers_divide_the_wait`
+    /// above: `workers_phrase` and the `t!` call it's compared against are
+    /// two separate reads of the global locale, and without the lock a
+    /// concurrent test flipping it to `de` mid-run can land between them.
     #[test]
     fn one_worker_is_singular() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some("en-CA"));
         assert_eq!(
             workers_phrase(1),
             rox_i18n::t!("pace-workers", count = 1u64)
@@ -223,6 +230,7 @@ mod tests {
             workers_phrase(32),
             rox_i18n::t!("pace-workers", count = 32u64)
         );
+        rox_i18n::set_locale(None);
     }
 
     /// The wording holds its shape across the scales a pass actually spans,

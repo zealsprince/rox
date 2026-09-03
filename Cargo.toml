@@ -16,13 +16,14 @@ members = [
     "crates/rox-panel-api",
     "crates/rox-panel-kit",
     "crates/rox-panels",
+    "crates/rox-romanize",
     "crates/rox-services",
     "crates/rox-viz",
 ]
 default-members = ["crates/rox"]
 
 [workspace.package]
-version = "1.23.6"
+version = "1.24.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 

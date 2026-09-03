@@ -54,8 +54,12 @@ instead of forcing a migration (see
 
 Boundary: browsing never touches SQLite. The UI reads the shared in-memory projection
 and derives its views from it; paths stay in the store, so playing a row costs one
-id-to-path read back through the service. Consistency is by rebuild: the projection is
-never patched, it's rebuilt from SQLite and swapped whole.
+id-to-path read back through the service. Consistency is by rebuild: a scan, an explicit
+reload, a removal, or a prune rebuilds the projection from SQLite and swaps it whole. The
+one exception is a filesystem watch event or a reindex, which patches the live projection
+with just the rows it touched (append plus tombstone) and leaves the next rebuild to
+compact. The rebuilt projection is the reference state either way; a patch is only a
+cheaper route to what a rebuild would produce.
 
 Contract to the UI:
 - In: `rescan(root)`, `watch(on/off)`, and `paths_for(ids)`, the id-to-path hop that

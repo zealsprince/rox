@@ -18,6 +18,7 @@ pub mod filter;
 pub mod folder_tree;
 pub mod genre_grid;
 pub mod grid;
+pub mod health_widget;
 pub mod history;
 pub mod library;
 pub mod lyrics;

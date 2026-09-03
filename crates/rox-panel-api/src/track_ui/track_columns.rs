@@ -120,6 +120,12 @@ pub struct Cell<'a> {
     pub title: &'a str,
     pub artist: &'a str,
     pub album: &'a str,
+    /// The three sort names, drawn after their name as a reading when the
+    /// switch is on and the name needs one. Empty where the panel has
+    /// none, which is a track the projection holds no row for.
+    pub title_reading: &'a str,
+    pub artist_reading: &'a str,
+    pub album_reading: &'a str,
     pub year: u16,
     pub genre: &'a str,
     pub duration_ms: u32,
@@ -149,13 +155,14 @@ pub fn cell(
     row_height: f32,
     compact_plays: bool,
 ) -> Option<Div> {
-    let text = |value: &str, color: gpui::Rgba| {
+    let readings = rox_core::settings::show_readings();
+    let text = |value: &str, reading: &str, color: gpui::Rgba| {
         div()
             .flex_1()
             .min_w_0()
             .truncate()
             .text_color(color)
-            .child(SharedString::from(value.to_string()))
+            .child(crate::panel::named(value, reading, readings))
     };
     Some(match key {
         "cover" => cover_cell(&c.cover, row_height),
@@ -191,10 +198,12 @@ pub fn cell(
             .min_w_0()
             .truncate()
             .when(c.playing, |d| d.text_color(palette::accent()))
-            .child(SharedString::from(c.title.to_string())),
-        "artist" => text(c.artist, palette::text_secondary()),
-        "album" => text(c.album, palette::text_secondary()),
-        "genre" => text(c.genre, palette::text_muted()),
+            .child(crate::panel::named(c.title, c.title_reading, readings)),
+        "artist" => text(c.artist, c.artist_reading, palette::text_secondary()),
+        "album" => text(c.album, c.album_reading, palette::text_secondary()),
+        // The genre column takes no reading: genres are interned without
+        // sort names, so there would never be one to draw.
+        "genre" => text(c.genre, "", palette::text_muted()),
         "year" => div()
             .flex_none()
             .text_color(palette::text_muted())
@@ -405,7 +414,13 @@ pub fn stock_head_look() -> group_head::HeadLook {
 fn head_of(g: &AlbumGroup) -> group_head::GroupHead {
     group_head::GroupHead {
         name: SharedString::from(g.artist.clone()),
+        // No readings here: an album run in the queue, history or a
+        // playlist is grouped off the tags those rows carry, which come
+        // from the store rather than the projection and so have no sort
+        // names to read.
+        name_reading: SharedString::default(),
         album: SharedString::from(g.album.clone()),
+        album_reading: SharedString::default(),
         year: g.year,
         genre: SharedString::from(g.genre.clone()),
         quality: SharedString::from(g.quality.clone()),

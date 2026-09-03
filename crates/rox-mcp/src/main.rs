@@ -191,9 +191,10 @@ fn base_tools() -> Value {
         },
         {
             "name": "get_tasks",
-            "description": "The long analysis passes (acoustic, ReplayGain, tempo): \
-                            whether each could start, how many tracks it would work \
-                            through, and live progress while one runs.",
+            "description": "The long library passes (acoustic, ReplayGain, tempo, \
+                            sort names, romanize): whether each could start, how \
+                            much it would work through, and live progress while one \
+                            runs.",
             "inputSchema": { "type": "object", "properties": {} },
         },
         {
@@ -201,11 +202,21 @@ fn base_tools() -> Value {
             "description": "Start a long analysis pass over the library. These cost \
                             hours on a large library, and in tags save mode rewrite \
                             audio files; the answer says what the pass took on, with \
-                            an estimate where this machine knows its pace.",
+                            an estimate where this machine knows its pace. The \
+                            sortnames pass writes no files at all: it asks \
+                            MusicBrainz what each artist files under and stores the \
+                            answer in the library, over the non-Latin names only. \
+                            The romanize pass writes no files either and runs at \
+                            disk speed: it reads every non-Latin title, album and \
+                            artist that still has no sort name and stores a Latin \
+                            spelling. Korean, Chinese and kana need nothing; kanji \
+                            values are skipped unless the optional Japanese \
+                            dictionary is installed, and get_tasks reports how \
+                            many that is.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pass": { "type": "string", "enum": ["acoustic", "replaygain", "tempo"] },
+                    "pass": { "type": "string", "enum": ["acoustic", "replaygain", "tempo", "sortnames", "romanize"] },
                 },
                 "required": ["pass"],
             },
@@ -217,7 +228,7 @@ fn base_tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pass": { "type": "string", "enum": ["acoustic", "replaygain", "tempo"] },
+                    "pass": { "type": "string", "enum": ["acoustic", "replaygain", "tempo", "sortnames", "romanize"] },
                 },
                 "required": ["pass"],
             },

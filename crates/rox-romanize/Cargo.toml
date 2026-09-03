@@ -1,0 +1,48 @@
+[package]
+name = "rox-romanize"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The morphological analyzer behind kanji readings. Default features only,
+# which is `mmap` and nothing else: every `embed-*` feature bakes a
+# dictionary into the binary and none of them are on, so what links here is
+# the Viterbi lattice, the loader and the FST reader, and the data arrives
+# as a download instead. Measured: a stripped release binary that loads a
+# dictionary and segments one string is 520 KiB bigger than the same binary
+# without lindera (927 KB against 394 KB), against the 10 MB the dictionary
+# itself would have added. `mmap` earns its keep on the other side of that:
+# the connection-cost matrix and the prefix dictionary are memory-mapped
+# rather than read, so loading IPADIC doesn't pull forty megabytes into RSS
+# to romanize a few thousand titles.
+#
+# Pinned to 5.x deliberately: the binary dictionary format is Lindera's own,
+# and the download in src/dictionary.rs is a specific release asset. Bump
+# them together or the loader opens a dictionary it can't read.
+lindera = "5.3"
+# The Mandarin reading table, which is not the thing Andrew ruled out
+# shipping: a few hundred kilobytes of per-character readings, against
+# IPADIC's forty megabytes. Default features off and `plain` alone, so the
+# binary carries one toneless spelling per character instead of four
+# spellings plus the heteronym table, none of which a search key uses.
+# Measured the same way as lindera above: 264 KiB.
+pinyin = { version = "0.11", default-features = false, features = ["plain"] }
+# Checks the dictionary archive against the checksum in the descriptor.
+# Pure Rust, no build script, and already in the tree under rox-acoustic.
+sha2 = "0.10"
+# The dictionary download runs its own agent, for the reason rox-acoustic's
+# does: rox-net caps every request at ten seconds, which a ten-megabyte
+# archive can't finish inside.
+ureq = "2"
+# Unpacks the archive. Same version and the same one feature the workspace
+# unpacks theme and workspace bundles with, so this adds no crate to the
+# build.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Where the download lands: `models/`, beside the acoustic weights. The one
+# sibling dependency, exactly the one rox-acoustic takes for the same
+# reason, and nothing in this crate reaches any further up.
+rox-core = { path = "../rox-core" }
+# Saying so when a dictionary fails to load. Rare enough that the facade
+# costs nothing without a logger behind it.
+log = "0.4"

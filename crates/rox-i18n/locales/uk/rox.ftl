@@ -304,6 +304,12 @@ panel-add-to-queue = Додати в чергу
 panel-add-to-playlist = Додати до списку відтворення
 panel-favourite-add = Додати в улюблене
 panel-favourite-remove = Прибрати з улюбленого
+panel-copy = Копіювати
+panel-copy-title = Копіювати назву
+panel-copy-artist = Копіювати виконавця
+panel-copy-album = Копіювати альбом
+panel-copy-filename = Копіювати ім'я файлу
+panel-copy-path = Копіювати шлях
 shader-pick-missing = { $name } (немає)
 shader-pick-custom = Власний
 
@@ -409,6 +415,12 @@ library-columns = Стовпці
     .description = Які стовпці показані; перетягніть заголовки в панелі, щоб змінити їхній порядок і ширину
 library-column-headers = Заголовки стовпців
     .description = Рядок заголовків над списком, за якими сортують; приховайте його, і стовпці збережуть порядок та ширину
+library-column-rename = Перейменувати...
+library-column-rename-reset = Скинути назву
+library-column-rename-name = Заголовок
+library-column-rename-note = Показується замість вбудованого заголовка; порожнє поле повертає його, а один пробіл лишає заголовок порожнім
+library-sort-on-click = Сортування кліком
+    .description = Сортує кліком будь-де в заголовку, а не на його значку; щоб переставити стовпець, потрібні Alt і перетягування
 library-compact-plays = Компактні прослуховування
     .description = Стовпець прослуховувань як маленьке число з рискою поруч
 library-line-height = Висота рядка
@@ -766,12 +778,20 @@ settings-library-tempo-enable = З'ясовувати, як швидко йду�
     .description = Рахувати біти в треках, чиї теги про це мовчать, щоб медіатека могла показувати темп і сортувати за ним. Усе працює на цій машині, числа лягають у базу медіатеки, а ваші файли лишаються недоторканими
 settings-library-tempo-progress = З'ясовуємо темп, { $done } з { $total }
 settings-library-tempo-progress-start = З'ясовуємо, чого бракує...
+settings-library-tempo-refused = . Треків, у яких rox не розчув ритму: { $count }. «Проаналізувати те, чого бракує» їх не чіпає
+settings-library-tempo-retry = Повторити відхилені
 settings-library-tempo-status-measured = Усі скановані треки ({ $total }) мають темп, з них { $measured } з'ясував rox
+settings-library-tempo-status-measured-some = Темп мають { $covered } зі { $total } сканованих треків, з них { $measured } з'ясував rox
+settings-library-tempo-status-none = Жоден зі сканованих треків ({ $total }) не каже, як швидко він грає. «Проаналізувати те, чого бракує» це з'ясує
+settings-library-tempo-status-partial = Темп мають { $covered } зі { $total } сканованих треків, з них { $measured } з'ясував rox. «Проаналізувати те, чого бракує» візьметься за решту ({ $missing })
 settings-library-tempo-status-tagged = Усі скановані треки ({ $total }) мають тег темпу
+settings-library-tempo-status-tagged-some = Тег темпу мають { $covered } зі { $total } сканованих треків
 settings-library-watch-folders = Стежити за теками
     .description = Вносити додані, змінені й видалені файли в медіатеку в міру того, як це стається, без ручного пересканування
 settings-library-write-stored = Записати збережене у файли
     .description = Три налаштування збереження діють лише на наступний запис, тож усе, збережене до того, як котресь перемкнули на Теги, лишається тільки в rox. Це записує тексти пісень, підсилення й описи, які rox уже тримає, у самі файли, щоб їх бачив інший програвач, який читає цю теку. Нічого не перераховується
+settings-show-readings = Показувати читання
+    .description = Ставити латинське читання після імені, записаного письмом, яке ця абетка не прочитає: 秋ノ風 (Aki no kaze). Читання береться з імені для сортування, яке значення вже має, тож імʼя без нього нічого не показує, а латинське імʼя читання не отримує
 
 ## Settings: MCP
 settings-mcp-client-config = Конфіг клієнта
@@ -786,6 +806,11 @@ settings-mlmodels-custom-description-empty = Укажіть rox власний �
 settings-mlmodels-download-failed = Не вдалося завантажити { $label }: { $reason }
 settings-mlmodels-downloading = Завантажуємо { $label }: { $done } з { $total }
 settings-mlmodels-stopping = Спиняємо завантаження { $label }...
+settings-dictionary-description = { $summary }. { $licence }
+settings-dictionary-download-failed = Не вдалося завантажити словник: { $reason }
+settings-dictionary-downloading = Завантажуємо словник: { $done } з { $total }
+settings-dictionary-heading = Романізація
+settings-dictionary-stopping = Спиняємо завантаження словника...
 settings-mlmodels-fallback-model = модель
 settings-mlmodels-fallback-the-model = Модель
 settings-mlmodels-kind-custom = Власна
@@ -993,9 +1018,11 @@ settings-sidebar-settings-file = Файл налаштувань
 
 ## Menubar
 menu-about = Про програму
+menu-analyze-tempo = Проаналізувати темп...
 menu-application = Застосунок
 menu-apply-layout = Застосувати розкладку
 menu-apply-workspace = Застосувати робочий простір
+menu-build-acoustic = Побудувати акустичні вектори...
 menu-chat = Чат
 menu-close = Закрити
 menu-console = Консоль
@@ -1004,8 +1031,16 @@ menu-discussions = Обговорення
 menu-empty-window = Порожнє вікно
 menu-equalizer = Еквалайзер
 menu-exit = Вийти
+menu-fill-sort-names = Заповнити імена для сортування...
+menu-romanize-library = Романізувати медіатеку...
+menu-find-duplicates = Знайти дублікати...
+menu-tag-genres = Проставити жанри...
+menu-health = Стан бібліотеки
+menu-power-search = Розширений пошук
 menu-hide-menubar = Ховати смугу меню
 menu-import-workspace = Імпортувати робочий простір...
+menu-library = Медіатека
+menu-measure-replaygain = Виміряти ReplayGain...
 menu-new-ellipsis = Новий...
 menu-new-window = Нове вікно
 menu-new-window-from-layout = Нове вікно з розкладки
@@ -1027,13 +1062,16 @@ menu-pause = Пауза
 menu-playback = Відтворення
 menu-remain-in-tray = Лишатися в лотку
 menu-report-issue = Повідомити про проблему
+menu-rescan-library = Пересканувати медіатеку
 menu-save-layout = Зберегти розкладку
 menu-save-workspace = Зберегти робочий простір
 menu-section-add = Додати
+menu-section-analyze = Аналіз
 menu-section-app = Застосунок
 menu-section-interface = Інтерфейс
 menu-section-layouts = Розкладки
-menu-section-library = Медіатека
+menu-section-listening = Прослуховування
+menu-section-maintain = Обслуговування
 menu-section-session = Сеанс
 menu-section-track = Трек
 menu-section-tuning = Налаштування
@@ -1156,20 +1194,44 @@ tasks-start-rescan = Пересканувати
 tasks-stop = Спинити
 tasks-stopping = Спиняємо...
 tasks-tempo-all = Усі треки ({ $count }) мають темп
+tasks-tempo-counted = Треків із темпом: { $count }
 tasks-tempo-off = З'ясування того, як швидко йдуть треки, вимкнено в Налаштуваннях, у розділі Медіатека
 tasks-tempo-partial = { $missing } з { $total } треків без темпу
+tasks-tempo-refused = Треків, у яких rox не розчув ритму: { $count }
 tasks-timing = Міряємо час { $progress }
+tasks-filling = Заповнення { $progress }
+tasks-job-sortnames = Імена для сортування
+tasks-sortnames-all = Усі виконавці ({ $count }) мають ім'я для сортування
+tasks-sortnames-non-latin = , з них не латиницею: { $count }, { $estimate }
+tasks-sortnames-nothing = Ще нічого не скановано для пошуку
+tasks-sortnames-partial = { $missing } з { $total } виконавців без імені для сортування
+tasks-start-fill-missing = Заповнити те, чого бракує
+tasks-job-romanize = Романізація
+tasks-reading-takes = , їх читання займе { $estimate }
+tasks-romanize-all = Імена для сортування є в усіх { $count } назв, альбомів та виконавців
+tasks-romanize-nothing = Ще нічого не скановано для читання
+tasks-romanize-partial = { $missing } з { $total } назв, альбомів та виконавців без імені для сортування
+tasks-romanizing = Читання { $progress }
+tasks-romanize-skipped = Пропущено без японського словника: { $count }
+tasks-romanize-skipping = Із них { $kanji } — кандзі, їм потрібен японський словник із Налаштування > Медіатека
+tasks-start-romanize = Романізувати
 tasks-tip = Відкрити завдання медіатеки
 tasks-window-title = rox - Завдання
 tasks-working-out-missing = З'ясовуємо, чого бракує...
 
 ## Stats window
+stats-bars-daily = Стовпці по днях, клацніть один, щоб відкрити день
+stats-bars-days = Стовпці по { $days } дн., клацніть один, щоб відкрити період
+stats-bars-hourly = Стовпці по годинах, ближче не наблизити
+stats-bars-hours = Стовпці по { $hours } год, клацніть один, щоб відкрити його день
+stats-bars-weekly = Стовпці по тижнях, клацніть один, щоб відкрити тиждень
 stats-bucket-listens = { $count ->
-    [one] { $count } прослуховування, { $ago }
-    [few] { $count } прослуховування, { $ago }
-    [many] { $count } прослуховувань, { $ago }
-   *[other] { $count } прослуховування, { $ago }
+    [one] { $count } прослуховування, { $ago } ({ $date })
+    [few] { $count } прослуховування, { $ago } ({ $date })
+    [many] { $count } прослуховувань, { $ago } ({ $date })
+   *[other] { $count } прослуховування, { $ago } ({ $date })
 }
+stats-chart-end-day = Північ
 stats-chart-start-all = Перше прослуховування
 stats-chart-start-month = 30 днів тому
 stats-chart-start-week = 7 днів тому
@@ -1180,6 +1242,7 @@ stats-count-menu = Підрахунок
     .description = За яким останнім проміжком число рахує прослуховування; список при наведенні завжди показує їх усі
 stats-empty-all = Ще немає прослуховувань
 stats-empty-range = У цьому проміжку немає прослуховувань
+stats-library-held = { $tracks } треків, { $size } у пам'яті
 stats-now = Зараз
 stats-open = Відкрити статистику
 stats-open-on-click = Відкривати статистику кліком
@@ -1198,6 +1261,7 @@ stats-range-day-short = День
 stats-range-label = Проміжок
 stats-range-month = Цього місяця
 stats-range-month-short = Місяць
+stats-range-span = З { $from } по { $to }
 stats-range-today = Сьогодні
 stats-range-week = Цього тижня
 stats-range-week-short = Тиждень
@@ -1217,6 +1281,85 @@ stats-show-number = Показувати число
 stats-title = Віджет статистики
 stats-tooltip-listens = Прослуховування
 stats-window-title = rox - Статистика
+
+## Library health window
+
+health-caption-art = { $albums } з { $total }, { $tracks }
+health-caption-duplicates = { $groups } на { $tracks }
+health-caption-formats = { $unwritable } з { $total }
+health-caption-gaps = { $albums } з { $total }
+health-caption-missing = { $missing } відсутні з { $total }
+health-caption-sort = Виконавці альбому { $album_artists }, альбоми { $albums }, назви { $titles }
+health-caption-split = { $tagged } з тегами, { $measured } виміряно, { $missing } відсутні
+health-caption-split-refused = { $tagged } з тегами, { $measured } виміряно, { $missing } відсутні, { $refused } без ритму
+health-checks-menu = Теги, які рахуються
+    .description = Які з п'яти основних тегів рахує показник; список при наведенні завжди показує їх усі
+health-click-opens = Клік відкриває стан бібліотеки
+health-click-section = Клік
+health-complete = Пропусків немає
+health-count-groups = { $count ->
+    [one] { $count } група
+    [few] { $count } групи
+    [many] { $count } груп
+   *[other] { $count } групи
+}
+health-desc-acoustic = Треки без акустичного відбитка: схоже за звучанням для них не підібрати.
+health-desc-art = Альбоми без обкладинки: ні всередині файлів, ні картинкою поруч із ними.
+health-desc-duplicates = Групи треків з однаковим виконавцем і назвою та приблизно однаковою тривалістю.
+health-desc-gaps = Альбоми, у нумерації треків яких пропущено номер або трек не має номера взагалі.
+health-desc-genre = Треки, у файлах яких не вказано жанр.
+health-desc-rating = Треки, яким ви ще не поставили оцінку.
+health-desc-replaygain = Треки без заміру гучності: вони звучать гучніше або тихіше за решту.
+health-desc-sort-names = Скільки імен мають ім'я для сортування, тобто написання, яке визначає місце в алфавітному порядку.
+health-desc-tempo = Треки без темпу, і саме його читають сортування та добір за BPM.
+health-desc-writable = Треки у форматах, які rox читає, але не може записати в них теги. Фрагментовані файли MP4 теж відмовляють у записі, і тут вони не враховані.
+health-desc-year = Треки без року випуску.
+health-drill = Показати ці
+health-fix-analyze = Проаналізувати те, чого бракує
+health-fix-duplicates = Відкрити дублікати
+health-fix-genres = Проставити жанри
+health-fix-measure = Виміряти те, чого бракує
+health-fix-fill = Заповнити те, чого бракує
+health-measuring-art = Перевіряємо обкладинки, { $done } з { $total }
+health-measuring-duplicates = Шукаємо збіги дублікатів
+health-measuring-formats = Читаємо формати файлів
+health-measuring-gaps = Перевіряємо номери треків
+health-open = Відкрити стан бібліотеки
+health-open-on-click = Відкривати стан бібліотеки кліком
+    .description = Клікніть віджет, щоб відкрити вікно стану бібліотеки, де розкладено покриття
+health-overview-complete = { $complete } з { $total } повністю з тегами
+health-overview-missing = { $missing } відсутні
+health-readout-section = Показник
+health-running = Виконується
+health-section-audio = Аудіо
+health-section-files = Файли та структура
+health-section-overview = Огляд
+health-section-tags = Теги
+health-show-percent = Показувати відсоток
+    .description = Малювати покриття поруч зі значком; вимкнено лишає голий значок, а числа показує при наведенні
+health-tile-acoustic = Акустичні вектори
+health-tile-album = Альбом
+health-tile-art = Обкладинка альбому
+health-tile-artist = Виконавець
+health-tile-duplicates = Дублікати
+health-tile-gaps = Пропуски в альбомах
+health-tile-genre = Жанр
+health-tile-rating = Оцінка
+health-tile-replaygain = ReplayGain
+health-tile-sort-names = Імена для сортування
+health-tile-tempo = Темп
+health-tile-writable = Без підтримки
+health-tile-year = Рік
+health-tile-title = Назва
+health-tooltip-missing = Відсутні теги
+health-waiting = Очікування
+health-widget-title = Віджет стану
+health-window-title = rox - Стан бібліотеки
+
+## Power search window
+
+search-seed-caption = { $source }: { $count }
+search-window-title = rox - Розширений пошук
 
 ## About window
 about-check-failed = Не вдалося дістатися GitHub
@@ -1355,6 +1498,7 @@ keymap-focus-search = Фокус на пошук
     .description = Поставити курсор у поле пошуку медіатеки
 keymap-group-browsing = Навігація
 keymap-group-editing = Редагування
+keymap-group-library = Медіатека
 keymap-group-playback = Відтворення
 keymap-group-view = Вигляд
 keymap-group-windows = Вікна
@@ -1398,6 +1542,10 @@ keymap-open-settings = Відкрити налаштування
     .description = Відкрити це вікно
 keymap-open-panel-settings = Налаштування панелі
     .description = Відкриває вікно налаштувань активної панелі
+keymap-open-health = Стан бібліотеки
+    .description = Відкрити вікно стану бібліотеки, де підраховуються охоплення тегів і структурні проблеми
+keymap-open-power-search = Розширений пошук
+    .description = Відкрити вікно пошуку з власним запитом, щоб пошук тут не змінював робочий простір
 keymap-open-stats = Відкрити статистику
     .description = Відкрити вікно статистики прослуханого
 keymap-open-tasks = Завдання
@@ -1434,6 +1582,56 @@ keymap-next-tab = Наступна вкладка
     .description = Показує наступну вкладку в активній групі панелей
 keymap-prev-tab = Попередня вкладка
     .description = Показує попередню вкладку в активній групі панелей
+keymap-toggle-mute = Вимкнути звук
+    .description = Вимикає вивід, не скидаючи рівень. Натисніть ще раз, щоб повернути його
+keymap-toggle-shuffle = Перемкнути перемішування
+    .description = Вмикає або вимикає перемішування черги
+keymap-cycle-loop = Перемкнути повтор
+    .description = Перемикає повтор з вимкненого на всі, на один і знову по колу
+keymap-toggle-stop-after = Зупинити після
+    .description = Дає поточному треку дограти, потім ставить паузу. Натисніть ще раз, щоб скасувати
+keymap-volume-up = Гучніше
+    .description = Підвищує гучність на один крок
+keymap-volume-down = Тихіше
+    .description = Знижує гучність на один крок
+keymap-close-panel = Закрити панель
+    .description = Закриває активну панель в активній групі панелей
+keymap-new-empty-window = Порожнє вікно
+    .description = Відкриває вікно робочого простору без вмісту
+keymap-open-signals = Сигнали
+    .description = Відкриває вікно сигналів, спільний пул за маршрутами кожної панелі
+keymap-import-workspace = Імпортувати робочий простір
+    .description = Вибирає файл робочого простору та додає його до колекції
+keymap-toggle-quit-to-tray = Перемкнути «Лишатися в лотку»
+    .description = Перемикає, чи лишається rox у лотку після закриття останнього вікна
+keymap-toggle-design-mode = Перемкнути режим дизайну
+    .description = Перемикає, чи можна переставляти панелі прямо в розкладці
+keymap-toggle-theme = Перемкнути світлу / темну
+    .description = Перемикає на інший бік палітри. Діє всюди, бо всі вікна ділять одну тему
+keymap-toggle-resize-lock = Перемкнути блокування зміни розміру панелей
+    .description = Перемикає, чи доступна зміна розміру панелей лише в режимі дизайну
+keymap-toggle-menubar = Перемкнути приховування смуги меню
+    .description = Показує смугу меню у вікні або ховає її, поки не утримується Alt
+keymap-toggle-decorations = Перемкнути оформлення ОС
+    .description = Перемикає вікна робочого простору між рамкою ОС і власною рамкою rox
+keymap-toggle-art-theming = Перемкнути тему пісні
+    .description = Перемикає, чи обкладинка поточного треку забарвлює палітру
+keymap-rescan-library = Пересканувати медіатеку
+    .description = Заново просканувати всі запам’ятовані теки медіатеки
+keymap-measure-replaygain = Виміряти ReplayGain
+    .description = Відкрити діалог, який вимірює гучність треків без неї
+keymap-analyze-tempo = Проаналізувати темп
+    .description = Відкрити діалог, який слухає біт у треках без BPM
+keymap-build-acoustic = Побудувати акустичні вектори
+    .description = Відкрити діалог, який будує вектори для акустичного пошуку
+keymap-fill-sort-names = Заповнити імена для сортування
+    .description = Відкрити діалог, який запитує в MusicBrainz імена для сортування, яких немає у файлах
+keymap-romanize-library = Романізувати медіатеку
+    .description = Відкрити діалог, який читає латинкою нелатинські назви, альбоми та імена виконавців
+keymap-find-duplicates = Знайти дублікати
+    .description = Відкрити пошук дублікатів у медіатеці
+keymap-tag-genres = Проставити жанри
+    .description = Відкрити простановку жанрів за треками без жанру
 
 ## Panel catalog
 panel-catalog-album-carousel = Карусель альбомів
@@ -1445,6 +1643,7 @@ panel-catalog-eq-widget = Віджет еквалайзера
 panel-catalog-filter = Фільтр
 panel-catalog-folder-tree = Дерево тек
 panel-catalog-genre-grid = Сітка жанрів
+panel-catalog-health-widget = Віджет стану
 panel-catalog-group-application = Застосунок
 panel-catalog-group-arrangement = Розстановка
 panel-catalog-group-catalogue = Каталог
@@ -1493,6 +1692,7 @@ lastfm-import-matched = , зіставлено: { $count }
 lastfm-import-added = , додано в улюблене: { $count }
 
 ## Tag tools
+tags-editor-add-tag = Додати
 tags-editor-clear-all = очистити все
 tags-editor-form-view = Форма
 tags-editor-format-unsupported-all = Теги цього формату поки що не читаються й не записуються.
@@ -1502,17 +1702,22 @@ tags-editor-guess-folded = { $status }, ще { $count } не показано
 tags-editor-guess-help = { $placeholders }; / збігається з текою вище, %skip% відкидає
 tags-editor-guess-match-count = Збігів: { $hits } з { $total }
 tags-editor-guess-no-match = немає збігу
-tags-editor-guess-pattern-label = шаблон
+tags-editor-guess-pattern-label = Шаблон
 tags-editor-loading = Читаємо теги...
 tags-editor-look-up = Знайти
 tags-editor-multiple-values = Кілька значень
 tags-editor-clear-on-save = Очиститься при збереженні
-tags-editor-other-tags = Інші теги ({ $count })
+tags-editor-additional-tags = Додаткові теги ({ $count })
 tags-editor-remove = прибрати
 tags-editor-reveal = Показати
 tags-editor-save-errors = Файлів з помилкою: { $count }; { $error }
 tags-editor-saving-progress = Зберігаємо { $done }/{ $total }...
+tags-editor-sort-names = Імена для сортування
 tags-editor-table-view = Таблиця
+tags-editor-tag-columns = Додаткові теги
+tags-editor-tag-field-conflict = поле { $field } записує цей тег
+tags-editor-tag-key-placeholder = Назва тега
+tags-editor-tag-value-placeholder = Значення
 tags-editor-tags-section = Теги
 tags-editor-unknown-partial = { $count } з { $total }
 tags-editor-unread-count = Не вдалося прочитати теги { $failed } з { $total } файлів
@@ -1682,6 +1887,70 @@ duplicates-trash-result = { $count ->
 duplicates-trash-result-failed = Перенесено в смітник { $count }, не вдалося { $failed }
 duplicates-trashing = Переносимо в смітник { $done }/{ $total }...
 duplicates-window-title = rox - Дублікати
+
+## Простановка жанрів
+
+tag-genres-empty = У кожного треку є жанр. Увімкніть щось, щоб позначити заново.
+tag-genres-heading = Проставити жанри
+tag-genres-input-placeholder = Введіть жанр
+tag-genres-keys-hint = 1-8 обирають рядок, Shift+1-8 додають його в поле, Ctrl+1-8 застосовують його до всього альбому, Enter застосовує набране, L запитує Last.fm, S пропускає, Ctrl+Z скасовує
+tag-genres-library-loading = Медіатека ще завантажується; спробуйте трохи згодом.
+tag-genres-no-file = У медіатеці немає файлу для цього треку.
+tag-genres-no-suggestions = Немає що запропонувати; введіть жанр.
+tag-genres-progress = { $at } з { $total } без жанру
+tag-genres-skip = Пропустити
+tag-genres-thinking = Читаємо сусідів...
+tag-genres-undo = Скасувати
+tag-genres-unwritable = Цей трек лежить усередині спільного cue-образу, тож його жанр не записати. Пропустіть його.
+tag-genres-window-title = rox - Проставити жанри
+tag-genres-looking-up = Питаємо Last.fm...
+tag-genres-lookup = Знайти на Last.fm
+tag-genres-auto-lookup = Автоматично
+tag-genres-lookup-found = Last.fm позначає { $artist } як: { $tags }
+tag-genres-lookup-none = У Last.fm немає тегів для { $artist }.
+tag-genres-lookup-off = Онлайн-пошук виконавців вимкнено в налаштуваннях.
+tag-genres-why-acoustic = { $count ->
+    [one] { $count } трек зі схожим звучанням
+    [few] { $count } треки зі схожим звучанням
+    [many] { $count } треків зі схожим звучанням
+   *[other] { $count } треки зі схожим звучанням
+}
+tag-genres-why-album = { $count ->
+    [one] { $count } трек у цьому альбомі
+    [few] { $count } треки у цьому альбомі
+    [many] { $count } треків у цьому альбомі
+   *[other] { $count } треки у цьому альбомі
+}
+tag-genres-why-artist = { $count ->
+    [one] { $count } трек цього виконавця
+    [few] { $count } треки цього виконавця
+    [many] { $count } треків цього виконавця
+   *[other] { $count } треки цього виконавця
+}
+tag-genres-why-lookup = Last.fm
+tag-genres-album-too = { $count ->
+    [one] Позначити весь альбом треку і { $count } сусідній трек
+    [few] Позначити весь альбом треку і { $count } сусідні треки
+    [many] Позначити весь альбом треку і { $count } сусідніх треків
+   *[other] Позначити весь альбом треку і { $count } сусіднього треку
+}
+tag-genres-apply = Застосувати
+tag-genres-begin = Запустити чергу
+tag-genres-col-genre = Жанр
+tag-genres-col-match = Збіг
+tag-genres-col-why = Чому
+tag-genres-current-genre = Жанр: { $genre }
+tag-genres-idle = Нічого не грає. Запустіть чергу, щоб пройти треки без жанру, або увімкніть щось, щоб позначити заново.
+tag-genres-no-genre = Жанру ще немає
+tag-genres-stop = Зупинити чергу
+tag-genres-untagged-count = { $count ->
+    [one] { $count } трек без жанру
+    [few] { $count } треки без жанру
+    [many] { $count } треків без жанру
+   *[other] { $count } треку без жанру
+}
+tag-genres-write-error = { $name }: { $error }
+tag-genres-writing = Запис { $done } з { $total }...
 
 ## Smart playlists
 smart-playlist-descending = За спаданням
@@ -1867,6 +2136,8 @@ pass-replaygain-title = { $count ->
    *[other] Виміряти { $count } трека?
 }
 pass-tempo-body = З кожного файлу декодуються два вікна по пів хвилини, і в них рахуються біти, щоб медіатека могла показати, з якою швидкістю йде трек. Найкраще це працює на музиці, записаній під клік, а те, що зміряти не вдається, пропускається. Числа лягають у базу медіатеки, а ваші файли лишаються недоторканими.
+pass-tempo-retry-body = Ці треки попередній прохід уже прослухав і ритму в них не знайшов. Повтор знову декодує кожен із них, тож сенс у ньому з'являється лише після того, як рахування ударів стало кращим.
+pass-tempo-retry-title = Прослухати заново відхилені треки ({ $count })?
 pass-tempo-title = { $count ->
     [one] Знайти темп { $count } треку?
     [few] Знайти темп { $count } треків?
@@ -1875,6 +2146,14 @@ pass-tempo-title = { $count ->
 }
 pass-timing = Міряємо час кількох треків...
 pass-timing-failed = Не вдалося зміряти цю медіатеку: { $error }
+pass-fill = Заповнити
+pass-sortnames-body = Кожного виконавця шукаємо на MusicBrainz заради латинського написання, за яким він сортується, щоб 米津玄師 потрапив на літеру Y. Сервіс дозволяє один запит на секунду, і саме це задає темп. Відповіді потрапляють у базу медіатеки, файли не чіпаються ніколи.
+pass-sortnames-scope-all = Шукати й ті імена, які вже сортуються латиницею
+pass-romanize = Романізувати
+pass-romanize-body = Кожну назву, альбом і виконавця без імені для сортування читаємо латинкою, щоб レモン знаходилося за запитом "lemon". Корейській та китайській більше нічого не потрібно. Японським кандзі потрібен словник із Налаштування > Медіатека, а IPADIC помиляється в іменах досить часто, щоб редактор тегів був на місці для виправлення. Відповіді потрапляють у базу медіатеки, файли не чіпаються ніколи.
+pass-romanize-title = Прочитати латинкою назв: { $count }?
+pass-romanize-skips-kanji = { $kanji } із { $total } значень — це кандзі, їх буде пропущено, доки не встановлено японський словник. Візьміть його в Налаштування > Медіатека.
+pass-sortnames-title = Знайти виконавців: { $count }?
 pass-workers = Потоки
 
 ## Quick play
@@ -1884,10 +2163,22 @@ quick-play-cover = Обкладинка
     .description = Показувати мініатюру обкладинки ліворуч від кожного результату
 quick-play-duration = Тривалість
     .description = Показувати довжину кожного результату праворуч
-quick-play-narrow-by = Звузити за
 quick-play-search-placeholder = Пошук у медіатеці
 quick-play-subtitle = Підпис
     .description = Показувати виконавця й альбом під кожним результатом
+quick-play-syntax-absent = Рядки взагалі без значення
+    .example = -year
+quick-play-syntax-exclude = Усе, крім збігів
+    .example = -genre:rock
+quick-play-syntax-field = Закріпити одне поле, значення з пробілами в лапках
+    .example = artist:"Daft Punk"
+quick-play-syntax-free = Збігається з назвою, виконавцем, виконавцем альбому, альбомом або жанром
+    .example = daft punk
+quick-play-syntax-numeric = Порівняння числа; plays:0 і added:<90d працюють так само
+    .example = rating:>=4
+quick-play-syntax-title = Синтаксис пошуку
+quick-play-syntax-year = Це цифри, тож префікс бере ціле десятиліття
+    .example = year:199
 quick-play-tag-album = Альбом
 quick-play-tag-artist = Виконавець
 
@@ -2202,6 +2493,39 @@ shader-panel-run-shader = Запустити шейдер
     .description = Вимкнено лишає джерело, закладку й прив'язки на місці й нічого не малює
 shader-panel-section-routes = Маршрути
 
+## Редактор шейдерів
+
+shader-edit-here = Редагувати
+shader-editor-window-title = rox - Редактор шейдерів
+shader-editor-target-screen = Шейдер екрана
+shader-editor-target-backdrop = Шейдер тла
+shader-editor-origin-pool = Шейдер робочого простору: застосування доходить до кожної поверхні, що його використовує
+shader-editor-origin-pool-file = Шейдер робочого простору, робоча копія в { $path }
+shader-editor-origin-file = Прив'язаний до { $path }, при застосуванні файл теж записується
+shader-editor-origin-inline = Власний код цієї поверхні
+shader-editor-apply = Застосувати
+shader-editor-revert = Відкотити
+shader-editor-close = Закрити
+shader-editor-hint-press = Натисніть
+shader-editor-hint-apply = щоб застосувати
+shader-editor-status-unchecked = Поки нічого перевіряти
+shader-editor-status-ok = Компілюється
+shader-editor-status-error = Цей шейдер не скомпілювався:
+shader-editor-section-uniforms = Uniform-змінні
+shader-editor-section-textures = Текстури
+shader-editor-section-slots = Слоти
+shader-editor-section-signals = Сигнали
+shader-editor-slot-unnamed = Слот { $n }
+shader-editor-signals-empty = У пулі ще немає сигналів. Додайте їх у вікні «Сигнали», і вони з'являться тут із живими індикаторами.
+shader-editor-uniform-time = Секунди роботи шейдера, завмирають разом із потоком
+shader-editor-uniform-delta = Секунди з його минулого кадру, 0 на першому
+shader-editor-uniform-resolution = Поверхня в пікселях пристрою
+shader-editor-uniform-mouse = xy курсор у пікселях пристрою, z і w кнопки
+shader-editor-uniform-meta-0 = x гучність, y позиція в треку, z відтворення, w довжина треку в секундах
+shader-editor-uniform-meta-1 = x яскравість сторінки, y світла тема, z присутність курсора, w форма вмісту
+shader-editor-texture-screen = Те, що під поверхнею в цьому кадрі
+shader-editor-texture-prev = Минулий кадр цієї поверхні, для шлейфів
+
 ## Genre grid panel
 genre-grid-clear-picked = Очистити вибрані жанри
 genre-grid-desaturate = Знебарвлювати під час відтворення
@@ -2283,6 +2607,7 @@ wall-tile-size = Розмір плитки
     .description = Найдовший бік плиток; стовпці ділять ширину панелі порівну
 
 ## Metadata panel
+metadata-copy-field = Копіювати { $field }
 metadata-cover-background = Обкладинка на тлі
     .description = Обкладинка треку за полями
 metadata-display = Показ
@@ -2290,18 +2615,28 @@ metadata-display = Показ
 metadata-display-sheet = Аркуш
 metadata-display-table = Таблиця
 metadata-edit-save = Зберегти
+metadata-field-album-artist-sort = Сортування виконавця альбому
+metadata-field-album-sort = Сортування альбому
+metadata-field-artist-sort = Сортування виконавця
 metadata-field-bit-depth = Глибина біт
 metadata-field-bitrate = Бітрейт
+metadata-field-bpm-measured = { $bpm } (виміряно rox)
 metadata-field-codec = Кодек
 metadata-field-comment = Коментар
 metadata-field-disc = Диск
 metadata-field-file = Файл
+metadata-field-gain-album = Підсилення альбому
+metadata-field-gain-track = Підсилення треку
 metadata-field-sample-rate = Частота дискретизації
+metadata-field-title-sort = Сортування назви
 metadata-field-track = Трек
 metadata-fields = Поля
     .description = Які поля перелічує аркуш; поле, якого в треку немає, лишається прихованим
 metadata-find-online = Знайти метадані онлайн...
 metadata-no-library = Немає медіатеки
+metadata-romanize = Романізувати
+metadata-romanize-needs-dictionary = Для назви з кандзі потрібен японський словник. Візьміть його в Налаштування > Медіатека.
+metadata-romanize-sort-names = Романізувати імена для сортування
 metadata-row-borders-description = Волосяна лінія під кожним рядком таблиці
 metadata-source = Джерело
     .description = Стежити за тим, що грає чи вибрано, або читати медіатеку загалом
@@ -2541,6 +2876,9 @@ output-start-track-hint = Запустіть трек, щоб побачити �
 output-title = Вихід
 
 ## Track columns
+columns-album-artist-sort = Сортування виконавця альбому
+columns-album-sort = Сортування альбому
+columns-artist-sort = Сортування виконавця
 columns-bits = Біти
 columns-bpm = BPM
 columns-codec = Кодек
@@ -2553,6 +2891,7 @@ columns-name = Назва
 columns-number = Номер
 columns-scanned = Скановано
 columns-similar = Схожість
+columns-title-sort = Сортування назви
 
 ## Filter panel
 filter-add-column = Додати стовпець
@@ -2561,6 +2900,7 @@ filter-all = Усі
 filter-clear-filters = Очистити фільтри
 filter-clear-selection = Зняти вибір
 filter-empty = Виберіть поле, щоб почати фільтрувати
+filter-over-cap = Ще { $count }, уточніть пошуком
 filter-remove-column = Прибрати стовпець
 
 ## Search panel
@@ -2884,6 +3224,7 @@ settings-mlmodels-on-disk = , { $size } на диску
 settings-mlmodels-to-download = , { $size } до завантаження
 model-summary-dsp-timbre-1 = Вбудована, без завантаження. Зведення енергії по логарифмічних смугах, спектральної форми й частоти атак кожного треку. Грубо порівняно з навченою мережею, але їй нічого не треба і вона працює всюди
 model-summary-panns-cnn10 = Згорткова мережа, навчена на AudioSet розпізнавати, що це за звук. Її опис треку з 512 значень набагато багатший за вбудований ескіз, ціною завантаження на 24 МБ і повільнішого проходу аналізу
+dictionary-summary-lindera-ipadic = Японський словник, на якому тримаються читання кандзі. Без нього кана й хангиль усе одно романізуються, а китайська усе одно читається піньїнем, але назва в кандзі пропускається
 
 ## Shipped workspaces
 workspace-shipped-default = (Типовий)

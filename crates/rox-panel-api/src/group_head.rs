@@ -206,9 +206,16 @@ pub fn stock_meta_line() -> Vec<HeadPiece> {
 pub struct GroupHead {
     /// The album artist, or the field a non-album grouping keys on.
     pub name: SharedString,
+    /// The name's sort name, drawn after it as a reading when the switch
+    /// is on and the name needs one. Empty for a caller that has none, and
+    /// for the groupings (year, genre) whose field has no sort name.
+    pub name_reading: SharedString,
     /// The album, shown on the meta line (expanded) or beside the name
     /// (compact). Empty when the grouping is not by album.
     pub album: SharedString,
+    /// The album's sort name, the reading beside it. Empty like
+    /// [`GroupHead::name_reading`] when there's nothing to read.
+    pub album_reading: SharedString,
     /// The year on the name line; 0 hides it.
     pub year: u16,
     pub genre: SharedString,
@@ -578,6 +585,7 @@ pub fn line_content(
     let has_tile = expanded && head.tiled && look.show_art;
     let indent = look.art_margin + look.tile_side + tokens::SPACE_SM;
     let album_here = !head.album.is_empty() && pieces.contains(&HeadPiece::Album);
+    let readings = rox_core::settings::show_readings();
     let mut row = div()
         .absolute()
         .inset_0()
@@ -628,7 +636,11 @@ pub fn line_content(
                                     d.flex_none()
                                 }
                             })
-                            .child(head.name.clone()),
+                            .child(crate::panel::named(
+                                &head.name,
+                                &head.name_reading,
+                                readings,
+                            )),
                     );
                 }
             }
@@ -640,7 +652,11 @@ pub fn line_content(
                             .min_w_0()
                             .truncate()
                             .text_color(palette::text_secondary())
-                            .child(head.album.clone()),
+                            .child(crate::panel::named(
+                                &head.album,
+                                &head.album_reading,
+                                readings,
+                            )),
                     );
                 }
             }

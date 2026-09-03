@@ -11,7 +11,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::projection::{FilterSet, Projection, SortKey};
+
+/// How many rows one core takes at a time in the whole-view passes. The
+/// work per row is an array index and a push, so the chunk has to be big
+/// or the split dominates it; at this size a library under a hundred
+/// thousand tracks stays on one thread and a ten-million-row pass spreads
+/// over every core.
+const PAR_CHUNK: usize = 64 * 1024;
 
 /// One display row of a track list: a track from the projection, or a line
 /// of the group header opening the artist/album run that follows it.
@@ -117,9 +126,16 @@ pub fn view_for(
     } else {
         Arc::new(projection.search(spec.query))
     };
+    // Both the mask intersection and the flat collect below walk every row
+    // of the base, which is the whole library on an unqueried view, so they
+    // split across cores in chunks the way the projection's own passes do.
+    // Rayon keeps a collect in order, so the rows come out exactly as the
+    // serial pass left them. `with_min_len` keeps a small view on one
+    // thread, where the split would cost more than the pass.
     let base = match projection.filter_mask(spec.filter) {
         Some(mask) => Arc::new(
-            base.iter()
+            base.par_iter()
+                .with_min_len(PAR_CHUNK)
                 .copied()
                 .filter(|&row| mask[row as usize])
                 .collect(),
@@ -172,7 +188,13 @@ pub fn view_for(
                     (Arc::new(rows), groups)
                 }
                 _ => (
-                    Arc::new(sorted.into_iter().map(Row::Track).collect()),
+                    Arc::new(
+                        sorted
+                            .into_par_iter()
+                            .with_min_len(PAR_CHUNK)
+                            .map(Row::Track)
+                            .collect(),
+                    ),
                     Vec::new(),
                 ),
             }
@@ -191,7 +213,13 @@ pub fn view_for(
                 (Arc::new(rows), groups)
             }
             _ => (
-                Arc::new(base.iter().copied().map(Row::Track).collect()),
+                Arc::new(
+                    base.par_iter()
+                        .with_min_len(PAR_CHUNK)
+                        .copied()
+                        .map(Row::Track)
+                        .collect(),
+                ),
                 Vec::new(),
             ),
         },
@@ -312,6 +340,10 @@ mod tests {
         bit_depth: u8,
     ) -> TrackRow {
         TrackRow {
+            title_sort: String::new(),
+            artist_sort: String::new(),
+            album_artist_sort: String::new(),
+            album_sort: String::new(),
             sub: 0,
             cue: None,
             path: path.into(),

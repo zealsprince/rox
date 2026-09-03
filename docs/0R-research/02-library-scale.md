@@ -112,3 +112,25 @@ swap in without the UI noticing.
   to cost something.
 - gpui rendering. Window resolution is microseconds, but nobody has scrolled a
   `uniform_list` bound to a 10M-row index vector yet.
+
+## Benchmarks
+
+The prototype crate that produced the table above is gone, so the harness that
+reproduces it lives in `rox-library` now: `examples/genlib.rs` writes a
+synthetic library at these cardinalities straight through `store::insert_batch`,
+`benches/scale.rs` measures the read path over it, and `examples/scanprobe.rs`
+prints the resident high water mark of the four structures `scanner::scan`
+builds before it reads a tag.
+
+```sh
+cargo run --release -p rox-library --example genlib -- --tracks 1000000 --out /tmp/rox-bench-1m.db
+ROX_BENCH_DB=/tmp/rox-bench-1m.db cargo bench -p rox-library --bench scale
+cargo run --release -p rox-library --example scanprobe -- --db /tmp/rox-bench-1m.db
+```
+
+The generator is deterministic from `--seed`, so a before and an after at the
+same track count run against the same rows. Row counts, interner
+cardinalities, projection heap and search hit counts print to stderr beside the
+timings, since criterion has no way to report a size. With `ROX_BENCH_DB` unset
+the bench registers nothing and says why, so a machine that has never generated
+a database still passes `cargo bench` and `cargo test`.

@@ -12,6 +12,7 @@ use std::path::Path;
 use lofty::file::{AudioFile, FileType};
 use lofty::flac::FlacFile;
 use lofty::id3::v2::{Frame, Id3v2Tag};
+use lofty::mp4::{AtomData, AtomIdent, Ilst, Mp4File};
 use lofty::mpeg::MpegFile;
 use lofty::ogg::VorbisComments;
 use lofty::probe::Probe;
@@ -132,6 +133,14 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
                 .cloned()?;
             from_vorbis(&tag)
         }
+        FileType::Mp4 => {
+            let mut source = std::fs::File::open(path).ok()?;
+            let tag = Mp4File::read_from(&mut source, opts)
+                .ok()?
+                .ilst()
+                .cloned()?;
+            from_ilst(&tag)
+        }
         _ => None,
     }
 }
@@ -187,6 +196,27 @@ pub fn from_vorbis(tag: &VorbisComments) -> Option<u8> {
     popm
 }
 
+/// The rating held by an already-parsed MP4 tag, the third carrier and the
+/// short one: the FMPS freeform atom, and nothing else. There's no
+/// popularimeter on this format. lofty maps `ItemKey::Popularimeter` to the
+/// `rate` atom, which no tagger fills with stars, and `rtng` is Apple's
+/// content advisory ("explicit"), so reading either as a rating would put
+/// one on a file whose owner never gave it one. An m4a tagged by something
+/// that writes stars alone therefore reads as unrated, which is the honest
+/// answer: the number isn't in the file.
+pub fn from_ilst(tag: &Ilst) -> Option<u8> {
+    tag.into_iter()
+        .filter(|atom| match atom.ident() {
+            AtomIdent::Freeform { name, .. } => name.eq_ignore_ascii_case(FMPS_KEY),
+            AtomIdent::Fourcc(_) => false,
+        })
+        .flat_map(|atom| atom.data())
+        .find_map(|data| match data {
+            AtomData::UTF8(text) | AtomData::UTF16(text) => parse_fmps(text),
+            _ => None,
+        })
+}
+
 /// Probe a path's format and read its rating, the reindex-free entry.
 pub fn read_path(path: &Path) -> Option<u8> {
     let kind = Probe::open(path)
@@ -212,6 +242,40 @@ mod tests {
         assert_eq!(fmps(75), "0.75");
         assert_eq!(parse_fmps("0.75"), Some(75));
         assert_eq!(parse_fmps("2.0"), None);
+    }
+
+    /// The MP4 read, off the atom rather than off a key. Taggers disagree
+    /// about which mean an FMPS rating belongs under, so the name is the
+    /// whole match; a file carrying no such atom reads as unrated rather
+    /// than falling back to something that isn't a rating.
+    #[test]
+    fn an_m4a_rating_comes_off_any_freeform_fmps_atom() {
+        use lofty::config::WriteOptions;
+        use lofty::mp4::Atom;
+        use lofty::prelude::TagExt;
+        use std::borrow::Cow;
+
+        let dir = crate::writer::scratch("rating-m4a");
+        let path = crate::writer::m4a_file(&dir, "track.m4a");
+        assert_eq!(read_path(&path), None);
+
+        let mut tag = Ilst::default();
+        tag.insert(Atom::new(
+            AtomIdent::Freeform {
+                mean: Cow::Borrowed("org.example.tagger"),
+                name: Cow::Borrowed(FMPS_KEY),
+            },
+            AtomData::UTF8("0.75".into()),
+        ));
+        // The content advisory sits right beside it and is not a rating,
+        // however much `rtng` looks like one.
+        tag.insert(Atom::new(
+            AtomIdent::Fourcc(*b"rtng"),
+            AtomData::SignedInteger(4),
+        ));
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        assert_eq!(read_path(&path), Some(75));
     }
 
     #[test]

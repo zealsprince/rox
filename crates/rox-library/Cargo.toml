@@ -11,6 +11,13 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 rayon = "1.10"
 # SIMD substring search for the title arena scan.
 memchr = "2.7"
+# Accent folding for the search key (see src/fold.rs): NFD decomposition to
+# split an accent off its letter, and the general-category table to know
+# which chars are the marks to drop. Both are already in the lockfile
+# through rox-i18n at the same pinned 2.3.0, so this adds a dependency edge
+# for a leaf crate but no crate to the build.
+icu_normalizer = "2.3.0"
+icu_properties = "2.3.0"
 # Tag reads for the scanner per ADR 4: lofty is the single metadata layer.
 lofty = "0.24"
 # Thumbnail decode, downscale, and re-encode for the artwork service.
@@ -35,3 +42,20 @@ serde_json = "1"
 # candle, so neither is a new dependency for the build.
 base64 = "0.22"
 half = "2"
+
+[dev-dependencies]
+# The scale benches under benches/. Criterion because the numbers it takes
+# (load, search, filter, sort) run from under a microsecond to a second on
+# the same library, and eyeballing a loop counter across five orders of
+# magnitude is how you end up quoting warm-cache noise. Default features off:
+# the HTML report pulls in plotters and rayon for charts nobody reads out of
+# a terminal, and the harness alone is what these benches use.
+criterion = { version = "0.8", default-features = false, features = [
+    "cargo_bench_support",
+] }
+
+# Criterion brings its own argument parsing, so the stock libtest harness has
+# to stay out of the way.
+[[bench]]
+name = "scale"
+harness = false

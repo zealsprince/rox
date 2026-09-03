@@ -754,11 +754,10 @@ impl ArtistGridPanel {
         if let Some(projection) = self.state.library.read(cx).projection() {
             let (_, table) = self.config.group.source(projection);
             for (ix, cell) in self.cells.iter().enumerate() {
-                let name = table
-                    .lower
-                    .get(cell.sym as usize)
-                    .map(String::as_str)
-                    .unwrap_or("");
+                // The same key the ordering runs on, so the rail stays
+                // monotonic by construction: a sort-tagged 米津玄師 sorts
+                // under Y and the rail has to say Y too.
+                let name = table.sort_key(cell.sym as usize);
                 let letter = panel::letter_initial(name);
                 if self.letters.last().map(|(l, _)| l.as_ref()) != Some(letter.as_str()) {
                     self.letters.push((SharedString::from(letter), ix));
@@ -1566,11 +1565,31 @@ impl ArtistGridPanel {
 
     /// A tile's name and tally: the artist over what the current view
     /// holds of them.
-    fn cell_labels(&self, ix: usize, cx: &App) -> (SharedString, SharedString) {
+    fn cell_labels(&self, ix: usize, cx: &App) -> (SharedString, SharedString, SharedString) {
         let Some(cell) = self.cells.get(ix) else {
             return Default::default();
         };
         let name = self.cell_name(ix, cx);
+        // The reading off the same symbol the name came from. An untagged
+        // shelf gets none: the word below is the app's, not the library's,
+        // and a sort name would be reading a name nobody wrote.
+        let reading = if name.is_empty() {
+            String::new()
+        } else {
+            self.state
+                .library
+                .read(cx)
+                .projection()
+                .map(|projection| {
+                    self.config
+                        .group
+                        .source(projection)
+                        .1
+                        .sort_name(cell.sym as usize)
+                        .to_string()
+                })
+                .unwrap_or_default()
+        };
         // An untagged shelf reads as Unknown, the filter panel's wording,
         // while the pick it writes stays the real empty string.
         let name = if name.is_empty() {
@@ -1588,13 +1607,18 @@ impl ArtistGridPanel {
         } else {
             String::new()
         };
-        (SharedString::from(name), SharedString::from(tally))
+        (
+            SharedString::from(name),
+            SharedString::from(reading),
+            SharedString::from(tally),
+        )
     }
 
     /// The hover overlay: name over tally on a translucent strip along the
     /// tile's bottom edge.
     fn label(&self, ix: usize, cx: &App) -> Div {
-        let (name, tally) = self.cell_labels(ix, cx);
+        let (name, reading, tally) = self.cell_labels(ix, cx);
+        let readings = crate::settings::show_readings();
         div()
             .absolute()
             .left_0()
@@ -1609,7 +1633,7 @@ impl ArtistGridPanel {
                 div()
                     .truncate()
                     .text_color(palette::text_bright())
-                    .child(name),
+                    .child(panel::named(&name, &reading, readings)),
             )
             .when(!tally.is_empty(), |d| {
                 d.child(
@@ -1628,7 +1652,8 @@ impl ArtistGridPanel {
     /// a picked artist's name takes the accent color so the wall still reads
     /// once the outline is off screen.
     fn caption(&self, ix: usize, side: Pixels, picked: bool, cx: &App) -> Div {
-        let (name, tally) = self.cell_labels(ix, cx);
+        let (name, reading, tally) = self.cell_labels(ix, cx);
+        let readings = crate::settings::show_readings();
         let base = div()
             .w(side)
             .h(px(TILE_LABEL_H))
@@ -1650,7 +1675,7 @@ impl ArtistGridPanel {
                 } else {
                     palette::text_bright()
                 })
-                .child(name),
+                .child(panel::named(&name, &reading, readings)),
         )
         .when(!tally.is_empty(), |d| {
             d.child(

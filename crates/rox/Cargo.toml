@@ -67,6 +67,10 @@ rox-panel-kit = { path = "../rox-panel-kit" }
 # crate::panels so every path in the app reads the way it always did.
 rox-panels = { path = "../rox-panels" }
 rox-playback = { path = "../rox-playback" }
+# Latin spellings for the titles, albums and artists that have none, and
+# the optional Japanese dictionary behind the kanji half of that. The
+# romanization pass is crate::romanize_job.
+rox-romanize = { path = "../rox-romanize" }
 # The headless service layer the shared state is made of: the catalog, the
 # player, the scrobbler, the caches, the selection, the backdrop, and the
 # presence, re-exported at the module paths the app always read them at.

@@ -421,6 +421,11 @@ impl FolderTreePanel {
                 // matches in Hide. Non-matches that stay get marked faint.
                 let mut listed: Vec<Vec<u32>> = vec![Vec::new(); nsym];
                 for row in 0..len {
+                    // Tombstoned rows are still columns; they count for
+                    // no folder until the next rebuild drops them.
+                    if projection.is_dead(row as u32) {
+                        continue;
+                    }
                     let sym = projection.folder[row] as usize;
                     total_sym[sym] += 1;
                     let hit = matches(row);

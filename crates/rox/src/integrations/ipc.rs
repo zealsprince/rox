@@ -292,9 +292,10 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
 /// The pass a tasks method names, or a sentence listing what it takes.
 fn pass_param(params: &Value) -> Result<&str, RpcError> {
     match params.get("pass").and_then(Value::as_str) {
-        Some(pass @ ("acoustic" | "replaygain" | "tempo")) => Ok(pass),
+        Some(pass @ ("acoustic" | "replaygain" | "tempo" | "sortnames" | "romanize")) => Ok(pass),
         _ => Err(RpcError::invalid_params(
-            "takes {\"pass\": \"acoustic\" | \"replaygain\" | \"tempo\"}",
+            "takes {\"pass\": \"acoustic\" | \"replaygain\" | \"tempo\" | \"sortnames\" \
+             | \"romanize\"}",
         )),
     }
 }
@@ -302,8 +303,8 @@ fn pass_param(params: &Value) -> Result<&str, RpcError> {
 /// One pass's row: whether it could start, what it would work through, and
 /// live progress while it runs. `progress` arrives pre-serialized because
 /// the three passes each have their own Progress type.
-fn pass_json(enabled: bool, missing: u64, progress: Option<Value>) -> Value {
-    match progress {
+fn pass_json(enabled: bool, missing: u64, extra: Value, progress: Option<Value>) -> Value {
+    let mut out = match progress {
         Some(Value::Object(mut fields)) => {
             fields.insert("running".into(), json!(true));
             fields.insert("enabled".into(), json!(enabled));
@@ -311,20 +312,34 @@ fn pass_json(enabled: bool, missing: u64, progress: Option<Value>) -> Value {
             Value::Object(fields)
         }
         _ => json!({ "running": false, "enabled": enabled, "missing": missing }),
+    };
+    // Whatever the pass has that the other two don't. It merges rather than
+    // nesting so a reader asking for one number gets it at the same depth
+    // as `missing`, which is the only reason it's worth carrying.
+    if let (Some(out), Value::Object(extra)) = (out.as_object_mut(), extra) {
+        out.extend(extra);
     }
+    out
 }
 
-/// The three long passes the tasks window lists, one row each. The library
+/// The four long passes the tasks window lists, one row each. The library
 /// scan isn't in here: it has its own surface in `library.rescan` and the
 /// menubar, the same split the window's badge makes.
 fn tasks_status(state: &AppState, cx: &App) -> Value {
     let settings = rox_core::settings::Settings::load();
     let source = rox_services::acoustic::acoustic_source();
     let library = state.library.read(cx);
+    let bpm = library.bpm_breakdown();
+    let sort = crate::sortnames_job::coverage(library.projection().map(|p| p.as_ref()));
+    let romanize = crate::romanize_job::coverage(
+        library.projection().map(|p| p.as_ref()),
+        &crate::romanize_job::stale(&library.db_path()),
+    );
     json!({
         "acoustic": pass_json(
             settings.acoustic_analysis,
             library.acoustic_coverage(source.id()).missing() as u64,
+            json!({}),
             crate::embeddings::progress(cx).map(|p| json!({
                 "done": p.done(), "total": p.total(), "failed": p.failed(),
                 "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
@@ -333,6 +348,7 @@ fn tasks_status(state: &AppState, cx: &App) -> Value {
         "replaygain": pass_json(
             true,
             library.replaygain_breakdown().missing,
+            json!({}),
             crate::replaygain_job::progress(cx).map(|p| json!({
                 "done": p.done(), "total": p.total(), "failed": p.failed(),
                 "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
@@ -340,8 +356,48 @@ fn tasks_status(state: &AppState, cx: &App) -> Value {
         ),
         "tempo": pass_json(
             settings.tempo_analysis,
-            library.bpm_breakdown().missing,
+            bpm.missing,
+            // Tracks the pass listened to and heard no beat in. They're not
+            // missing (nothing picks them up again on its own) and they're
+            // not measured either, so a client counting the library's
+            // untimed tracks off `missing` alone would be short by these.
+            json!({ "refused": bpm.refused }),
             crate::tempo_job::progress(cx).map(|p| json!({
+                "done": p.done(), "total": p.total(), "failed": p.failed(),
+                "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
+            })),
+        ),
+        "sortnames": pass_json(
+            true,
+            sort.missing,
+            // Counted in artists rather than tracks, and split by what the
+            // default scope reaches, since a client pricing this pass
+            // needs to know which of the two numbers the button uses.
+            json!({ "unit": "artists", "non_latin": sort.non_latin, "total": sort.total }),
+            crate::sortnames_job::progress(cx).map(|p| json!({
+                "done": p.done(), "total": p.total(), "failed": p.failed(),
+                "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
+            })),
+        ),
+        "romanize": pass_json(
+            true,
+            romanize.missing,
+            // Counted in values (titles, albums, artists) rather than
+            // tracks. `kanji` is how many of those need the Japanese
+            // dictionary; with it uninstalled they're what the pass will
+            // skip, which is `skipped` here, and the rest still runs.
+            json!({
+                "unit": "values",
+                "total": romanize.total,
+                "kanji": romanize.kanji,
+                "dictionary_installed": crate::romanize_job::dictionary_installed(),
+                "skipped": if crate::romanize_job::dictionary_installed() {
+                    0
+                } else {
+                    romanize.kanji
+                },
+            }),
+            crate::romanize_job::progress(cx).map(|p| json!({
                 "done": p.done(), "total": p.total(), "failed": p.failed(),
                 "current": p.current(), "stopping": p.stopping(), "eta_secs": p.eta_secs(),
             })),
@@ -355,6 +411,11 @@ fn tasks_status(state: &AppState, cx: &App) -> Value {
 /// count, the estimate where this machine has a pace, and the save mode,
 /// which matters because tags mode rewrites audio files. The silent no-op
 /// guards inside the passes become sentences here, same as the rescan.
+///
+/// The tempo pass takes an optional `retry_refused` alongside the pass
+/// name, the dialog's Retry Refused button: with it the run covers the
+/// tracks an earlier pass heard and couldn't call, instead of the ones
+/// nothing has looked at.
 fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let pass = pass_param(params)?;
     let settings = rox_core::settings::Settings::load();
@@ -396,6 +457,52 @@ fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, 
                 detail,
             )
         }
+        "sortnames" => {
+            if crate::sortnames_job::progress(cx).is_some() {
+                return Err(RpcError::app("the sort-name pass is already running"));
+            }
+            // The narrow scope, the same one the prompt opens on: the
+            // wide one is an hour and a half and nothing over a socket
+            // should commit to that by default.
+            let scope = crate::sortnames_job::Scope::NonLatin;
+            let missing =
+                crate::sortnames_job::coverage(library.read(cx).projection().map(|p| p.as_ref()))
+                    .non_latin;
+            crate::sortnames_job::start(library, scope, cx);
+            (
+                missing,
+                1,
+                crate::sortnames_job::PACE,
+                json!({ "scope": "non-latin", "unit": "artists" }),
+            )
+        }
+        "romanize" => {
+            if crate::romanize_job::progress(cx).is_some() {
+                return Err(RpcError::app("the romanization pass is already running"));
+            }
+            let coverage = {
+                let library = library.read(cx);
+                crate::romanize_job::coverage(
+                    library.projection().map(|p| p.as_ref()),
+                    &crate::romanize_job::stale(&library.db_path()),
+                )
+            };
+            // A missing dictionary costs the kanji values and nothing
+            // else, so the pass starts and the reply says what it will
+            // leave for a later run.
+            let skipped = if crate::romanize_job::dictionary_installed() {
+                0
+            } else {
+                coverage.kanji
+            };
+            crate::romanize_job::start(library, cx);
+            (
+                coverage.missing,
+                1,
+                settings.session.romanize_pace,
+                json!({ "unit": "values", "kanji": coverage.kanji, "skipped": skipped }),
+            )
+        }
         _ => {
             if crate::tempo_job::progress(cx).is_some() {
                 return Err(RpcError::app("the tempo pass is already running"));
@@ -406,13 +513,25 @@ fn tasks_start(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, 
                      Run\" on Settings > Library first",
                 ));
             }
-            let missing = library.read(cx).bpm_breakdown().missing;
-            crate::tempo_job::start(library, cx);
+            // Additive on the wire: a caller that says nothing gets the
+            // missing pile, the same run the start button gives it, and
+            // asking for the retry runs the refusals instead.
+            let retry_refused = params
+                .get("retry_refused")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let split = library.read(cx).bpm_breakdown();
+            let missing = if retry_refused {
+                split.refused
+            } else {
+                split.missing
+            };
+            crate::tempo_job::start(library, retry_refused, cx);
             (
                 missing,
                 settings.tempo_workers.max(1),
                 settings.session.tempo_pace,
-                json!({}),
+                json!({ "retry_refused": retry_refused }),
             )
         }
     };
@@ -435,6 +554,8 @@ fn tasks_stop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let running = match pass {
         "acoustic" => crate::embeddings::progress(cx).is_some(),
         "replaygain" => crate::replaygain_job::progress(cx).is_some(),
+        "sortnames" => crate::sortnames_job::progress(cx).is_some(),
+        "romanize" => crate::romanize_job::progress(cx).is_some(),
         _ => crate::tempo_job::progress(cx).is_some(),
     };
     if !running {
@@ -443,6 +564,8 @@ fn tasks_stop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     match pass {
         "acoustic" => crate::embeddings::stop(cx),
         "replaygain" => crate::replaygain_job::stop(cx),
+        "sortnames" => crate::sortnames_job::stop(cx),
+        "romanize" => crate::romanize_job::stop(cx),
         _ => crate::tempo_job::stop(cx),
     }
     Ok(json!({ "stopping": true }))
@@ -597,7 +720,7 @@ fn queue_add(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, Rp
             other => {
                 return Err(RpcError::invalid_params(format!(
                     "unknown mode {other:?}: end, next, or now"
-                )))
+                )));
             }
         }
         Ok(())

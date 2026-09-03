@@ -39,7 +39,8 @@ commands:
   now                        the playing track's full tags
   rescan                     scan the library folders again
   tasks                      the long analysis passes and their progress
-  task-start <pass>          start acoustic, replaygain, or tempo
+  task-start <pass>          start a pass: acoustic, replaygain, tempo,
+                             sortnames, romanize
   task-stop <pass>           stop a running pass at the next file
   watch                      follow playback, track, and queue events
   art <path> <out-file>      save a track's cover art
@@ -217,13 +218,13 @@ fn run(
         "task-start" => {
             let pass = args
                 .first()
-                .ok_or("task-start takes acoustic, replaygain, or tempo")?;
+                .ok_or("task-start takes acoustic, replaygain, tempo, sortnames, or romanize")?;
             ("tasks.start".into(), json!({ "pass": pass }))
         }
         "task-stop" => {
             let pass = args
                 .first()
-                .ok_or("task-stop takes acoustic, replaygain, or tempo")?;
+                .ok_or("task-stop takes acoustic, replaygain, tempo, sortnames, or romanize")?;
             ("tasks.stop".into(), json!({ "pass": pass }))
         }
         "windows" => ("debug.windows".into(), json!({})),
@@ -578,9 +579,13 @@ fn print_now(track: &Value) {
 /// One line per pass: progress while it runs, otherwise what a start would
 /// take on and whether its switch is even on.
 fn print_tasks(result: &Value) {
-    for pass in ["acoustic", "replaygain", "tempo"] {
+    for pass in ["acoustic", "replaygain", "tempo", "sortnames", "romanize"] {
         let task = &result[pass];
         let missing = task["missing"].as_u64().unwrap_or_default();
+        // The three analysis passes count tracks; the fill counts artists
+        // and romanize counts values, and saying "tracks to do" over
+        // either would be wrong by a factor of ten.
+        let unit = task["unit"].as_str().unwrap_or("tracks");
         if task["running"].as_bool().unwrap_or(false) {
             println!(
                 "{pass:>10}  {}/{}  eta {}{}",
@@ -594,9 +599,9 @@ fn print_tasks(result: &Value) {
                 },
             );
         } else if !task["enabled"].as_bool().unwrap_or(true) {
-            println!("{pass:>10}  switched off, {missing} tracks to do");
+            println!("{pass:>10}  switched off, {missing} {unit} to do");
         } else {
-            println!("{pass:>10}  idle, {missing} tracks to do");
+            println!("{pass:>10}  idle, {missing} {unit} to do");
         }
     }
 }

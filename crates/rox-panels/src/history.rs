@@ -7,7 +7,7 @@
 //! clicks queue from the row, the library panel's moves. Its own panel,
 //! never a mode of the library.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
@@ -270,6 +270,12 @@ pub struct HistoryPanel {
     /// The current view's tracks in query order, re-read when a listen is
     /// recorded or the catalog changes, cached between.
     tracks: Vec<TrackPlays>,
+    /// Each shown track's sort names by id, for the readings beside the
+    /// names. Filled beside the tracks rather than carried on
+    /// [`TrackPlays`], which comes out of the events table and has no
+    /// business knowing about the projection; a track the projection has
+    /// no row for is simply absent.
+    readings: HashMap<i64, rox_services::catalog::SortNames>,
     /// The search box, shared by every searching view; shown per config.
     search: Entity<SearchBox>,
     /// A pending box reset from a source toggle or a shared-query change,
@@ -382,6 +388,7 @@ impl HistoryPanel {
             state,
             config,
             tracks: Vec::new(),
+            readings: HashMap::new(),
             search,
             resync_box: false,
             selection_ids,
@@ -435,7 +442,7 @@ impl HistoryPanel {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let library = self.state.library.read(cx);
         self.tracks = match self.config.view {
-            HistoryView::Recent => library.recent_listens(0, ROWS_CAP),
+            HistoryView::Recent => library.recent_listens(0, i64::MAX, ROWS_CAP),
             HistoryView::Most => library.most_played(ROWS_CAP),
             HistoryView::Never => library.never_played(
                 self.config.never_sort.order(),
@@ -443,6 +450,14 @@ impl HistoryPanel {
                 ROWS_CAP,
             ),
         };
+        self.readings = self
+            .tracks
+            .iter()
+            .map(|t| (t.track_id, library.sort_names_for_id(t.track_id)))
+            .filter(|(_, sort)| {
+                !sort.title.is_empty() || !sort.artist.is_empty() || !sort.album.is_empty()
+            })
+            .collect();
         self.favourites = library.favourite_ids();
         self.selected.clear();
         self.anchor = None;
@@ -928,11 +943,15 @@ impl HistoryPanel {
             self.column_shown("cover"),
             cx,
         );
+        let sort = self.readings.get(&t.track_id);
         let cell = track_columns::Cell {
             pos: (ti + 1) as u32,
             title: &t.title,
             artist: &t.artist,
             album: &t.album,
+            title_reading: sort.map(|s| s.title.as_str()).unwrap_or(""),
+            artist_reading: sort.map(|s| s.artist.as_str()).unwrap_or(""),
+            album_reading: sort.map(|s| s.album.as_str()).unwrap_or(""),
             year: t.year,
             genre: &t.genre,
             duration_ms: t.duration_ms,

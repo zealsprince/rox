@@ -221,8 +221,10 @@ background task, so the UI receives projection and order together and paints onc
 
 ## Rescan and swap
 
-The projection is never patched in place; it's rebuilt from SQLite and swapped
-whole. That's the entire consistency mechanism between store and projection.
+The projection is rebuilt from SQLite and swapped whole on every scan, reload,
+removal, and prune. That's the consistency mechanism between store and projection;
+the watch patch below is the one path that changes a projection without a rebuild,
+and it exists only to reach the same state cheaper.
 
 ```
  folder walk + lofty tags           SQLite (WAL)                  projection (RAM)
@@ -248,6 +250,31 @@ Because the swap is whole, the projection cannot half-reflect a scan. Because up
 keep rowids, identity is preserved across the swap: a queue built against the old
 projection still resolves. The view re-derives on every search keystroke, an empty
 query shares the canonical order's `Arc` and a non-empty one allocates a fresh hit vector.
+
+## Watch patches
+
+A filesystem watch event or a reindex is the one place the projection changes
+without a rebuild. The sync collects the ids it touched while the store
+connection is open (a rename reads its ids before the move, a prune before the
+delete), reads those rows back through the same shard builder a full load uses,
+appends them to the live projection, and tombstones the rows they replace; a
+removal is a tombstone alone. The canonical order takes the new rows at their
+sorted position and drops the dead ones, and the id-to-row map is patched in
+place. Search, filter, sort, and every scan inside the projection skip
+tombstones, so a view never hands one out; code that walks a column by index
+checks `is_dead` itself, and `live_len` is the count a browse sees where `len`
+stays the physical row bound.
+
+Tombstones accumulate until the next full rebuild. The catalog stops patching
+and rebuilds instead once dead rows pass a tenth of the projection, or when a
+single event touches more than a few thousand rows, since the patch reads its
+rows one primary-key lookup at a time. Two things a patch doesn't reproduce
+until that rebuild: the display casing of a value that already had a symbol
+stays whatever the last build's vote chose, and a symbol whose rows have all
+died still sits in its table. Measured on the generated 1M-track store, a
+single-row upsert or remove costs about a tenth of a millisecond against a
+350 ms rebuild (see the benchmarks in
+[research 02](../0R-research/02-library-scale.md)).
 
 Playback resolution is the one projection-to-store hop: double-clicking a row queues
 it and up to 999 rows behind it in view order, mapping view rows to `db_id`s and

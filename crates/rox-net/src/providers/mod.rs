@@ -315,6 +315,12 @@ pub struct MetadataCandidate {
     pub artist: String,
     pub album: String,
     pub album_artist: String,
+    /// The Latin sort names for the two credited artists, empty when the
+    /// service has none. Only these two: nothing rox queries serves a
+    /// title or album sort, and a field nothing ever fills is a lie in the
+    /// compare table.
+    pub artist_sort: String,
+    pub album_artist_sort: String,
     pub year: String,
     pub track_no: String,
     pub disc_no: String,
@@ -553,6 +559,79 @@ pub fn normalize(s: &str) -> String {
     out
 }
 
+/// `normalize` with the accents taken off as well, for the places where two
+/// spellings of the same name have to compare equal rather than merely
+/// score well: a MusicBrainz artist row spelled "Beyoncé" against a tag
+/// spelled "Beyonce" is the same artist, and an exact-name gate that says
+/// otherwise writes nothing for half a library.
+///
+/// A table rather than a normalizer, because rox-net is a leaf crate with
+/// no ICU dependency and this only has to cover the Latin blocks a tag
+/// actually carries: Latin-1 Supplement and Latin Extended-A. Anything
+/// outside them (CJK, Cyrillic, Greek) has no marks to strip and comes
+/// through untouched, which is exactly right.
+pub fn normalize_folded(s: &str) -> String {
+    let normalized = normalize(s);
+    if normalized.is_ascii() {
+        return normalized;
+    }
+    let mut out = String::with_capacity(normalized.len());
+    for ch in normalized.chars() {
+        match unaccent(ch) {
+            Some(base) => out.push_str(base),
+            None => out.push(ch),
+        }
+    }
+    out
+}
+
+/// The unaccented letters a keyboard without the mark produces, for one
+/// character. None means there's nothing to strip. Only the lowercase half
+/// of each block matters in practice since [`normalize`] lowercases first,
+/// but the ranges cover both so the function stands on its own.
+fn unaccent(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{00C0}'..='\u{00C5}' | '\u{00E0}'..='\u{00E5}' => "a",
+        '\u{00C6}' | '\u{00E6}' => "ae",
+        '\u{00C7}' | '\u{00E7}' => "c",
+        '\u{00C8}'..='\u{00CB}' | '\u{00E8}'..='\u{00EB}' => "e",
+        '\u{00CC}'..='\u{00CF}' | '\u{00EC}'..='\u{00EF}' => "i",
+        '\u{00D0}' | '\u{00F0}' => "d",
+        '\u{00D1}' | '\u{00F1}' => "n",
+        '\u{00D2}'..='\u{00D6}' | '\u{00D8}' => "o",
+        '\u{00F2}'..='\u{00F6}' | '\u{00F8}' => "o",
+        '\u{00D9}'..='\u{00DC}' | '\u{00F9}'..='\u{00FC}' => "u",
+        '\u{00DD}' | '\u{00FD}' | '\u{00FF}' => "y",
+        '\u{00DE}' | '\u{00FE}' => "th",
+        // The sharp s carries no mark to strip, and a keyboard without it
+        // types two esses.
+        '\u{00DF}' => "ss",
+        '\u{0100}'..='\u{0105}' => "a",
+        '\u{0106}'..='\u{010D}' => "c",
+        '\u{010E}'..='\u{0111}' => "d",
+        '\u{0112}'..='\u{011B}' => "e",
+        '\u{011C}'..='\u{0123}' => "g",
+        '\u{0124}'..='\u{0127}' => "h",
+        '\u{0128}'..='\u{0131}' => "i",
+        '\u{0132}'..='\u{0133}' => "ij",
+        '\u{0134}'..='\u{0135}' => "j",
+        '\u{0136}'..='\u{0138}' => "k",
+        '\u{0139}'..='\u{0142}' => "l",
+        '\u{0143}'..='\u{014B}' => "n",
+        '\u{014C}'..='\u{0151}' => "o",
+        '\u{0152}'..='\u{0153}' => "oe",
+        '\u{0154}'..='\u{0159}' => "r",
+        '\u{015A}'..='\u{0161}' => "s",
+        '\u{0162}'..='\u{0167}' => "t",
+        '\u{0168}'..='\u{0173}' => "u",
+        '\u{0174}'..='\u{0175}' => "w",
+        '\u{0176}'..='\u{0178}' => "y",
+        '\u{0179}'..='\u{017E}' => "z",
+        '\u{017F}' => "s",
+        _ => return None,
+    })
+}
+
 /// A JSON string field trimmed to an owned String, empty when the value is
 /// absent or not a string. The literal "null" some services hand back for a
 /// missing field (theaudiodb does this) folds to empty too, so a caller
@@ -592,6 +671,22 @@ mod tests {
     /// The normalizer collapses every run of non-alphanumerics to one space
     /// and trims the ends, so leading, trailing, and repeated punctuation
     /// never leave stray spaces or empty words behind.
+    /// The accent fold on top of the normalize, for the comparisons that
+    /// have to come out equal rather than merely close.
+    #[test]
+    fn normalize_folded_takes_the_accents_off_too() {
+        assert_eq!(normalize_folded("Beyoncé!"), "beyonce");
+        assert_eq!(normalize_folded("Sigur Rós"), "sigur ros");
+        assert_eq!(normalize_folded("Motörhead"), "motorhead");
+        assert_eq!(normalize_folded("Mylène Farmer"), "mylene farmer");
+        assert_eq!(normalize_folded("Straße"), "strasse");
+        assert_eq!(normalize_folded("Antonín Dvořák"), "antonin dvorak");
+        // Nothing to strip: ASCII takes the fast path, and a script with
+        // no marks comes through as normalize left it.
+        assert_eq!(normalize_folded("Daft Punk"), "daft punk");
+        assert_eq!(normalize_folded("米津玄師"), "米津玄師");
+    }
+
     #[test]
     fn normalize_collapses_and_trims_separators() {
         assert_eq!(normalize("  Air - Talkie Walkie  "), "air talkie walkie");

@@ -660,6 +660,12 @@ mod tests {
         bpm(all[0], 140.0);
         bpm(all[1], 198.0);
         bpm(all[N - 1], 198.0);
+        // The four behind them run at the seed's tempo. Everything further
+        // out is unmeasured, which is its own mismatch under a seed that has
+        // one, so the band is these four and not the rest of the circle.
+        for id in [all[2], all[3], all[N - 2], all[N - 3]] {
+            bpm(id, 140.0);
+        }
 
         // A band of one batch: the two nearest by vector alone, which is
         // exactly the pair being marked down.

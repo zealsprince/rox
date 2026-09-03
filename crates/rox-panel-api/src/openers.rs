@@ -19,6 +19,7 @@ use rox_library::cue::TrackKey;
 use rox_services::backdrop::NowPlayingArt;
 use rox_services::catalog::Library;
 
+use crate::panel::shader::edit::ShaderEditTarget;
 use crate::panel::AppState;
 
 /// The app's windows, as plain function pointers. One field per call a
@@ -49,8 +50,12 @@ pub struct Openers {
     pub eq_window: fn(&mut App),
     /// The library stats page over a workspace's state.
     pub stats_window: fn(AppState, &mut App),
+    /// The library health page over a workspace's state.
+    pub health_window: fn(AppState, &mut App),
     /// The signals window, where the shared pool is tended.
     pub signals_window: fn(&mut App),
+    /// The shader editor over one surface's source.
+    pub shader_editor: fn(AppState, ShaderEditTarget, &mut App),
     /// The failed-with-a-reason placeholder a panel shows in place of its
     /// content, with the button into the console.
     pub console_notice: fn(SharedString) -> Div,
@@ -179,6 +184,13 @@ pub fn stats_window(state: AppState, cx: &mut App) {
     }
 }
 
+/// Open the library health page.
+pub fn health_window(state: AppState, cx: &mut App) {
+    if let Some(openers) = openers("the health window") {
+        (openers.health_window)(state, cx);
+    }
+}
+
 /// Open the signals window.
 pub fn signals_window(cx: &mut App) {
     if let Some(openers) = openers("the signals window") {
@@ -212,6 +224,13 @@ pub fn lyrics_edit(state: AppState, path: PathBuf, cx: &mut App) {
 pub fn lyrics_matcher(state: AppState, path: PathBuf, cx: &mut App) {
     if let Some(openers) = openers("the lyrics search") {
         (openers.lyrics_matcher)(state, path, cx);
+    }
+}
+
+/// Open the shader editor over `target`, or focus the one already on it.
+pub fn shader_editor(state: AppState, target: ShaderEditTarget, cx: &mut App) {
+    if let Some(openers) = openers("the shader editor") {
+        (openers.shader_editor)(state, target, cx);
     }
 }
 

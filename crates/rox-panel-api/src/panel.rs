@@ -6,14 +6,17 @@
 //! cross-window messaging needed.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
     anchored, deferred, div, linear_color_stop, linear_gradient, prelude::*, px, relative, size,
-    AbsoluteLength, AnyElement, App, Bounds, Context, DismissEvent, Div, Element, Entity,
-    FocusHandle, Focusable as _, GlobalElementId, InspectorElementId, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Pixels, Point, Rgba, SharedString, Size, Stateful,
-    Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
+    AbsoluteLength, AnyElement, App, Bounds, ClipboardItem, Context, DismissEvent, Div, Element,
+    Entity, FocusHandle, Focusable as _, GlobalElementId, HighlightStyle, InspectorElementId,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, Rgba, SharedString, Size,
+    Stateful, StyledText, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowHandle, WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Root};
@@ -454,6 +457,127 @@ pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMe
     )
 }
 
+/// What the Copy submenu can put on the clipboard for one track: the file
+/// and the three tags a person types elsewhere. Resolved at click time by
+/// the surface that opened the menu, so a copy after a rescan reads the
+/// file where it is now.
+pub struct CopyText {
+    pub path: PathBuf,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+}
+
+impl CopyText {
+    /// A track's copy fields from its key and the tags the library holds
+    /// for it; a file the library doesn't know still copies its path.
+    pub fn from_key(key: &rox_library::cue::TrackKey, library: &Library) -> Self {
+        let meta = library.meta_for_key(key);
+        CopyText {
+            path: key.path.clone(),
+            title: meta.as_ref().map(|m| m.title.clone()).unwrap_or_default(),
+            artist: meta.as_ref().map(|m| m.artist.clone()).unwrap_or_default(),
+            album: meta.as_ref().map(|m| m.album.clone()).unwrap_or_default(),
+        }
+    }
+}
+
+/// Names the tracks a Copy entry acts on, run at click time.
+pub type CopyResolver = Rc<dyn Fn(&App) -> Vec<CopyText>>;
+
+/// The Copy submenu shared by every track surface: the title, artist,
+/// album, filename, or full path onto the clipboard as text. `resolve`
+/// runs when an entry is clicked and names the tracks the menu was opened
+/// over; a multi-row selection copies one line per track, in the order
+/// given, with empty fields dropped. Nothing is written when no track has
+/// the field, so an untagged selection doesn't blank the clipboard.
+///
+/// The clipboard only takes text here: gpui's clipboard item carries
+/// strings and images, so there's no way to hand a file manager the file
+/// itself without a platform patch. The path is the nearest thing.
+pub fn copy_submenu(
+    menu: PopupMenu,
+    window: &mut Window,
+    cx: &mut App,
+    resolve: CopyResolver,
+) -> PopupMenu {
+    type Pick = fn(&CopyText) -> String;
+    let entries: [(SharedString, &str, Pick); 5] = [
+        (rox_i18n::t!("panel-copy-title"), icons::FILE_TEXT, |t| {
+            t.title.clone()
+        }),
+        (rox_i18n::t!("panel-copy-artist"), icons::MIC, |t| {
+            t.artist.clone()
+        }),
+        (rox_i18n::t!("panel-copy-album"), icons::DISC, |t| {
+            t.album.clone()
+        }),
+        (rox_i18n::t!("panel-copy-filename"), icons::FILE_TEXT, |t| {
+            t.path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        }),
+        (rox_i18n::t!("panel-copy-path"), icons::FOLDER, |t| {
+            t.path.to_string_lossy().into_owned()
+        }),
+    ];
+    let submenu = PopupMenu::build(window, cx, move |mut submenu, _, _| {
+        for (label, icon, pick) in entries {
+            let resolve = resolve.clone();
+            submenu = submenu.item(
+                PopupMenuItem::new(label)
+                    .icon(Icon::default().path(icon))
+                    .on_click(move |_, _, cx| {
+                        let lines: Vec<String> = resolve(cx)
+                            .iter()
+                            .map(pick)
+                            .filter(|line| !line.is_empty())
+                            .collect();
+                        if !lines.is_empty() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
+                        }
+                    }),
+            );
+        }
+        submenu
+    });
+    menu.item(
+        PopupMenuItem::submenu(rox_i18n::t!("panel-copy"), submenu)
+            .icon(Icon::default().path(icons::COPY)),
+    )
+}
+
+/// [`copy_submenu`] over library ids, for the surfaces that hand
+/// `track_actions` a selection. The ids resolve to keys and tags at click
+/// time; ids the library has since dropped fall out. Empty ids appends
+/// nothing.
+pub fn copy_ids_submenu(
+    menu: PopupMenu,
+    state: AppState,
+    ids: Vec<i64>,
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    if ids.is_empty() {
+        return menu;
+    }
+    copy_submenu(
+        menu,
+        window,
+        cx,
+        Rc::new(move |cx: &App| {
+            let library = state.library.read(cx);
+            library
+                .keys_for(&ids)
+                .unwrap_or_default()
+                .iter()
+                .map(|key| CopyText::from_key(key, library))
+                .collect()
+        }),
+    )
+}
+
 /// Resolve track ids to keys and hand them to the player: after the playing
 /// track when `next`, at the tail otherwise. Shared by the context-menu
 /// actions across every song surface.
@@ -472,8 +596,8 @@ pub fn queue_tracks(state: &AppState, ids: &[i64], next: bool, cx: &mut App) {
 }
 
 /// The track actions every song surface's right-click shares: Play under
-/// the caller's label, the selection into the tag and cover editors, and
-/// Reveal in File Browser. What playing queues differs per panel (the
+/// the caller's label, the selection into the tag and cover editors, the
+/// Copy submenu, and Reveal in File Browser. What playing queues differs per panel (the
 /// view from a row, the highlighted set, whole albums), so the caller
 /// hands the click over; everything after acts on the ids, resolved at
 /// build time so the editors get this set even if another panel
@@ -492,6 +616,7 @@ pub fn track_actions(
     let tag_ids = ids.clone();
     let tag_state = state.clone();
     let cover_state = state.clone();
+    let cover_ids = ids.clone();
     let rename_ids = ids.clone();
     let rename_state = state.clone();
     let convert_ids = ids.clone();
@@ -606,7 +731,7 @@ pub fn track_actions(
             PopupMenuItem::new(rox_i18n::t!("panel-edit-cover"))
                 .icon(Icon::default().path(icons::IMAGE))
                 .on_click(move |_, _, cx| {
-                    crate::openers::cover_editor(cover_state.clone(), ids.clone(), cx);
+                    crate::openers::cover_editor(cover_state.clone(), cover_ids.clone(), cx);
                 }),
         )
         // The other direction: tags into filenames. Renaming is a disk
@@ -632,6 +757,7 @@ pub fn track_actions(
     } else {
         menu
     };
+    let menu = copy_ids_submenu(menu, state.clone(), ids, window, cx);
     reveal_item(menu, state, reveal)
 }
 
@@ -944,6 +1070,62 @@ pub fn page_label(name: &str) -> SharedString {
         other => return SharedString::from(other.to_owned()),
     };
     rox_i18n::t!(key)
+}
+
+/// Whether a name gets its reading drawn beside it: the switch is on, the
+/// value has a sort name, that name says something the display name
+/// doesn't, and the display name is one a reader of this alphabet can't
+/// sound out.
+///
+/// The last test is the fold, not a bare `is_ascii`, because Beyoncé and
+/// Straße are Latin names that happen to carry non-ASCII bytes; folding
+/// takes them back to letters and they never get a reading. An ASCII name
+/// always folds to ASCII, so the cheap check in front of it decides the
+/// whole Latin library without allocating.
+///
+/// The order is the cost order: the common row pays one `is_empty` and
+/// stops, since a library with no sort names anywhere has nothing to draw
+/// however the switch is set.
+pub fn shows_reading(name: &str, reading: &str, show: bool) -> bool {
+    show && !reading.is_empty()
+        && reading != name
+        && !name.is_ascii()
+        && !rox_library::fold::fold(name).is_ascii()
+}
+
+/// A name with its reading after it, "秋ノ風 (Aki no kaze)", for every cell
+/// that draws a title, artist, album or album artist. The reading is the
+/// sort name the row already carries, from the file's tag, MusicBrainz, or
+/// the romanization pass.
+///
+/// One text element rather than two elements side by side, so the pair
+/// truncates as the single line it reads as, and so the parenthesis can't
+/// end up on its own row. The muted stretch is a highlight over the
+/// trailing span; everything else about the text (size, weight, the colour
+/// the cell set) comes from the cell it's dropped into.
+///
+/// A name with nothing to add draws as the bare string, which is what the
+/// call sites handed over before this existed. No formatting, no second
+/// allocation.
+pub fn named(name: &str, reading: &str, show: bool) -> impl IntoElement {
+    if !shows_reading(name, reading, show) {
+        return StyledText::new(SharedString::from(name.to_owned()));
+    }
+    let mut text = String::with_capacity(name.len() + reading.len() + 3);
+    text.push_str(name);
+    text.push_str(" (");
+    text.push_str(reading);
+    text.push(')');
+    // One step below muted: at muted the reading still reads as part of
+    // the title, and the point is that it isn't.
+    let faint = name.len()..text.len();
+    StyledText::new(SharedString::from(text)).with_highlights([(
+        faint,
+        HighlightStyle {
+            color: Some(palette::text_faint().into()),
+            ..Default::default()
+        },
+    )])
 }
 
 /// A panel whose per-view config is edited in its own settings window
@@ -1440,18 +1622,28 @@ pub fn transport_strip<P: 'static>(
     library: &Entity<Library>,
     cx: &mut Context<P>,
 ) -> Div {
-    let playing = player.read(cx).is_playing();
-    let button = |icon: &'static str,
-                  player: Entity<Player>,
-                  verb: fn(&mut Player, &mut Context<Player>)| {
-        rox_panel_kit::ui::icon_button(icon, false, move |_, _, cx| player.update(cx, verb))
-    };
     let random = {
         let player = player.clone();
         let library = library.clone();
         rox_panel_kit::ui::icon_button(icons::DICE, false, move |_, _, cx| {
             player.update(cx, |player, cx| player.play_random(&library, cx));
         })
+    };
+    // Random draws through the scope the continuation system tracks, so
+    // it stays inside a playlist the way the transport panel's does.
+    transport_nudges(player, cx).child(random)
+}
+
+/// The strip without the die: back fifteen, play/pause, forward fifteen.
+/// For a window that has already chosen what plays, like the genre tagger
+/// walking its own list, where a random draw would swap the track out from
+/// under the question being asked about it.
+pub fn transport_nudges<P: 'static>(player: &Entity<Player>, cx: &mut Context<P>) -> Div {
+    let playing = player.read(cx).is_playing();
+    let button = |icon: &'static str,
+                  player: Entity<Player>,
+                  verb: fn(&mut Player, &mut Context<Player>)| {
+        rox_panel_kit::ui::icon_button(icon, false, move |_, _, cx| player.update(cx, verb))
     };
     div()
         .flex()
@@ -1469,9 +1661,6 @@ pub fn transport_strip<P: 'static>(
         .child(button(icons::SEEK_FORWARD, player.clone(), |p, _| {
             p.seek_by(STRIP_SEEK)
         }))
-        // Random draws through the scope the continuation system tracks, so
-        // it stays inside a playlist the way the transport panel's does.
-        .child(random)
 }
 
 /// A panel in a window of its own: the panel view, full-size, on the same
@@ -1757,5 +1946,42 @@ mod chrome_tests {
             ..PanelChrome::default()
         };
         assert_eq!(chrome_min_size(&negative, floor).height, px(0.));
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::shows_reading;
+
+    /// The rule, which is the whole feature: everything else is where the
+    /// string lands. A name a Latin reader can sound out never gets one,
+    /// however good the sort name is.
+    #[test]
+    fn a_latin_name_never_takes_a_reading() {
+        assert!(!shows_reading("USAO", "USAO", true));
+        assert!(!shows_reading("Beyoncé", "Beyonce", true));
+        assert!(!shows_reading("Straße", "Strasse", true));
+        assert!(!shows_reading("Sigur Rós", "Sigur Ros", true));
+    }
+
+    #[test]
+    fn a_non_latin_name_takes_its_reading() {
+        assert!(shows_reading("秋ノ風", "Aki no kaze", true));
+        assert!(shows_reading("米津玄師", "Yonezu Kenshi", true));
+        assert!(shows_reading("Мельница", "Melnitsa", true));
+    }
+
+    /// A sort name that only repeats the name says nothing, and neither
+    /// does an absent one.
+    #[test]
+    fn a_reading_that_adds_nothing_is_dropped() {
+        assert!(!shows_reading("秋ノ風", "秋ノ風", true));
+        assert!(!shows_reading("秋ノ風", "", true));
+    }
+
+    #[test]
+    fn the_switch_turns_every_reading_off() {
+        assert!(!shows_reading("秋ノ風", "Aki no kaze", false));
+        assert!(!shows_reading("米津玄師", "Yonezu Kenshi", false));
     }
 }

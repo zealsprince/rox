@@ -438,10 +438,11 @@ impl Engine {
             // Which way the navigation went, for the transport's fade
             // readout: a Previous sweeps the other way from a Next.
             let mut nav_back = false;
-            // A remove dropped the pre-decoded next track while its source was
-            // already open. Set here, acted on after the drain: drop that stale
-            // source and reopen the real next track so the removed one doesn't
-            // play on. The audible track is fully in the ring, so no flush.
+            // A queue edit moved the pre-decoded next track out from under its
+            // open source: a remove dropped it, or a reorder put something else
+            // in the slot after the audible entry. Set here, acted on after the
+            // drain: drop that stale source and reopen the track that's really
+            // next now. The audible track is fully in the ring, so no flush.
             let mut reopen_runahead = false;
             while let Ok(cmd) = self.rx.try_recv() {
                 match cmd {
@@ -509,8 +510,8 @@ impl Engine {
                             };
                         }
                     }
-                    Cmd::SetShuffle(on) => self.set_shuffle(on),
-                    Cmd::OrderTail(ids) => self.order_tail(&ids),
+                    Cmd::SetShuffle(on) => reopen_runahead |= self.set_shuffle(on),
+                    Cmd::OrderTail(ids) => reopen_runahead |= self.order_tail(&ids),
                     Cmd::SetStopAfter(on) => self.stop_after = on,
                     Cmd::Insert {
                         after,
@@ -594,19 +595,22 @@ impl Engine {
                 continue;
             }
 
-            // The pre-decoded next track was removed with its source open.
-            // Drop that stale source and reopen the track now in its
-            // slot, right after the audible one. The audible track already
+            // The pre-decoded next track was removed or reordered away with its
+            // source open. Drop that stale source and reopen the track now in
+            // its slot, right after the audible one. The audible track already
             // filled the ring, so this reopen is silent, no flush needed. Any
-            // half-decoded pending samples belong to the removed track, so
+            // half-decoded pending samples belong to the stale track, so
             // clear them too. Skipped when a flush already reopened above.
             //
             // Residual risk: if the decode cursor got far enough ahead that
-            // some of the removed track's samples already went into the ring
+            // some of the stale track's samples already went into the ring
             // (bounded by RING_SECS), that fraction still plays before the
             // reopened next track takes over. Flushing the ring would drop it
             // but would also cut the untouched audible track mid-note, a worse
-            // glitch, so we accept the short tail here.
+            // glitch, so we accept the short tail here. A removal is worth that
+            // splice, the listener asked for the track to be gone; an automatic
+            // reorder isn't, so `reorder_tail` never asks for a reopen once the
+            // runahead has fed the ring.
             if reopen_runahead {
                 let next = self.audible_pos() + 1;
                 self.pending.clear();
@@ -1364,24 +1368,146 @@ impl Engine {
         self.publish_queue();
     }
 
-    /// Reorder only the upcoming portion, `order[pos + 1..]`. History and the
-    /// playing entry stay put, so shuffle never scrambles what already played
-    /// and the current track keeps playing. Nothing flushes. Off restores
-    /// pool order (ascending idx), which is library order for a fresh context;
-    /// play-next inserts, being later pool entries, settle at the tail.
-    fn set_shuffle(&mut self, on: bool) {
-        let start = self.pos + 1;
-        if start >= self.order.len() {
-            self.publish_queue();
-            return;
-        }
-        let tail = &mut self.order[start..];
-        if on {
-            shuffle_slice(tail);
+    /// The last entry a tail reorder has to leave alone, everything past it
+    /// being fair game.
+    ///
+    /// That's the audible entry, not the decode cursor. Near a boundary the
+    /// cursor has already stepped onto the next entry and opened it for the
+    /// gapless handoff, so anchoring on the cursor would freeze the very next
+    /// track out of the reorder: switch to Similar during the last seconds of
+    /// a track and the radio wouldn't kick in until the track after next.
+    ///
+    /// A boundary crossfade is the one exception. There the entry at the
+    /// cursor is the incoming track, already mixing into the output and
+    /// rising under the one going out, so it counts as playing even though
+    /// the clock hasn't flipped to it yet. Reordering around it would mean
+    /// cutting audio the listener is hearing, so the fade window keeps the
+    /// old cursor anchor and the reorder lands on what comes after the fade.
+    fn reorder_anchor(&self) -> usize {
+        if self.fade.is_some() {
+            self.pos
         } else {
-            tail.sort_by_key(|e| e.idx);
+            self.audible_pos()
+        }
+    }
+
+    /// True when the pre-decoded next track already has samples sitting in the
+    /// ring, waiting behind the audible track rather than merely being open.
+    ///
+    /// [`adopt`](Self::adopt) registers the segment at the open, before a
+    /// single frame of the new track is pushed, so "a segment exists" doesn't
+    /// answer this. What does is where that segment sits against
+    /// `pushed_playable`: once we've pushed past its start frame, those frames
+    /// are in the ring, and since the cursor still leads the audible entry
+    /// they haven't played yet either.
+    fn runahead_ringed(&self) -> bool {
+        let Some(entry) = self.order.get(self.pos) else {
+            return false;
+        };
+        if self.pos == self.audible_pos() {
+            return false;
+        }
+        let idx = entry.idx;
+        let segments = self.shared.segments.lock().unwrap();
+        segments
+            .iter()
+            .any(|s| s.track == idx && s.at_frame < self.pushed_playable)
+    }
+
+    /// Reorder the upcoming portion with `sort`, everything past the anchor
+    /// from [`reorder_anchor`](Self::reorder_anchor). History and the playing
+    /// entry stay put, and the ring is never flushed.
+    ///
+    /// Under Loop All the upcoming portion wraps. When the last entry is the
+    /// audible one, everything in front of it is what plays next, so that's
+    /// the stretch the sort gets; without the wrap a Similar or shuffle
+    /// command on the final track reordered nothing at all.
+    ///
+    /// Returns true when the reorder displaced the runahead, the pre-decoded
+    /// next track whose source the decode cursor already opened. The caller
+    /// then drops that source and reopens whatever the sort put right after
+    /// the audible entry, same contract as [`remove`](Self::remove) has for a
+    /// removed runahead. Without it the open source plays on and the newly
+    /// ranked next track waits a whole extra boundary.
+    ///
+    /// The trade the runahead check buys: a reopen only drops the open source
+    /// and the half-decoded pending samples, so any frames of the pre-rolled
+    /// track already pushed into the ring still play before the reopened one
+    /// takes over. Silent while the runahead is only open, audible as a splice
+    /// once it has fed the ring. Similar mode fires a reorder on every batch
+    /// landing, and one landing in the last ring of a track would otherwise
+    /// splice the old next track into the new one. So when the runahead is
+    /// already feeding the ring the sort starts past it instead: the pre-rolled
+    /// track keeps its slot and the reorder lands behind it, one boundary
+    /// later than it might have but never mid-note.
+    fn reorder_tail(&mut self, sort: impl FnOnce(&mut [OrderEntry])) -> bool {
+        let len = self.order.len();
+        let anchor = self.reorder_anchor();
+        // Half-open span of slots the sort may touch: everything past the
+        // anchor, or the whole order in front of it once Loop All has the
+        // cursor wrapping around the last entry.
+        let (mut start, mut end) = if anchor + 1 < len {
+            (anchor + 1, len)
+        } else if self.loop_mode == LoopMode::All && len > 1 && anchor == len - 1 {
+            (0, anchor)
+        } else {
+            self.publish_queue();
+            return false;
+        };
+        // A boundary fade under Loop All can have the cursor already wrapped
+        // onto the front of the order while the last entry is still coming out
+        // of the speakers. The anchor is the cursor through a fade, so the span
+        // would run right over that audible entry: stop short of it.
+        if end == len && anchor + 1 < len && self.audible_pos() == len - 1 {
+            end = len - 1;
+        }
+        if (start..end).contains(&self.pos) && self.runahead_ringed() {
+            start = self.pos + 1;
+        }
+        if start >= end {
+            self.publish_queue();
+            return false;
+        }
+        // The stretch from the first reorderable slot through the decode
+        // cursor: these are the entries the open source's handoff depends on.
+        // If the sort leaves them in the same sequence the cursor still points
+        // at its own entry and the pre-roll is still correct, whatever it did
+        // further out. The cursor sits outside the span when nothing has run
+        // ahead, and that's the mid-track case where there's no pre-roll to
+        // invalidate at all.
+        let leads = (start..end).contains(&self.pos);
+        let watched = start..=if leads { self.pos } else { start };
+        let before: Vec<u64> = self.order[watched.clone()].iter().map(|e| e.id).collect();
+        sort(&mut self.order[start..end]);
+        let changed = leads
+            && self.order[watched]
+                .iter()
+                .map(|e| e.id)
+                .ne(before.iter().copied());
+        if changed {
+            // Re-anchor onto the audible entry the way a removed runahead
+            // does, so the caller's reopen goes to the entry now sitting in
+            // the next slot rather than one past it. On the wrap that slot is
+            // past the end of the order, and the reopen wraps to the front
+            // with it.
+            self.pos = anchor;
         }
         self.publish_queue();
+        changed
+    }
+
+    /// Shuffle the upcoming portion, or put it back in pool order (ascending
+    /// idx), which is library order for a fresh context; play-next inserts,
+    /// being later pool entries, settle at the tail. Returns the displaced
+    /// runahead flag from [`reorder_tail`](Self::reorder_tail).
+    fn set_shuffle(&mut self, on: bool) -> bool {
+        self.reorder_tail(|tail| {
+            if on {
+                shuffle_slice(tail);
+            } else {
+                tail.sort_by_key(|e| e.idx);
+            }
+        })
     }
 
     /// [`Self::set_shuffle`]'s twin for an order computed elsewhere: put the
@@ -1391,20 +1517,13 @@ impl Engine {
     /// The sort is stable and unnamed entries rank last, which lets a
     /// partial list work: tracks the caller had no opinion about keep the
     /// order they were already in, behind the ones it ranked.
-    fn order_tail(&mut self, ids: &[u64]) {
-        let start = self.pos + 1;
-        if start >= self.order.len() {
-            self.publish_queue();
-            return;
-        }
+    fn order_tail(&mut self, ids: &[u64]) -> bool {
         let rank = |id: u64| {
             ids.iter()
                 .position(|&want| want == id)
                 .unwrap_or(usize::MAX)
         };
-        let tail = &mut self.order[start..];
-        tail.sort_by_key(|e| rank(e.id));
-        self.publish_queue();
+        self.reorder_tail(|tail| tail.sort_by_key(|e| rank(e.id)))
     }
 
     /// Have the backend discard everything queued and tell us it has, then
@@ -2287,11 +2406,201 @@ mod tests {
         let mut engine = test_engine(2);
         engine.pos = 1;
         let before: Vec<u64> = engine.order.iter().map(|e| e.id).collect();
-        engine.order_tail(&[before[0]]);
+        assert!(!engine.order_tail(&[before[0]]));
         assert_eq!(
             before,
             engine.order.iter().map(|e| e.id).collect::<Vec<_>>()
         );
+    }
+
+    /// The bug this anchor exists for: turn on the radio during the last
+    /// seconds of a track, where the decode cursor has already stepped onto
+    /// the next entry and opened it, and the reorder has to reach that entry
+    /// too. Anchored on the cursor it wouldn't, and the pre-rolled track would
+    /// play next whatever the ranking said.
+    #[test]
+    fn order_tail_reaches_the_pre_rolled_next_track() {
+        let mut e = test_engine(5);
+        // Audible on track 1, decode cursor pre-rolled onto track 2.
+        set_audible(&e, 1);
+        e.pos = 2;
+        // Rank the last entry to the front of what's coming.
+        let moved_runahead = e.order_tail(&[4]);
+        let after: Vec<u64> = e.order.iter().map(|en| en.id).collect();
+        assert_eq!(
+            after,
+            vec![0, 1, 4, 2, 3],
+            "the slot right after the audible entry is part of the reorder"
+        );
+        assert!(
+            moved_runahead,
+            "the open source is no longer the next track, so the caller reopens"
+        );
+        // Re-anchored onto the audible entry, so the caller's reopen at
+        // audible + 1 lands on the newly ranked track rather than past it.
+        assert_eq!(e.pos, 1);
+        assert_eq!(e.order[e.pos + 1].id, 4);
+    }
+
+    /// A reorder that leaves the pre-rolled track where it was keeps the open
+    /// source: nothing about the handoff changed, so there's nothing to redo.
+    #[test]
+    fn order_tail_keeps_the_runahead_when_the_next_slot_holds() {
+        let mut e = test_engine(5);
+        set_audible(&e, 1);
+        e.pos = 2;
+        // Rank the entry that's already next first, then reshuffle behind it.
+        let moved_runahead = e.order_tail(&[2, 4]);
+        assert!(
+            !moved_runahead,
+            "the pre-rolled track is still next, so no reopen"
+        );
+        assert_eq!(e.order[e.pos].id, 2, "cursor stays on its own entry");
+        assert_eq!(
+            e.order.iter().map(|en| en.id).collect::<Vec<_>>(),
+            vec![0, 1, 2, 4, 3]
+        );
+    }
+
+    /// Mid-track, cursor and audible together, there's no pre-roll to
+    /// invalidate: the reorder covers everything after the playing entry and
+    /// reports nothing back.
+    #[test]
+    fn order_tail_mid_track_never_asks_for_a_reopen() {
+        let mut e = test_engine(5);
+        set_audible(&e, 2);
+        e.pos = 2;
+        let moved_runahead = e.order_tail(&[4, 3]);
+        assert!(!moved_runahead);
+        assert_eq!(e.pos, 2, "the playing entry stays put");
+        assert_eq!(
+            e.order.iter().map(|en| en.id).collect::<Vec<_>>(),
+            vec![0, 1, 2, 4, 3]
+        );
+    }
+
+    /// Shuffle rides the same anchor, so flipping it on near a boundary
+    /// reaches the pre-rolled track the same way the similarity reorder does.
+    #[test]
+    fn set_shuffle_off_reaches_the_pre_rolled_next_track() {
+        let mut e = test_engine(5);
+        set_audible(&e, 1);
+        e.pos = 2;
+        // Scramble the tail by hand, then let shuffle-off sort it back to pool
+        // order: entry 4 is dragged into the slot the pre-roll holds.
+        e.order.swap(2, 4);
+        let moved_runahead = e.set_shuffle(false);
+        assert_eq!(
+            e.order.iter().map(|en| en.id).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+        assert!(moved_runahead, "the open source was entry 4, now not next");
+        assert_eq!(e.pos, 1);
+    }
+
+    /// On the last entry under Loop All the upcoming portion is everything in
+    /// front of it, and the decode cursor has already wrapped there. Anchored
+    /// on the audible entry alone the reorder found nothing past it and every
+    /// Similar batch or shuffle toggle on the final track did nothing.
+    #[test]
+    fn order_tail_wraps_to_the_front_under_loop_all() {
+        let mut e = test_engine(4);
+        e.loop_mode = LoopMode::All;
+        // Audible on the last entry, cursor wrapped onto entry 0 and holding
+        // it open for the handoff, nothing pushed for it yet.
+        set_audible(&e, 3);
+        e.pos = 0;
+        let moved_runahead = e.order_tail(&[2]);
+        assert_eq!(
+            e.order.iter().map(|en| en.id).collect::<Vec<_>>(),
+            vec![2, 0, 1, 3],
+            "the wrapped tail is the whole order except the audible entry"
+        );
+        assert!(
+            moved_runahead,
+            "the pre-rolled entry 0 is no longer first, so the caller reopens"
+        );
+        // Re-anchored onto the audible entry, which puts the reopen's
+        // audible + 1 past the end and wraps it to the new front.
+        assert_eq!(e.pos, 3);
+        assert_eq!(e.order[0].id, 2);
+    }
+
+    /// The same wrap for the shuffle toggle, with no pre-roll to invalidate.
+    #[test]
+    fn set_shuffle_wraps_to_the_front_under_loop_all() {
+        let mut e = test_engine(4);
+        e.loop_mode = LoopMode::All;
+        set_audible(&e, 3);
+        e.pos = 3;
+        e.order.swap(0, 2);
+        let moved_runahead = e.set_shuffle(false);
+        assert!(!moved_runahead, "nothing ran ahead, so nothing reopens");
+        assert_eq!(
+            e.order.iter().map(|en| en.id).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "shuffle off sorts the wrapped tail back to pool order"
+        );
+        assert_eq!(e.pos, 3);
+    }
+
+    /// Once the runahead has frames in the ring, displacing it would splice:
+    /// the reopen drops the source but not what it already pushed. Similar
+    /// mode reorders on every batch landing, so the sort starts past the
+    /// pre-rolled track instead and the new ranking lands behind it.
+    #[test]
+    fn order_tail_leaves_a_runahead_that_already_reached_the_ring() {
+        let mut e = test_engine(5);
+        set_audible(&e, 1);
+        e.pos = 2;
+        set_runahead_ringed(&mut e, 2);
+        let moved_runahead = e.order_tail(&[4]);
+        assert!(
+            !moved_runahead,
+            "no reopen, so nothing the listener hears is cut"
+        );
+        assert_eq!(
+            e.order.iter().map(|en| en.id).collect::<Vec<_>>(),
+            vec![0, 1, 2, 4, 3],
+            "entry 2 keeps the slot its samples are queued for"
+        );
+        assert_eq!(e.pos, 2, "the cursor still points at its own entry");
+    }
+
+    /// A boundary crossfade is the narrow window that keeps the old cursor
+    /// anchor: the entry at the cursor is already mixing into the output, so
+    /// the reorder starts past it instead of cutting audio the listener is
+    /// hearing.
+    #[test]
+    fn a_reorder_during_a_boundary_fade_leaves_the_incoming_track_alone() {
+        let fx = Fixtures::new("fade-reorder");
+        let mut e = engine_over(vec![fx.wav("a.wav", 0.2), fx.wav("b.wav", 0.2)]);
+        // Two more entries so there's a tail to reorder behind the fade.
+        e.insert(
+            None,
+            vec!["c".into(), "d".into()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+        // Track 0 is going out under the fade, track 1 is the one coming in,
+        // so the cursor has adopted 1 while the clock still reads 0.
+        let src = e.open_at(0).expect("the fixture opens");
+        set_audible(&e, 0);
+        e.pos = 1;
+        e.fade = Some(Fade::new(src, 4_800));
+        let moved_runahead = e.order_tail(&[1, 3]);
+        assert!(
+            !moved_runahead,
+            "the incoming track keeps playing, so nothing reopens"
+        );
+        assert_eq!(
+            e.order.iter().map(|en| en.id).collect::<Vec<_>>(),
+            vec![0, 1, 3, 2],
+            "entry 1 is audible in the mix and stays, the rest reorders"
+        );
+        assert_eq!(e.pos, 1);
     }
 
     /// A directory of fixture files that clears itself when the test ends.
@@ -2372,6 +2681,19 @@ mod tests {
         segments.clear();
         segments.push(Segment {
             at_frame: 0,
+            track,
+            track_frame: 0,
+        });
+    }
+
+    /// Take the pre-decoded next track from open to feeding the ring: a
+    /// segment for it ahead of the output clock, with the push counter past
+    /// that segment's start. `set_audible` on its own leaves the runahead
+    /// merely open, which is the silent-to-reopen case.
+    fn set_runahead_ringed(engine: &mut Engine, track: usize) {
+        engine.pushed_playable = 30;
+        engine.shared.segments.lock().unwrap().push(Segment {
+            at_frame: 20,
             track,
             track_frame: 0,
         });

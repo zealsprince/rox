@@ -272,7 +272,12 @@ impl SeekStripPanel {
     /// The panel's own dropdown entries: the quick timings and marker
     /// toggles. Timings still means both clocks at once; the settings
     /// window's arrange editor splits and reorders them.
-    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
         let weak = cx.entity().downgrade();
         let timings = self.timings_shown();
         let menu = menu.item(

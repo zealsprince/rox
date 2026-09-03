@@ -54,6 +54,18 @@ pub fn fmt_ago(secs: i64) -> String {
     rox_i18n::t!(key, count = value as u64).to_string()
 }
 
+/// A unix timestamp as the locale's calendar date, on the machine's own
+/// clock, for readouts that want the day a thing happened rather than
+/// how long ago that was.
+pub fn fmt_date(unix_secs: i64) -> String {
+    use chrono::Datelike;
+    let Some(utc) = chrono::DateTime::from_timestamp(unix_secs, 0) else {
+        return String::new();
+    };
+    let local = utc.with_timezone(&chrono::Local);
+    rox_i18n::format::format_date(local.year(), local.month() as u8, local.day() as u8)
+}
+
 /// A long running time in words: the largest unit that fits and the one
 /// under it, "3 weeks, 2 days". The clock readouts stop meaning much past
 /// a day, so the library totals show this beside them.

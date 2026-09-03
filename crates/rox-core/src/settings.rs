@@ -472,6 +472,12 @@ pub struct Settings {
     /// libraries whose slashes name single genres. Flipping it reloads
     /// the projection.
     pub split_genre_compounds: bool,
+    /// Whether a name written in a script the reader can't sound out
+    /// carries its reading after it, "秋ノ風 (Aki no kaze)", wherever a
+    /// title, artist or album is drawn. The reading is the sort name the
+    /// value already has, so a library with none shows nothing either way,
+    /// and a Latin name never gets one. On by default.
+    pub show_readings: bool,
     /// The theme pick: which of the two user palettes renders, with
     /// System following the OS's light/dark preference live.
     #[serde(deserialize_with = "lenient::or_default")]
@@ -731,6 +737,14 @@ pub struct WindowsState {
     /// open. None until the window closes.
     #[serde(alias = "stats_window", deserialize_with = "lenient::option")]
     pub stats: Option<StatsWindowState>,
+    /// The library health window's last size, restored on the next open.
+    /// None until the window closes.
+    #[serde(deserialize_with = "lenient::option")]
+    pub health: Option<HealthWindowState>,
+    /// The power search window's last size, restored on the next open.
+    /// None until the window closes.
+    #[serde(deserialize_with = "lenient::option")]
+    pub search: Option<SearchWindowState>,
     /// The app settings window's last size, restored on the next open.
     /// None until the window closes.
     #[serde(alias = "settings_window", deserialize_with = "lenient::option")]
@@ -858,6 +872,14 @@ pub struct SessionState {
     /// because there's no model behind it to key by. Zero until measured.
     #[serde(skip_serializing_if = "is_zero")]
     pub tempo_pace: f32,
+    /// The same for the romanization pass: worker-seconds per value the
+    /// last probe or pass averaged. Unlike the three above it there's no
+    /// audio to decode, so the number is small and dominated by whether a
+    /// Japanese dictionary is loaded; measured all the same, because "how
+    /// long would this take" has no honest constant answer across a
+    /// library of kana and one of kanji. Zero until measured.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub romanize_pace: f32,
     /// The shader sources this machine has agreed to run, hex SHA-256 of the
     /// trimmed WGSL. Panel shaders are stored in layout dumps and workspace
     /// bundles as inline source, so an imported look arrives with somebody
@@ -912,6 +934,7 @@ impl Default for SessionState {
             acoustic_pace: HashMap::new(),
             replaygain_pace: 0.0,
             tempo_pace: 0.0,
+            romanize_pace: 0.0,
             approved_shaders: BTreeSet::new(),
         }
     }
@@ -1153,6 +1176,24 @@ pub fn fold_case() -> bool {
 
 pub fn set_fold_case(on: bool) {
     FOLD_CASE.store(on, Ordering::Relaxed);
+}
+
+/// The live readings flag, a static like the two above. Every cell that
+/// draws a name reads it, so it has to be a load rather than a settings
+/// file: a panel row is the hottest path in the app. Seeded at startup and
+/// flipped from the Library settings page, which refreshes the windows
+/// after it stores.
+static SHOW_READINGS: AtomicBool = AtomicBool::new(true);
+
+pub fn show_readings() -> bool {
+    SHOW_READINGS.load(Ordering::Relaxed)
+}
+
+pub fn set_show_readings(on: bool, cx: &mut App) {
+    SHOW_READINGS.store(on, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
 }
 
 /// The live OS-decorations flag, a static like the menubar's. Seeded at
@@ -3083,9 +3124,27 @@ pub struct QueuedTrack {
 
 /// The tag editor's remembered shape: window size in logical pixels,
 /// the table's column widths (one slot per column in field order, shown
-/// or not), the columns hidden from the table, and the last guess
-/// pattern. Every editor window writes it on close, the last writer
-/// wins.
+/// or not), which columns the table shows, and the last guess pattern.
+/// Every editor window writes it on close, the last writer wins.
+///
+/// Two sets say what shows, because the columns come in two kinds. A
+/// field shows unless it's in `hidden`, so a build that adds a field
+/// shows it without anyone asking. A column that has to be asked for -
+/// an additional tag, or one of the four sort names - shows only when
+/// it's in `shown`, so a selection carrying fifteen stray tags doesn't
+/// open with fifteen surprise columns.
+///
+/// `columns` is positional over the fixed order and `tag_columns` is
+/// keyed, for the same reason: a tag's place in the order changes with
+/// the selection, so a slot would land its width on the wrong tag. The
+/// map keeps a width for every tag ever sized, including tags no
+/// current selection carries; that's a handful of bytes each and it's
+/// what makes a width survive editing a different album in between.
+///
+/// `sort_fields` is the shared form's version of that same ask. The
+/// sheet folds the four sort rows away until it's on, so a library
+/// that carries no romanizations doesn't read four empty rows on every
+/// open. Off by default, and the table keeps its own answer in `shown`.
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TagEditorState {
@@ -3093,6 +3152,9 @@ pub struct TagEditorState {
     pub height: f32,
     pub columns: Vec<f32>,
     pub hidden: Vec<String>,
+    pub shown: Vec<String>,
+    pub tag_columns: BTreeMap<String, f32>,
+    pub sort_fields: bool,
     pub pattern: String,
 }
 
@@ -3149,6 +3211,27 @@ pub struct StatsWindowState {
     pub range: String,
 }
 
+/// The library health window's remembered shape: size in logical pixels,
+/// written on close. Nothing else is worth keeping: what the page shows is
+/// whatever the library measures at the time, so there's no pick to restore
+/// the way the stats window restores its range.
+#[derive(Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct HealthWindowState {
+    pub width: f32,
+    pub height: f32,
+}
+
+/// The power search window's remembered shape: size in logical pixels,
+/// written on close. The seed it opened with isn't kept: it belongs to the
+/// click that opened the window, not to the window.
+#[derive(Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SearchWindowState {
+    pub width: f32,
+    pub height: f32,
+}
+
 /// The signals window's remembered shape: size in logical pixels, written
 /// on close, and whether the page's explainer is unfolded, written when it
 /// folds. An older file with only the size reads back with the
@@ -3196,6 +3279,7 @@ impl Default for Settings {
             watch_library: true,
             fold_case: false,
             split_genre_compounds: true,
+            show_readings: true,
             theme: Theme::default(),
             language: None,
             app_font_size: palette::FONT_SIZE_DEFAULT,

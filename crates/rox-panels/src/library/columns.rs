@@ -2,6 +2,8 @@
 //! and grouping configuration, and how a panel's layout maps into the table
 //! widget's columns.
 
+use std::collections::HashMap;
+
 use gpui::{px, SharedString};
 use gpui_component::table::{Column, ColumnSort};
 use rox_library::projection::SortKey;
@@ -71,12 +73,36 @@ pub fn columns() -> &'static [ColumnDef] {
             sort: SortKey::Title,
         },
         ColumnDef {
+            // The sort tag beside the name it sorts, blank for a row that
+            // doesn't carry one. `sort` is a key of its own rather than the
+            // base one: the base key falls back to the display name, which
+            // would file the handful of tagged rows in among the thousands
+            // of untagged ones and leave both ends of the column blank. The
+            // sort keys order by the tag alone and park the rows without
+            // one at the bottom, whichever way the column points. The other
+            // three sort columns below read the same way.
+            key: "title_sort",
+            label: rox_i18n::t_static("columns-title-sort"),
+            default_width: 420.,
+            right: false,
+            default_on: false,
+            sort: SortKey::TitleSort,
+        },
+        ColumnDef {
             key: "artist",
             label: rox_i18n::t_static("head-piece-artist"),
             default_width: 220.,
             right: false,
             default_on: true,
             sort: SortKey::Artist,
+        },
+        ColumnDef {
+            key: "artist_sort",
+            label: rox_i18n::t_static("columns-artist-sort"),
+            default_width: 220.,
+            right: false,
+            default_on: false,
+            sort: SortKey::ArtistSort,
         },
         ColumnDef {
             key: "album_artist",
@@ -87,12 +113,28 @@ pub fn columns() -> &'static [ColumnDef] {
             sort: SortKey::AlbumArtist,
         },
         ColumnDef {
+            key: "album_artist_sort",
+            label: rox_i18n::t_static("columns-album-artist-sort"),
+            default_width: 220.,
+            right: false,
+            default_on: false,
+            sort: SortKey::AlbumArtistSort,
+        },
+        ColumnDef {
             key: "album",
             label: rox_i18n::t_static("head-piece-album"),
             default_width: 220.,
             right: false,
             default_on: true,
             sort: SortKey::Album,
+        },
+        ColumnDef {
+            key: "album_sort",
+            label: rox_i18n::t_static("columns-album-sort"),
+            default_width: 220.,
+            right: false,
+            default_on: false,
+            sort: SortKey::AlbumSort,
         },
         ColumnDef {
             key: "genre",
@@ -257,12 +299,26 @@ pub fn column_def(key: &str) -> Option<&'static ColumnDef> {
 /// thing in every language, so rebuilding outright would throw away a
 /// layout to fix a label. A key the registry no longer offers keeps
 /// whatever it had, the same way [`track_columns`] skips it.
-pub fn reword(columns: &mut [Column]) {
+///
+/// A column the user renamed keeps its own name: that name was typed in
+/// no particular language, so a switch has nothing to say about it.
+pub fn reword(columns: &mut [Column], labels: &HashMap<String, String>) {
     for column in columns {
-        if let Some(def) = column_def(&column.key) {
+        if let Some(label) = labels.get(column.key.as_ref()) {
+            column.name = label.clone().into();
+        } else if let Some(def) = column_def(&column.key) {
             column.name = def.label.into();
         }
     }
+}
+
+/// The renamed headers in a saved layout, keyed by column. An empty
+/// string is a real entry: it's how a header is asked to draw blank.
+pub fn label_overrides(layout: &[ColumnSpec]) -> HashMap<String, String> {
+    layout
+        .iter()
+        .filter_map(|spec| Some((spec.key.clone(), spec.label.clone()?)))
+        .collect()
 }
 
 /// One shown column: its registry key and current width. The order of the
@@ -272,6 +328,11 @@ pub fn reword(columns: &mut [Column]) {
 pub struct ColumnSpec {
     pub key: String,
     pub width: f32,
+    /// The header the user typed over the registry's, if any. `Some("")`
+    /// is what a blank header saves as, so it has to round-trip apart
+    /// from None, which is the registry label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// The registry's default visible columns, in registry order.
@@ -282,6 +343,7 @@ fn default_layout() -> Vec<ColumnSpec> {
         .map(|c| ColumnSpec {
             key: c.key.to_string(),
             width: c.default_width,
+            label: None,
         })
         .collect()
 }
@@ -494,6 +556,11 @@ pub struct LibraryConfig {
     /// resizing happen there, so hiding it freezes the current layout.
     #[serde(default = "default_true")]
     pub column_headers: bool,
+    /// Sort on a plain click anywhere in a header instead of on the sort
+    /// icon. Off by default, since it takes the drag that reorders the
+    /// columns over to Alt and hides the icon in the bargain.
+    #[serde(default)]
+    pub sort_on_click: bool,
 }
 
 // Hand-written over derived for the one default-true knob.
@@ -535,6 +602,7 @@ impl Default for LibraryConfig {
             stripes: true,
             row_borders: true,
             column_headers: true,
+            sort_on_click: false,
         }
     }
 }
@@ -580,8 +648,14 @@ pub fn fold_head_lines(config: &LibraryConfig) -> (Vec<HeadPiece>, Vec<Vec<HeadP
 
 /// Build the table columns from a saved layout (or the default set),
 /// marking the active sort's direction on its column. Unknown keys in a
-/// hand-edited layout are skipped.
-pub fn track_columns(layout: &[ColumnSpec], sort: &Option<(SharedString, bool)>) -> Vec<Column> {
+/// hand-edited layout are skipped. `labels` carries the headers the user
+/// renamed, which is [`label_overrides`] over the same layout on the
+/// restore path and the panel's live map when it rebuilds the default set.
+pub fn track_columns(
+    layout: &[ColumnSpec],
+    sort: &Option<(SharedString, bool)>,
+    labels: &HashMap<String, String>,
+) -> Vec<Column> {
     let specs = if layout.is_empty() {
         default_layout()
     } else {
@@ -601,7 +675,14 @@ pub fn track_columns(layout: &[ColumnSpec], sort: &Option<(SharedString, bool)>)
                 }
                 _ => ColumnSort::Default,
             };
-            let column = Column::new(def.key, def.label).width(px(spec.width));
+            // The user's own header where one was typed, the registry's
+            // otherwise. An empty override draws a blank header, which is
+            // the point of it.
+            let label: SharedString = match labels.get(def.key) {
+                Some(label) => label.clone().into(),
+                None => def.label.into(),
+            };
+            let column = Column::new(def.key, label).width(px(spec.width));
             // The cover and favourite columns show rather than sort; leaving
             // their sort unset keeps the header from cycling a sort that goes
             // nowhere.
@@ -665,10 +746,13 @@ pub fn sort_key(key: &str) -> Option<SortKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        fold_head_lines, mirror_sort, reword, track_columns, ColumnSort, ColumnSpec, HeadPiece,
-        LibraryConfig, SharedString, HEAD_HEIGHT_MAX, HEAD_LINE_SLOTS, ROW_HEIGHT_MIN,
+        fold_head_lines, label_overrides, mirror_sort, reword, track_columns, ColumnSort,
+        ColumnSpec, HashMap, HeadPiece, LibraryConfig, SharedString, HEAD_HEIGHT_MAX,
+        HEAD_LINE_SLOTS, ROW_HEIGHT_MIN,
     };
+    use crate::panel::letter_initial;
     use crate::settings::ui as settings_ui;
+    use rox_library::projection::SymTable;
 
     /// A language switch rewords the headers and leaves the layout alone.
     ///
@@ -685,17 +769,18 @@ mod tests {
             .map(|key| ColumnSpec {
                 key: key.to_string(),
                 width: 64.,
+                label: None,
             })
             .collect();
         rox_i18n::set_locale(Some("en-CA"));
         let sort = Some((SharedString::from("title"), true));
-        let mut columns = track_columns(&layout, &sort);
+        let mut columns = track_columns(&layout, &sort, &HashMap::new());
         let english: Vec<String> = columns.iter().map(|c| c.name.to_string()).collect();
         let order: Vec<String> = columns.iter().map(|c| c.key.to_string()).collect();
         let sorts: Vec<Option<ColumnSort>> = columns.iter().map(|c| c.sort).collect();
 
         rox_i18n::set_locale(Some("ja"));
-        reword(&mut columns);
+        reword(&mut columns, &HashMap::new());
         let japanese: Vec<String> = columns.iter().map(|c| c.name.to_string()).collect();
         assert_ne!(english, japanese, "the headers should follow the language");
         assert_eq!(
@@ -718,7 +803,7 @@ mod tests {
 
         // And back, so the switch isn't a one-way trip.
         rox_i18n::set_locale(Some("en-CA"));
-        reword(&mut columns);
+        reword(&mut columns, &HashMap::new());
         assert_eq!(
             english,
             columns
@@ -727,6 +812,63 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         rox_i18n::set_locale(None);
+    }
+
+    /// A renamed header keeps the name the user typed, including the
+    /// blank one, and a language switch leaves it where it is. The blank
+    /// is the case that has to survive decoding as its own value: dropping
+    /// `Some("")` to None would put the registry's label back on a header
+    /// asked to draw nothing.
+    #[test]
+    fn a_renamed_header_survives_a_language_switch_and_a_save() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some("en-CA"));
+        let layout = vec![
+            ColumnSpec {
+                key: "title".to_string(),
+                width: 64.,
+                label: Some("Song".to_string()),
+            },
+            ColumnSpec {
+                key: "artist".to_string(),
+                width: 64.,
+                label: Some(String::new()),
+            },
+            ColumnSpec {
+                key: "year".to_string(),
+                width: 64.,
+                label: None,
+            },
+        ];
+        let labels = label_overrides(&layout);
+        let mut columns = track_columns(&layout, &None, &labels);
+        let names = |columns: &[super::Column]| -> Vec<String> {
+            columns.iter().map(|c| c.name.to_string()).collect()
+        };
+        assert_eq!(names(&columns)[0], "Song");
+        assert_eq!(names(&columns)[1], "", "a blank header draws blank");
+        let year = names(&columns)[2].clone();
+
+        rox_i18n::set_locale(Some("ja"));
+        reword(&mut columns, &labels);
+        assert_eq!(names(&columns)[0], "Song", "a typed name has no language");
+        assert_eq!(names(&columns)[1], "");
+        assert_ne!(names(&columns)[2], year, "the rest still follow the switch");
+        rox_i18n::set_locale(None);
+
+        // The overrides have to come back off disk, blank included, or a
+        // relaunch quietly undoes the rename.
+        let saved = serde_json::to_string(&layout).unwrap();
+        let back: Vec<ColumnSpec> = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back[0].label.as_deref(), Some("Song"));
+        assert_eq!(back[1].label.as_deref(), Some(""));
+        assert_eq!(back[2].label, None);
+
+        // And a layout saved before the rename decodes with none of them.
+        let old: Vec<ColumnSpec> =
+            serde_json::from_str(r#"[{"key": "title", "width": 64.0}]"#).unwrap();
+        assert_eq!(old[0].label, None);
+        assert!(label_overrides(&old).is_empty());
     }
 
     /// Sorting leaves the show-only columns alone. The table reads the
@@ -742,9 +884,10 @@ mod tests {
             .map(|key| ColumnSpec {
                 key: key.to_string(),
                 width: 64.,
+                label: None,
             })
             .collect();
-        let mut columns = track_columns(&layout, &None);
+        let mut columns = track_columns(&layout, &None, &HashMap::new());
         let ix = |columns: &[super::Column], key: &str| {
             columns
                 .iter()
@@ -791,10 +934,11 @@ mod tests {
             .map(|key| ColumnSpec {
                 key: key.to_string(),
                 width: 64.,
+                label: None,
             })
             .collect();
         let sort = Some((SharedString::from("similar"), true));
-        let columns = track_columns(&layout, &sort);
+        let columns = track_columns(&layout, &sort, &HashMap::new());
         let of = |key: &str| {
             columns
                 .iter()
@@ -896,5 +1040,88 @@ mod tests {
         let saved = serde_json::to_value(&round).unwrap();
         assert!(saved.get("density").is_none());
         assert!(saved.get("row_height").is_some());
+    }
+
+    /// The four sort columns are offered and sortable, and each sits next
+    /// to the column it describes rather than at the end of the list.
+    #[test]
+    fn the_sort_columns_are_offered_and_sortable() {
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some("en-CA"));
+        let offered: Vec<&str> = super::offered().map(|def| def.key).collect();
+        for (base, sort) in [
+            ("title", "title_sort"),
+            ("artist", "artist_sort"),
+            ("album_artist", "album_artist_sort"),
+            ("album", "album_sort"),
+        ] {
+            let base_ix = offered
+                .iter()
+                .position(|key| *key == base)
+                .unwrap_or_else(|| panic!("{base} should be offered"));
+            let sort_ix = offered
+                .iter()
+                .position(|key| *key == sort)
+                .unwrap_or_else(|| panic!("{sort} should be offered"));
+            assert!(
+                sort_ix == base_ix + 1,
+                "{sort} should follow {base} in the picker"
+            );
+            assert!(
+                super::sortable(sort),
+                "{sort} should offer a sort of its own"
+            );
+            assert!(
+                super::sort_key(sort) != super::sort_key(base),
+                "{sort} should order on its own key, not {base}'s, which falls \
+                 back to the display name and interleaves the untagged rows"
+            );
+            assert!(
+                !super::column_def(sort).expect("registered").default_on,
+                "{sort} is a diagnostic column, off by default"
+            );
+        }
+        rox_i18n::set_locale(None);
+    }
+
+    /// The letter rails read the same key the ordering does, so they stay
+    /// monotonic. A CJK name with a Latin sort tag sorts under its sort
+    /// name, and a rail still reading the display name would print it
+    /// after Z and scroll to a tile that isn't under the letter it names.
+    #[test]
+    fn a_rail_off_the_sort_key_stays_monotonic() {
+        let table = SymTable {
+            strings: vec![
+                "Adele".to_string(),
+                "米津玄師".to_string(),
+                "ZZ Top".to_string(),
+            ],
+            lower: vec![
+                "adele".to_string(),
+                "米津玄師".to_string(),
+                "zz top".to_string(),
+            ],
+            sort: vec![String::new(), "Yonezu, Kenshi".to_string(), String::new()],
+            sort_lower: vec![String::new(), "yonezu, kenshi".to_string(), String::new()],
+        };
+        // The tiles arrive in the order the projection sorted them, which
+        // is by `sort_key`.
+        let mut order: Vec<usize> = (0..table.strings.len()).collect();
+        order.sort_by(|&a, &b| table.sort_key(a).cmp(table.sort_key(b)));
+
+        let mut letters: Vec<String> = Vec::new();
+        for &sym in &order {
+            let letter = letter_initial(table.sort_key(sym));
+            if letters.last().map(String::as_str) != Some(letter.as_str()) {
+                letters.push(letter);
+            }
+        }
+        assert!(
+            letters == vec!["A".to_string(), "Y".to_string(), "Z".to_string()],
+            "the rail should read {letters:?} as A, Y, Z"
+        );
+        let mut sorted = letters.clone();
+        sorted.sort();
+        assert!(sorted == letters, "the rail's letters have to climb");
     }
 }

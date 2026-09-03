@@ -31,6 +31,7 @@ use rox_panels::filter::{FilterConfig, FilterPanel};
 use rox_panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
 use rox_panels::genre_grid::{GenreGridConfig, GenreGridPanel};
 use rox_panels::grid::{GridConfig, GridPanel};
+use rox_panels::health_widget::{HealthWidgetConfig, HealthWidgetPanel};
 use rox_panels::history::{HistoryConfig, HistoryPanel};
 use rox_panels::library::{LibraryConfig, LibraryPanel};
 use rox_panels::lyrics::{LyricsConfig, LyricsPanel};
@@ -470,6 +471,17 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
                 Arc::new(
                     cx.new(|cx| EqWidgetPanel::new(state.clone(), EqWidgetConfig::default(), cx)),
                 )
+            },
+        },
+        PanelDef {
+            label: "panel-catalog-health-widget",
+            name: "health widget",
+            icon: icons::ACTIVITY,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| {
+                    HealthWidgetPanel::new(state.clone(), HealthWidgetConfig::default(), cx)
+                }))
             },
         },
         PanelDef {

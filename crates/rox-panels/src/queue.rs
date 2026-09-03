@@ -178,6 +178,12 @@ struct TrackRow {
     title: String,
     artist: String,
     album: String,
+    /// The three sort names, off the projection by track id. All empty
+    /// for a queued file the library doesn't know, which has no row to
+    /// read them from.
+    title_reading: String,
+    artist_reading: String,
+    album_reading: String,
     album_artist: String,
     year: u16,
     genre: String,
@@ -235,6 +241,11 @@ struct Playing {
     title: String,
     artist: String,
     album: String,
+    /// The three sort names, like the queue rows'. Empty for a playing
+    /// file the library doesn't know.
+    title_reading: String,
+    artist_reading: String,
+    album_reading: String,
     year: u16,
     genre: String,
     duration_ms: u32,
@@ -526,6 +537,12 @@ impl QueuePanel {
                     .insert(path.clone(), rox_library::scanner::read_one(path));
             }
         }
+        // The playing track's readings, off the same id its tags came
+        // from. One lookup per rebuild, not per paint.
+        let playing_sort = playing_resolved
+            .as_ref()
+            .map(|(id, _)| library.sort_names_for_id(*id))
+            .unwrap_or_default();
         self.playing = self.playing_key.as_ref().map(|key| {
             let path = &key.path;
             let track_id = playing_resolved.as_ref().map(|(id, _)| *id);
@@ -536,6 +553,9 @@ impl QueuePanel {
                     title: m.title,
                     artist: m.artist,
                     album: m.album,
+                    title_reading: playing_sort.title.clone(),
+                    artist_reading: playing_sort.artist.clone(),
+                    album_reading: playing_sort.album.clone(),
                     year: m.year,
                     genre: m.genre,
                     duration_ms: m.duration_ms,
@@ -551,6 +571,9 @@ impl QueuePanel {
                         title: r.title.clone(),
                         artist: r.artist.clone(),
                         album: r.album.clone(),
+                        title_reading: String::new(),
+                        artist_reading: String::new(),
+                        album_reading: String::new(),
                         year: r.year,
                         genre: r.genre.clone(),
                         duration_ms: r.duration_ms,
@@ -563,6 +586,9 @@ impl QueuePanel {
                         title: file_label(path),
                         artist: String::new(),
                         album: String::new(),
+                        title_reading: String::new(),
+                        artist_reading: String::new(),
+                        album_reading: String::new(),
                         year: 0,
                         genre: String::new(),
                         duration_ms: 0,
@@ -583,6 +609,9 @@ impl QueuePanel {
                 let track_id = resolved.as_ref().map(|(id, _)| *id);
                 let pos = (i + 1) as u32;
                 let count = track_id.and_then(|id| plays.get(&id).copied()).unwrap_or(0);
+                let sort = track_id
+                    .map(|id| library.sort_names_for_id(id))
+                    .unwrap_or_default();
                 match resolved {
                     Some((_, m)) => TrackRow {
                         entry_id: entry.id,
@@ -591,6 +620,9 @@ impl QueuePanel {
                         title: m.title,
                         artist: m.artist,
                         album: m.album,
+                        title_reading: sort.title,
+                        artist_reading: sort.artist,
+                        album_reading: sort.album,
                         album_artist: m.album_artist,
                         year: m.year,
                         genre: m.genre,
@@ -614,6 +646,9 @@ impl QueuePanel {
                             title: r.title.clone(),
                             artist: r.artist.clone(),
                             album: r.album.clone(),
+                            title_reading: String::new(),
+                            artist_reading: String::new(),
+                            album_reading: String::new(),
                             album_artist: r.album_artist.clone(),
                             year: r.year,
                             genre: r.genre.clone(),
@@ -633,6 +668,9 @@ impl QueuePanel {
                             title: file_label(&key.path),
                             artist: String::new(),
                             album: String::new(),
+                            title_reading: String::new(),
+                            artist_reading: String::new(),
+                            album_reading: String::new(),
                             album_artist: String::new(),
                             year: 0,
                             genre: String::new(),
@@ -1241,6 +1279,9 @@ impl QueuePanel {
             title: &t.title,
             artist: &t.artist,
             album: &t.album,
+            title_reading: &t.title_reading,
+            artist_reading: &t.artist_reading,
+            album_reading: &t.album_reading,
             year: t.year,
             genre: &t.genre,
             duration_ms: t.duration_ms,
@@ -1629,6 +1670,9 @@ impl QueuePanel {
                 title: &p.title,
                 artist: &p.artist,
                 album: &p.album,
+                title_reading: &p.title_reading,
+                artist_reading: &p.artist_reading,
+                album_reading: &p.album_reading,
                 year: p.year,
                 genre: &p.genre,
                 duration_ms: p.duration_ms,

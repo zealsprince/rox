@@ -470,6 +470,54 @@ impl ShaderPanel {
         }
     }
 
+    /// Open the in-app editor over what runs. A named panel edits the pool
+    /// entry, so every panel on the name follows an apply; an inline one
+    /// edits its own text through [`apply_edit`](Self::apply_edit).
+    fn open_editor(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        use surface::edit::{EditKey, ShaderEditTarget};
+
+        let target = match self.config.name.as_deref() {
+            Some(name) => ShaderEditTarget::pool(name),
+            None => {
+                let title = self
+                    .config
+                    .chrome
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| panel::display_name(self.panel_name()));
+                let panel = cx.entity().downgrade();
+                Some(ShaderEditTarget {
+                    key: EditKey::Panel(cx.entity_id()),
+                    title: title.into(),
+                    source: self.config.source.clone(),
+                    ctx: surface::ProgramCtx::of(None, self.config.path.as_deref()),
+                    path: self.config.path.clone(),
+                    write: Arc::new(move |source, cx| {
+                        if let Some(panel) = panel.upgrade() {
+                            panel.update(cx, |this, cx| this.apply_edit(source, cx));
+                        }
+                    }),
+                })
+            }
+        };
+        if let Some(target) = target {
+            rox_panel_api::openers::shader_editor(self.state.clone(), target, cx);
+        }
+    }
+
+    /// Take an applied buffer from the editor. Unlike [`set_source`]
+    /// (Self::set_source) the bookmark stays: the editor wrote the file
+    /// from this same text, so the watch reseeds on it and only the next
+    /// outside edit wakes it. The approval already happened on the way in.
+    /// The registration re-runs on its own, since the program's hash moved.
+    fn apply_edit(&mut self, source: String, cx: &mut Context<Self>) {
+        // Applying an edit is asking to see it.
+        self.config.enabled = true;
+        self.config.source = source;
+        self.watch = SourceWatch::seeded(self.config.path.as_deref());
+        cx.notify();
+    }
+
     /// Take a copy of the pool shader this panel is using and stop using
     /// it. The text is the one that was already running, so its approval
     /// still holds; no bookmark comes across, since the pool entry's file
@@ -747,6 +795,7 @@ impl ShaderPanel {
             use_example: |this: &mut Self, index, cx| this.use_preset(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_pool_name(name, cx),
             choose_file: |this: &mut Self, window, cx| this.pick_file(window, cx),
+            edit: |this: &mut Self, window, cx| this.open_editor(window, cx),
             eject: |this: &mut Self, cx| this.eject(cx),
             detach: |this: &mut Self, cx| this.detach(cx),
             reload: |this: &mut Self, cx| this.reload(cx),

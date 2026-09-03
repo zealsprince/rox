@@ -30,6 +30,7 @@ use rox_panels::filter::FilterPanel;
 use rox_panels::folder_tree::FolderTreePanel;
 use rox_panels::genre_grid::GenreGridPanel;
 use rox_panels::grid::GridPanel;
+use rox_panels::health_widget::HealthWidgetPanel;
 use rox_panels::history::HistoryPanel;
 use rox_panels::library::LibraryPanel;
 use rox_panels::lyrics::LyricsPanel;
@@ -81,6 +82,7 @@ macro_rules! with_settings_panel {
             QueueWidgetPanel,
             EqWidgetPanel,
             StatsWidgetPanel,
+            HealthWidgetPanel,
             OutputPanel,
             SpectrumPanel,
             SpectrogramPanel,

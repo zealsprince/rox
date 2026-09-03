@@ -34,17 +34,21 @@ bindings registration found in the source, then paint it as an in-scene quad or 
 region pass over some bounds. The shape is pinned in `shaders-contract.md`, which both
 sides build against; changing it edits that file first.
 
-The shader path is built on blade's render pipelines, so the renderer in use determines
-which platforms get them: Linux and FreeBSD, and macOS through gpui's `macos-blade`
-feature, which the vendored patches extend the shader calls onto. Windows renders through
-DirectX, where the calls return `Err("unsupported")` or no-op. The features hide
-themselves on that error rather than on a platform check, so one source serves all three.
+The shader path is built on blade's render pipelines on Linux and FreeBSD, and on macOS
+through gpui's `macos-blade` feature, which the vendored patches extend the shader calls
+onto. Windows renders through gpui's own Direct3D 11 renderer, and a later patch carries
+the pipeline there too: naga translates the composed WGSL to HLSL, `D3DCompile` builds it
+at shader model 5.0, and chains, textures, and the post pass register the same way. The
+one Windows case that stays unsupported is a device that caps below shader model 5.0,
+which the renderer reports at runtime. The features hide themselves on that error rather
+than on a platform check, so one source serves all three.
 
 `macos-blade` buys the shader surfaces at the price of the whole Mac render path: every
 glyph, quad and shadow goes through blade instead of the hand-written Metal renderer,
 and `set_presents_with_transaction` has no equivalent there. Porting the pipeline to
-Metal directly would avoid that trade and isn't specced. Windows needs either naga's
-HLSL backend feeding a runtime `D3DCompile`, or a blade backend gpui doesn't have.
+Metal directly would avoid that trade and isn't specced. Windows took the first of the
+two routes it had, naga's HLSL backend feeding a runtime `D3DCompile`, rather than a
+blade backend gpui doesn't have.
 
 Three consumers share the API: a whole-window post pass, a surface shader any panel can
 draw over its own body, and the Shader panel, whose entire body is the shader. All

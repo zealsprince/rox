@@ -1,9 +1,10 @@
 //! The metadata panel: the current track's tags laid out as a sheet, with
 //! title and artist up top, then the labeled fields the library has
-//! (album, genre, year, duration, codec, bitrate). What it describes is
-//! per-view config through [`MetadataSource`]: the playing track, the
-//! selected one, or the library as a whole, where the sheet zooms out to
-//! the catalog's counts, so a duplicate can watch each. The background
+//! (album, genre, year, duration, codec, bitrate, and a sort name beside
+//! each name that carries one). What it describes is per-view config
+//! through [`MetadataSource`]: the playing track, the selected one, or
+//! the library as a whole, where the sheet zooms out to the catalog's
+//! counts, so a duplicate can watch each. The background
 //! can show the track's cover art, cropped to fill and dimmed under a
 //! scrim so the fields keep reading; art comes off the file on a
 //! background thread like the cover panel's and is retired the same way
@@ -32,18 +33,20 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use gpui::{
-    div, img, prelude::*, px, AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, Image, ImageFormat, KeyDownEvent, ObjectFit, SharedString, Stateful, Subscription,
-    WeakEntity, Window,
+    div, img, prelude::*, px, AnyElement, App, ClipboardItem, Context, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, Image, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent,
+    ObjectFit, SharedString, Stateful, Subscription, WeakEntity, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Side, Sizable};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
 use rox_library::projection::FilterField;
 use rox_library::writer::{self, Change, Field};
+use rox_romanize::{Japanese, Reading};
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
@@ -147,19 +150,44 @@ impl MetadataSource {
 /// registry shape so the shared checklist and Fields submenu drive them.
 /// The file facts are off by default; the tag sheet is the stock face.
 ///
+/// The four sort names lead, mirroring the title-over-artist head the
+/// sheet puts above this list, and each other one sits under the field
+/// it sorts. They're on by default and cost a Latin-only library
+/// nothing, since a row whose value is empty is skipped like any other.
+///
 /// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
 /// this rebuilds and leaks once per active locale rather than on every
 /// call, mirroring `rox_i18n::t_static`'s own per-locale cache.
 fn fields() -> Vec<Column> {
     vec![
         Column {
+            key: "title_sort",
+            label: rox_i18n::t!("metadata-field-title-sort"),
+            default_on: true,
+        },
+        Column {
+            key: "artist_sort",
+            label: rox_i18n::t!("metadata-field-artist-sort"),
+            default_on: true,
+        },
+        Column {
             key: "album",
             label: rox_i18n::t!("head-piece-album"),
             default_on: true,
         },
         Column {
+            key: "album_sort",
+            label: rox_i18n::t!("metadata-field-album-sort"),
+            default_on: true,
+        },
+        Column {
             key: "album_artist",
             label: rox_i18n::t!("filter-field-album-artist"),
+            default_on: true,
+        },
+        Column {
+            key: "album_artist_sort",
+            label: rox_i18n::t!("metadata-field-album-artist-sort"),
             default_on: true,
         },
         Column {
@@ -188,6 +216,11 @@ fn fields() -> Vec<Column> {
             default_on: true,
         },
         Column {
+            key: "bpm",
+            label: rox_i18n::t!("columns-bpm"),
+            default_on: true,
+        },
+        Column {
             key: "codec",
             label: rox_i18n::t!("metadata-field-codec"),
             default_on: true,
@@ -208,6 +241,16 @@ fn fields() -> Vec<Column> {
             default_on: false,
         },
         Column {
+            key: "gain_track",
+            label: rox_i18n::t!("metadata-field-gain-track"),
+            default_on: false,
+        },
+        Column {
+            key: "gain_album",
+            label: rox_i18n::t!("metadata-field-gain-album"),
+            default_on: false,
+        },
+        Column {
             key: "file",
             label: rox_i18n::t!("metadata-field-file"),
             default_on: false,
@@ -222,7 +265,33 @@ fn fields() -> Vec<Column> {
             label: rox_i18n::t!("info-item-rating"),
             default_on: false,
         },
+        Column {
+            key: "added",
+            label: rox_i18n::t!("columns-scanned"),
+            default_on: false,
+        },
     ]
+}
+
+/// The fields a picker should offer: the registry minus BPM while tempo
+/// analysis is off, the way the library's column picker hides it. Only
+/// discovery is gated: a layout already holding the field keeps showing
+/// whatever tempo the tags brought in.
+fn offered() -> Vec<Column> {
+    let tempo = crate::settings::tempo_analysis();
+    fields()
+        .into_iter()
+        .filter(|col| tempo || col.key != "bpm")
+        .collect()
+}
+
+/// A ReplayGain figure with its sign forced, "+1.25 dB", so a positive
+/// gain reads as one rather than as a bare number. The locale formatter
+/// has no sign flag, so it's glued on by hand.
+fn fmt_gain(db: f32) -> String {
+    let sign = if db.is_sign_negative() { "-" } else { "+" };
+    let magnitude = rox_i18n::format::format_float(f64::from(db.abs()), 2);
+    format!("{sign}{magnitude} dB")
 }
 
 /// What a click on a value does to the shared query: pin the exact value
@@ -274,6 +343,13 @@ struct Details {
     artist: String,
     album_artist: String,
     album: String,
+    /// The sort names, empty when the file carries none. Off the
+    /// projection like the rest: the interned ones ride their symbol
+    /// tables, the sort title is per row.
+    title_sort: String,
+    artist_sort: String,
+    album_artist_sort: String,
+    album_sort: String,
     genre: String,
     year: u16,
     disc_no: u16,
@@ -285,23 +361,45 @@ struct Details {
     bit_depth: u8,
     plays: u32,
     rating: u8,
+    /// Beats a minute, None where nothing has filled a tempo.
+    bpm: Option<f32>,
+    /// Whether that tempo is rox's own estimate rather than a tag.
+    bpm_measured: bool,
+    /// The file's ReplayGain figures in dB, None where it carries none.
+    track_gain_db: Option<f32>,
+    album_gain_db: Option<f32>,
+    /// When the scanner took the track in, as unix seconds, 0 when the
+    /// library predates the timestamp.
+    added: i64,
 }
 
 /// The editable fields in sheet order, each with its input row's label:
-/// the tags the panel shows plus the comment, which is only stored in the
-/// file. Duration, codec, and bitrate stay display-only, they describe
-/// the stream. A plain function rather than a `const`: `t_static` isn't
+/// the tags the panel shows plus the comment, which is only stored in
+/// the file. Each sort name sits under the field it sorts, so a
+/// romanization is typed next to the name it stands in for. Duration,
+/// codec, and bitrate stay display-only, they describe the stream. A
+/// plain function rather than a `const`: `t_static` isn't
 /// const-evaluable, and nothing outside this file needs the slice itself
 /// to be `'static`, so it just rebuilds (cheaply, `t_static` caches the
 /// strings) on each call.
 fn edit_fields() -> Vec<(Field, gpui::SharedString)> {
     vec![
         (Field::Title, rox_i18n::t!("info-item-title")),
+        (Field::TitleSort, rox_i18n::t!("metadata-field-title-sort")),
         (Field::Artist, rox_i18n::t!("head-piece-artist")),
+        (
+            Field::ArtistSort,
+            rox_i18n::t!("metadata-field-artist-sort"),
+        ),
         (Field::Album, rox_i18n::t!("head-piece-album")),
+        (Field::AlbumSort, rox_i18n::t!("metadata-field-album-sort")),
         (
             Field::AlbumArtist,
             rox_i18n::t!("filter-field-album-artist"),
+        ),
+        (
+            Field::AlbumArtistSort,
+            rox_i18n::t!("metadata-field-album-artist-sort"),
         ),
         (Field::DiscNo, rox_i18n::t!("metadata-field-disc")),
         (Field::TrackNo, rox_i18n::t!("metadata-field-track")),
@@ -309,6 +407,113 @@ fn edit_fields() -> Vec<(Field, gpui::SharedString)> {
         (Field::Year, rox_i18n::t!("head-piece-year")),
         (Field::Comment, rox_i18n::t!("metadata-field-comment")),
     ]
+}
+
+/// What Romanize does to one sort input, decided per field by
+/// [`sort_fill`].
+#[derive(PartialEq, Debug)]
+enum Fill {
+    /// Leave the input alone: the user typed something into it, or the
+    /// name it sorts already files where a person would look for it.
+    Leave,
+    /// Put this in the input. Either the sort name the library already
+    /// holds, or a fresh reading of the name.
+    Value(String),
+    /// The name is kanji and no dictionary is installed, so there's no
+    /// honest answer. The sheet says so under the rows.
+    NeedsDictionary,
+}
+
+/// What Romanize should put in one sort input, given the name it sorts
+/// (`base`), what's typed in the input now, and the sort name the
+/// library already holds for that name (`stored`).
+///
+/// Three rules, in order. A typed value is never touched: the whole
+/// point of the sheet is that a person can overrule any of this, and a
+/// button that overwrites what they wrote is a button they stop
+/// pressing. A name that already reads in Latin letters gets nothing at
+/// all, whatever the library holds for it, because this button says
+/// Romanize and "Beatles, The" is not a romanization. What's left is a
+/// name that needs one, and there the sort name the library already
+/// holds wins over a fresh reading: it's MusicBrainz's or the user's
+/// answer where the reading is IPADIC's guess.
+fn sort_fill(
+    base: &str,
+    current: &str,
+    stored: &str,
+    reading: Reading,
+    ja: Option<&Japanese>,
+) -> Fill {
+    if !current.trim().is_empty() {
+        return Fill::Leave;
+    }
+    let read = rox_romanize::romanize_as(base, ja, reading);
+    // Either there's a reading, or there would be one with the
+    // dictionary installed. Anything else is a name this can't improve:
+    // Latin already, or a script the crate doesn't read.
+    let readable = read.is_some() || rox_romanize::needs_dictionary(base, reading);
+    if !readable {
+        return Fill::Leave;
+    }
+    if !stored.trim().is_empty() {
+        return Fill::Value(stored.to_string());
+    }
+    match read {
+        Some(read) => Fill::Value(read),
+        // The one refusal worth telling the user about. A dictionary
+        // that's loaded and still can't read the name is a different
+        // problem, and pointing at the download wouldn't fix it.
+        None if ja.is_none() => Fill::NeedsDictionary,
+        None => Fill::Leave,
+    }
+}
+
+/// The four sort fields Romanize fills, each with the field it sorts and
+/// the sort name the projection holds for that value, empty where it
+/// holds none.
+///
+/// The stored side is what the fill pass and the romanize pass wrote into
+/// the library's own tables, which is exactly the answer this button is
+/// for: the sheet shows it, and Save is what gets it into the file.
+fn sort_targets(details: Option<&Details>) -> [(Field, Field, String); 4] {
+    let stored =
+        |pick: fn(&Details) -> &str| details.map(|d| pick(d).to_string()).unwrap_or_default();
+    [
+        (Field::TitleSort, Field::Title, stored(|d| &d.title_sort)),
+        (Field::ArtistSort, Field::Artist, stored(|d| &d.artist_sort)),
+        (Field::AlbumSort, Field::Album, stored(|d| &d.album_sort)),
+        (
+            Field::AlbumArtistSort,
+            Field::AlbumArtist,
+            stored(|d| &d.album_artist_sort),
+        ),
+    ]
+}
+
+/// The changes a save writes: one per [`edit_fields`] entry whose input
+/// drifted from the baseline the writer read off the file, and nothing
+/// for the rest, so an untouched tag never rewrites. A field the file
+/// never carried reads as empty, which is what keeps a blank input
+/// quiet; emptying one it does carry drops the tag.
+fn diff_baseline(values: &[String], baseline: &[(Field, String)]) -> Vec<Change> {
+    edit_fields()
+        .iter()
+        .zip(values)
+        .filter_map(|((field, _), value)| {
+            let original = baseline
+                .iter()
+                .find(|(f, _)| f == field)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
+            if value == original {
+                return None;
+            }
+            Some(Change {
+                field: field.clone(),
+                value: (!value.is_empty()).then(|| value.clone()),
+            })
+        })
+        .collect()
 }
 
 /// One in-progress edit: the pinned track, the baseline read off its
@@ -323,6 +528,13 @@ struct EditState {
     inputs: Vec<Entity<InputState>>,
     /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
+    /// What Romanize couldn't answer, a muted line under the rows. Set
+    /// when a name needed the Japanese dictionary and none is installed.
+    note: Option<SharedString>,
+    /// Run Romanize as soon as the baseline read lands. The menu row
+    /// opens the sheet and fills it in one click, and the read is what
+    /// puts the file's own sort names in the way of the fill.
+    romanize_on_open: bool,
     /// A commit is in flight; the buttons hold still until it finishes.
     saving: bool,
     _input_events: Vec<Subscription>,
@@ -333,6 +545,11 @@ pub struct MetadataPanel {
     config: MetadataConfig,
     /// The in-progress edit while the sheet shows its edit face.
     edit: Option<EditState>,
+    /// The row a right press last landed on, as its label and the value
+    /// it shows, which is what the context menu's Copy entry writes. A
+    /// press anywhere but a row clears it, so the menu falls back to the
+    /// panel's own entries.
+    menu_field: Option<(SharedString, String)>,
     /// The shown path's row, or None inside for a file the library does
     /// not know. Cached because the pump notifies every frame and the row
     /// lookup scans the projection; cleared when the catalog changes.
@@ -401,6 +618,7 @@ impl MetadataPanel {
             state,
             config,
             edit: None,
+            menu_field: None,
             details: None,
             totals: None,
             art: panel::TrackedImage::default(),
@@ -430,13 +648,22 @@ impl MetadataPanel {
             let library = self.state.library.read(cx);
             let details = library.id_for_key(key).and_then(|id| {
                 let projection = library.projection()?;
-                let row = projection.db_id.iter().position(|&db_id| db_id == id)?;
-                let v = projection.resolve(row as u32);
+                // The live row for the id: an update tombstones the old
+                // row and appends the new one, so both can carry the id
+                // and the dead one comes first.
+                let row = (0..projection.len() as u32).find(|&row| {
+                    projection.db_id[row as usize] == id && !projection.is_dead(row)
+                })?;
+                let v = projection.resolve(row);
                 Some(Details {
                     title: v.title.to_owned(),
                     artist: v.artist.to_owned(),
                     album_artist: v.album_artist.to_owned(),
                     album: v.album.to_owned(),
+                    title_sort: v.title_sort.to_owned(),
+                    artist_sort: v.artist_sort.to_owned(),
+                    album_artist_sort: v.album_artist_sort.to_owned(),
+                    album_sort: v.album_sort.to_owned(),
                     genre: v.genre.to_owned(),
                     year: v.year,
                     disc_no: v.disc_no,
@@ -448,6 +675,11 @@ impl MetadataPanel {
                     bit_depth: v.bit_depth,
                     plays: v.plays,
                     rating: v.rating,
+                    bpm: v.bpm,
+                    bpm_measured: matches!(v.bpm_source, rox_library::tempo::Source::Measured),
+                    track_gain_db: v.track_gain_db,
+                    album_gain_db: v.album_gain_db,
+                    added: v.added,
                 })
             });
             self.details = Some((key.clone(), details));
@@ -472,7 +704,10 @@ impl MetadataPanel {
             let mut albums: HashSet<(u32, u32)> = HashSet::new();
             let mut artists: HashSet<u32> = HashSet::new();
             let mut genre_syms: HashSet<u32> = HashSet::new();
-            for ix in 0..projection.db_id.len() {
+            for ix in 0..projection.len() {
+                if projection.is_dead(ix as u32) {
+                    continue;
+                }
                 total_ms += u64::from(projection.duration_ms[ix]);
                 plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
                 albums.insert((projection.album_artist[ix], projection.album[ix]));
@@ -489,7 +724,7 @@ impl MetadataPanel {
             }
             genres.remove("");
             self.totals = Some(LibraryTotals {
-                tracks: projection.db_id.len(),
+                tracks: projection.live_len(),
                 albums: albums.len(),
                 artists: artists.len(),
                 genres: genres.len(),
@@ -568,7 +803,7 @@ impl MetadataPanel {
             rox_i18n::t!("metadata-source"),
             submenu,
         ));
-        let submenu = track_columns::columns_submenu(fields(), window, cx);
+        let submenu = track_columns::columns_submenu(offered(), window, cx);
         let menu = menu.item(PopupMenuItem::submenu(
             rox_i18n::t!("metadata-fields"),
             submenu,
@@ -607,6 +842,16 @@ impl MetadataPanel {
         let Some(key) = self.resolved_track(cx) else {
             return;
         };
+        // IPADIC is forty megabytes of mapped tables and the first caller
+        // in the session pays for the open. Romanize lives one click away
+        // from here, so the open happens off the UI thread while the sheet
+        // is being filled in. The load is cached and idempotent, so a
+        // second sheet costs a lock.
+        cx.background_executor()
+            .spawn(async {
+                rox_romanize::japanese();
+            })
+            .detach();
         let inputs: Vec<Entity<InputState>> = edit_fields()
             .iter()
             .map(|_| cx.new(|cx| InputState::new(window, cx)))
@@ -628,6 +873,8 @@ impl MetadataPanel {
             baseline: None,
             inputs,
             error: None,
+            note: None,
+            romanize_on_open: false,
             saving: false,
             _input_events,
         });
@@ -662,6 +909,12 @@ impl MetadataPanel {
                     }
                     Err(e) => edit.error = Some(e.into()),
                 }
+                // The menu's row opens the sheet and fills it; the fill
+                // waits for this read, which would otherwise land on top
+                // of it with the file's own (empty) sort names.
+                if this.edit.as_ref().is_some_and(|edit| edit.romanize_on_open) {
+                    this.fill_romanize(window, cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -688,22 +941,12 @@ impl MetadataPanel {
         let (Some(baseline), false) = (&edit.baseline, edit.saving) else {
             return;
         };
-        let mut changes = Vec::new();
-        for ((field, _), input) in edit_fields().iter().zip(&edit.inputs) {
-            let value = input.read(cx).value().to_string();
-            let original = baseline
-                .iter()
-                .find(|(f, _)| f == field)
-                .map(|(_, v)| v.as_str())
-                .unwrap_or("");
-            if value == original {
-                continue;
-            }
-            changes.push(Change {
-                field: field.clone(),
-                value: (!value.is_empty()).then_some(value),
-            });
-        }
+        let values: Vec<String> = edit
+            .inputs
+            .iter()
+            .map(|input| input.read(cx).value().to_string())
+            .collect();
+        let changes = diff_baseline(&values, baseline);
         if changes.is_empty() {
             self.close_edit(cx);
             return;
@@ -743,6 +986,150 @@ impl MetadataPanel {
                             }
                         }
                     }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// Romanize, from the panel's own menu: open the sheet if it's closed,
+/// then fill it. Nothing here writes the file; the sort names land in
+/// the inputs and Save is what commits them, which is the confirmed
+/// write step every enrichment path in the app goes through.
+impl MetadataPanel {
+    fn romanize_sort_names(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match &mut self.edit {
+            // Already open, and its baseline read is either done or
+            // about to land on top of the fill; flag it either way and
+            // fill now if the read is already in.
+            Some(edit) => {
+                if edit.baseline.is_none() {
+                    edit.romanize_on_open = true;
+                    return;
+                }
+                self.fill_romanize(window, cx);
+            }
+            None => {
+                self.start_edit(window, cx);
+                if let Some(edit) = &mut self.edit {
+                    edit.romanize_on_open = true;
+                }
+            }
+        }
+    }
+
+    /// Fill the empty sort inputs with a Latin reading of the name each
+    /// one sorts, leaving every typed value alone. [`sort_fill`] makes
+    /// the call per field; this is where the values it needs come from.
+    ///
+    /// The reading hint comes off the whole row rather than the one
+    /// field: bare kanji is the same characters in Japanese and Chinese,
+    /// and kana anywhere in the track's names is the one signal that says
+    /// which. That's the same read the library pass makes.
+    fn fill_romanize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = self.edit.as_ref().map(|edit| edit.key.clone()) else {
+            return;
+        };
+        let details = self.details_for(&key, cx).cloned();
+        let fields = edit_fields();
+        let Some(edit) = &self.edit else { return };
+        let values: Vec<String> = edit
+            .inputs
+            .iter()
+            .map(|input| input.read(cx).value().to_string())
+            .collect();
+        let index = |field: &Field| fields.iter().position(|(f, _)| f == field);
+        // The name a sort field sorts, as the sheet has it now: what's
+        // typed, or what the library holds when the file carried no tag.
+        let name = |field: &Field, from_details: fn(&Details) -> &str| -> String {
+            let typed = index(field)
+                .map(|ix| values[ix].trim().to_string())
+                .unwrap_or_default();
+            if !typed.is_empty() {
+                return typed;
+            }
+            details
+                .as_ref()
+                .map(|d| from_details(d).to_string())
+                .unwrap_or_default()
+        };
+        let title = name(&Field::Title, |d| &d.title);
+        let artist = name(&Field::Artist, |d| &d.artist);
+        let album = name(&Field::Album, |d| &d.album);
+        let album_artist = name(&Field::AlbumArtist, |d| &d.album_artist);
+        let reading = if [&title, &artist, &album, &album_artist]
+            .iter()
+            .any(|text| rox_romanize::has_kana(text))
+        {
+            Reading::Japanese
+        } else {
+            Reading::Auto
+        };
+        // What each sort input would take, gathered here and decided off
+        // the UI thread: the reading walks IPADIC, and the first call in a
+        // session opens it, which is dictionary-sized rather than
+        // click-sized.
+        let mut plan: Vec<(usize, String, String, String)> = Vec::new();
+        for (sort, base, stored) in sort_targets(details.as_ref()) {
+            let Some(sort_ix) = index(&sort) else {
+                continue;
+            };
+            let base_value = match base {
+                Field::Title => &title,
+                Field::Artist => &artist,
+                Field::Album => &album,
+                _ => &album_artist,
+            };
+            plan.push((sort_ix, base_value.clone(), values[sort_ix].clone(), stored));
+        }
+        // The flag is spent the moment the reading starts, so the baseline
+        // landing behind it doesn't queue a second pass over the same row.
+        if let Some(edit) = &mut self.edit {
+            edit.romanize_on_open = false;
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            let filled = cx
+                .background_executor()
+                .spawn(async move {
+                    let ja = rox_romanize::japanese();
+                    plan.into_iter()
+                        .map(|(sort_ix, base, current, stored)| {
+                            (sort_ix, sort_fill(&base, &current, &stored, reading, ja))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let Some(edit) = &this.edit else { return };
+                // The sheet moved to another track while the dictionary
+                // opened, so this reading is about a row nobody is editing.
+                if edit.key != key {
+                    return;
+                }
+                let mut needs_dictionary = false;
+                let mut writes: Vec<(Entity<InputState>, String)> = Vec::new();
+                for (sort_ix, fill) in filled {
+                    let Some(input) = edit.inputs.get(sort_ix) else {
+                        continue;
+                    };
+                    match fill {
+                        Fill::Leave => {}
+                        // Typed while the reading ran, and a typed value is
+                        // never overwritten.
+                        Fill::Value(_) if !input.read(cx).value().trim().is_empty() => {}
+                        Fill::Value(value) => writes.push((input.clone(), value)),
+                        Fill::NeedsDictionary => needs_dictionary = true,
+                    }
+                }
+                for (input, value) in writes {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+                if let Some(edit) = &mut this.edit {
+                    edit.note = needs_dictionary
+                        .then(|| rox_i18n::t!("metadata-romanize-needs-dictionary"));
                 }
                 cx.notify();
             })
@@ -884,7 +1271,7 @@ impl PanelSettings for MetadataPanel {
                 rox_i18n::t!("metadata-fields"),
                 Some(rox_i18n::t!("metadata-fields.description")),
                 None,
-                track_columns::checklist(&fields(), self, cx),
+                track_columns::checklist(&offered(), self, cx),
             ))
             .into_any_element()
     }
@@ -989,6 +1376,13 @@ impl Panel for MetadataPanel {
         false
     }
 
+    /// The sheet serves its own right click, so the tab panel's body
+    /// menu stays out of the way: a press over a row offers to copy that
+    /// row's value, with the panel's own entries after it.
+    fn content_context_menu(&self, _cx: &App) -> bool {
+        true
+    }
+
     /// The layout dump stores the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
@@ -1060,6 +1454,49 @@ impl Panel for MetadataPanel {
             }
             _ => menu,
         };
+        // Reading the names into Latin letters, the library pass's work
+        // on the one track the sheet has pinned. It opens the edit face
+        // and fills the empty sort inputs; the file is only touched when
+        // Save is pressed, so this is a proposal like every other
+        // enrichment path. No track, nothing to read.
+        let menu = match self.resolved_track(cx) {
+            Some(_) => {
+                let weak = cx.entity().downgrade();
+                // The online lookup above draws the separator when it's
+                // there; with the provider off this row is the first of
+                // the group and draws its own.
+                let menu = if providers::metadata_online() {
+                    menu
+                } else {
+                    menu.separator()
+                };
+                menu.item(
+                    PopupMenuItem::new(rox_i18n::t!("metadata-romanize-sort-names"))
+                        .icon(Icon::default().path(icons::GLOBE))
+                        .on_click(move |_, window, cx| {
+                            let Some(this) = weak.upgrade() else { return };
+                            this.update(cx, |this, cx| this.romanize_sort_names(window, cx));
+                        }),
+                )
+            }
+            None => menu,
+        };
+        // Copy takes the track the panel showed when the menu opened; the
+        // tags resolve at click time so a fresh tag write copies through.
+        let menu = match self.resolved_track(cx) {
+            Some(key) => {
+                let library = self.state.library.clone();
+                panel::copy_submenu(
+                    menu,
+                    window,
+                    cx,
+                    Rc::new(move |cx: &App| {
+                        vec![panel::CopyText::from_key(&key, library.read(cx))]
+                    }),
+                )
+            }
+            None => menu,
+        };
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
@@ -1097,12 +1534,17 @@ impl Panel for MetadataPanel {
 /// it hit rather than filtering on the whole list at once.
 fn value_cell(
     value: &str,
+    reading: &str,
     search: Option<Search>,
     query: Option<&Entity<SharedQuery>>,
     next_id: &mut usize,
 ) -> Div {
+    let readings = crate::settings::show_readings();
     let (Some(search), Some(query)) = (search, query) else {
-        return div().min_w_0().truncate().child(value.to_string());
+        return div()
+            .min_w_0()
+            .truncate()
+            .child(panel::named(value, reading, readings));
     };
     let terms: Vec<String> = match search {
         Search::Pick(FilterField::Genre) => rox_library::genre::split(value)
@@ -1135,10 +1577,30 @@ fn value_cell(
                     Search::Pick(field) => shared_query::toggle_pick(&query, field, &value, cx),
                     Search::Term(field) => shared_query::toggle_term(&query, field, &value, cx),
                 })
-                .child(term),
+                .child(panel::named(&term, reading, readings)),
         );
     }
     row
+}
+
+/// Arm one row for the copy menu: a right press over it records the
+/// label and the value it shows, which the panel's context menu turns
+/// into a "Copy Title" entry. The row records itself on the press and
+/// the menu reads it back, the shape the history and queue panels use
+/// for their track rows.
+fn copy_target(
+    row: Div,
+    label: SharedString,
+    value: String,
+    panel: &WeakEntity<MetadataPanel>,
+) -> Div {
+    let panel = panel.clone();
+    row.on_mouse_down(MouseButton::Right, move |_: &MouseDownEvent, _, cx| {
+        let Some(panel) = panel.upgrade() else { return };
+        panel.update(cx, |panel, _| {
+            panel.menu_field = Some((label.clone(), value.clone()));
+        });
+    })
 }
 
 /// One labeled field of the sheet: the tag's name dimmed in a fixed
@@ -1247,13 +1709,52 @@ impl MetadataPanel {
         // this one edits tags, not the layout, so design mode leaves it be.
         let show_toggle = !self.config.chrome.hide_controls
             && (self.edit.is_some() || self.resolved_track(cx).is_some());
+        // A right press arrives here in the capture phase, before any
+        // row's own handler records itself, so a press off the rows
+        // leaves no target and the menu below falls back to the panel's
+        // entries alone. The history panel's shape.
+        let sheet = self
+            .sheet_body(cx)
+            .flex_1()
+            .min_h_0()
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
+                if event.button == MouseButton::Right {
+                    this.menu_field = None;
+                }
+            }));
+        let weak = cx.entity().downgrade();
+        let sheet = sheet.context_menu(move |menu, window, cx| {
+            let Some(this) = weak.upgrade() else {
+                return menu;
+            };
+            // Copy first, then the panel's normal entries after a
+            // separator, so a right click over the sheet never loses what
+            // the tab menu offers.
+            let field = this.read(cx).menu_field.clone();
+            let menu = match field {
+                Some((label, value)) if !value.is_empty() => menu
+                    .item(
+                        PopupMenuItem::new(rox_i18n::t!(
+                            "metadata-copy-field",
+                            field = label.to_string()
+                        ))
+                        .icon(Icon::default().path(icons::COPY))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                        }),
+                    )
+                    .separator(),
+                _ => menu,
+            };
+            this.update(cx, |this, cx| this.dropdown_menu(menu, window, cx))
+        });
         div()
             .size_full()
             .flex()
             .flex_col()
             .bg(palette::bg_root())
             .when(headerless && show_toggle, |d| d.child(self.toolbar(cx)))
-            .child(self.sheet_body(cx).flex_1().min_h_0())
+            .child(sheet)
     }
 
     /// Solo or popped out there is no title bar to host the edit toggle,
@@ -1378,12 +1879,14 @@ impl MetadataPanel {
         // Counts up through the rendered values so each hit area gets its own
         // element id.
         let mut hit_id = 0usize;
+        // Every row arms itself for the copy menu on a right press.
+        let weak = cx.entity().downgrade();
 
         // The shown fields in registry order, each skipped when its value
         // is empty: absence reads cleaner than a labeled blank. The key
         // comes along for [`query_field`], which decides whether the value
         // is clickable.
-        let mut fields: Vec<(gpui::SharedString, String, Option<Search>)> = Vec::new();
+        let mut fields: Vec<(gpui::SharedString, String, String, Option<Search>)> = Vec::new();
         for col in self::fields() {
             if !self.config.fields.iter().any(|k| k == col.key) {
                 continue;
@@ -1396,6 +1899,15 @@ impl MetadataPanel {
                     .map(|name| name.to_string_lossy().into_owned()),
                 key => details.as_ref().and_then(|d| match key {
                     "album" => (!d.album.is_empty()).then(|| d.album.clone()),
+                    // Absent on everything but a romanized library, and
+                    // an absent value skips its row, so a Latin-only
+                    // sheet looks exactly as it did.
+                    "title_sort" => (!d.title_sort.is_empty()).then(|| d.title_sort.clone()),
+                    "artist_sort" => (!d.artist_sort.is_empty()).then(|| d.artist_sort.clone()),
+                    "album_sort" => (!d.album_sort.is_empty()).then(|| d.album_sort.clone()),
+                    "album_artist_sort" => (!d.album_artist_sort.is_empty()
+                        && d.album_artist_sort != d.artist_sort)
+                        .then(|| d.album_artist_sort.clone()),
                     "album_artist" => (!d.album_artist.is_empty() && d.album_artist != d.artist)
                         .then(|| d.album_artist.clone()),
                     "disc" => (d.disc_no > 0).then(|| d.disc_no.to_string()),
@@ -1415,19 +1927,50 @@ impl MetadataPanel {
                     "sample_rate" => (d.sample_rate_hz > 0)
                         .then(|| format!("{} kHz", crate::group_head::khz(d.sample_rate_hz))),
                     "bit_depth" => (d.bit_depth > 0).then(|| format!("{} bit", d.bit_depth)),
+                    // Whole beats, like the library column: the fraction
+                    // comes from the estimator, and an estimate says so.
+                    "bpm" => d.bpm.map(|bpm| {
+                        let beats = rox_i18n::format::format_int(bpm.round() as i64);
+                        if d.bpm_measured {
+                            rox_i18n::t!("metadata-field-bpm-measured", bpm = beats).to_string()
+                        } else {
+                            beats
+                        }
+                    }),
+                    "gain_track" => d.track_gain_db.map(fmt_gain),
+                    "gain_album" => d.album_gain_db.map(fmt_gain),
+                    "added" => (d.added > 0).then(|| rox_core::fmt::fmt_date(d.added)),
                     "plays" => (d.plays > 0).then(|| track_columns::fmt_plays(d.plays)),
                     "rating" => (d.rating > 0).then(|| crate::rating_ui::fmt(d.rating).to_string()),
                     _ => None,
                 }),
             };
             if let Some(value) = value {
-                fields.push((col.label.clone(), value, query_field(col.key)));
+                // A field row's value is the tag itself, sort rows
+                // included, so none of them takes a reading.
+                fields.push((
+                    col.label.clone(),
+                    value,
+                    String::new(),
+                    query_field(col.key),
+                ));
             }
         }
         let artist = details
             .as_ref()
             .map(|d| d.artist.clone())
             .filter(|a| !a.is_empty());
+        // The head's two readings. A file the library doesn't know has no
+        // details and so no sort names, which is also the case where the
+        // title above is a file name rather than a tag.
+        let title_reading = details
+            .as_ref()
+            .map(|d| d.title_sort.clone())
+            .unwrap_or_default();
+        let artist_reading = details
+            .as_ref()
+            .map(|d| d.artist_sort.clone())
+            .unwrap_or_default();
         // The title only searches when the library has the track; for one
         // it doesn't the line is the file name, which no tag holds.
         let title_field = details.as_ref().and_then(|_| query_field("title"));
@@ -1436,12 +1979,18 @@ impl MetadataPanel {
         // where the vertical knob puts it, and it scrolls when the panel
         // runs short.
         if self.config.display == MetadataDisplay::Table {
-            let mut rows: Vec<(gpui::SharedString, String, Option<Search>)> = Vec::new();
-            rows.push((rox_i18n::t!("info-item-title"), title, title_field));
+            let mut rows: Vec<(gpui::SharedString, String, String, Option<Search>)> = Vec::new();
+            rows.push((
+                rox_i18n::t!("info-item-title"),
+                title,
+                title_reading,
+                title_field,
+            ));
             if let Some(artist) = artist {
                 rows.push((
                     rox_i18n::t!("head-piece-artist"),
                     artist,
+                    artist_reading,
                     query_field("artist"),
                 ));
             }
@@ -1451,9 +2000,10 @@ impl MetadataPanel {
             let rows: Vec<Div> = rows
                 .into_iter()
                 .enumerate()
-                .map(|(ix, (label, value, field))| {
-                    let cell = value_cell(&value, field, query.as_ref(), &mut hit_id);
-                    table_row(ix, label, cell, stripes, borders)
+                .map(|(ix, (label, value, reading, field))| {
+                    let cell = value_cell(&value, &reading, field, query.as_ref(), &mut hit_id);
+                    let row = table_row(ix, label.clone(), cell, stripes, borders);
+                    copy_target(row, label, value, &weak)
                 })
                 .collect();
             return root.child(
@@ -1477,22 +2027,42 @@ impl MetadataPanel {
         // The sheet: title over artist, the fields below, placed by the
         // two alignment knobs. The cells build up front so each one gets
         // its turn at the shared hit-id counter.
-        let title_cell = value_cell(&title, title_field, query.as_ref(), &mut hit_id)
-            .text_lg()
-            .text_color(palette::text_bright())
-            .max_w_full();
+        let title_cell = value_cell(
+            &title,
+            &title_reading,
+            title_field,
+            query.as_ref(),
+            &mut hit_id,
+        )
+        .text_lg()
+        .text_color(palette::text_bright())
+        .max_w_full();
+        let title_cell = copy_target(
+            title_cell,
+            rox_i18n::t!("info-item-title"),
+            title.clone(),
+            &weak,
+        );
         let artist_cell = artist.map(|artist| {
-            value_cell(&artist, query_field("artist"), query.as_ref(), &mut hit_id)
-                .text_color(palette::text_muted())
-                .max_w_full()
+            let cell = value_cell(
+                &artist,
+                &artist_reading,
+                query_field("artist"),
+                query.as_ref(),
+                &mut hit_id,
+            )
+            .text_color(palette::text_muted())
+            .max_w_full();
+            copy_target(cell, rox_i18n::t!("head-piece-artist"), artist, &weak)
         });
         let rows: Vec<Div> = fields
             .into_iter()
-            .map(|(label, value, search)| {
-                field(
-                    label,
-                    value_cell(&value, search, query.as_ref(), &mut hit_id),
-                )
+            .map(|(label, value, reading, search)| {
+                let row = field(
+                    label.clone(),
+                    value_cell(&value, &reading, search, query.as_ref(), &mut hit_id),
+                );
+                copy_target(row, label, value, &weak)
             })
             .collect();
         let sheet = div()
@@ -1576,7 +2146,7 @@ impl MetadataPanel {
                 .into_iter()
                 .enumerate()
                 .map(|(ix, (label, value))| {
-                    let cell = value_cell(&value, None, None, &mut hit_id);
+                    let cell = value_cell(&value, "", None, None, &mut hit_id);
                     table_row(ix, label, cell, stripes, borders)
                 })
                 .collect();
@@ -1599,6 +2169,7 @@ impl MetadataPanel {
         }
         let title_cell = value_cell(
             &rox_i18n::t!("panel-title-library"),
+            "",
             None,
             None,
             &mut hit_id,
@@ -1608,7 +2179,7 @@ impl MetadataPanel {
         .max_w_full();
         let rows: Vec<Div> = fields
             .into_iter()
-            .map(|(label, value)| field(label, value_cell(&value, None, None, &mut hit_id)))
+            .map(|(label, value)| field(label, value_cell(&value, "", None, None, &mut hit_id)))
             .collect();
         let sheet = div()
             .max_w_full()
@@ -1674,6 +2245,17 @@ impl MetadataPanel {
             .flex_col()
             .gap(px(2.))
             .children(rows)
+            // Romanize's one refusal: a kanji name with no dictionary
+            // installed. Muted, under the rows, and it says where the
+            // download is.
+            .when_some(edit.note.clone(), |d, note| {
+                d.child(
+                    div()
+                        .mt(tokens::SPACE_XS)
+                        .text_color(palette::text_muted())
+                        .child(note),
+                )
+            })
             .when_some(edit.error.clone(), |d, error| {
                 d.child(
                     div()
@@ -1699,6 +2281,18 @@ impl MetadataPanel {
                         icons::CLOSE,
                         edit.saving,
                         cx.listener(|this, _, _, cx| this.close_edit(cx)),
+                    ))
+                    // Fills the empty sort inputs and stops there: what
+                    // it wrote is a proposal until Save takes it to the
+                    // file, and a typed sort name survives it.
+                    .child(settings_ui::small_button(
+                        rox_i18n::t!("metadata-romanize"),
+                        icons::GLOBE,
+                        // Inert until the baseline read lands, like Save:
+                        // the read fills every input, so a fill before it
+                        // would be overwritten a moment later.
+                        edit.saving || edit.baseline.is_none(),
+                        cx.listener(|this, _, window, cx| this.fill_romanize(window, cx)),
                     )),
             )
     }
@@ -1706,7 +2300,97 @@ impl MetadataPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{MetadataConfig, MetadataSource};
+    use super::{
+        diff_baseline, edit_fields, fields, sort_fill, sort_targets, Fill, MetadataConfig,
+        MetadataSource,
+    };
+    use rox_library::writer::Field;
+    use rox_romanize::Reading;
+
+    /// One input value per [`edit_fields`] entry, seeded from a baseline
+    /// so nothing reads as drifted until the caller moves a field.
+    fn inputs(baseline: &[(Field, String)]) -> Vec<String> {
+        edit_fields()
+            .iter()
+            .map(|(field, _)| {
+                baseline
+                    .iter()
+                    .find(|(f, _)| f == field)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// Typing a romanization into one sort field writes that field and
+    /// nothing else, and leaving the form alone writes nothing at all.
+    /// This is the property the baseline diff exists for, and the one
+    /// that breaks if `writer::field_of` is missing a reverse arm: a
+    /// sort field with no baseline entry would read as always-dirty.
+    #[test]
+    fn only_the_moved_sort_field_writes() {
+        let baseline = vec![
+            (Field::Artist, "米津玄師".to_string()),
+            (Field::ArtistSort, "Yonezu, Kenshi".to_string()),
+        ];
+
+        assert!(diff_baseline(&inputs(&baseline), &baseline).is_empty());
+
+        let ix = edit_fields()
+            .iter()
+            .position(|(field, _)| *field == Field::AlbumArtistSort)
+            .expect("the album artist sort field is in the form");
+        let mut values = inputs(&baseline);
+        values[ix] = "Yonezu, Kenshi".to_string();
+        let changes = diff_baseline(&values, &baseline);
+        assert!(changes.len() == 1);
+        assert!(changes[0].field == Field::AlbumArtistSort);
+        assert!(changes[0].value.as_deref() == Some("Yonezu, Kenshi"));
+
+        // Emptying a sort field the file carries drops the tag.
+        let mut values = inputs(&baseline);
+        let ix = edit_fields()
+            .iter()
+            .position(|(field, _)| *field == Field::ArtistSort)
+            .unwrap();
+        values[ix].clear();
+        let changes = diff_baseline(&values, &baseline);
+        assert!(changes.len() == 1);
+        assert!(changes[0].field == Field::ArtistSort);
+        assert!(changes[0].value.is_none());
+    }
+
+    /// Every sort field the form edits has a read-only row to show it
+    /// when the panel isn't editing, so a value a user types comes back
+    /// as a labeled row instead of vanishing until the next edit.
+    #[test]
+    fn sort_names_show_outside_the_edit_form() {
+        for key in [
+            "title_sort",
+            "artist_sort",
+            "album_artist_sort",
+            "album_sort",
+        ] {
+            assert!(fields().iter().any(|col| col.key == key), "{key}");
+        }
+        for field in [
+            Field::TitleSort,
+            Field::ArtistSort,
+            Field::AlbumArtistSort,
+            Field::AlbumSort,
+        ] {
+            assert!(edit_fields().iter().any(|(f, _)| *f == field));
+        }
+    }
+
+    /// Every projection field the library table offers has a sheet row
+    /// too, so the two faces never disagree about what a track carries.
+    #[test]
+    fn projection_extras_have_fields() {
+        for key in ["bpm", "gain_track", "gain_album", "added"] {
+            assert!(fields().iter().any(|col| col.key == key), "{key}");
+        }
+    }
 
     /// A layout saved before the library scope existed spells its source
     /// the shared track pair's way, and still reads; no source at all is
@@ -1721,5 +2405,85 @@ mod tests {
 
         let config: MetadataConfig = serde_json::from_str(r#"{"source": "library"}"#).unwrap();
         assert!(config.source == MetadataSource::Library);
+    }
+
+    /// Romanize's decision, per field. The dictionary is never installed
+    /// on a CI runner, so these are the cases that answer without one:
+    /// kana reads, kanji doesn't, and neither one gets to touch a value
+    /// somebody typed.
+    #[test]
+    fn romanize_fills_only_the_empty_sort_inputs() {
+        // An empty input with a non-Latin name gets its reading.
+        assert_eq!(
+            sort_fill("レモン", "", "", Reading::Auto, None),
+            Fill::Value("Remon".to_string())
+        );
+        // A typed sort name is never overwritten, whatever else is on
+        // offer.
+        assert_eq!(
+            sort_fill("レモン", "Lemon", "", Reading::Auto, None),
+            Fill::Leave
+        );
+        assert_eq!(
+            sort_fill("レモン", "Lemon", "remon", Reading::Auto, None),
+            Fill::Leave
+        );
+        // A Latin name has no reading to add, so the row stays empty
+        // rather than filling with a copy of itself, and the sort name
+        // the library holds for it stays out of the file too: this
+        // button romanizes, it doesn't fill sort names in general.
+        assert_eq!(sort_fill("Lemon", "", "", Reading::Auto, None), Fill::Leave);
+        assert_eq!(
+            sort_fill("The Beatles", "", "Beatles, The", Reading::Auto, None),
+            Fill::Leave
+        );
+        // The sort name the library already holds wins over a fresh
+        // reading: it's MusicBrainz's or the user's answer, where the
+        // reading is IPADIC's guess.
+        assert_eq!(
+            sort_fill("米津玄師", "", "Yonezu, Kenshi", Reading::Japanese, None),
+            Fill::Value("Yonezu, Kenshi".to_string())
+        );
+        // Kanji with nothing stored and no dictionary: the sheet says so
+        // instead of writing a Chinese reading of Japanese text.
+        assert_eq!(
+            sort_fill("米津玄師", "", "", Reading::Japanese, None),
+            Fill::NeedsDictionary
+        );
+    }
+
+    /// Every sort field the button fills is a field the form actually
+    /// has, and each one is paired with the name it sorts.
+    #[test]
+    fn romanize_covers_the_four_sort_fields() {
+        let targets = sort_targets(None);
+        for (sort, base, stored) in &targets {
+            assert!(edit_fields().iter().any(|(f, _)| f == sort), "{sort:?}");
+            assert!(edit_fields().iter().any(|(f, _)| f == base), "{base:?}");
+            // No row, nothing stored: the fill falls back to reading the
+            // name itself.
+            assert!(stored.is_empty());
+        }
+        for field in [
+            Field::TitleSort,
+            Field::ArtistSort,
+            Field::AlbumSort,
+            Field::AlbumArtistSort,
+        ] {
+            assert!(targets.iter().any(|(sort, _, _)| *sort == field));
+        }
+    }
+
+    /// The row context menu names the field it copies, so a right click
+    /// on Title offers Copy Title rather than a bare Copy.
+    #[test]
+    fn the_copy_entry_carries_the_rows_label() {
+        let label = rox_i18n::t!("info-item-title");
+        let entry = rox_i18n::t!("metadata-copy-field", field = label.to_string());
+        assert!(
+            entry.contains(label.as_ref()),
+            "{entry} should name {label}"
+        );
+        assert!(entry.as_ref() != label.as_ref());
     }
 }

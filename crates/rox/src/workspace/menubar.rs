@@ -78,9 +78,38 @@ impl Workspace {
                 }
             }
             MenuAction::OpenStats => crate::stats_window::open(self.state.clone(), cx),
+            MenuAction::OpenHealth => crate::health_window::open(self.state.clone(), cx),
+            MenuAction::OpenPowerSearch => crate::search_window::open(self.state.clone(), cx),
             MenuAction::OpenConsole => crate::console_window::open(cx),
             MenuAction::OpenTasks => crate::tasks_window::open(cx),
             MenuAction::OpenEqualizer => crate::eq_window::open(cx),
+            MenuAction::RescanLibrary => self.rescan_library(cx),
+            // The four passes stop at their start prompt. Same dialog the
+            // health tiles and the tasks window raise, so a pass costs the
+            // same conversation whichever door it came through.
+            MenuAction::MeasureReplayGain => {
+                self.start_pass_prompt(crate::pass_prompt::Pass::ReplayGain, cx)
+            }
+            MenuAction::AnalyzeTempo => self.start_pass_prompt(
+                crate::pass_prompt::Pass::Tempo {
+                    retry_refused: false,
+                },
+                cx,
+            ),
+            MenuAction::BuildAcoustic => {
+                self.start_pass_prompt(crate::pass_prompt::Pass::Acoustic, cx)
+            }
+            MenuAction::FillSortNames => self.start_pass_prompt(
+                crate::pass_prompt::Pass::SortNames {
+                    scope: crate::sortnames_job::Scope::default(),
+                },
+                cx,
+            ),
+            MenuAction::RomanizeLibrary => {
+                self.start_pass_prompt(crate::pass_prompt::Pass::Romanize, cx)
+            }
+            MenuAction::FindDuplicates => self.open_duplicates(cx),
+            MenuAction::TagGenres => self.open_genre_tagger(cx),
             MenuAction::OpenSignals => crate::signals_window::open(cx),
             MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
             MenuAction::OpenAbout => crate::startup::about_window::open(self.state.clone(), cx),
@@ -750,6 +779,21 @@ impl Workspace {
             )
         };
         let idle = busy.is_none();
+        // A standing selection rides along in parentheses after the
+        // catalog count: what's picked and how long it runs, the status
+        // strip's two stock readouts up in the bar. Only at idle, since a
+        // scan's own progress outranks it. The pair is summed on a pick
+        // rather than here, so the bar doesn't walk the projection every
+        // frame.
+        let selection = idle.then_some(self.selection_status).flatten();
+        let status = match selection {
+            Some((tracks, total_ms)) => SharedString::from(format!(
+                "{status} ({} / {})",
+                rox_i18n::t!("status-count-selected", count = tracks as u64),
+                rox_panel_api::group_head::fmt_total(total_ms)
+            )),
+            None => status,
+        };
         // Status text leftmost so its width changes grow into the empty
         // middle of the bar; the badge and buttons keep their spot at the
         // right edge.
@@ -765,6 +809,7 @@ impl Workspace {
             })
             .when(!status.is_empty(), |d| {
                 let library = self.state.library.clone();
+                let picked = self.state.selection.clone();
                 d.child(
                     div()
                         .id("library-status")
@@ -774,12 +819,18 @@ impl Workspace {
                         // While scanning the status is the full path of the
                         // file under the cursor: smaller text.
                         .when(scanning, |d| d.text_xs())
-                        // The count's hover card: the catalog's totals, the
-                        // status strip's tooltip. Only at idle, where the
-                        // text is the count the card expands on.
+                        // The count's hover card: the totals behind the
+                        // line, the status strip's tooltip. Only at idle,
+                        // where the text is the count the card expands on.
+                        // It follows the line's scope, so a selection
+                        // shows the picked tracks' numbers.
                         .when(idle, |d| {
                             d.tooltip(move |_window, cx| {
-                                rox_panels::status::library_tooltip(&library, cx)
+                                if selection.is_some() {
+                                    rox_panels::status::selection_tooltip(&library, &picked, cx)
+                                } else {
+                                    rox_panels::status::library_tooltip(&library, cx)
+                                }
                             })
                         })
                         .child(status),

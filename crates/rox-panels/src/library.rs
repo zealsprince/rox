@@ -12,13 +12,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, prelude::*, px, rems, AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, KeyDownEvent, MouseButton, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful,
-    Subscription, WeakEntity, Window,
+    div, prelude::*, px, rems, AnyElement, App, ClickEvent, Context, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, KeyDownEvent, ModifiersChangedEvent, MouseButton, ScrollStrategy,
+    ScrollWheelEvent, SharedString, Stateful, Subscription, WeakEntity, Window, WindowHandle,
 };
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
-use gpui_component::{Icon, Side, Sizable, Size};
+use gpui_component::{Icon, IconName, Root, Side, Sizable, Size};
 use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
 use rox_panel_api::actions::{TypeAheadNext, TypeAheadPrev};
 
@@ -27,6 +28,7 @@ use rox_core::QUEUE_CAP;
 use rox_library::cue::TrackKey;
 use rox_library::projection::{Projection, QueryField, QUERY_FIELDS};
 use rox_library::view::{self, Group, Grouping, Row, ViewSpec};
+use rox_services::backdrop::WindowBackdrop;
 
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
@@ -53,6 +55,12 @@ const ART_ROUNDING_MAX: f32 = 24.;
 /// How far page up and page down step the keyboard cursor.
 const PAGE_ROWS: isize = 25;
 
+/// How long a keystroke-driven view rebuild waits for the next keystroke
+/// before it runs. Long enough that typing a word starts one pass instead
+/// of one per letter, short enough that a pause between words shows
+/// results before the hand moves again.
+const VIEW_DEBOUNCE: Duration = Duration::from_millis(100);
+
 mod columns;
 
 pub use columns::LibraryConfig;
@@ -71,6 +79,127 @@ fn group_quality(group: &Group, projection: &Projection) -> String {
         group.bit_depth.unwrap_or(0),
         group.sample_rate_hz.unwrap_or(0),
     )
+}
+
+/// Everything one view pass reads, owned rather than borrowed so the pass
+/// can run on the background executor. The projection and the canonical
+/// order ride their `Arc`s: the catalog swaps them whole and never patches
+/// one in place, so a pass in flight keeps working over the library it
+/// started on and its result is thrown away by the generation check when a
+/// newer one has landed since.
+struct ViewInputs {
+    projection: Arc<Projection>,
+    order: Arc<Vec<u32>>,
+    query: String,
+    filter: rox_library::projection::FilterSet,
+    similar: Option<(Arc<HashMap<i64, f32>>, bool)>,
+    sort: Option<(rox_library::projection::SortKey, bool)>,
+    group_by: GroupBy,
+    /// How many header rows open each run, None while headers are off.
+    head_rows: Option<u8>,
+}
+
+/// The view pass itself: the same call the panel used to make inline, with
+/// nothing left in it that touches a window or an entity.
+fn compute_rows(inputs: &ViewInputs) -> (Arc<Vec<Row>>, Vec<Group>) {
+    let group_by = inputs.group_by;
+    let key = move |projection: &Projection, row: u32| -> u64 {
+        let i = row as usize;
+        match group_by {
+            GroupBy::Album => {
+                (projection.album_artist[i] as u64) << 32 | projection.album[i] as u64
+            }
+            GroupBy::Artist => projection.album_artist[i] as u64,
+            GroupBy::Genre => projection.genre[i] as u64,
+            GroupBy::Year => projection.year[i] as u64,
+        }
+    };
+    let grouping = inputs.head_rows.map(|head_rows| Grouping {
+        head_rows,
+        pre_sort: group_by.sort(),
+        key: &key,
+        discs: group_by == GroupBy::Album,
+    });
+    view::view_for(
+        &inputs.projection,
+        inputs.order.clone(),
+        &ViewSpec {
+            query: &inputs.query,
+            filter: &inputs.filter,
+            similar: inputs.similar.as_ref().map(|(map, desc)| (&**map, *desc)),
+            sort: inputs.sort,
+            grouping,
+        },
+    )
+}
+
+/// The slice of a view a click plays through: up to `cap` track rows
+/// around `ix`, at most half of them behind it so Prev has somewhere to
+/// step back to, and the rest ahead. A click near the end of the view
+/// takes the shortfall out of the rows behind instead, so the window is
+/// always full while the view has the rows to fill it.
+///
+/// Walks out from the click rather than listing the view's tracks first:
+/// the old pass built a `Vec<usize>` of every track row before slicing
+/// `cap` of them out of it, which is tens of megabytes and a full scan for
+/// a double click on a big library. Header and disc rows are skipped, not
+/// counted. None when `ix` isn't a track row.
+///
+/// Hands back the view indices of the window, in view order, and the
+/// clicked row's offset inside it.
+fn play_window(view: &[Row], ix: usize, cap: usize) -> Option<(Vec<usize>, usize)> {
+    if cap == 0 || !matches!(view.get(ix)?, Row::Track(_)) {
+        return None;
+    }
+    let track_rows =
+        |range: std::ops::Range<usize>| range.filter(|&i| matches!(view[i], Row::Track(_)));
+    // Behind first, since its share is the fixed one; the rows ahead take
+    // whatever the budget has left.
+    let mut behind: Vec<usize> = track_rows(0..ix).rev().take(cap / 2).collect();
+    let ahead: Vec<usize> = track_rows(ix + 1..view.len())
+        .take(cap - behind.len() - 1)
+        .collect();
+    // The view ran out ahead of the click, so the window slides back over
+    // the rows it does have, the way the old slice did against the end.
+    let short = cap - behind.len() - 1 - ahead.len();
+    if short > 0 {
+        let from = behind.last().copied().unwrap_or(ix);
+        behind.extend(track_rows(0..from).rev().take(short));
+    }
+    let start = behind.len();
+    behind.reverse();
+    behind.push(ix);
+    behind.extend(ahead);
+    Some((behind, start))
+}
+
+/// Swap a finished pass into the table, unless a newer one was scheduled
+/// while it ran. True when the rows landed, which is what the panel's
+/// post-swap work (the restored scroll, the follow) hangs off.
+fn install_view(
+    table: &mut TableState<TrackTable>,
+    generation: u64,
+    view: Arc<Vec<Row>>,
+    groups: Vec<Group>,
+    cx: &mut Context<TableState<TrackTable>>,
+) -> bool {
+    if table.delegate().view_gen != generation {
+        return false;
+    }
+    // Selection indices point into the old view; drop them along with the
+    // widget's own focus row. The shared selection keeps the last explicit
+    // pick, a view refresh is not one.
+    let delegate = table.delegate_mut();
+    delegate.view = view;
+    delegate.groups = groups;
+    delegate.selected.clear();
+    delegate.sel_gen += 1;
+    delegate.anchor = None;
+    delegate.cursor = None;
+    delegate.locate_playing(cx);
+    table.clear_selection(cx);
+    cx.notify();
+    true
 }
 
 /// The table delegate: the column set and the rows one panel displays.
@@ -149,6 +278,16 @@ struct TrackTable {
     /// Follows clicks, so keys and mouse hand off mid-browse.
     cursor: Option<usize>,
     columns: Vec<Column>,
+    /// The headers the user renamed, keyed by column. Held here beside the
+    /// columns so a language switch can tell a typed name from a resolved
+    /// one, and so the layout dump can write them back out. An empty value
+    /// is a header asked to draw blank, not a missing entry.
+    labels: HashMap<String, String>,
+    /// Sort on a plain click in the header rather than on the sort icon,
+    /// copied from the panel. While it's on the widget's own sorting is
+    /// switched off, so the click, the arrow, and the Alt-held column drag
+    /// all run from here.
+    sort_on_click: bool,
     /// The language the headers above were worded in. Their labels are
     /// resolved once and stored on the Column, so unlike the strings that
     /// resolve at render time they don't follow a language switch on
@@ -192,6 +331,11 @@ struct TrackTable {
     /// rebuilds only when the selection actually moves, not per frame. A view
     /// swap always clears the selection, so this catches those too.
     sel_gen: u64,
+    /// Bumped every time a view pass is scheduled. The pass carries the
+    /// number it was scheduled under and its result is dropped on arrival
+    /// unless this still matches, so a slow pass over a big library can
+    /// never overwrite the answer to a later keystroke.
+    view_gen: u64,
     /// The wall clock the "added" column dates against, refreshed at most every
     /// half minute instead of a `SystemTime::now` per shown cell per frame;
     /// relative-time granularity is coarse enough that the small lag is unseen.
@@ -205,6 +349,73 @@ struct TrackTable {
 }
 
 impl TrackTable {
+    /// Take a header sort: mark the clicked column, remember what the
+    /// list is sorted by, and schedule the pass. Called by the widget's
+    /// own sort hook and, with click-to-sort on, by the header click that
+    /// runs the cycle here instead.
+    ///
+    /// The view is scheduled rather than refreshed through the panel: the
+    /// table entity is mid-update and the panel's refresh path would
+    /// re-enter it. The panel reads the sort back for persistence via
+    /// `dump`. Sorting ten million rows is a quarter of a second on
+    /// integer ranks and near a second by title, so the pass goes to the
+    /// background executor like every other one and the old rows stay up
+    /// until it lands.
+    fn apply_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        columns::mirror_sort(&mut self.columns, col_ix, sort);
+        self.sort = match sort {
+            ColumnSort::Ascending => Some((self.columns[col_ix].key.clone(), false)),
+            ColumnSort::Descending => Some((self.columns[col_ix].key.clone(), true)),
+            ColumnSort::Default => None,
+        };
+        let (query, filter) = self
+            .panel
+            .upgrade()
+            .map(|panel| {
+                let panel = panel.read(cx);
+                (panel.effective_query(cx), panel.effective_filter(cx))
+            })
+            .unwrap_or_default();
+        self.view_gen += 1;
+        let generation = self.view_gen;
+        let Some(inputs) = self.view_inputs(&query, &filter, cx) else {
+            return;
+        };
+        let panel = self.panel.clone();
+        cx.spawn(async move |table, cx| {
+            let (view, groups) = cx
+                .background_executor()
+                .spawn(async move { compute_rows(&inputs) })
+                .await;
+            let installed = table
+                .update(cx, |table, cx| {
+                    install_view(table, generation, view, groups, cx)
+                })
+                .unwrap_or(false);
+            // A sort is a landing like any other, so the panel's post-swap
+            // work runs off it too. Without this the restored scroll and a
+            // pending follow sit there until some unrelated refresh lands
+            // and yanks the list out from under whoever was reading it.
+            // The table's own update has finished by here, so the panel
+            // can read it back without re-entering it.
+            if installed {
+                panel
+                    .update(cx, |panel, cx| panel.on_view_installed(cx))
+                    .ok();
+            }
+        })
+        .detach();
+        // The header's own arrow moved with the click, so repaint now
+        // rather than waiting for the rows.
+        cx.notify();
+    }
+
     /// Reword the headers when the language has changed under them.
     ///
     /// Only the wording is touched. Order, widths, and the active sort
@@ -218,7 +429,7 @@ impl TrackTable {
             return;
         }
         self.columns_locale = locale;
-        columns::reword(&mut self.columns);
+        columns::reword(&mut self.columns, &self.labels);
     }
 
     /// The current unix time the "added" column dates against, refreshed at
@@ -699,10 +910,30 @@ impl TrackTable {
                         }
                     }
                 };
+                // The heading's own readings, from the same fields the
+                // rows below read. The name line follows whichever of the
+                // two artist fields stood in for it above; year and genre
+                // headings have no sort name of their own.
+                let name_reading = match self.group_by {
+                    GroupBy::Album | GroupBy::Artist => {
+                        if v.album_artist.is_empty() {
+                            v.artist_sort
+                        } else {
+                            v.album_artist_sort
+                        }
+                    }
+                    GroupBy::Genre | GroupBy::Year => "",
+                };
                 group_head::GroupHead {
                     name: SharedString::from(name),
+                    name_reading: SharedString::from(name_reading.to_string()),
                     album: if by_album {
                         SharedString::from(v.album.to_string())
+                    } else {
+                        SharedString::default()
+                    },
+                    album_reading: if by_album {
+                        SharedString::from(v.album_sort.to_string())
                     } else {
                         SharedString::default()
                     },
@@ -908,59 +1139,37 @@ impl TrackTable {
         self.playing_row = row;
     }
 
-    /// The rows this panel shows, off the shared view pass: the config
-    /// this panel holds resolved into a [`ViewSpec`], the projection and
-    /// the canonical order read off the catalog entity here.
-    fn compute_view(
+    /// Everything the view pass needs, read off the catalog entity and the
+    /// delegate here so the pass itself can run on a background thread.
+    /// None while the catalog has no projection yet, which is an empty
+    /// view.
+    fn view_inputs(
         &self,
         query: &str,
         filter: &rox_library::projection::FilterSet,
         cx: &App,
-    ) -> (Arc<Vec<Row>>, Vec<Group>) {
+    ) -> Option<ViewInputs> {
         let library = self.state.library.read(cx);
-        let Some(projection) = library.projection() else {
-            return (Arc::new(Vec::new()), Vec::new());
-        };
-        // The similar column scores off the delegate's own map, so it hands
-        // the scores over rather than naming a projection field.
-        let similar = self
-            .sort
-            .as_ref()
-            .and_then(|(key, desc)| (key.as_ref() == "similar").then_some(*desc))
-            .map(|desc| (self.similar.as_ref(), desc));
-        let sort = self
-            .sort
-            .as_ref()
-            .and_then(|(key, desc)| sort_key(key).map(|key| (key, *desc)));
-        let group_by = self.group_by;
-        let key = move |projection: &Projection, row: u32| -> u64 {
-            let i = row as usize;
-            match group_by {
-                GroupBy::Album => {
-                    (projection.album_artist[i] as u64) << 32 | projection.album[i] as u64
-                }
-                GroupBy::Artist => projection.album_artist[i] as u64,
-                GroupBy::Genre => projection.genre[i] as u64,
-                GroupBy::Year => projection.year[i] as u64,
-            }
-        };
-        let grouping = (self.headers != Headers::Off).then(|| Grouping {
-            head_rows: self.head_rows(),
-            pre_sort: group_by.sort(),
-            key: &key,
-            discs: group_by == GroupBy::Album,
-        });
-        view::view_for(
+        let projection = library.projection()?.clone();
+        Some(ViewInputs {
             projection,
-            library.order(),
-            &ViewSpec {
-                query,
-                filter,
-                similar,
-                sort,
-                grouping,
-            },
-        )
+            order: library.order(),
+            query: query.to_string(),
+            filter: filter.clone(),
+            // The similar column scores off the delegate's own map, so it
+            // hands the scores over rather than naming a projection field.
+            similar: self
+                .sort
+                .as_ref()
+                .and_then(|(key, desc)| (key.as_ref() == "similar").then_some(*desc))
+                .map(|desc| (self.similar.clone(), desc)),
+            sort: self
+                .sort
+                .as_ref()
+                .and_then(|(key, desc)| sort_key(key).map(|key| (key, *desc))),
+            group_by: self.group_by,
+            head_rows: (self.headers != Headers::Off).then(|| self.head_rows()),
+        })
     }
 
     /// Append the owning panel's dropdown items to a row context menu.
@@ -1059,10 +1268,16 @@ impl TableDelegate for TrackTable {
     }
 
     /// The header cell: the stock label plus a right-click menu that
-    /// toggles the shown columns in place, the customize window's chips
-    /// without the trip there. The table's own right-click menu stays a
-    /// row affair; over the header it builds empty and never shows, so
-    /// the two menus don't stack.
+    /// renames this header and toggles the shown columns in place, the
+    /// customize window's chips without the trip there. The table's own
+    /// right-click menu stays a row affair; over the header it builds
+    /// empty and never shows, so the two menus don't stack.
+    ///
+    /// With click-to-sort on, the cell also carries the sort: the widget's
+    /// icon and its click are switched off (its `perform_sort` is private,
+    /// so the cycle runs here instead), and the arrow for the sorted
+    /// column draws beside the label. Alt+click is the column drag's grab,
+    /// so it never sorts.
     fn render_th(
         &mut self,
         col_ix: usize,
@@ -1072,10 +1287,81 @@ impl TableDelegate for TrackTable {
         self.reword_columns();
         let shown: HashSet<String> = self.columns.iter().map(|c| c.key.to_string()).collect();
         let panel = self.panel.clone();
+        let key = self.columns[col_ix].key.to_string();
+        let renamed = self.labels.contains_key(&key);
+        let sorts = self.sort_on_click && columns::sortable(&key);
+        // Our own arrow, drawn only for the column the list is sorted by,
+        // at the size and in the shapes the widget's own icon uses.
+        let arrow =
+            sorts
+                .then(|| self.columns[col_ix].sort)
+                .flatten()
+                .and_then(|sort| match sort {
+                    ColumnSort::Ascending => Some(IconName::SortAscending),
+                    ColumnSort::Descending => Some(IconName::SortDescending),
+                    ColumnSort::Default => None,
+                });
         div()
             .size_full()
-            .child(self.column(col_ix, cx).name.clone())
+            .id(("th", col_ix))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(div().flex_1().child(self.column(col_ix, cx).name.clone()))
+            .children(arrow.map(|icon| {
+                Icon::new(icon)
+                    .size_3()
+                    .text_color(palette::text_muted())
+                    .into_any_element()
+            }))
+            .when(sorts, |d| {
+                d.cursor_pointer().on_click(cx.listener(
+                    move |table, event: &ClickEvent, window, cx| {
+                        // Alt is the grab that reorders the columns, so a
+                        // press that ends without moving isn't a sort.
+                        if event.modifiers().alt {
+                            return;
+                        }
+                        let next = match table.delegate().columns.get(col_ix).and_then(|c| c.sort) {
+                            Some(ColumnSort::Descending) => ColumnSort::Ascending,
+                            Some(ColumnSort::Ascending) => ColumnSort::Default,
+                            _ => ColumnSort::Descending,
+                        };
+                        table.delegate_mut().apply_sort(col_ix, next, window, cx);
+                    },
+                ))
+            })
             .context_menu(move |mut menu, _, _| {
+                let renaming = panel.clone();
+                let key_for_rename = key.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(rox_i18n::t!("library-column-rename"))
+                        .icon(Icon::default().path(icons::PENCIL))
+                        .on_click(move |_, _, cx| {
+                            if let Some(panel) = renaming.upgrade() {
+                                let key = key_for_rename.clone();
+                                panel.update(cx, |panel, cx| panel.open_column_rename(key, cx));
+                            }
+                        }),
+                );
+                if renamed {
+                    let resetting = panel.clone();
+                    let key_for_reset = key.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(rox_i18n::t!("library-column-rename-reset"))
+                            .icon(Icon::default().path(icons::REFRESH_CW))
+                            .on_click(move |_, _, cx| {
+                                if let Some(panel) = resetting.upgrade() {
+                                    let key = key_for_reset.clone();
+                                    panel.update(cx, |panel, cx| {
+                                        panel.set_column_label(key, None, cx)
+                                    });
+                                }
+                            }),
+                    );
+                }
+                menu = menu.separator();
                 for def in columns::offered() {
                     let key = def.key;
                     let panel = panel.clone();
@@ -1095,47 +1381,16 @@ impl TableDelegate for TrackTable {
 
     /// The header sort hook. The widget has already advanced the clicked
     /// column's cycle (canonical -> descending -> ascending) in its own
-    /// column state; copy it into the delegate's columns and swap the
-    /// view here, because the table entity is mid-update and the panel's
-    /// refresh path would re-enter it. The panel reads the sort back for
-    /// persistence via `dump`.
+    /// column state, so all that's left is taking it, which is the same
+    /// thing a click-to-sort header does for itself.
     fn perform_sort(
         &mut self,
         col_ix: usize,
         sort: ColumnSort,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        columns::mirror_sort(&mut self.columns, col_ix, sort);
-        self.sort = match sort {
-            ColumnSort::Ascending => Some((self.columns[col_ix].key.clone(), false)),
-            ColumnSort::Descending => Some((self.columns[col_ix].key.clone(), true)),
-            ColumnSort::Default => None,
-        };
-        let (query, filter) = self
-            .panel
-            .upgrade()
-            .map(|panel| {
-                let panel = panel.read(cx);
-                (panel.effective_query(cx), panel.effective_filter(cx))
-            })
-            .unwrap_or_default();
-        let (view, groups) = self.compute_view(&query, &filter, cx);
-        self.view = view;
-        self.groups = groups;
-        // The old indices point elsewhere in the new order, same as any
-        // view swap. The widget's own focus row does too, but it can only
-        // be cleared once the table's update ends.
-        self.selected.clear();
-        self.sel_gen += 1;
-        self.anchor = None;
-        self.cursor = None;
-        self.locate_playing(cx);
-        let table = cx.entity();
-        cx.defer(move |cx| {
-            table.update(cx, |table, cx| table.clear_selection(cx));
-        });
-        cx.notify();
+        self.apply_sort(col_ix, sort, window, cx);
     }
 
     fn render_tr(
@@ -1364,6 +1619,7 @@ impl TableDelegate for TrackTable {
         };
         let v = projection.resolve(row);
         let playing = self.playing_row == Some(row_ix);
+        let readings = crate::settings::show_readings();
         let cell = div().truncate();
         // Copied out so the cover arm can borrow the delegate mutably (its
         // path cache) without the match still holding `self.columns`.
@@ -1396,18 +1652,39 @@ impl TableDelegate for TrackTable {
             "track" => cell
                 .text_color(palette::text_muted())
                 .child(fmt_num(v.track_no)),
+            // The four name columns carry the reading after the name when
+            // the switch is on and the name is in a script this alphabet
+            // can't sound out; the four sort columns below show the same
+            // string on its own, which is why they don't go through the
+            // helper.
             "title" => cell
                 .when(playing, |d| d.text_color(palette::accent()))
-                .child(SharedString::from(v.title.to_string())),
+                .child(panel::named(v.title, v.title_sort, readings)),
             "artist" => cell
                 .text_color(palette::text_secondary())
-                .child(SharedString::from(v.artist.to_string())),
+                .child(panel::named(v.artist, v.artist_sort, readings)),
             "album_artist" => cell
                 .text_color(palette::text_secondary())
-                .child(SharedString::from(v.album_artist.to_string())),
+                .child(panel::named(v.album_artist, v.album_artist_sort, readings)),
             "album" => cell
                 .text_color(palette::text_secondary())
-                .child(SharedString::from(v.album.to_string())),
+                .child(panel::named(v.album, v.album_sort, readings)),
+            // The four sort tags. A row without one draws an empty cell
+            // rather than falling back to the display name, since which
+            // rows actually carry the tag is the whole reason to show the
+            // column.
+            "title_sort" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(v.title_sort.to_string())),
+            "artist_sort" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(v.artist_sort.to_string())),
+            "album_artist_sort" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(v.album_artist_sort.to_string())),
+            "album_sort" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(v.album_sort.to_string())),
             "genre" => cell
                 .text_color(palette::text_secondary())
                 .child(SharedString::from(v.genre.to_string())),
@@ -1608,6 +1885,10 @@ pub struct LibraryPanel {
     /// The row the last follow aimed at, so a catalog refresh that leaves
     /// the playing track where it already was doesn't scroll there again.
     followed_row: Option<usize>,
+    /// Whether the next view to land should catch the follow up. Set by the
+    /// catalog change that asked for the rebuild, since the playing row it
+    /// wants to scroll to only exists once that view is installed.
+    follow_on_view: bool,
     /// Scroll back to the playing row on its own once the list has gone
     /// untouched a spell.
     resume_playing: bool,
@@ -1704,6 +1985,16 @@ pub struct LibraryPanel {
     row_borders: bool,
     /// Draw the column header row over the list, same route again.
     column_headers: bool,
+    /// Sort on a plain click in the header instead of on the sort icon.
+    /// The delegate keeps a copy for the header it draws, and the widget's
+    /// own sorting and its always-on column drag follow this one.
+    sort_on_click: bool,
+    /// The open column rename window and the key it renames, if any:
+    /// opening a rename on the same header focuses it rather than
+    /// stacking a second dialog, and one on another header closes it
+    /// first. A closed window leaves a handle whose activate fails, so
+    /// the next open falls through and replaces it.
+    column_rename: Option<(String, WindowHandle<Root>)>,
     /// The rename, theme override, and placement locks shared by every
     /// panel, live for the render and stored in the config dump like
     /// every other view knob.
@@ -1754,19 +2045,12 @@ impl LibraryPanel {
                     return;
                 }
                 this.error = None;
-                this.refresh_view(cx);
                 // The catalog loads after a restored track starts, so the
                 // launch's follow waits for this first rebuild; a rescan
-                // that moves the playing row re-scrolls the same way. A
-                // refresh that leaves the row exactly where it was does
-                // not: a tag save reindexes the files it wrote and comes
-                // back through here, and that shouldn't yank the list off
-                // whatever the user was looking at.
-                if this.follow_playing
-                    && this.table.read(cx).delegate().playing_row != this.followed_row
-                {
-                    this.follow_playing(cx);
-                }
+                // that moves the playing row re-scrolls the same way. The
+                // catch-up runs when the rows land, in `on_view_installed`.
+                this.follow_on_view = true;
+                this.refresh_view(cx);
                 cx.notify();
                 this.refresh_title_bar(cx);
             },
@@ -1792,6 +2076,8 @@ impl LibraryPanel {
             .sort_key
             .filter(|key| columns::sortable(key))
             .map(|key| (SharedString::from(key), config.sort_desc));
+        // The renamed headers ride the same layout the columns come from.
+        let labels = columns::label_overrides(&config.column_layout);
         let delegate = TrackTable {
             state: state.clone(),
             panel: cx.weak_entity(),
@@ -1817,7 +2103,9 @@ impl LibraryPanel {
             selected: HashSet::new(),
             anchor: None,
             cursor: None,
-            columns: track_columns(&config.column_layout, &sort),
+            columns: track_columns(&config.column_layout, &sort, &labels),
+            labels,
+            sort_on_click: config.sort_on_click,
             columns_locale: rox_i18n::locale(),
             sort,
             playing_id: None,
@@ -1828,6 +2116,7 @@ impl LibraryPanel {
             cover_paths: HashMap::new(),
             drag_keys: HashMap::new(),
             sel_gen: 0,
+            view_gen: 0,
             added_now: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -1837,9 +2126,13 @@ impl LibraryPanel {
         };
         // Widths and order persist by column key, so a drag is kept across a
         // layout save; the delegate copies the widget's reorder.
+        // Click-to-sort takes the widget's own sorting off (the header
+        // click runs the cycle instead) and takes the column drag over to
+        // Alt, which `set_alt` flips as the modifier comes and goes.
         let table = cx.new(|cx| {
             TableState::new(delegate, window, cx)
-                .col_movable(true)
+                .col_movable(!config.sort_on_click)
+                .sortable(!config.sort_on_click)
                 .col_selectable(false)
         });
         let _table_events = cx.subscribe_in(&table, window, Self::on_table_event);
@@ -1911,6 +2204,7 @@ impl LibraryPanel {
             follow_playing: config.follow_playing,
             smooth_follow: config.smooth_follow,
             followed_row: None,
+            follow_on_view: false,
             resume_playing: config.resume_playing,
             resume_idle: ResumeIdle::default(),
             glide_to: None,
@@ -1951,6 +2245,8 @@ impl LibraryPanel {
             stripes: config.stripes,
             row_borders: config.row_borders,
             column_headers: config.column_headers,
+            sort_on_click: config.sort_on_click,
+            column_rename: None,
             chrome: config.chrome,
             tab_panel: None,
             _tabs_changed: None,
@@ -2413,25 +2709,81 @@ impl LibraryPanel {
         });
     }
 
+    /// Rebuild the rows for the current query, filter, and sort. The pass
+    /// itself runs on the background executor: a search over ten million
+    /// rows is tens of milliseconds and the sort behind it can be near a
+    /// second, which is a dropped frame either way if it runs here. The
+    /// old rows stay on screen until the new ones land.
     fn refresh_view(&mut self, cx: &mut Context<Self>) {
+        self.schedule_view(false, cx);
+    }
+
+    /// [`Self::refresh_view`] behind the keystroke debounce: typing into a
+    /// search box fires one of these per character, and a pass started per
+    /// keystroke is work thrown away by the next one. The generation check
+    /// already makes stale results harmless; the wait keeps them from being
+    /// started at all.
+    fn refresh_view_debounced(&mut self, cx: &mut Context<Self>) {
+        self.schedule_view(true, cx);
+    }
+
+    fn schedule_view(&mut self, debounce: bool, cx: &mut Context<Self>) {
         let query = self.effective_query(cx);
         let filter = self.effective_filter(cx);
-        self.table.update(cx, |table, cx| {
-            // Selection indices point into the old view; drop them along
-            // with the widget's own focus row. The shared selection keeps
-            // the last explicit pick, a view refresh is not one.
-            let (view, groups) = table.delegate().compute_view(&query, &filter, cx);
+        let generation = self.table.update(cx, |table, _| {
             let delegate = table.delegate_mut();
-            delegate.view = view;
-            delegate.groups = groups;
-            delegate.selected.clear();
-            delegate.sel_gen += 1;
-            delegate.anchor = None;
-            delegate.cursor = None;
-            delegate.locate_playing(cx);
-            table.clear_selection(cx);
-            cx.notify();
+            delegate.view_gen += 1;
+            delegate.view_gen
         });
+        let inputs = self
+            .table
+            .read(cx)
+            .delegate()
+            .view_inputs(&query, &filter, cx);
+        let Some(inputs) = inputs else {
+            // No projection yet: install the empty view straight away, so a
+            // panel built before the catalog loads shows nothing rather
+            // than whatever it held before.
+            self.table.update(cx, |table, cx| {
+                install_view(table, generation, Arc::new(Vec::new()), Vec::new(), cx);
+            });
+            self.on_view_installed(cx);
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            if debounce {
+                cx.background_executor().timer(VIEW_DEBOUNCE).await;
+                // Another keystroke landed while this one waited, so its
+                // pass is the one worth running.
+                let live = this
+                    .update(cx, |this, cx| {
+                        this.table.read(cx).delegate().view_gen == generation
+                    })
+                    .unwrap_or(false);
+                if !live {
+                    return;
+                }
+            }
+            let (view, groups) = cx
+                .background_executor()
+                .spawn(async move { compute_rows(&inputs) })
+                .await;
+            this.update(cx, |this, cx| {
+                let installed = this.table.update(cx, |table, cx| {
+                    install_view(table, generation, view, groups, cx)
+                });
+                if installed {
+                    this.on_view_installed(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// What used to run under `refresh_view` once the rows were in hand,
+    /// now that they arrive a frame or more later.
+    fn on_view_installed(&mut self, cx: &mut Context<Self>) {
         // The saved scroll restores against the first view with rows; a
         // strict deferred scroll on the handle, so it runs on the paint
         // that shows them, even if the panel is in a background tab
@@ -2445,6 +2797,17 @@ impl LibraryPanel {
                     .vertical_scroll_handle
                     .scroll_to_item_strict(row, ScrollStrategy::Top);
             }
+        }
+        // The catalog load's follow waited for the rows, so it runs here:
+        // the playing row's index only exists once the view holding it is
+        // installed. A refresh that leaves the row where it was does not
+        // re-scroll, so a tag save that reindexes a few files can't yank
+        // the list off whatever was being read.
+        if std::mem::take(&mut self.follow_on_view)
+            && self.follow_playing
+            && self.table.read(cx).delegate().playing_row != self.followed_row
+        {
+            self.follow_playing(cx);
         }
     }
 
@@ -2607,14 +2970,14 @@ impl LibraryPanel {
     /// The shown columns in display order, each with its live width, for
     /// the layout dump and for duplicates.
     fn column_specs(&self, cx: &App) -> Vec<ColumnSpec> {
-        self.table
-            .read(cx)
-            .delegate()
+        let delegate = self.table.read(cx).delegate();
+        delegate
             .columns
             .iter()
             .map(|column| ColumnSpec {
                 key: column.key.to_string(),
                 width: f32::from(column.width),
+                label: delegate.labels.get(column.key.as_ref()).cloned(),
             })
             .collect()
     }
@@ -2660,6 +3023,7 @@ impl LibraryPanel {
             stripes: self.stripes,
             row_borders: self.row_borders,
             column_headers: self.column_headers,
+            sort_on_click: self.sort_on_click,
         }
     }
 
@@ -2751,7 +3115,13 @@ impl LibraryPanel {
                     }
                 }
             } else {
-                let column = Column::new(def.key, def.label).width(px(def.default_width));
+                // A column brought back by hand keeps whatever header it
+                // was renamed to, the same way a restored one does.
+                let label: SharedString = match delegate.labels.get(def.key) {
+                    Some(label) => label.clone().into(),
+                    None => def.label.into(),
+                };
+                let column = Column::new(def.key, label).width(px(def.default_width));
                 // Same gate the restored layout builds under, or a column
                 // would sort while it was added by hand this session and stop
                 // sorting on the next launch.
@@ -2777,6 +3147,117 @@ impl LibraryPanel {
         self.refresh_similarity(cx);
         self.refresh_title_bar(cx);
         self.request_layout_save(cx);
+    }
+
+    /// Rename a column's header, or drop the rename with None so the
+    /// registry's label comes back. An empty name is a name: it's how a
+    /// header is asked to draw blank, and it persists as one.
+    ///
+    /// Called from the header menu and from the rename window, both of
+    /// which run outside the table's own update, so this takes the table
+    /// the way [`Self::toggle_column`] does.
+    fn set_column_label(&mut self, key: String, label: Option<String>, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            match label.clone() {
+                Some(label) => delegate.labels.insert(key.clone(), label),
+                None => delegate.labels.remove(&key),
+            };
+            // A hidden column has no built column to write to; its name
+            // still lands on the map above and shows when it comes back.
+            if let Some(column) = delegate.columns.iter_mut().find(|c| c.key.as_ref() == key) {
+                column.name = match label.clone() {
+                    Some(label) => label.into(),
+                    None => column_def(&key)
+                        .map_or_else(SharedString::default, |def| SharedString::from(def.label)),
+                };
+            }
+            table.refresh(cx);
+        });
+        self.request_layout_save(cx);
+    }
+
+    /// The current name of a column: what the user typed over it, or the
+    /// registry's label.
+    fn column_label(&self, key: &str, cx: &App) -> Option<String> {
+        self.table.read(cx).delegate().labels.get(key).cloned()
+    }
+
+    /// Open the rename window for one header, or focus the open one. It
+    /// holds the panel weakly, like every other dialog over a panel, so
+    /// closing the panel under it leaves a window that renames nothing.
+    fn open_column_rename(&mut self, key: String, cx: &mut Context<Self>) {
+        if let Some((open_key, handle)) = self.column_rename.take() {
+            if open_key == key {
+                if handle
+                    .update(cx, |_, window, _| window.activate_window())
+                    .is_ok()
+                {
+                    self.column_rename = Some((open_key, handle));
+                    return;
+                }
+            } else {
+                // A window over another header would keep writing to that
+                // one; close it rather than juggle two.
+                handle
+                    .update(cx, |_, window, _| window.remove_window())
+                    .ok();
+            }
+        }
+        let Some(def) = column_def(&key) else { return };
+        let current = self.column_label(&key, cx).unwrap_or_default();
+        let title = SharedString::from(format!("rox - rename {}", def.label));
+        let bounds = gpui::Bounds::centered(None, gpui::size(px(380.), px(205.)), cx);
+        let state = self.state.clone();
+        let panel = cx.weak_entity();
+        let handle = panel::open_child_window(cx, title, bounds, None, {
+            let key = key.clone();
+            move |window, cx| {
+                cx.new(|cx| {
+                    ColumnRenameWindow::new(panel, state, key, def.label, current, window, cx)
+                })
+            }
+        });
+        self.column_rename = Some((key, handle));
+    }
+
+    /// Switch the header's plain click between sorting and doing nothing.
+    /// While it's on, the widget's own sorting is off (the delegate runs
+    /// the cycle and draws the arrow) and the column drag wants Alt, which
+    /// [`Self::set_alt`] tracks; while it's off, both go back to stock.
+    fn set_sort_on_click(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.sort_on_click = on;
+        self.table.update(cx, |table, cx| {
+            table.sortable = !on;
+            // Off, the drag is always live again. On, it waits for Alt,
+            // which nothing is holding at the moment the toggle flips.
+            table.col_movable = !on;
+            table.delegate_mut().sort_on_click = on;
+            // The widget keeps its own copy of each column, and the sorts
+            // taken while it was switched off never reached it. Re-reading
+            // the delegate's columns puts its arrows back on the column
+            // the list is actually sorted by.
+            table.refresh(cx);
+        });
+        cx.notify();
+        self.request_layout_save(cx);
+    }
+
+    /// Follow the Alt key while click-to-sort is on: the plain click is
+    /// the sort, so the column drag only arms while Alt is held. gpui
+    /// can't gate `on_drag` on a modifier, so the header is built with or
+    /// without it and the modifier decides which.
+    fn set_alt(&mut self, alt: bool, cx: &mut Context<Self>) {
+        if !self.sort_on_click {
+            return;
+        }
+        self.table.update(cx, |table, cx| {
+            if table.col_movable == alt {
+                return;
+            }
+            table.col_movable = alt;
+            cx.notify();
+        });
     }
 
     /// The keys of the currently shown columns, for the settings checklist.
@@ -2833,7 +3314,11 @@ impl LibraryPanel {
     fn reset_columns(&mut self, cx: &mut Context<Self>) {
         let sort = self.table.read(cx).delegate().sort.clone();
         self.table.update(cx, |table, cx| {
-            table.delegate_mut().columns = track_columns(&[], &sort);
+            let delegate = table.delegate_mut();
+            // The renames survive: this row resets what shows and in what
+            // order, and each renamed header has its own reset in the
+            // header menu.
+            delegate.columns = track_columns(&[], &sort, &delegate.labels);
             table.refresh(cx);
         });
         self.columns_shown = self.shown_columns(cx);
@@ -2877,21 +3362,11 @@ impl LibraryPanel {
             self.play_shuffled_from(ix, cx);
             return;
         }
-        let (rows, start) = {
-            let delegate = self.table.read(cx).delegate();
-            let tracks: Vec<usize> = (0..delegate.view.len())
-                .filter(|&i| delegate.track_at(i).is_some())
-                .collect();
-            let Some(clicked) = tracks.iter().position(|&i| i == ix) else {
-                return;
-            };
-            // Keep up to half the budget behind the click for history, then
-            // slide the window forward to fill it against the view's end.
-            let mut lo = clicked.saturating_sub(QUEUE_CAP / 2);
-            lo = lo.min(tracks.len().saturating_sub(QUEUE_CAP));
-            let hi = (lo + QUEUE_CAP).min(tracks.len());
-            (tracks[lo..hi].to_vec(), clicked - lo)
+        let window = {
+            let view = self.table.read(cx).delegate().view.clone();
+            play_window(&view, ix, QUEUE_CAP)
         };
+        let Some((rows, start)) = window else { return };
         self.play_rows_at(rows, start, false, cx);
     }
 
@@ -2999,19 +3474,29 @@ impl LibraryPanel {
         self.play_rows_at(rows, 0, false, cx);
     }
 
-    /// Play the whole view shuffled with `ix` first: the clicked row heads the
+    /// Play the view shuffled with `ix` first: the clicked row heads the
     /// queue so the pinned head plays before the shuffled rest. "Play Shuffled"
     /// on a single row and a shuffle-on double click both come through here.
+    ///
+    /// The draw is the clicked row plus the view's leading rows up to the
+    /// cap, which is what the whole-view build came to anyway once
+    /// [`Self::play_shuffled`] truncated it; taking only that many out of
+    /// the view keeps a click on a million-row list from listing the whole
+    /// thing to throw all but a thousand of it away.
     fn play_shuffled_from(&mut self, ix: usize, cx: &mut Context<Self>) {
         let rows = {
             let delegate = self.table.read(cx).delegate();
-            let mut tracks: Vec<usize> = (0..delegate.view.len())
-                .filter(|&i| delegate.track_at(i).is_some())
-                .collect();
-            if let Some(pos) = tracks.iter().position(|&i| i == ix) {
-                let clicked = tracks.remove(pos);
-                tracks.insert(0, clicked);
+            let mut tracks = Vec::with_capacity(QUEUE_CAP.min(delegate.view.len()));
+            // A press on a header row plays its view from the front, the
+            // way it always did; only a track row heads the queue.
+            if delegate.track_at(ix).is_some() {
+                tracks.push(ix);
             }
+            tracks.extend(
+                (0..delegate.view.len())
+                    .filter(|&i| i != ix && delegate.track_at(i).is_some())
+                    .take(QUEUE_CAP - tracks.len()),
+            );
             tracks
         };
         self.play_shuffled(rows, cx);
@@ -3445,6 +3930,15 @@ impl panel::PanelSettings for LibraryPanel {
                     },
                     cx,
                 ))
+                .child(panel::setting_row(
+                    rox_i18n::t!("library-sort-on-click"),
+                    Some(rox_i18n::t!("library-sort-on-click.description")),
+                    panel::toggle(
+                        self.sort_on_click,
+                        |this: &mut Self, on, cx| this.set_sort_on_click(on, cx),
+                        cx,
+                    ),
+                ))
                 .into_any_element(),
         )
     }
@@ -3797,8 +4291,10 @@ impl QueryFilter for LibraryPanel {
     fn set_query_box_shown(&mut self, shown: bool) {
         self.show_search = shown;
     }
+    /// Every query change reaches the view through here, and the ones that
+    /// matter for cost are keystrokes, so this is the debounced path.
     fn rebuild_query_view(&mut self, cx: &mut Context<Self>) {
-        self.refresh_view(cx);
+        self.refresh_view_debounced(cx);
     }
     fn set_query_resync(&mut self, pending: bool) {
         self.resync_box = pending;
@@ -4233,6 +4729,12 @@ impl LibraryPanel {
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.on_panel_key(event, window, cx)),
             )
+            // While click-to-sort is on, the column drag arms on Alt, so
+            // the header is rebuilt with or without its grab as the key
+            // comes and goes.
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                this.set_alt(event.modifiers.alt, cx);
+            }))
             // Any scroll or press over the list counts as browsing; the
             // stamps only restart the idle clock, leaving the scroll and the
             // click to the table underneath, so nothing acts twice.
@@ -4250,5 +4752,315 @@ impl LibraryPanel {
             .child(div().flex_1().min_h_0().relative().child(body).children(
                 panel::type_ahead_overlay(&self.type_ahead_display(), self.type_ahead_at),
             ))
+    }
+}
+
+/// The column rename window: one input over a header's name, the panel
+/// rename window's shape at the column's scale. Edits apply as they're
+/// typed, so the header follows along, and Enter or Escape closes.
+///
+/// Clearing the field puts the registry's label back, so an empty field
+/// reads as what it does. A header that draws nothing is asked for with a
+/// single space: the value is trimmed before it's stored, so the space
+/// lands as an empty name rather than as no name at all.
+struct ColumnRenameWindow {
+    panel: WeakEntity<LibraryPanel>,
+    input: Entity<InputState>,
+    /// The shared state, for the window's own backdrop.
+    state: AppState,
+    backdrop: WindowBackdrop,
+    _input_events: Subscription,
+    /// This window pumps its own frames, so the backdrop needs its own
+    /// wake on a new bake.
+    _backdrop_changed: Subscription,
+}
+
+impl ColumnRenameWindow {
+    fn new(
+        panel: WeakEntity<LibraryPanel>,
+        state: AppState,
+        key: String,
+        placeholder: &'static str,
+        current: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // The registry's label is the placeholder, so an empty field reads
+        // as the fallback it is.
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(placeholder)
+                .default_value(current)
+        });
+        // The column is held by key rather than by index: the columns can
+        // be reordered or hidden while this window is open.
+        let _input_events = cx.subscribe_in(
+            &input,
+            window,
+            move |this: &mut Self, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    // An empty field is the registry's label back. A name
+                    // is trimmed before it's stored, so a lone space lands
+                    // as an empty name rather than as no name at all.
+                    let raw = input.read(cx).value().to_string();
+                    let label = (!raw.is_empty()).then(|| raw.trim().to_string());
+                    this.panel
+                        .update(cx, |panel, cx| {
+                            panel.set_column_label(key.clone(), label, cx)
+                        })
+                        .ok();
+                }
+                // The name was written as it was typed, so committing is
+                // closing.
+                InputEvent::PressEnter { .. } => window.remove_window(),
+                _ => {}
+            },
+        );
+        let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        window.focus(&input.read(cx).focus_handle(cx));
+        ColumnRenameWindow {
+            panel,
+            input,
+            state,
+            backdrop: WindowBackdrop::default(),
+            _input_events,
+            _backdrop_changed,
+        }
+    }
+}
+
+impl Render for ColumnRenameWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(palette::bg_elevated())
+            .text_color(palette::text_bright())
+            .text_sm()
+            // Escape leaves the way Enter does: the name is already on the
+            // header, so there's nothing here to cancel.
+            .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
+                if event.keystroke.key == "escape" {
+                    window.remove_window();
+                }
+            }))
+            // The backdrop paints first, under the input, like every other
+            // window over the shared state.
+            .children(self.backdrop.layer(&self.state.now_art, window, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .bg(palette::bg_elevated())
+                    .p(tokens::SPACE_MD)
+                    .child(settings_ui::section(
+                        rox_i18n::t!("library-column-rename-name"),
+                        None,
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_XS)
+                            .child(Input::new(&self.input).w_full())
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    .child(rox_i18n::t!("library-column-rename-note")),
+                            ),
+                    )),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rox_library::projection::FilterSet;
+    use rox_library::{store, TrackRow};
+
+    /// A track row carrying only what the view pass and the windowing
+    /// read; everything else stays at its neutral default.
+    fn track(path: &str, album_artist: &str, album: &str, track_no: u16) -> TrackRow {
+        TrackRow {
+            title_sort: String::new(),
+            artist_sort: String::new(),
+            album_artist_sort: String::new(),
+            album_sort: String::new(),
+            sub: 0,
+            cue: None,
+            path: path.into(),
+            title: path.into(),
+            artist: album_artist.into(),
+            album_artist: album_artist.into(),
+            album: album.into(),
+            genre: String::new(),
+            year: 2000,
+            disc_no: 1,
+            track_no,
+            duration_ms: 1000,
+            codec: "flac".into(),
+            bitrate_kbps: 900,
+            sample_rate_hz: 44100,
+            bit_depth: 16,
+            rating: 0,
+            replay_gain: Default::default(),
+            bpm: None,
+            size: 0,
+            mtime: 0,
+        }
+    }
+
+    /// A projection over an in-memory database, the same load path the
+    /// catalog runs.
+    fn projection(rows: &[TrackRow]) -> Arc<Projection> {
+        let mut conn = rox_library::rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, rows).unwrap();
+        Arc::new(Projection::load_serial(&conn, false).unwrap())
+    }
+
+    /// The window the old pass produced: every track row in the view
+    /// listed, then a slice of it taken around the click. What
+    /// [`play_window`] has to keep answering without the list.
+    fn window_by_listing(view: &[Row], ix: usize, cap: usize) -> Option<(Vec<usize>, usize)> {
+        let tracks: Vec<usize> = (0..view.len())
+            .filter(|&i| matches!(view[i], Row::Track(_)))
+            .collect();
+        let clicked = tracks.iter().position(|&i| i == ix)?;
+        let mut lo = clicked.saturating_sub(cap / 2);
+        lo = lo.min(tracks.len().saturating_sub(cap));
+        let hi = (lo + cap).min(tracks.len());
+        Some((tracks[lo..hi].to_vec(), clicked - lo))
+    }
+
+    /// A view of `tracks` track rows with a header block every `run` of
+    /// them, so the windowing has non-track rows to walk over.
+    fn view_with_heads(tracks: usize, run: usize) -> Vec<Row> {
+        let mut view = Vec::new();
+        for i in 0..tracks {
+            if i % run == 0 {
+                view.push(Row::Head((i / run) as u32, 0));
+                view.push(Row::Head((i / run) as u32, 1));
+            }
+            view.push(Row::Track(i as u32));
+        }
+        view
+    }
+
+    /// Walking out from the click lands on exactly the slice the full
+    /// listing did: same rows, same order, same offset for the clicked
+    /// one, wherever in the view it sits and however the cap compares to
+    /// the view's length.
+    #[test]
+    fn the_play_window_matches_the_full_listing() {
+        for (tracks, run) in [(1, 1), (7, 3), (40, 5), (101, 7)] {
+            let view = view_with_heads(tracks, run);
+            for cap in [1, 2, 3, 10, 40, 500] {
+                for (ix, _) in view
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| matches!(row, Row::Track(_)))
+                {
+                    assert_eq!(
+                        play_window(&view, ix, cap),
+                        window_by_listing(&view, ix, cap),
+                        "tracks {tracks}, run {run}, cap {cap}, row {ix}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A press on a header row or past the end plays nothing.
+    #[test]
+    fn the_play_window_needs_a_track_row() {
+        let view = view_with_heads(4, 2);
+        assert!(play_window(&view, 0, 10).is_none());
+        assert!(play_window(&view, view.len(), 10).is_none());
+    }
+
+    /// The window never runs past the budget, and fills it whenever the
+    /// view has the rows to fill it with.
+    #[test]
+    fn the_play_window_fills_the_budget() {
+        let view = view_with_heads(100, 4);
+        for ix in (0..view.len()).filter(|&i| matches!(view[i], Row::Track(_))) {
+            let (rows, start) = play_window(&view, ix, 20).expect("a track row");
+            assert_eq!(rows.len(), 20);
+            assert_eq!(rows[start], ix);
+        }
+    }
+
+    /// The rows a fixture's view holds, computed the way the panel used to
+    /// compute them inline.
+    fn view_directly(inputs: &ViewInputs) -> (Arc<Vec<Row>>, Vec<Group>) {
+        let key = |projection: &Projection, row: u32| -> u64 {
+            let i = row as usize;
+            (projection.album_artist[i] as u64) << 32 | projection.album[i] as u64
+        };
+        view::view_for(
+            &inputs.projection,
+            inputs.order.clone(),
+            &ViewSpec {
+                query: &inputs.query,
+                filter: &inputs.filter,
+                similar: None,
+                sort: inputs.sort,
+                grouping: inputs.head_rows.map(|head_rows| Grouping {
+                    head_rows,
+                    pre_sort: None,
+                    key: &key,
+                    discs: true,
+                }),
+            },
+        )
+    }
+
+    fn inputs(projection: &Arc<Projection>, query: &str, head_rows: Option<u8>) -> ViewInputs {
+        ViewInputs {
+            projection: projection.clone(),
+            order: Arc::new(projection.sort_canonical()),
+            query: query.to_string(),
+            filter: FilterSet::default(),
+            similar: None,
+            sort: None,
+            group_by: GroupBy::Album,
+            head_rows,
+        }
+    }
+
+    /// The pass hands back the same view off the UI thread as it did on
+    /// it: same rows in the same order, same groups, for a grouped view, a
+    /// flat one, and a search. Running it on a plain thread also pins the
+    /// inputs as `Send`, which is what lets the executor take them at all.
+    #[test]
+    fn the_background_pass_computes_the_same_view() {
+        let p = projection(&[
+            track("/m/a1.flac", "A", "One", 1),
+            track("/m/a2.flac", "A", "One", 2),
+            track("/m/b1.flac", "B", "Two", 1),
+            track("/m/b2.flac", "B", "Two", 2),
+            track("/m/c1.flac", "C", "Three", 1),
+        ]);
+        for (query, head_rows) in [("", Some(2u8)), ("", None), ("b", Some(2u8))] {
+            let direct = view_directly(&inputs(&p, query, head_rows));
+            let sent = inputs(&p, query, head_rows);
+            let off_thread = std::thread::spawn(move || compute_rows(&sent))
+                .join()
+                .expect("the pass");
+            assert_eq!(*off_thread.0, *direct.0, "rows for {query:?}");
+            let shape = |groups: &[Group]| -> Vec<(u32, u32, u64)> {
+                groups
+                    .iter()
+                    .map(|g| (g.first, g.tracks, g.total_ms))
+                    .collect()
+            };
+            assert_eq!(
+                shape(&off_thread.1),
+                shape(&direct.1),
+                "groups for {query:?}"
+            );
+        }
     }
 }

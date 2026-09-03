@@ -1053,12 +1053,11 @@ impl ArtPanel {
         if let Some(projection) = self.state.library.read(cx).projection() {
             for (ix, cell) in self.cells.iter().enumerate() {
                 let row = self.view[cell.start] as usize;
+                // The same key the ordering runs on, so a sort-tagged name
+                // lands under the letter the rail names.
                 let name = projection
                     .album_artists
-                    .lower
-                    .get(projection.album_artist[row] as usize)
-                    .map(String::as_str)
-                    .unwrap_or("");
+                    .sort_key(projection.album_artist[row] as usize);
                 let letter = panel::letter_initial(name);
                 if self.letters.last().map(|(l, _)| l.as_ref()) != Some(letter.as_str()) {
                     self.letters.push((SharedString::from(letter), ix));
@@ -2082,7 +2081,7 @@ impl ArtPanel {
     /// `rail` lifts the Bottom position clear of a horizontal letter rail.
     /// Hidden never gets here; the caller skips the child.
     fn label(&self, ix: usize, pos: LabelPos, below: f32, rail: bool, cx: &App) -> Div {
-        let (album, artist) = {
+        let (album, album_reading, artist, artist_reading) = {
             let library = self.state.library.read(cx);
             match (self.cells.get(ix), library.projection()) {
                 (Some(cell), Some(projection)) => self
@@ -2091,21 +2090,25 @@ impl ArtPanel {
                     .map(|&row| {
                         let v = projection.resolve(row);
                         // Rows from before the album artist column have an
-                        // empty one; the first track's artist stands in.
-                        let artist = if v.album_artist.is_empty() {
-                            v.artist
+                        // empty one; the first track's artist stands in,
+                        // with its own sort name for the reading.
+                        let (artist, artist_sort) = if v.album_artist.is_empty() {
+                            (v.artist, v.artist_sort)
                         } else {
-                            v.album_artist
+                            (v.album_artist, v.album_artist_sort)
                         };
                         (
                             SharedString::from(v.album.to_string()),
+                            SharedString::from(v.album_sort.to_string()),
                             SharedString::from(artist.to_string()),
+                            SharedString::from(artist_sort.to_string()),
                         )
                     })
                     .unwrap_or_default(),
                 _ => Default::default(),
             }
         };
+        let readings = crate::settings::show_readings();
         let has_text = !album.is_empty() || !artist.is_empty();
         let anchor = div().absolute().left_0().right_0();
         let anchor = match pos {
@@ -2133,7 +2136,7 @@ impl ArtPanel {
                                 .max_w(relative(1.0))
                                 .truncate()
                                 .text_color(palette::text_bright())
-                                .child(album),
+                                .child(panel::named(&album, &album_reading, readings)),
                         )
                     })
                     .when(!artist.is_empty(), |d| {
@@ -2143,7 +2146,7 @@ impl ArtPanel {
                                 .truncate()
                                 .text_xs()
                                 .text_color(palette::text_secondary())
-                                .child(artist),
+                                .child(panel::named(&artist, &artist_reading, readings)),
                         )
                     }),
             )
@@ -3336,6 +3339,7 @@ impl ArtPanel {
                         let reveal = ids.first().copied();
                         let convert_state = state.clone();
                         let convert_ids = ids.clone();
+                        let copy_ids = ids.clone();
                         let menu = menu.item(
                             PopupMenuItem::new(rox_i18n::t!("art-edit-tags"))
                                 .icon(Icon::default().path(icons::PENCIL))
@@ -3367,6 +3371,14 @@ impl ArtPanel {
                         } else {
                             menu
                         };
+                        // Copy takes the album's tracks, one line each.
+                        let menu = panel::copy_ids_submenu(
+                            menu,
+                            this.read(cx).state.clone(),
+                            copy_ids,
+                            window,
+                            cx,
+                        );
                         // Reveal follows the album's first track, opening
                         // that album's folder.
                         let menu = panel::reveal_item(menu, this.read(cx).state.clone(), reveal);

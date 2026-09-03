@@ -4,16 +4,21 @@
 //! shape was validated at 10 million tracks in rox-prototype-library, which
 //! reused these modules for its harness (git history, commit bd22dc1).
 
+pub mod album_meta;
 pub mod art;
+pub mod artist_meta;
 pub mod bake;
 pub mod cue;
 pub mod duplicates;
 pub mod embed_tag;
 pub mod embeddings;
+pub mod fold;
 pub mod folders;
 pub mod genre;
 pub mod genre_meta;
+pub mod genre_suggest;
 pub mod hash;
+pub mod health;
 pub mod listens;
 pub mod lyrics;
 pub mod m3u;
@@ -32,6 +37,7 @@ pub mod store;
 pub mod tag_source;
 pub mod tempo;
 pub mod thumbs;
+pub mod track_meta;
 pub mod view;
 pub mod watch;
 pub mod writer;
@@ -84,6 +90,15 @@ pub struct TrackRow {
     /// the tag is missing, so a plain album groups the same either way.
     pub album_artist: String,
     pub album: String,
+    /// The four sort names off the file's tags, empty when it carries
+    /// none, the way `album_artist` and `genre` already carry absence.
+    /// These are the Latin forms ordering and search fall back to when the
+    /// displayed name isn't one, so a library of Japanese titles still
+    /// files under the letter a person would look for it under.
+    pub title_sort: String,
+    pub artist_sort: String,
+    pub album_artist_sort: String,
+    pub album_sort: String,
     pub genre: String,
     pub year: u16,
     /// The disc this track belongs to in a multi-disc set; 0 when untagged.

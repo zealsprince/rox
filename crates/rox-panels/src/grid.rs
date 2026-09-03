@@ -248,6 +248,18 @@ struct Cell {
     dim: Option<f32>,
 }
 
+/// What a tile writes under its cover: the album and the artist, each
+/// with the sort name that draws after it as a reading. Both the hover
+/// overlay and the always-on caption read this, so they can't disagree
+/// about which artist field stood in.
+#[derive(Default)]
+struct TileLabels {
+    album: SharedString,
+    album_reading: SharedString,
+    artist: SharedString,
+    artist_reading: SharedString,
+}
+
 /// How many columns the grid falls back to before its first paint has
 /// measured a width.
 const FALLBACK_COLS: usize = 4;
@@ -686,11 +698,9 @@ impl GridPanel {
             if let Some((column, table)) = table {
                 for (ix, cell) in self.cells.iter().enumerate() {
                     let row = self.view[cell.start] as usize;
-                    let name = table
-                        .lower
-                        .get(column[row] as usize)
-                        .map(String::as_str)
-                        .unwrap_or("");
+                    // The same key the ordering runs on, so a sort-tagged
+                    // name lands under the letter the rail names.
+                    let name = table.sort_key(column[row] as usize);
                     let letter = panel::letter_initial(name);
                     if self.letters.last().map(|(l, _)| l.as_ref()) != Some(letter.as_str()) {
                         self.letters.push((SharedString::from(letter), ix));
@@ -1471,7 +1481,7 @@ impl GridPanel {
     /// A tile's album and artist strings: the first track's, with the
     /// album artist standing in when the row has one. Empty off the
     /// end of the cells or before a projection loads.
-    fn cell_labels(&self, ix: usize, cx: &App) -> (SharedString, SharedString) {
+    fn cell_labels(&self, ix: usize, cx: &App) -> TileLabels {
         let library = self.state.library.read(cx);
         match (self.cells.get(ix), library.projection()) {
             (Some(cell), Some(projection)) => self
@@ -1481,25 +1491,33 @@ impl GridPanel {
                     let v = projection.resolve(row);
                     // Rows from before the album artist column have an
                     // empty one; the first track's artist stands in.
-                    let artist = if v.album_artist.is_empty() {
-                        v.artist
+                    let (artist, artist_reading) = if v.album_artist.is_empty() {
+                        (v.artist, v.artist_sort)
                     } else {
-                        v.album_artist
+                        (v.album_artist, v.album_artist_sort)
                     };
-                    (
-                        SharedString::from(v.album.to_string()),
-                        SharedString::from(artist.to_string()),
-                    )
+                    TileLabels {
+                        album: SharedString::from(v.album.to_string()),
+                        album_reading: SharedString::from(v.album_sort.to_string()),
+                        artist: SharedString::from(artist.to_string()),
+                        artist_reading: SharedString::from(artist_reading.to_string()),
+                    }
                 })
                 .unwrap_or_default(),
-            _ => Default::default(),
+            _ => TileLabels::default(),
         }
     }
 
     /// The hover overlay: album over artist on a translucent strip along
     /// the tile's bottom edge.
     fn label(&self, ix: usize, cx: &App) -> Div {
-        let (album, artist) = self.cell_labels(ix, cx);
+        let TileLabels {
+            album,
+            album_reading,
+            artist,
+            artist_reading,
+        } = self.cell_labels(ix, cx);
+        let readings = crate::settings::show_readings();
         div()
             .absolute()
             .left_0()
@@ -1515,7 +1533,7 @@ impl GridPanel {
                     div()
                         .truncate()
                         .text_color(palette::text_bright())
-                        .child(album),
+                        .child(panel::named(&album, &album_reading, readings)),
                 )
             })
             .when(!artist.is_empty(), |d| {
@@ -1524,7 +1542,7 @@ impl GridPanel {
                         .truncate()
                         .text_xs()
                         .text_color(palette::text_secondary())
-                        .child(artist),
+                        .child(panel::named(&artist, &artist_reading, readings)),
                 )
             })
     }
@@ -1533,7 +1551,13 @@ impl GridPanel {
     /// block, so the tile's total height stays predictable for the virtual
     /// list. Widths match the cover so long titles truncate at its edge.
     fn caption(&self, ix: usize, side: Pixels, cx: &App) -> Div {
-        let (album, artist) = self.cell_labels(ix, cx);
+        let TileLabels {
+            album,
+            album_reading,
+            artist,
+            artist_reading,
+        } = self.cell_labels(ix, cx);
+        let readings = crate::settings::show_readings();
         let base = div()
             .w(side)
             .h(px(TILE_LABEL_H))
@@ -1553,7 +1577,7 @@ impl GridPanel {
                 .truncate()
                 .text_sm()
                 .text_color(palette::text_bright())
-                .child(album),
+                .child(panel::named(&album, &album_reading, readings)),
         )
         .when(!artist.is_empty(), |d| {
             d.child(
@@ -1561,7 +1585,7 @@ impl GridPanel {
                     .truncate()
                     .text_xs()
                     .text_color(palette::text_secondary())
-                    .child(artist),
+                    .child(panel::named(&artist, &artist_reading, readings)),
             )
         })
     }

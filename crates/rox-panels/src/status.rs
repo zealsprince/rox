@@ -22,7 +22,7 @@ use crate::design::{palette, tokens};
 use crate::group_head;
 use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
-use crate::selection::SelectionEvent;
+use crate::selection::{Selection, SelectionEvent};
 use crate::transport::transport_panel;
 
 /// One readout of the status strip, the arrange editor's unit. The
@@ -215,7 +215,12 @@ impl StatusPanel {
     /// The panel's own dropdown entries: quick show/hide per readout. A
     /// re-shown one goes back where it was; the order changes in the
     /// settings window's arrange editor.
-    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
             (rox_i18n::t!("status-item-count"), StatusItem::Count),
@@ -275,6 +280,9 @@ impl StatusPanel {
         let mut plays = 0u64;
         let mut first_ix: Option<u32> = None;
         for (ix, id) in projection.db_id.iter().enumerate() {
+            if projection.is_dead(ix as u32) {
+                continue;
+            }
             if !selected.is_empty() && !selected.contains(id) {
                 continue;
             }
@@ -412,40 +420,98 @@ fn genre_count(syms: HashSet<u32>, strings: &[String]) -> usize {
     genres.len()
 }
 
+/// One pass over the projection for a scope, filtered to the given ids
+/// while the set holds any and covering the whole catalog when it's
+/// empty. Hands back the track count and the summed time alongside the
+/// hover card's rows, since the menubar's status line reads those two off
+/// the same walk. The panel keeps its own richer scan; this one is what
+/// the surfaces with nowhere to cache share.
+fn scope_totals(
+    library: &Entity<Library>,
+    selected: &HashSet<i64>,
+    cx: &App,
+) -> (usize, u64, Vec<(SharedString, SharedString)>) {
+    let Some(projection) = library.read(cx).projection() else {
+        return (0, 0, Vec::new());
+    };
+    let mut tracks = 0usize;
+    let mut total_ms = 0u64;
+    let mut plays = 0u64;
+    let mut albums: HashSet<(u32, u32)> = HashSet::new();
+    let mut artists: HashSet<u32> = HashSet::new();
+    let mut genre_syms: HashSet<u32> = HashSet::new();
+    for (ix, id) in projection.db_id.iter().enumerate() {
+        if projection.is_dead(ix as u32) {
+            continue;
+        }
+        if !selected.is_empty() && !selected.contains(id) {
+            continue;
+        }
+        tracks += 1;
+        total_ms += u64::from(projection.duration_ms[ix]);
+        plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
+        albums.insert((projection.album_artist[ix], projection.album[ix]));
+        artists.insert(projection.album_artist[ix]);
+        genre_syms.insert(projection.genre[ix]);
+    }
+    let rows = totals_rows(
+        tracks,
+        albums.len(),
+        artists.len(),
+        genre_count(genre_syms, &projection.genres.strings),
+        total_ms,
+        plays,
+    );
+    (tracks, total_ms, rows)
+}
+
+/// The selected ids as a set, for scoping a scan.
+fn selected_ids(selection: &Entity<Selection>, cx: &App) -> HashSet<i64> {
+    selection.read(cx).tracks().iter().copied().collect()
+}
+
 /// The whole catalog's totals as a hover card, computed on open. The
 /// menubar's track count uses this one: no panel stands behind it, so
 /// there's nowhere to cache and one projection scan per hover is fine.
 pub fn library_tooltip(library: &Entity<Library>, cx: &mut App) -> AnyView {
-    let rows = library
-        .read(cx)
-        .projection()
-        .map_or_else(Vec::new, |projection| {
-            let mut total_ms = 0u64;
-            let mut plays = 0u64;
-            let mut albums: HashSet<(u32, u32)> = HashSet::new();
-            let mut artists: HashSet<u32> = HashSet::new();
-            let mut genre_syms: HashSet<u32> = HashSet::new();
-            for ix in 0..projection.db_id.len() {
-                total_ms += u64::from(projection.duration_ms[ix]);
-                plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
-                albums.insert((projection.album_artist[ix], projection.album[ix]));
-                artists.insert(projection.album_artist[ix]);
-                genre_syms.insert(projection.genre[ix]);
-            }
-            totals_rows(
-                projection.db_id.len(),
-                albums.len(),
-                artists.len(),
-                genre_count(genre_syms, &projection.genres.strings),
-                total_ms,
-                plays,
-            )
-        });
+    let (_, _, rows) = scope_totals(library, &HashSet::new(), cx);
     cx.new(|_| TotalsTooltip {
         scope: rox_i18n::t!("panel-title-library"),
         rows,
     })
     .into()
+}
+
+/// The standing selection's totals as a hover card, the counterpart to
+/// [`library_tooltip`] for the menubar's line once a pick scopes it.
+pub fn selection_tooltip(
+    library: &Entity<Library>,
+    selection: &Entity<Selection>,
+    cx: &mut App,
+) -> AnyView {
+    let (_, _, rows) = scope_totals(library, &selected_ids(selection, cx), cx);
+    cx.new(|_| TotalsTooltip {
+        scope: rox_i18n::t!("status-scope-selection"),
+        rows,
+    })
+    .into()
+}
+
+/// The selection's track count and summed time, or None while nothing is
+/// picked or the catalog has none of what is. The menubar's status line
+/// runs this when the selection or the catalog moves and shows the cached
+/// pair in between, the way the strip caches its own readouts.
+pub fn selection_summary(
+    library: &Entity<Library>,
+    selection: &Entity<Selection>,
+    cx: &App,
+) -> Option<(usize, u64)> {
+    let selected = selected_ids(selection, cx);
+    if selected.is_empty() {
+        return None;
+    }
+    let (tracks, total_ms, _) = scope_totals(library, &selected, cx);
+    (tracks > 0).then_some((tracks, total_ms))
 }
 
 /// The count's hover card: the scope's full readout set, the stats

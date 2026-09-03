@@ -273,6 +273,34 @@ pub const CANDIDATE_CAP: usize = 200_000;
 /// there's nothing to gain from reading a million vectors to find them.
 const STATS_SAMPLE: usize = 20_000;
 
+/// How many sigmas out a standardized cell is allowed to sit. Anything past
+/// this is pulled back to it, either side of zero.
+///
+/// The z-scores under the model rox ships are heavy tailed in a particular
+/// way: a handful of dimensions barely move across the whole library and
+/// then, on one track in a few thousand, jump to fifty or a hundred and fifty
+/// sigma. Left alone, one such cell is the whole row. Measured over the live
+/// library, a track carrying one has a standardized length of sixty to a
+/// hundred and fifty against a median of seventeen, with nineteen parts in
+/// twenty of that length in two cells, and its cosine against anything is
+/// then a question of whether the other track spikes in the same place. The
+/// symptom is a neighbourhood of thirty tracks that share nothing but the
+/// spike, intros and interludes beside power metal beside a French house
+/// track, and the library's real neighbours nowhere in it. One track in eight
+/// carries a cell past ten sigma, so it's not a corner case.
+///
+/// Four, because that's where a real reading ends and a spike begins. Half a
+/// track's rows have at least one cell past it, so the clip touches a lot of
+/// rows and almost nothing in any of them: the ordinary cells, which are what
+/// the cosine should be reading, sit well inside it and come through
+/// untouched. Anything past four sigma in a dimension that never moves is a
+/// yes-or-no fact about the track, and a yes counts for four sigma rather
+/// than a hundred. Prototyped against the same live library at three, four,
+/// a signed log and a tanh: all four hand the seed above a neighbourhood of
+/// the synth and electronic tracks it belongs with, and they agree on it to
+/// within a place or two, so the choice among them is the simplest one.
+const Z_CLIP: f32 = 4.0;
+
 /// Per-dimension standardization for one model's corpus: what to subtract
 /// and what to divide by before two vectors can be compared. See the module
 /// header for why this isn't baked into the stored vectors.
@@ -292,7 +320,9 @@ impl Stats {
     }
 
     /// Standardize a raw vector into `out`: every dimension in sigmas, none of
-    /// them louder than another for having been measured in a bigger unit.
+    /// them louder than another for having been measured in a bigger unit,
+    /// and none of them past [`Z_CLIP`] of them, so a tail can't be louder
+    /// than the rest of the row put together.
     ///
     /// Length is left alone here rather than scaled to one. Comparing two of
     /// these is still a cosine, and the division that makes it one is folded
@@ -304,7 +334,7 @@ impl Stats {
             raw.iter()
                 .zip(&self.mean)
                 .zip(&self.inv_std)
-                .map(|((v, m), i)| (v - m) * i),
+                .map(|((v, m), i)| ((v - m) * i).clamp(-Z_CLIP, Z_CLIP)),
         );
     }
 }
@@ -588,22 +618,64 @@ const QUANT_FLOOR: f32 = 1e-20;
 /// per minute, because tempo is heard as a ratio: 60 against 70 is a different
 /// piece of music, 160 against 170 is the same one played tight.
 ///
-/// Zero for a tempo either side is missing, which keeps an unmeasured
-/// library ranking exactly as it did before this existed. The NaN the corpus
-/// stands a missing tempo up as goes down that branch, and so does anything
-/// else a ratio and a logarithm have no answer for.
+/// Zero for a tempo either side is missing; what a missing tempo costs is
+/// [`tempo_penalty`]'s call, not this one's. The NaN the corpus stands a
+/// missing tempo up as goes down that branch, and so does anything else a
+/// ratio and a logarithm have no answer for.
+///
+/// This is half of what a candidate pays now. Folding this hard means a pair
+/// that's nearly a double reads as nearly a match, whatever the two numbers
+/// are, so [`tempo_penalty`] charges the octaves the fold dropped as well.
 fn tempo_distance(a: f32, b: f32) -> f32 {
-    let measured = |bpm: f32| bpm.is_finite() && bpm > 0.0;
-    if !measured(a) || !measured(b) {
+    let Some(octaves) = tempo_octaves(a, b) else {
         return 0.0;
-    }
-    let octaves = (a / b).log2();
+    };
     (octaves - octaves.round()).abs()
+}
+
+/// How far apart two tempos are in octaves before anything is folded, None
+/// for a pair a ratio and a logarithm have no answer for. The one place a
+/// tempo pair turns into a number, so the two things charged for it,
+/// [`tempo_distance`] and the drift term in [`tempo_penalty`], agree on what
+/// counts as measurable.
+fn tempo_octaves(a: f32, b: f32) -> Option<f32> {
+    let measured = |bpm: f32| bpm.is_finite() && bpm > 0.0;
+    (measured(a) && measured(b)).then(|| (a / b).log2().abs())
+}
+
+/// The whole cosine a candidate at `b` is charged against a seed at `a`: the
+/// folded distance at [`TEMPO_WEIGHT`], plus the octaves the fold threw away
+/// at [`TEMPO_DRIFT_WEIGHT`]. Two missing tempos charge nothing, so an
+/// unmeasured library still ranks on cosine alone; one missing against one
+/// measured charges [`NO_TEMPO_PENALTY`], since those two tracks disagree
+/// about something real.
+///
+/// Two terms because folding on its own has a hole in it, and the hole is
+/// wide. Fold 70 against 133 and you get 0.074 of an octave, less than a
+/// twentieth of a cosine at the folded weight, so 70 BPM ambient and 133 BPM
+/// EBM read as very nearly the same tempo: a ratio of 1.9 is close enough to
+/// a double that the fold treats the pair as the same music counted
+/// differently. It isn't. Meanwhile 70 against 100, a gap you could actually
+/// beatmatch through, pays 0.145. The drift term prices what the fold is
+/// deliberately blind to, which is how many octaves apart the two numbers
+/// literally are, and it does it gently enough that the fold still wins where
+/// the fold is right.
+fn tempo_penalty(a: f32, b: f32) -> f32 {
+    let Some(octaves) = tempo_octaves(a, b) else {
+        let measured = |bpm: f32| bpm.is_finite() && bpm > 0.0;
+        return if measured(a) == measured(b) {
+            0.0
+        } else {
+            NO_TEMPO_PENALTY
+        };
+    };
+    TEMPO_WEIGHT * tempo_distance(a, b) + TEMPO_DRIFT_WEIGHT * octaves.min(DRIFT_CEILING)
 }
 
 /// The cosine a candidate is charged per octave of [`tempo_distance`] from
 /// the seed. A gap tops out at half an octave, so the most any pair can be
-/// charged is half this.
+/// charged by this term is half this; the drift term in [`tempo_penalty`]
+/// adds its own share on top.
 ///
 /// Calibrated against the live library, fifty thousand tracks under the model
 /// rox ships, over eight seeds spaced evenly through it. The scale worth
@@ -626,20 +698,69 @@ fn tempo_distance(a: f32, b: f32) -> f32 {
 /// tempo goes from a third, the share chance gives, to four in five.
 const TEMPO_WEIGHT: f32 = 0.3;
 
+/// The cosine a candidate is charged per octave it sits from the seed before
+/// the fold, on top of what [`TEMPO_WEIGHT`] charges for the folded gap.
+///
+/// A fifth of the folded weight, which is the ratio that makes the three
+/// cases behave. Off a 70 BPM seed: 72 pays 0.015 and is still a match, 140
+/// pays the ceiling at 0.060, 133 pays 0.078, and 100 pays 0.176. That's the
+/// ordering the folded weight alone got wrong. 133 against a 70 is a ratio of
+/// 1.9, which the fold reads as 0.074 of an octave and charges 0.022 for,
+/// close enough to free that a track at 0.52 raw cosine got drawn off an
+/// ambient seed with three hundred closer tracks in the library. It now pays
+/// more than a clean double does and lands where it belongs, well outside the
+/// seed's tempo without being thrown out of the library.
+///
+/// Sized against the neighbourhood spread [`TEMPO_WEIGHT`] was calibrated on,
+/// 0.095 of cosine from leader to thirtieth at the median. A clean half or
+/// double costs 0.060, about two thirds of that band: enough to move a track
+/// down it, not enough to eject it, which is what half time deserves. It's a
+/// real gap and not a wrong reading, so it shouldn't be free either. Be clear
+/// about what this is: reasoned from the spread that comment measured, not a
+/// second run of the fifty-thousand-track calibration behind it.
+const TEMPO_DRIFT_WEIGHT: f32 = 0.06;
+
+/// What a track with no tempo pays against a seed that has one, and the
+/// other way round.
+///
+/// No tempo is a description too. The pass listens to every track and
+/// refuses the ones it can't hear a beat in, which on a real library is the
+/// classical, the ambient and the film score: about one track in six. A
+/// seed running at 128 and a candidate the pass couldn't count are not
+/// agreeing about tempo, they're disagreeing about whether there is one,
+/// and charging nothing for that handed every beatless track a free pass
+/// over the measured ones. Two beatless tracks still pay nothing, since
+/// they agree, and that's the case that keeps a Debussy seed ranking its
+/// own shelf first.
+///
+/// Twice a clean double and a little over half the most a measured pair
+/// can pay: a real mismatch, short of the worst one. Enough that a 128 BPM
+/// seed's band is measured tracks near 128 rather than whatever the pass
+/// couldn't count, not so much that a beatless track a real timbral
+/// distance ahead loses its place to a metronome.
+const NO_TEMPO_PENALTY: f32 = 0.12;
+
+/// Where the drift term stops counting octaves. Past a full octave the pair
+/// is as far apart as tempo can say, and the fold residue is already pricing
+/// which side of the octave the candidate landed on, so a quadruple isn't
+/// charged twice a double. It also keeps the worst any pair can pay to 0.21,
+/// twice the median neighbourhood and not much more: 40 against 300 is nearly
+/// three octaves, and charging it 0.32 would mean tempo alone deciding
+/// rankings that timbre should still have a say in.
+const DRIFT_CEILING: f32 = 1.0;
+
 /// One model's candidates, standardized once and kept as bytes.
 ///
 /// A byte a dimension rather than the four a float takes. Each row is scaled
 /// by its own largest magnitude, so 127 always means "this row's loudest
-/// dimension" and every other cell is a fraction of it. The obvious
-/// alternative, one fixed step for the whole corpus on the grounds that
-/// [`Stats::standardize`] already put every dimension in sigmas, was tried
-/// against the model rox ships and is markedly worse: those z-scores are
-/// heavy tailed, half a percent of them past four sigma and one in
-/// twenty-five hundred past twelve, so any fixed clip either throws away the
-/// outliers that dominate the cosine or spends its whole range on them.
-/// Measured over the live library, per-row scaling holds the score within a
-/// thousandth of the exact float answer where a four-sigma clip drifts by a
-/// hundredth and reshuffles the top fifty.
+/// dimension" and every other cell is a fraction of it. A fixed step for the
+/// whole corpus was tried first, on the grounds that [`Stats::standardize`]
+/// already put every dimension in sigmas, and lost to this on the live
+/// library: a row whose loudest cell is a fraction of a sigma would spend
+/// most of the byte's range on nothing. Now that standardizing also clips to
+/// [`Z_CLIP`], the loudest cell is never past four sigma either, so per-row
+/// scaling never gets coarser than thirty steps a sigma and the score holds
+/// within a thousandth of the float answer.
 ///
 /// Nothing needs storing for that scale. The length each row is divided by is
 /// measured from the bytes rather than from the floats they came from, so the
@@ -722,8 +843,8 @@ impl Corpus {
     }
 
     /// Charge every score for how far its track's tempo is from the seed's,
-    /// in place. See [`TEMPO_WEIGHT`] for what the charge is worth and
-    /// [`tempo_distance`] for what counts as far.
+    /// in place. See [`tempo_penalty`] for what the charge is worth and what
+    /// counts as far.
     ///
     /// Iterated in step with the corpus rather than looked up by id. `scores`
     /// is what [`Corpus::scores`] returned for this same corpus, which is these
@@ -741,7 +862,7 @@ impl Corpus {
             if row.0 != id {
                 continue;
             }
-            row.1 -= TEMPO_WEIGHT * tempo_distance(seed_bpm, bpm);
+            row.1 -= tempo_penalty(seed_bpm, bpm);
             at += 1;
         }
     }
@@ -987,7 +1108,7 @@ pub fn scores(conn: &Connection, track_id: i64, model: &str) -> rusqlite::Result
 }
 
 /// How much every other track resembles `track_id` once tempo has its say:
-/// [`scores`] with [`TEMPO_WEIGHT`] taken off each candidate in proportion to
+/// [`scores`] with [`tempo_penalty`] taken off each candidate in proportion to
 /// how far its tempo is from the seed's.
 ///
 /// Every pick playback makes runs on this. Two tracks can share a
@@ -1005,11 +1126,12 @@ pub fn ranked(conn: &Connection, track_id: i64, model: &str) -> rusqlite::Result
     let db = db_key(conn);
     let at = fingerprint(conn, model, db.as_deref())?;
     let mut scored = (*held_scores(conn, track_id, model, db.clone(), at)?).clone();
-    // A seed with no tempo has nothing to charge anybody against, and an
-    // unscorable model has nothing to charge. Both leave the raw map alone.
-    let Some(seed_bpm) = track_bpm(conn, track_id)? else {
-        return Ok(scored);
-    };
+    // A seed with no tempo still charges: the candidates that have one
+    // disagree with it about whether there's a beat, and [`tempo_penalty`]
+    // prices that off the NaN the corpus files a missing tempo under. What
+    // has nothing to charge is an unscorable model, which leaves the raw map
+    // alone.
+    let seed_bpm = track_bpm(conn, track_id)?.unwrap_or(f32::NAN);
     let Some(stats) = held_stats(conn, model, db.as_deref(), at)? else {
         return Ok(scored);
     };
@@ -1182,12 +1304,16 @@ mod tests {
     /// Give a track a tempo the way a tagger would, without going through the
     /// measurement pass: the tests that care about the write counter call
     /// [`crate::store::set_measured_bpm`] instead.
+    /// A tempo straight onto the row, with the write noted the way the
+    /// store's own writers note it, so a corpus held from before the tag
+    /// is reread rather than answering with the tempo it no longer has.
     fn tag_bpm(conn: &Connection, id: i64, bpm: f32) {
         conn.execute(
             "UPDATE tracks SET bpm = ?2 WHERE id = ?1",
             rusqlite::params![id, bpm],
         )
         .unwrap();
+        note_write(conn);
     }
 
     /// Half time and double time are the same music counted differently, so
@@ -1223,6 +1349,91 @@ mod tests {
         assert_eq!(tempo_distance(-128.0, 128.0), 0.0);
     }
 
+    /// The regression the drift term exists for. A 70 BPM ambient seed drew a
+    /// 133 BPM EBM track because the fold saw a ratio of 1.9 as very nearly a
+    /// double and charged almost nothing for it. It has to cost more than a
+    /// clean double now, and a clean double has to cost more than a match.
+    #[test]
+    fn a_near_double_costs_more_than_a_real_one() {
+        let paid = |a: f32, b: f32| tempo_penalty(a, b);
+        let same = paid(70.0, 70.0);
+        let double = paid(70.0, 140.0);
+        let ebm = paid(70.0, 133.0);
+        let hundred = paid(70.0, 100.0);
+        assert!(same < 0.001, "a shared tempo is free, paid {same}");
+        assert!(
+            paid(70.0, 72.0) < 0.02,
+            "and so is a couple of BPM either side, paid {}",
+            paid(70.0, 72.0)
+        );
+        assert!(
+            (double - 0.06).abs() < 0.002,
+            "a clean double pays the drift ceiling, paid {double}"
+        );
+        assert!(
+            ebm > double + 0.01,
+            "70 against 133 has to read as further off than 70 against 140, paid {ebm} against {double}"
+        );
+        assert!(
+            ebm < hundred,
+            "and still nearer than a tempo in the middle of the fold, paid {ebm} against {hundred}"
+        );
+        // Which one is the seed changes nothing here either.
+        assert!((paid(133.0, 70.0) - ebm).abs() < 1e-6);
+    }
+
+    /// What the fold is for still works. A drum and bass track written down
+    /// at 87 and the same one at 174 is one tagger disagreeing with another,
+    /// so the pair pays the ceiling and nothing more: 0.06 against the 0.095
+    /// a median neighbourhood spans, which moves it down the band and leaves
+    /// it in the band.
+    #[test]
+    fn a_half_time_reading_stays_inside_a_neighbourhood() {
+        let dnb = tempo_penalty(87.0, 174.0);
+        assert!(
+            (dnb - 0.06).abs() < 0.002,
+            "87 against 174 pays the ceiling, paid {dnb}"
+        );
+        assert!(dnb < 0.095, "and less than a median band, paid {dnb}");
+        // Two octaves out is the same disagreement made twice, not twice the
+        // disagreement, so the ceiling holds.
+        assert!((tempo_penalty(70.0, 280.0) - dnb).abs() < 0.002);
+        // Nothing pays more than the folded half octave plus the ceiling.
+        assert!(tempo_penalty(40.0, 300.0) <= 0.21 + 0.002);
+    }
+
+    /// Two tracks with no tempo agree, so they pay nothing, which is what
+    /// keeps a library nothing has measured ranking on cosine alone. One
+    /// with and one without disagree about whether there's a beat at all,
+    /// and pay the flat charge for it, whichever side the gap is on and
+    /// whatever shape the missing number takes.
+    #[test]
+    fn a_missing_tempo_pays_against_a_measured_one_and_not_another_missing() {
+        for gap in [f32::NAN, 0.0, -128.0, f32::INFINITY] {
+            assert_eq!(
+                tempo_penalty(gap, 128.0),
+                NO_TEMPO_PENALTY,
+                "{gap} against 128"
+            );
+            assert_eq!(
+                tempo_penalty(128.0, gap),
+                NO_TEMPO_PENALTY,
+                "128 against {gap}"
+            );
+            assert_eq!(tempo_penalty(gap, f32::NAN), 0.0, "{gap} against nothing");
+        }
+        assert!(
+            NO_TEMPO_PENALTY > tempo_penalty(70.0, 140.0),
+            "worse than a clean double"
+        );
+        // The worst a measured pair can do: half an octave folded and the
+        // drift ceiling, 100 against a tempo one and a half octaves up.
+        assert!(
+            NO_TEMPO_PENALTY < tempo_penalty(100.0, 282.8),
+            "better than the worst mismatch"
+        );
+    }
+
     /// What [`ranked`] is: [`scores`] with the tempo charge taken off, track
     /// for track, and the reordering that comes out of it.
     ///
@@ -1254,20 +1465,31 @@ mod tests {
 
         // The seed at 140, the raw leader at half of 175 so the fold has
         // something to undo, the runner-up at double the seed's tempo, which
-        // is the same tempo. Everything else is untempoed.
+        // is the same music counted twice as fast. Everything else is
+        // untempoed, and pays the flat charge for disagreeing with a seed
+        // that has one.
         tag_bpm(&conn, seed, 140.0);
         tag_bpm(&conn, leader[0].0, 87.5);
         tag_bpm(&conn, leader[1].0, 280.0);
         let with_tempo: HashMap<i64, f32> = ranked(&conn, seed, "m").unwrap().into_iter().collect();
         let charged = |id: i64| raw[&id] - with_tempo[&id];
         assert!(
-            (charged(leader[0].0) - TEMPO_WEIGHT * 0.322).abs() < 0.002,
-            "the leader pays for a third of an octave, paid {}",
+            (charged(leader[0].0) - (TEMPO_WEIGHT * 0.322 + TEMPO_DRIFT_WEIGHT * 0.678)).abs()
+                < 0.002,
+            "the leader pays for a third of an octave folded and two thirds of one unfolded, paid {}",
             charged(leader[0].0)
         );
-        assert_eq!(charged(leader[1].0), 0.0, "a double is the same tempo");
+        assert!(
+            (charged(leader[1].0) - TEMPO_DRIFT_WEIGHT).abs() < 0.002,
+            "a double is the same tempo and still an octave away, paid {}",
+            charged(leader[1].0)
+        );
         for (id, _) in &leader[2..] {
-            assert_eq!(charged(*id), 0.0, "an untempoed track pays nothing");
+            assert!(
+                (charged(*id) - NO_TEMPO_PENALTY).abs() < 0.002,
+                "an untempoed track pays the flat charge, paid {}",
+                charged(*id)
+            );
         }
 
         let ranked_order = nearest_ranked(&conn, seed, "m", 12).unwrap();
@@ -1294,8 +1516,9 @@ mod tests {
     }
 
     /// A library with no tempos anywhere ranks exactly as it did before the
-    /// penalty existed, and so does one where only the candidates have them:
-    /// a seed with nothing to compare against charges nobody.
+    /// penalty existed. One where only the candidates have them keeps its
+    /// order too: a seed with no tempo charges every measured candidate the
+    /// same flat amount, and a charge everyone pays moves nobody.
     #[test]
     fn an_untempoed_library_ranks_the_way_it_always_did() {
         let conn = conn();
@@ -1316,16 +1539,28 @@ mod tests {
         let raw = nearest(&conn, ids[0], "m", 6).unwrap();
         assert_eq!(nearest_ranked(&conn, ids[0], "m", 6).unwrap(), raw);
 
-        // Tempos on the candidates and none on the seed: still nothing to
-        // charge, since a gap needs two ends.
+        // Tempos on the candidates and none on the seed: every candidate
+        // pays the flat charge for having one where the seed has none, which
+        // is the same charge for each and leaves the order where it was.
         for (i, id) in ids.iter().enumerate().skip(1) {
             tag_bpm(&conn, *id, 80.0 + i as f32 * 20.0);
         }
-        assert_eq!(nearest_ranked(&conn, ids[0], "m", 6).unwrap(), raw);
-        // A tempo nothing believes is no tempo: the seed's 9999 leaves the
-        // ranking alone rather than filing every candidate half an octave off.
+        let flat = |got: Vec<(i64, f32)>| {
+            assert_eq!(got.len(), raw.len());
+            for ((id, score), (want_id, want_score)) in got.iter().zip(&raw) {
+                assert_eq!(id, want_id, "the order held");
+                assert!(
+                    (want_score - score - NO_TEMPO_PENALTY).abs() < 1e-4,
+                    "track {id} went from {want_score} to {score}"
+                );
+            }
+        };
+        flat(nearest_ranked(&conn, ids[0], "m", 6).unwrap());
+        // A tempo nothing believes is no tempo: the seed's 9999 reads as
+        // missing, the same flat charge, rather than filing every candidate
+        // half an octave off.
         tag_bpm(&conn, ids[0], 9999.0);
-        assert_eq!(nearest_ranked(&conn, ids[0], "m", 6).unwrap(), raw);
+        flat(nearest_ranked(&conn, ids[0], "m", 6).unwrap());
     }
 
     /// The tempo pass writes onto `tracks`, not onto the embeddings table, and
@@ -1354,17 +1589,18 @@ mod tests {
             ids.push(id);
         }
         // The seed measured first, which builds and holds a corpus in which
-        // nothing else has a tempo.
+        // nothing else has a tempo: every candidate pays the flat charge for
+        // having none, and the order is the raw one.
         assert_eq!(
             crate::store::set_measured_bpm(&mut conn, &[("/m/0.mp3", 0, 140.0)]).unwrap(),
             1
         );
+        let raw_order = nearest(&conn, ids[0], "m", 6).unwrap();
         let before = nearest_ranked(&conn, ids[0], "m", 6).unwrap();
-        assert_eq!(
-            before,
-            nearest(&conn, ids[0], "m", 6).unwrap(),
-            "nothing to charge yet"
-        );
+        for ((id, score), (raw_id, raw_score)) in before.iter().zip(&raw_order) {
+            assert_eq!(id, raw_id, "nothing to reorder yet");
+            assert!((raw_score - score - NO_TEMPO_PENALTY).abs() < 1e-4);
+        }
 
         // The leader measured at a tempo the seed doesn't share. Its vector
         // never moved, so a corpus that outlived the write would hand back
@@ -1379,15 +1615,15 @@ mod tests {
             1
         );
         let after = nearest_ranked(&conn, ids[0], "m", 6).unwrap();
-        let charged = before[0].1 - after.iter().find(|(id, _)| *id == leader).unwrap().1;
+        let charged = raw_order[0].1 - after.iter().find(|(id, _)| *id == leader).unwrap().1;
         assert!(
-            (charged - TEMPO_WEIGHT * 0.322).abs() < 0.002,
+            (charged - (TEMPO_WEIGHT + TEMPO_DRIFT_WEIGHT) * 0.322).abs() < 0.002,
             "the corpus was reread and the tempo charged, paid {charged}"
         );
         // The raw cosine is what it always was: the write moved the ranking,
         // not the vectors.
         let raw: HashMap<i64, f32> = scores(&conn, ids[0], "m").unwrap().into_iter().collect();
-        assert!((raw[&leader] - before[0].1).abs() < 1e-6);
+        assert!((raw[&leader] - raw_order[0].1).abs() < 1e-6);
     }
 
     /// The cheap gate the modes that rank by sound are offered on: per
@@ -1650,6 +1886,67 @@ mod tests {
 
     /// The bytes the corpus scores against the floats they stand in for.
     ///
+    /// The live library's failure, in miniature. One dimension sits at zero
+    /// for every track but two, where it reads one: a fact about those two,
+    /// and after standardizing a cell of fifteen sigma against a row of
+    /// ordinary ones. Without the clip that cell is the row, and the two
+    /// spiking tracks come out as each other's nearest neighbour whatever the
+    /// rest of them holds. With it, the track that actually shares a seed's
+    /// other sixty-three dimensions is the one that comes back first.
+    #[test]
+    fn a_spike_in_a_quiet_dimension_does_not_decide_the_neighbourhood() {
+        let conn = conn();
+        let (tracks, dim, quiet) = (500usize, 64usize, 5usize);
+        let mut rolls = Rolls(0x9E37_79B9_7F4A_7C15);
+        let mut ids = Vec::new();
+        let mut rows: Vec<Vec<f32>> = Vec::new();
+        for i in 0..tracks {
+            let mut raw: Vec<f32> = (0..dim).map(|_| rolls.next()).collect();
+            raw[quiet] = 0.0;
+            rows.push(raw);
+            ids.push(add_track(&conn, &format!("/m/{i}.mp3"), 200_000));
+        }
+        // The seed and a stranger both spike; a twin shares the seed's every
+        // other cell and stays quiet.
+        let (seed, stranger, twin) = (0usize, 1usize, 2usize);
+        rows[seed][quiet] = 1.0;
+        rows[stranger][quiet] = 1.0;
+        let twin_row = {
+            let mut r = rows[seed].clone();
+            r[quiet] = 0.0;
+            r
+        };
+        rows[twin] = twin_row;
+        for (id, raw) in ids.iter().zip(&rows) {
+            upsert(&conn, *id, "m", raw).unwrap();
+        }
+        let at = fingerprint(&conn, "m", None).unwrap();
+        let stats = compute_stats(&conn, "m", at).unwrap().unwrap();
+        let corpus = Corpus::build(&conn, "m", &stats, at.rows).unwrap();
+        let mut z = Vec::new();
+        stats.standardize(&rows[seed], &mut z);
+        assert!(
+            z[quiet].abs() <= Z_CLIP + 1e-3,
+            "the spike is held at the clip, got {}",
+            z[quiet]
+        );
+        let (cells, inv) = quantize_seed(&z);
+        let mut scores = corpus.scores(&cells, inv, ids[seed]);
+        scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+        assert_eq!(
+            scores[0].0, ids[twin],
+            "the twin is the nearest, not the stranger sharing the spike"
+        );
+        let stranger_at = scores
+            .iter()
+            .position(|(id, _)| *id == ids[stranger])
+            .unwrap();
+        assert!(
+            stranger_at > 10,
+            "the stranger shares one clipped cell and nothing else, ranked {stranger_at}"
+        );
+    }
+
     /// Quantizing is only worth doing if the answer holds up under it, and "the
     /// answer" is two things: the number the Similar column prints, which
     /// wants the score right to about a hundredth, and the order the
@@ -1740,7 +2037,17 @@ mod tests {
             };
             let want = order(exact);
             let got = order(quantized);
-            assert_eq!(want[0].0, got[0].0, "the same track leads");
+            // The same track leads, unless the float answer had two in a
+            // dead heat at the top, in which case whichever of the pair the
+            // bytes put first is as right as the other. The same tolerance
+            // as the tenth place gets below.
+            if want[0].0 != got[0].0 {
+                let gap = (want[0].1 - by_id[&got[0].0]).abs();
+                assert!(
+                    gap < 0.005,
+                    "a different track leads on a real gap of {gap}"
+                );
+            }
             let ids = |v: &[(i64, f32)]| -> std::collections::HashSet<i64> {
                 v.iter().map(|(id, _)| *id).collect()
             };

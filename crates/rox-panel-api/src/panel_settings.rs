@@ -466,6 +466,8 @@ pub struct ShaderSource<'a, P: 'static> {
     pub use_example: fn(&mut P, usize, &mut Context<P>),
     pub use_named: fn(&mut P, String, &mut Context<P>),
     pub choose_file: fn(&mut P, &mut Window, &mut Context<P>),
+    /// Open the in-app editor over what runs.
+    pub edit: fn(&mut P, &mut Window, &mut Context<P>),
     pub eject: fn(&mut P, &mut Context<P>),
     pub detach: fn(&mut P, &mut Context<P>),
     pub reload: fn(&mut P, &mut Context<P>),
@@ -488,6 +490,7 @@ impl<P: 'static> ShaderSource<'_, P> {
             use_example,
             use_named,
             choose_file,
+            edit,
             eject,
             detach,
             reload,
@@ -619,6 +622,16 @@ impl<P: 'static> ShaderSource<'_, P> {
                 .flex_row()
                 .items_center()
                 .gap(tokens::SPACE_SM)
+                // The editor comes first: it's the way in for someone with
+                // no editor of their own, and it edits whatever runs, the
+                // pool's copy included. A name the pool doesn't hold has
+                // no text to open on.
+                .child(small_button(
+                    rox_i18n::t!("shader-edit-here"),
+                    icons::PENCIL,
+                    missing,
+                    cx.listener(move |this, _, window, cx| edit(this, window, cx)),
+                ))
                 // A file is already the editing surface, so a second copy
                 // of it would only be a way to drift the two apart.
                 .when(file, |row| {
@@ -2089,6 +2102,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             use_example: |this: &mut Self, index, cx| this.use_shader_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_pool_shader(name, cx),
             choose_file: |this: &mut Self, window, cx| this.pick_shader_file(window, cx),
+            edit: |this: &mut Self, window, cx| this.edit_shader_in_app(window, cx),
             eject: |this: &mut Self, cx| this.eject_shader(cx),
             detach: |this: &mut Self, cx| this.detach_shader(cx),
             reload: |this: &mut Self, cx| this.reload_shader(cx),
@@ -2253,6 +2267,61 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
+    }
+
+    /// Open the in-app editor over the panel's shader. A named one edits
+    /// the pool entry, so every panel on the name follows an apply; an
+    /// inline one edits this panel's own text, and an apply lands through
+    /// the same config write the picker's actions take, with the bookmark
+    /// kept so the working copy stays in step.
+    fn edit_shader_in_app(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        use shader::edit::{EditKey, ShaderEditTarget};
+
+        let Some(panel) = self.panel.upgrade() else {
+            return;
+        };
+        let shader = panel.read(cx).chrome().shader.clone().unwrap_or_default();
+        let target = match shader.name.as_deref() {
+            Some(name) => ShaderEditTarget::pool(name),
+            None => {
+                let title = panel
+                    .read(cx)
+                    .custom_title()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| panel::display_name(panel.read(cx).panel_name()));
+                let weak = panel.downgrade();
+                Some(ShaderEditTarget {
+                    key: EditKey::Panel(panel.entity_id()),
+                    title: title.into(),
+                    source: shader.source.clone(),
+                    ctx: shader::ProgramCtx::of(None, shader.path.as_deref()),
+                    path: shader.path.clone(),
+                    write: Arc::new(move |source, cx| {
+                        let Some(panel) = weak.upgrade() else {
+                            return;
+                        };
+                        // The stored compile message was about text that
+                        // just left; the paint writes a fresh one.
+                        shader::note_error(panel.entity_id(), None);
+                        panel.update(cx, |panel, cx| {
+                            let shader = panel
+                                .chrome_mut()
+                                .shader
+                                .get_or_insert_with(shader::PanelShader::default);
+                            shader.source = source;
+                            // Applying an edit is asking to see it.
+                            shader.enabled = true;
+                            cx.notify();
+                        });
+                    }),
+                })
+            }
+        };
+        let Some(target) = target else {
+            return;
+        };
+        let state = panel.read(cx).state();
+        crate::openers::shader_editor(state, target, cx);
     }
 
     /// One hand-set slot edit, straight onto the panel's shader config.

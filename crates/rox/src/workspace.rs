@@ -16,8 +16,8 @@ use gpui::{
     actions, canvas, deferred, div, overlay_phase, prelude::*, px, svg, AnyElement,
     AnyWindowHandle, App, Axis, Bounds, Context, DismissEvent, Div, Entity, ExternalPaths,
     FocusHandle, Focusable as _, FontFeatures, Global, KeyDownEvent, Modifiers,
-    ModifiersChangedEvent, MouseButton, PathPromptOptions, Pixels, SharedString, Subscription,
-    Task, WeakEntity, Window, WindowBounds,
+    ModifiersChangedEvent, MouseButton, PathPromptOptions, Pixels, Point, SharedString,
+    Subscription, Task, WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
@@ -43,6 +43,7 @@ use crate::panels::overlay::OverlayPanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
 use crate::panels::slide::SlidePanel;
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
+use crate::pass_prompt;
 use crate::quick_play::QuickPlay;
 use rox_core::settings::{
     self, LastTrack, LayoutEdit, LayoutSize, NamedLayout, PostShaderConfig, QueueState,
@@ -64,6 +65,7 @@ use rox_panels::filter::{FilterConfig, FilterPanel};
 use rox_panels::folder_tree::FolderTreePanel;
 use rox_panels::genre_grid::{GenreGridConfig, GenreGridPanel};
 use rox_panels::grid::{GridConfig, GridPanel};
+use rox_panels::health_widget::HealthWidgetPanel;
 use rox_panels::history::HistoryPanel;
 use rox_panels::library::{LibraryConfig, LibraryPanel};
 use rox_panels::lyrics::LyricsPanel;
@@ -91,7 +93,7 @@ use rox_services::history::{History, HistoryEvent};
 use rox_services::lastfm::Scrobbler;
 use rox_services::player::Player;
 use rox_services::portraits::Portraits;
-use rox_services::selection::Selection;
+use rox_services::selection::{Selection, SelectionEvent};
 use rox_services::thumbs::Thumbs;
 use rox_viz::signal::{Route, SignalHub};
 
@@ -1109,6 +1111,23 @@ const TRANSPORT_ROW_H: f32 = 120.0;
 /// minimum instead of taking a center panel's share.
 const SEARCH_BAR_H: f32 = 52.0;
 
+/// How far a library drag travels before the audio drop zones appear, in
+/// row-scaled px: about one row, so the pointer has to leave the row it
+/// grabbed. Under that, a slip that let go shows nothing and does nothing.
+const DROP_REVEAL_DISTANCE: f32 = 24.0;
+
+/// The drop zone strip's height along the bottom of the window, row-scaled.
+const DROP_ZONE_HEIGHT: f32 = 96.0;
+
+/// The reveal gate of an audio drag in flight: where the pointer was when
+/// the workspace first saw the drag, and whether it has since travelled far
+/// enough for the zones. One-way: once revealed they stay for the drag, so
+/// drifting back toward the origin can't hide them mid-gesture.
+struct DropReveal {
+    origin: Point<Pixels>,
+    revealed: bool,
+}
+
 // The three playback actions panels bind against are in rox-panel-api, so
 // a panel's transport button and this window's keymap name the same type.
 // Registration and the handlers stay here.
@@ -1119,6 +1138,8 @@ actions!(
     [
         OpenSettings,
         OpenStats,
+        OpenHealth,
+        OpenPowerSearch,
         OpenQuickPlay,
         FocusSearch,
         IncreaseFontSize,
@@ -1130,13 +1151,38 @@ actions!(
         NewWindow,
         OpenConsole,
         OpenTasks,
+        RescanLibrary,
+        MeasureReplayGain,
+        AnalyzeTempo,
+        BuildAcoustic,
+        FillSortNames,
+        RomanizeLibrary,
+        FindDuplicates,
+        TagGenres,
         OpenWelcome,
         OpenAbout,
         OpenEqualizer,
         NextTrack,
         PreviousTrack,
         StopPlayback,
-        PlayRandom
+        PlayRandom,
+        ToggleMute,
+        ToggleShuffle,
+        CycleLoop,
+        ToggleStopAfter,
+        VolumeUp,
+        VolumeDown,
+        OpenSignals,
+        NewEmptyWindow,
+        ImportWorkspace,
+        ToggleQuitToTray,
+        ToggleMenubar,
+        ToggleDecorations,
+        ToggleDesignMode,
+        ToggleResizeLock,
+        ToggleArtTheming,
+        ToggleTheme,
+        ClosePanelAction
     ]
 );
 
@@ -1180,6 +1226,64 @@ pub fn init(cx: &mut App) {
         with_front_workspace(cx, |ws, _, cx| {
             crate::stats_window::open(ws.state.clone(), cx);
         });
+    });
+    cx.on_action(|_: &OpenHealth, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            crate::health_window::open(ws.state.clone(), cx);
+        });
+    });
+    cx.on_action(|_: &OpenPowerSearch, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            crate::search_window::open(ws.state.clone(), cx);
+        });
+    });
+    // The Library menu's operations. All routed through the front
+    // workspace: the four passes raise a prompt that has to land over a
+    // workspace window, and the rescan and the duplicate finder read that
+    // window's shared state.
+    cx.on_action(|_: &RescanLibrary, cx| {
+        with_front_workspace(cx, |ws, _, cx| ws.rescan_library(cx));
+    });
+    cx.on_action(|_: &MeasureReplayGain, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.start_pass_prompt(pass_prompt::Pass::ReplayGain, cx);
+        });
+    });
+    cx.on_action(|_: &AnalyzeTempo, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.start_pass_prompt(
+                pass_prompt::Pass::Tempo {
+                    retry_refused: false,
+                },
+                cx,
+            );
+        });
+    });
+    cx.on_action(|_: &BuildAcoustic, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.start_pass_prompt(pass_prompt::Pass::Acoustic, cx);
+        });
+    });
+    cx.on_action(|_: &FillSortNames, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.start_pass_prompt(
+                pass_prompt::Pass::SortNames {
+                    scope: crate::sortnames_job::Scope::default(),
+                },
+                cx,
+            );
+        });
+    });
+    cx.on_action(|_: &RomanizeLibrary, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.start_pass_prompt(pass_prompt::Pass::Romanize, cx);
+        });
+    });
+    cx.on_action(|_: &FindDuplicates, cx| {
+        with_front_workspace(cx, |ws, _, cx| ws.open_duplicates(cx));
+    });
+    cx.on_action(|_: &TagGenres, cx| {
+        with_front_workspace(cx, |ws, _, cx| ws.open_genre_tagger(cx));
     });
     // The zoom chords are app-wide, so they hang off global handlers rather
     // than any one window's view: whichever window has focus dispatches, and
@@ -1234,6 +1338,100 @@ pub fn init(cx: &mut App) {
                 .update(cx, |player, cx| player.play_random(&library, cx));
         });
     });
+    // The transport's remaining switches, the ones the panel's buttons flip.
+    // Each is the player's own toggle, so a chord and a click agree.
+    cx.on_action(|_: &ToggleMute, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.state
+                .player
+                .update(cx, |player, cx| player.toggle_mute(cx));
+        });
+    });
+    cx.on_action(|_: &ToggleShuffle, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.state
+                .player
+                .update(cx, |player, cx| player.toggle_shuffle(cx));
+        });
+    });
+    cx.on_action(|_: &CycleLoop, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.state.player.update(cx, |player, cx| {
+                player.cycle_loop();
+                cx.notify();
+            });
+        });
+    });
+    cx.on_action(|_: &ToggleStopAfter, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.state
+                .player
+                .update(cx, |player, cx| player.toggle_stop_after(cx));
+        });
+    });
+    cx.on_action(|_: &VolumeUp, cx| nudge_volume(VOLUME_STEP, cx));
+    cx.on_action(|_: &VolumeDown, cx| nudge_volume(-VOLUME_STEP, cx));
+    // The menu rows that had no chord: each runs exactly what its row runs,
+    // through the same dispatcher, so the menu and the keymap can't drift.
+    cx.on_action(|_: &OpenSignals, cx| run_menu_action(MenuAction::OpenSignals, cx));
+    cx.on_action(|_: &NewEmptyWindow, cx| run_menu_action(MenuAction::EmptyWindow, cx));
+    cx.on_action(|_: &ImportWorkspace, cx| run_menu_action(MenuAction::ImportWorkspace, cx));
+    cx.on_action(|_: &ToggleQuitToTray, cx| run_menu_action(MenuAction::ToggleQuitToTray, cx));
+    cx.on_action(|_: &ToggleMenubar, cx| run_menu_action(MenuAction::ToggleMenubar, cx));
+    cx.on_action(|_: &ToggleDecorations, cx| run_menu_action(MenuAction::ToggleDecorations, cx));
+    cx.on_action(|_: &ToggleDesignMode, cx| run_menu_action(MenuAction::ToggleDesignMode, cx));
+    cx.on_action(|_: &ToggleArtTheming, cx| run_menu_action(MenuAction::ToggleArtTheming, cx));
+    // The theme flip, the theme toggle panel's click as a chord: to the
+    // opposite of the side rendering now, so a System pick that resolved
+    // dark goes light rather than staying put. App-wide like the zoom
+    // chords, since the palette is shared by every window.
+    cx.on_action(|_: &ToggleTheme, cx| {
+        let next = match palette::mode() {
+            palette::Mode::Dark => settings::Theme::Light,
+            palette::Mode::Light => settings::Theme::Dark,
+        };
+        settings::set_theme(next, cx);
+        Settings::update(move |s| s.theme = next);
+    });
+    // The resize lock has no menu row; it's the Workspace page's toggle,
+    // so the chord runs the same setter that toggle does.
+    cx.on_action(|_: &ToggleResizeLock, cx| {
+        let on = !settings::resize_lock();
+        settings::set_resize_lock(on, cx);
+        Settings::update(move |s| s.resize_lock = on);
+    });
+    // Closing the focused panel is the dock's own action, dispatched at the
+    // tab group like Panel Settings. It's bound as our type because the
+    // dock's is handled by whichever tab panel holds focus, and a chord
+    // reaching a window with no dock in the focus path should still find
+    // the front workspace's rather than fall through.
+    cx.on_action(|_: &ClosePanelAction, cx| {
+        with_front_workspace(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(rox_dock::ClosePanel), cx);
+        });
+    });
+}
+
+/// How far one volume chord moves the level: 5%, the same step one wheel
+/// notch over a transport volume control takes.
+const VOLUME_STEP: f32 = 0.05;
+
+/// Step the front workspace's volume by `delta`, within the same 0 to
+/// 100% the wheel keeps to. The setter unmutes, so stepping while muted
+/// brings the sound back the way the slider would.
+fn nudge_volume(delta: f32, cx: &mut App) {
+    with_front_workspace(cx, move |ws, _, cx| {
+        ws.state.player.update(cx, |player, cx| {
+            let volume = (player.volume() + delta).clamp(0.0, 1.0);
+            player.set_volume(volume, cx);
+        });
+    });
+}
+
+/// Run a menu row from a chord: the front workspace's dispatcher, the
+/// same one a click on the row reaches.
+fn run_menu_action(action: MenuAction, cx: &mut App) {
+    with_front_workspace(cx, move |ws, window, cx| ws.run(action, window, cx));
 }
 
 /// Nudge the app font size by `delta` px from where it stands.
@@ -1321,6 +1519,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("queue widget", QueueWidgetPanel);
     configured!("eq widget", EqWidgetPanel);
     configured!("stats widget", StatsWidgetPanel);
+    configured!("health widget", HealthWidgetPanel);
     // The retired standalone rating and favourite panels: their names
     // restore as track info cards holding the one piece, so a layout
     // saved with them keeps its stars and heart. The chrome (caps, theme,
@@ -1446,9 +1645,33 @@ pub(crate) enum MenuAction {
     Previous,
     OpenSettings,
     OpenStats,
+    /// Open the library health page, the tag-and-structure report beside
+    /// the listening one.
+    OpenHealth,
+    /// Open the power search window: one library view in a window of its
+    /// own, searching over its own query instead of the app-wide one.
+    OpenPowerSearch,
     OpenConsole,
     OpenTasks,
     OpenEqualizer,
+    /// Scan every remembered library folder again, the menubar status
+    /// area's refresh button with a menu row in front of it.
+    RescanLibrary,
+    /// The five library passes, each raising the shared start prompt
+    /// rather than going straight to work: four of them cost an afternoon
+    /// on a large library and one of those can rewrite every file in it.
+    /// The fifth is minutes, and raises the prompt anyway, because it's
+    /// also where its refusal gets explained.
+    MeasureReplayGain,
+    AnalyzeTempo,
+    BuildAcoustic,
+    FillSortNames,
+    RomanizeLibrary,
+    /// Open the duplicate finder, which until now only the health
+    /// window's duplicates tile could reach.
+    FindDuplicates,
+    /// Open the genre tagger, the walk through every track with no genre.
+    TagGenres,
     /// Open the shared signal pool, the window behind every panel's routes.
     OpenSignals,
     OpenWelcome,
@@ -1509,7 +1732,7 @@ impl MenuAction {
     /// go through their own bound action so the native menu can draw their
     /// shortcut. Panels encode by label, which the catalog keys on. Only the
     /// native bar encodes, and that's macOS-only, so off macOS this is dead.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn command_id(self) -> Option<String> {
         let id = match self {
             // These go through their own actions, for the shortcut.
@@ -1522,9 +1745,19 @@ impl MenuAction {
             MenuAction::Stop => "stop".into(),
             MenuAction::Next => "next".into(),
             MenuAction::Previous => "previous".into(),
+            MenuAction::OpenHealth => "health".into(),
+            MenuAction::OpenPowerSearch => "power-search".into(),
             MenuAction::OpenConsole => "console".into(),
             MenuAction::OpenTasks => "tasks".into(),
             MenuAction::OpenEqualizer => "equalizer".into(),
+            MenuAction::RescanLibrary => "rescan-library".into(),
+            MenuAction::MeasureReplayGain => "measure-replaygain".into(),
+            MenuAction::AnalyzeTempo => "analyze-tempo".into(),
+            MenuAction::BuildAcoustic => "build-acoustic".into(),
+            MenuAction::FillSortNames => "fill-sort-names".into(),
+            MenuAction::RomanizeLibrary => "romanize-library".into(),
+            MenuAction::FindDuplicates => "find-duplicates".into(),
+            MenuAction::TagGenres => "tag-genres".into(),
             MenuAction::OpenSignals => "signals".into(),
             MenuAction::OpenWelcome => "welcome".into(),
             MenuAction::OpenAbout => "about".into(),
@@ -1563,9 +1796,19 @@ impl MenuAction {
             "stop" => MenuAction::Stop,
             "next" => MenuAction::Next,
             "previous" => MenuAction::Previous,
+            "health" => MenuAction::OpenHealth,
+            "power-search" => MenuAction::OpenPowerSearch,
             "console" => MenuAction::OpenConsole,
             "tasks" => MenuAction::OpenTasks,
             "equalizer" => MenuAction::OpenEqualizer,
+            "rescan-library" => MenuAction::RescanLibrary,
+            "measure-replaygain" => MenuAction::MeasureReplayGain,
+            "analyze-tempo" => MenuAction::AnalyzeTempo,
+            "build-acoustic" => MenuAction::BuildAcoustic,
+            "fill-sort-names" => MenuAction::FillSortNames,
+            "romanize-library" => MenuAction::RomanizeLibrary,
+            "find-duplicates" => MenuAction::FindDuplicates,
+            "tag-genres" => MenuAction::TagGenres,
             "signals" => MenuAction::OpenSignals,
             "welcome" => MenuAction::OpenWelcome,
             "about" => MenuAction::OpenAbout,
@@ -1599,7 +1842,7 @@ fn front_workspace_entity(cx: &mut App) -> Option<(AnyWindowHandle, Entity<Works
 /// a menu pick can arrive while that window is mid-update (its own render
 /// dispatched the action), and updating a window already on the update stack
 /// is refused, the same reason [`close_active_window`] defers.
-fn with_front_workspace(
+pub(crate) fn with_front_workspace(
     cx: &mut App,
     f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
 ) {
@@ -1796,18 +2039,12 @@ pub(crate) const MENUS: &[Menu] = &[
                 icon: icons::AUDIO_WAVEFORM,
                 action: MenuAction::OpenSignals,
             }),
-            MenuEntry::Section("menu-section-library"),
-            MenuEntry::Item(MenuItem {
-                label: "menu-stats",
-                icon: icons::CHART_PIE,
-                action: MenuAction::OpenStats,
-            }),
+            MenuEntry::Section("menu-section-app"),
             MenuEntry::Item(MenuItem {
                 label: "menu-tasks",
                 icon: icons::CLOCK,
                 action: MenuAction::OpenTasks,
             }),
-            MenuEntry::Section("menu-section-app"),
             MenuEntry::Item(MenuItem {
                 label: "menu-console",
                 icon: icons::FILE_TEXT,
@@ -1846,6 +2083,83 @@ pub(crate) const MENUS: &[Menu] = &[
             }),
         ],
     },
+    // Everything the library does to itself, in one menu: the scan that
+    // finds the files, the passes that measure them, the finder that
+    // pairs them up, and the health report that says what's still
+    // missing. Tasks and Stats are deliberately not here: Tasks covers
+    // every background job rox runs, not just the library's, and Stats is
+    // about listening rather than about the collection.
+    Menu {
+        label: "menu-library",
+        entries: &[
+            // The report leads: it's the row you open most, and it points
+            // at everything below it.
+            MenuEntry::Item(MenuItem {
+                label: "menu-health",
+                icon: icons::ACTIVITY,
+                action: MenuAction::OpenHealth,
+            }),
+            // Straight under the report, since the report's own numbers open
+            // into it: a search window over one explicit set of tracks.
+            MenuEntry::Item(MenuItem {
+                label: "menu-power-search",
+                icon: icons::SEARCH,
+                action: MenuAction::OpenPowerSearch,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "menu-rescan-library",
+                icon: icons::REFRESH_CW,
+                action: MenuAction::RescanLibrary,
+            }),
+            // The four passes, each behind the start prompt: an afternoon
+            // of work is a choice made in front of an estimate, so the
+            // trailing dots are honest about there being a step first.
+            MenuEntry::Section("menu-section-analyze"),
+            MenuEntry::Item(MenuItem {
+                label: "menu-measure-replaygain",
+                icon: icons::GAUGE,
+                action: MenuAction::MeasureReplayGain,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "menu-analyze-tempo",
+                icon: icons::ACTIVITY,
+                action: MenuAction::AnalyzeTempo,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "menu-build-acoustic",
+                icon: icons::AUDIO_WAVEFORM,
+                action: MenuAction::BuildAcoustic,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "menu-fill-sort-names",
+                icon: icons::ALIGN_LEFT,
+                action: MenuAction::FillSortNames,
+            }),
+            // Under the fill rather than beside it: the two answer the
+            // same question, and reading the characters is what's left
+            // once MusicBrainz has had its go.
+            MenuEntry::Item(MenuItem {
+                label: "menu-romanize-library",
+                icon: icons::GLOBE,
+                action: MenuAction::RomanizeLibrary,
+            }),
+            // The finder. Its own section, since it's the one row that
+            // changes the collection rather than measuring it.
+            MenuEntry::Section("menu-section-maintain"),
+            MenuEntry::Item(MenuItem {
+                label: "menu-find-duplicates",
+                icon: icons::COPY,
+                action: MenuAction::FindDuplicates,
+            }),
+            // The other hand-run collection job: the finder decides what
+            // to remove, this decides what a track is.
+            MenuEntry::Item(MenuItem {
+                label: "menu-tag-genres",
+                icon: icons::TAG,
+                action: MenuAction::TagGenres,
+            }),
+        ],
+    },
     Menu {
         label: "menu-playback",
         entries: &[
@@ -1869,6 +2183,14 @@ pub(crate) const MENUS: &[Menu] = &[
                 label: "playback-item-previous",
                 icon: icons::SKIP_BACK,
                 action: MenuAction::Previous,
+            }),
+            // What the listening added up to, which is a playback fact
+            // rather than a library one: it counts plays, not files.
+            MenuEntry::Section("menu-section-listening"),
+            MenuEntry::Item(MenuItem {
+                label: "menu-stats",
+                icon: icons::CHART_PIE,
+                action: MenuAction::OpenStats,
             }),
         ],
     },
@@ -2041,8 +2363,8 @@ pub(crate) fn shortcut_for(action: MenuAction) -> Option<SharedString> {
 
 /// The keymap command a menu row runs on, so the row can trail the chord
 /// it's really bound to rather than one written out beside it that a
-/// rebind would make a lie. `None` for the rows nothing binds: the empty
-/// window, the signals window, the toggles and the links.
+/// rebind would make a lie. `None` for the rows nothing binds: the panels
+/// and the links out to the project.
 fn keymap_command(action: MenuAction) -> Option<&'static str> {
     Some(match action {
         MenuAction::TogglePlayback => "toggle_playback",
@@ -2050,10 +2372,28 @@ fn keymap_command(action: MenuAction) -> Option<&'static str> {
         MenuAction::Next => "next_track",
         MenuAction::Previous => "previous_track",
         MenuAction::NewWindow => "new_window",
+        MenuAction::EmptyWindow => "new_empty_window",
+        MenuAction::OpenSignals => "open_signals",
+        MenuAction::ImportWorkspace => "import_workspace",
+        MenuAction::ToggleQuitToTray => "toggle_quit_to_tray",
+        MenuAction::ToggleMenubar => "toggle_menubar",
+        MenuAction::ToggleDecorations => "toggle_decorations",
+        MenuAction::ToggleDesignMode => "toggle_design_mode",
+        MenuAction::ToggleArtTheming => "toggle_art_theming",
         MenuAction::OpenSettings => "open_settings",
         MenuAction::OpenStats => "open_stats",
+        MenuAction::OpenHealth => "open_health",
+        MenuAction::OpenPowerSearch => "open_power_search",
         MenuAction::OpenTasks => "open_tasks",
         MenuAction::OpenEqualizer => "open_equalizer",
+        MenuAction::RescanLibrary => "rescan_library",
+        MenuAction::MeasureReplayGain => "measure_replaygain",
+        MenuAction::AnalyzeTempo => "analyze_tempo",
+        MenuAction::BuildAcoustic => "build_acoustic",
+        MenuAction::FillSortNames => "fill_sort_names",
+        MenuAction::RomanizeLibrary => "romanize_library",
+        MenuAction::FindDuplicates => "find_duplicates",
+        MenuAction::TagGenres => "tag_genres",
         MenuAction::OpenConsole => "open_console",
         MenuAction::OpenWelcome => "open_welcome",
         MenuAction::OpenAbout => "open_about",
@@ -2203,8 +2543,23 @@ pub struct Workspace {
     dialog_focus: FocusHandle,
     /// Submits the save dialog's name field on Enter.
     _layout_input: Option<Subscription>,
+    /// The analysis pass's start prompt while the Library menu has one up.
+    /// The workspace hosts it the way the health and tasks windows do, so
+    /// a pass started from the menu asks the same question about workers
+    /// and cost that every other door to it asks.
+    prompt: Option<pass_prompt::Prompt>,
+    /// The prompt's own keyboard home, separate from `dialog_focus` so the
+    /// two never fight over one handle: the layout dialog and the prompt
+    /// can both be up, and a handle tracked by two elements in a frame is
+    /// a focus bug rather than a shared one.
+    pass_focus: FocusHandle,
+    /// The prompt's click-to-type slider state.
+    value_edit: panel::ValueEdit,
     /// The quick-play modal while it's up; dropped on dismiss.
     quick_play: Option<Entity<QuickPlay>>,
+    /// The audio drop zones' reveal gate for the drag in flight, None
+    /// between drags. See [`Self::drop_zones_overlay`].
+    drop_reveal: Option<DropReveal>,
     /// Clears `quick_play` and hands focus back when the modal dismisses.
     _quick_play_dismissed: Option<Subscription>,
     /// The queue modal the queue widget opens when no queue panel is docked;
@@ -2224,6 +2579,14 @@ pub struct Workspace {
     /// The menubar's right side shows the catalog status, so library
     /// updates must repaint the workspace.
     _library_changed: Subscription,
+    /// What the menubar's status line shows while a selection stands: the
+    /// picked track count and their summed time. None with nothing picked,
+    /// where the line stays the catalog's own status. Computed when the
+    /// selection or the catalog moves, so the bar never scans the
+    /// projection per frame.
+    selection_status: Option<(usize, u64)>,
+    /// A new pick rescopes that line.
+    _selection_changed: Subscription,
     /// A recorded listen bumps its track's play count in the shared
     /// projection, so plays columns move without a reload.
     _history_changed: Subscription,
@@ -2333,6 +2696,31 @@ fn layout_views(
 pub struct Adopted {
     pub state: AppState,
     pub media: Option<Entity<MediaSession>>,
+}
+
+/// The pass prompt's host side. The Library menu's four pass rows raise it
+/// here, so the prompt lands over the workspace rather than pulling a
+/// window up in front of the one the pick was made in.
+impl pass_prompt::Host for Workspace {
+    fn prompt(&self) -> Option<&pass_prompt::Prompt> {
+        self.prompt.as_ref()
+    }
+
+    fn prompt_mut(&mut self) -> &mut Option<pass_prompt::Prompt> {
+        &mut self.prompt
+    }
+
+    fn value_edit(&self) -> &panel::ValueEdit {
+        &self.value_edit
+    }
+
+    // Not `self.dialog_focus`, which the lint assumes from the name: the
+    // layout dialog owns that one, and one handle tracked by two overlays
+    // in a frame is a focus bug rather than a shared handle.
+    #[allow(clippy::misnamed_getters)]
+    fn dialog_focus(&self) -> &FocusHandle {
+        &self.pass_focus
+    }
 }
 
 impl Workspace {
@@ -2555,8 +2943,20 @@ impl Workspace {
         // re-derives on the next player tick.
         let _library_changed = cx.observe(&state.library, |this, _, cx| {
             this.titled_track = None;
+            // The selection readout is summed off the projection, so a
+            // catalog change moves it too. Not while a scan runs: the line
+            // is the scan's own progress then, and its ticks land here
+            // fast enough that a scan per tick would be wasted work.
+            if this.state.library.read(cx).busy().is_none() {
+                this.refresh_selection_status(cx);
+            }
             cx.notify();
         });
+        let _selection_changed =
+            cx.subscribe(&state.selection, |this, _, _: &SelectionEvent, cx| {
+                this.refresh_selection_status(cx);
+                cx.notify();
+            });
         let _player_changed = cx.observe_in(&state.player, window, |this, _, window, cx| {
             this.refresh_title(window, cx);
             this.publish_tray(cx);
@@ -2678,7 +3078,11 @@ impl Workspace {
             layout_dialog: None,
             dialog_focus: cx.focus_handle(),
             _layout_input: None,
+            prompt: None,
+            pass_focus: cx.focus_handle(),
+            value_edit: panel::ValueEdit::default(),
             quick_play: None,
+            drop_reveal: None,
             _quick_play_dismissed: None,
             queue_modal: None,
             backdrop: WindowBackdrop::default(),
@@ -2686,12 +3090,17 @@ impl Workspace {
             _layout_changed,
             _player_changed,
             _library_changed,
+            _selection_changed,
             _history_changed,
             _backdrop_changed,
             _window_activated,
             media,
             post_shader: None,
+            selection_status: None,
         };
+        // The selection is app-wide, so a window opened while a pick stands
+        // comes up scoped to it rather than waiting for the next click.
+        this.refresh_selection_status(cx);
         // Panel surface shaders paint far from any state handle, so the
         // window's hub and player go on the registry they look up.
         panel::shader::note_window(window, &this.state, cx);
@@ -2707,6 +3116,14 @@ impl Workspace {
             apply_post_shader(cx);
         }
         this
+    }
+
+    /// Re-sum the menubar's selection readout: one projection scan, run on
+    /// a new pick or a catalog change rather than per frame. It costs
+    /// nothing with an empty selection, which is the common case.
+    fn refresh_selection_status(&mut self, cx: &App) {
+        self.selection_status =
+            rox_panels::status::selection_summary(&self.state.library, &self.state.selection, cx);
     }
 
     /// Install or clear this window's post shader from the settings file.
@@ -3902,42 +4319,78 @@ impl Workspace {
     /// The Play now / Add to queue drop zones, shown only while an audio
     /// payload is dragged: a file from the OS (ExternalPaths) or a track from
     /// the library (PlayDrag). Other drags (panel docking, queue reorder)
-    /// leave them hidden. Rendered as the top layer so the drop always lands
-    /// here: an occluded window-root target misses it because the panels
-    /// block the hit test.
-    fn drop_zones_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !cx.active_drag_is::<ExternalPaths>() && !cx.active_drag_is::<PlayDrag>() {
+    /// leave them hidden. Rendered as the top layer so a drop on a zone
+    /// always lands there: an occluded window-root target misses it because
+    /// the panels block the hit test.
+    ///
+    /// Two guards keep a slip from playing something. A library drag has to
+    /// travel [`DROP_REVEAL_DISTANCE`] from where it started before the
+    /// zones appear at all: gpui turns a press into a drag after two pixels,
+    /// so without the gate a row grabbed for an instant would light up the
+    /// whole window and the release would land somewhere. And the zones are
+    /// a strip along the bottom rather than a split of the window, so the
+    /// rest of the workspace is neutral: letting go there drops nothing.
+    /// The backdrop dims without occluding, so a drop on a queue row still
+    /// reaches the queue's own handler. An OS file drag skips the gate; it
+    /// enters the window already committed.
+    fn drop_zones_overlay(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let external = cx.active_drag_is::<ExternalPaths>();
+        if !external && !cx.active_drag_is::<PlayDrag>() {
+            self.drop_reveal = None;
+            return None;
+        }
+        let pointer = window.mouse_position();
+        let reveal = self.drop_reveal.get_or_insert(DropReveal {
+            origin: pointer,
+            revealed: external,
+        });
+        if !reveal.revealed {
+            let travelled = (pointer - reveal.origin).magnitude();
+            reveal.revealed = travelled >= palette::scaled_px(DROP_REVEAL_DISTANCE).to_f64();
+        }
+        if !reveal.revealed {
             return None;
         }
         Some(
             div()
                 .absolute()
                 .inset_0()
-                .occlude()
                 .flex()
                 .flex_col()
-                .gap(tokens::SPACE_MD)
+                .justify_end()
                 .p(tokens::SPACE_MD)
-                .bg(rgba(0x00000055))
-                .child(self.drop_zone(
-                    rox_i18n::t!("workspace-drop-play-now"),
-                    icons::PLAY,
-                    true,
-                    cx,
-                ))
-                .child(self.drop_zone(
-                    rox_i18n::t!("workspace-drop-add-queue"),
-                    icons::LIST_MUSIC,
-                    false,
-                    cx,
-                ))
+                .bg(rgba(0x00000033))
+                .child(
+                    div()
+                        .h(palette::scaled_px(DROP_ZONE_HEIGHT))
+                        .flex()
+                        .flex_row()
+                        .gap(tokens::SPACE_MD)
+                        .child(self.drop_zone(
+                            rox_i18n::t!("workspace-drop-play-now"),
+                            icons::PLAY,
+                            true,
+                            cx,
+                        ))
+                        .child(self.drop_zone(
+                            rox_i18n::t!("workspace-drop-add-queue"),
+                            icons::LIST_MUSIC,
+                            false,
+                            cx,
+                        )),
+                )
                 .into_any_element(),
         )
     }
 
     /// One drop zone card. `play_now` true plays the drop after the current
     /// track and jumps to it; false appends it to the queue. Both accept a
-    /// file from the OS and a track dragged from the library.
+    /// file from the OS and a track dragged from the library. Occluded so
+    /// the drop is the card's alone and never also hits what it covers.
     fn drop_zone(
         &self,
         label: impl Into<SharedString>,
@@ -3947,7 +4400,8 @@ impl Workspace {
     ) -> Div {
         let card = div()
             .flex_1()
-            .w_full()
+            .h_full()
+            .occlude()
             .flex()
             .flex_col()
             .items_center()
@@ -4932,6 +5386,43 @@ fn dialog_button(
         .child(label.into())
 }
 
+impl Workspace {
+    /// Scan every remembered library folder again, the Library menu's row
+    /// and the menubar status area's refresh button running the same call.
+    /// No guard on the folder list: [`Library::rescan`] is already a no-op
+    /// with nothing to scan or a scan already out.
+    pub(crate) fn rescan_library(&mut self, cx: &mut Context<Self>) {
+        self.state
+            .library
+            .update(cx, |library, cx| library.rescan(cx));
+    }
+
+    /// Raise the start prompt for one of the analysis passes over this
+    /// window. Nothing starts here; the prompt does the starting once the
+    /// cost has been read.
+    pub(crate) fn start_pass_prompt(&mut self, pass: pass_prompt::Pass, cx: &mut Context<Self>) {
+        let library = self.state.library.clone();
+        pass_prompt::raise(self, pass, library, cx);
+    }
+
+    /// Open the duplicate finder, the same window the health window's
+    /// duplicates tile opens.
+    pub(crate) fn open_duplicates(&mut self, cx: &mut Context<Self>) {
+        crate::duplicates::open(
+            self.state.library.clone(),
+            self.state.thumbs.clone(),
+            self.state.now_art.clone(),
+            cx,
+        );
+    }
+
+    /// Open the genre tagger, the same window the health window's genre
+    /// tile opens.
+    pub(crate) fn open_genre_tagger(&mut self, cx: &mut Context<Self>) {
+        crate::genre_tagger::open(self.state.clone(), cx);
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The screen shader's hot reload and signal feed run off the render
@@ -5003,6 +5494,46 @@ impl Render for Workspace {
                 }))
                 .on_action(cx.listener(|this, _: &OpenStats, _, cx| {
                     crate::stats_window::open(this.state.clone(), cx);
+                }))
+                .on_action(cx.listener(|this, _: &OpenHealth, _, cx| {
+                    crate::health_window::open(this.state.clone(), cx);
+                }))
+                .on_action(cx.listener(|this, _: &OpenPowerSearch, _, cx| {
+                    crate::search_window::open(this.state.clone(), cx);
+                }))
+                .on_action(cx.listener(|this, _: &RescanLibrary, _, cx| {
+                    this.rescan_library(cx);
+                }))
+                .on_action(cx.listener(|this, _: &MeasureReplayGain, _, cx| {
+                    this.start_pass_prompt(pass_prompt::Pass::ReplayGain, cx);
+                }))
+                .on_action(cx.listener(|this, _: &AnalyzeTempo, _, cx| {
+                    this.start_pass_prompt(
+                        pass_prompt::Pass::Tempo {
+                            retry_refused: false,
+                        },
+                        cx,
+                    );
+                }))
+                .on_action(cx.listener(|this, _: &BuildAcoustic, _, cx| {
+                    this.start_pass_prompt(pass_prompt::Pass::Acoustic, cx);
+                }))
+                .on_action(cx.listener(|this, _: &FillSortNames, _, cx| {
+                    this.start_pass_prompt(
+                        pass_prompt::Pass::SortNames {
+                            scope: crate::sortnames_job::Scope::default(),
+                        },
+                        cx,
+                    );
+                }))
+                .on_action(cx.listener(|this, _: &RomanizeLibrary, _, cx| {
+                    this.start_pass_prompt(pass_prompt::Pass::Romanize, cx);
+                }))
+                .on_action(cx.listener(|this, _: &FindDuplicates, _, cx| {
+                    this.open_duplicates(cx);
+                }))
+                .on_action(cx.listener(|this, _: &TagGenres, _, cx| {
+                    this.open_genre_tagger(cx);
                 }))
                 .on_action(cx.listener(|this, _: &OpenQuickPlay, window, cx| {
                     this.toggle_quick_play(window, cx);
@@ -5202,6 +5733,9 @@ impl Render for Workspace {
                 // The layout save/apply dialog floats over everything, same as
                 // quick-play and for the same reasons: last child, not deferred.
                 .children(self.layout_dialog_overlay(window, cx).map(overlay_phase))
+                // The pass start prompt the Library menu raises, floated the
+                // same way and for the same reasons.
+                .children(pass_prompt::overlay(self, window, cx).map(overlay_phase))
                 // The queue modal floats the same way, last so it paints over
                 // the dock.
                 .children(self.queue_modal_overlay(cx).map(overlay_phase))
@@ -5209,7 +5743,7 @@ impl Render for Workspace {
                 // go on top of every panel, which also makes them the topmost
                 // hitbox: an occluded workspace-root drop target would miss the
                 // drop entirely (panels block the hit test).
-                .children(self.drop_zones_overlay(cx).map(overlay_phase))
+                .children(self.drop_zones_overlay(window, cx).map(overlay_phase))
                 .into_any_element()
         })
     }
@@ -5238,6 +5772,61 @@ mod tests {
                     "{id} is not a keymap command"
                 );
             }
+        }
+    }
+
+    /// The Library menu is the one menu whose rows are all one keymap
+    /// group, and the group is what the Keymap page draws them under. A row
+    /// that lands in Windows instead shows up nowhere near the rest of the
+    /// library's operations, which is the whole thing this menu fixed.
+    #[test]
+    fn library_menu_rows_are_all_one_keymap_group() {
+        let menu = super::MENUS
+            .iter()
+            .find(|menu| menu.label == "menu-library")
+            .expect("the Library menu is on the bar");
+        let mut rows = 0;
+        for entry in menu.entries {
+            let super::MenuEntry::Item(item) = entry else {
+                continue;
+            };
+            let id = super::keymap_command(item.action)
+                .unwrap_or_else(|| panic!("{} names no keymap command", item.label));
+            let command = crate::keymap::command(id).expect("the keymap has it");
+            assert!(
+                command.group == crate::keymap::Group::Library,
+                "{id} is not in the Library group"
+            );
+            rows += 1;
+        }
+        assert_eq!(rows, 10, "the menu grew or shrank without this test");
+    }
+
+    /// Every Library row survives the native bar's round trip through a
+    /// string. A row that encodes and decodes to something else is a macOS
+    /// menu pick that quietly runs the wrong thing.
+    #[test]
+    fn library_menu_rows_round_trip_through_their_command_id() {
+        let menu = super::MENUS
+            .iter()
+            .find(|menu| menu.label == "menu-library")
+            .expect("the Library menu is on the bar");
+        for entry in menu.entries {
+            let super::MenuEntry::Item(item) = entry else {
+                continue;
+            };
+            // The rows that go through their own bound action encode to
+            // None on purpose, so the native bar can draw their shortcut.
+            let Some(id) = item.action.command_id() else {
+                continue;
+            };
+            let back = super::MenuAction::from_command_id(&id)
+                .unwrap_or_else(|| panic!("{id} decodes to nothing"));
+            assert_eq!(
+                back.command_id(),
+                item.action.command_id(),
+                "{id} decodes to a different row"
+            );
         }
     }
 

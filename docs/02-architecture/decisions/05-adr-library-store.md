@@ -17,7 +17,11 @@ work rather than per-keystroke queries. The cost is the sync machinery: every sc
 tag edit, and filesystem event has to update SQLite and the projection consistently without
 a full rebuild. That sync is the most complex part of the library service, and the
 [non-functional model](../03-non-functional.md) treats it as the main
-library risk.
+library risk. It landed rebuild-first with one patch path: scans, reloads, removals,
+and prunes rebuild the projection and swap it whole, while watch events and reindexes
+append the rows they touched and tombstone the old ones, and the next rebuild compacts.
+A rebuild is the reference state and a patch is a cheaper route to it; the mechanics are
+in [implementation 02](../../03-implementation/02-library.md#watch-patches).
 
 Measured at scale in [research 02](../../0R-research/02-library-scale.md): the projection
 costs ~70 MB per million tracks and still meets the browse budget at 10M, provided it's

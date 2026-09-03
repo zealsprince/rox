@@ -115,9 +115,14 @@ fn query_note(query: &str) -> Option<SharedString> {
         .filter(|token| !token.contains('"'))
         .find_map(|token| {
             let (name, _) = token.split_once(':')?;
+            // A leading hyphen negates the term, so the field name is
+            // what follows it: `-genre:rock` is a genre pin like any
+            // other and shouldn't read as an unknown "-genre". The note
+            // still quotes the token as typed.
             let name = name.to_lowercase();
-            let known = QUERY_FIELDS.iter().any(|(field, _)| *field == name);
-            (!name.is_empty() && !known).then_some(name)
+            let bare = name.strip_prefix('-').unwrap_or(&name);
+            let known = QUERY_FIELDS.iter().any(|(field, _)| *field == bare);
+            (!bare.is_empty() && !known).then(|| name.clone())
         })?;
     Some(rox_i18n::t!(
         "smart-playlist-unknown-field",
@@ -211,7 +216,7 @@ impl SmartPlaylistWindow {
         });
         // The same completions the library's box gets, so the syntax is
         // learnable in the one place it's saved for good.
-        let provider = suggest::query_provider(state.library.read(cx).projection());
+        let provider = suggest::query_provider(&state.library, cx);
         query.update(cx, |query, cx| query.set_completions(provider, cx));
         let limit = cx.new(|cx| {
             InputState::new(window, cx)
@@ -534,7 +539,7 @@ impl SmartPlaylistWindow {
                 // leaves the rows this one kept pointing past the end of
                 // the new one. A stale row draws as nothing rather than
                 // reading off the end.
-                if row >= projection.len() {
+                if row >= projection.len() || projection.is_dead(row as u32) {
                     return None;
                 }
                 let view = projection.resolve(row as u32);

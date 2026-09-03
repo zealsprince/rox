@@ -1,4 +1,12 @@
-//! How long a fragmented MP4 runs, read off the movie header.
+//! The MP4 box walk rox does for itself, where lofty leaves it nothing to
+//! read.
+//!
+//! Three questions come off the same walk. The first is how long a
+//! fragmented file runs; the other two belong to the tag writer, and both
+//! are about the file's structure rather than its metadata. [`mdat_spans`]
+//! says where the audio actually sits, so a write that moves the audio can
+//! still be checked against it, and [`is_fragmented`] answers the question
+//! `writer::file_type` turns a file down on.
 //!
 //! A fragmented MP4, the shape anything assembled out of DASH segments
 //! comes down in, leaves the `moov` sample tables empty. No `stts`
@@ -18,7 +26,7 @@
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 use std::path::Path;
 
 /// The playable length of a fragmented MP4, in seconds. None where the file
@@ -42,10 +50,73 @@ pub fn fragment_duration_secs(path: &Path) -> Option<f64> {
     (duration > 0 && timescale > 0).then(|| duration as f64 / f64::from(timescale))
 }
 
+/// Every top-level `mdat` payload, in file order: where an MP4 keeps its
+/// audio. None where the file isn't an MP4, holds no `mdat` at all, or
+/// stops parsing partway.
+///
+/// One range would do for a plain file, which has a single `mdat` with the
+/// whole stream in it. A fragmented file has one per fragment with a
+/// `moof` between each pair, and hashing only the first would make the
+/// writer's verify step a rubber stamp over most of the audio.
+pub(crate) fn mdat_spans(path: &Path) -> Option<Vec<Range<u64>>> {
+    let mut file = File::open(path).ok()?;
+    let end = file.seek(SeekFrom::End(0)).ok()?;
+    let mut spans = Vec::new();
+    walk(&mut file, 0..end, |kind, body| {
+        if kind == b"mdat" {
+            spans.push(body);
+        }
+        ControlFlow::Continue(())
+    })?;
+    (!spans.is_empty()).then_some(spans)
+}
+
+/// Whether the file's samples live out in fragments rather than in the
+/// `moov` sample tables, the same `mvex` test
+/// [`fragment_duration_secs`] makes. A file this says yes to is one the
+/// tag writer turns down; a file it says no to (including anything that
+/// isn't an MP4 at all) is left to the caller's own checks.
+pub(crate) fn is_fragmented(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let Ok(end) = file.seek(SeekFrom::End(0)) else {
+        return false;
+    };
+    find(&mut file, 0..end, b"moov")
+        .and_then(|moov| find(&mut file, moov, b"mvex"))
+        .is_some()
+}
+
 /// The payload range of the first box of type `want` sitting directly
-/// inside `within`. Boxes are walked by their stated size, so this seeks
-/// header to header rather than reading the range through.
+/// inside `within`.
 fn find(file: &mut File, within: Range<u64>, want: &[u8; 4]) -> Option<Range<u64>> {
+    let mut found = None;
+    let _ = walk(file, within, |kind, body| {
+        if kind != want {
+            return ControlFlow::Continue(());
+        }
+        found = Some(body);
+        ControlFlow::Break(())
+    });
+    found
+}
+
+/// Hand every box sitting directly inside `within` to `visit`, as its
+/// four-byte type and its payload range. Boxes are walked by their stated
+/// size, so this seeks header to header rather than reading the range
+/// through.
+///
+/// None where a box doesn't cover its own header or runs past the parent
+/// holding it: a file to stop trusting rather than one to keep looping
+/// over. A `visit` that breaks stops the walk where it stands and comes
+/// back Some, so a caller that already has what it came for never fails
+/// over bytes further down the file it was never going to read.
+fn walk(
+    file: &mut File,
+    within: Range<u64>,
+    mut visit: impl FnMut(&[u8; 4], Range<u64>) -> ControlFlow<()>,
+) -> Option<()> {
     let mut at = within.start;
     while at + 8 <= within.end {
         file.seek(SeekFrom::Start(at)).ok()?;
@@ -72,12 +143,13 @@ fn find(file: &mut File, within: Range<u64>, want: &[u8; 4]) -> Option<Range<u64
         if body > box_end || box_end > within.end {
             return None;
         }
-        if header[4..] == want[..] {
-            return Some(body..box_end);
+        let kind: [u8; 4] = header[4..].try_into().ok()?;
+        if visit(&kind, body..box_end).is_break() {
+            return Some(());
         }
         at = box_end;
     }
-    None
+    Some(())
 }
 
 /// The movie timescale, in ticks per second. Version 1 widens the creation
@@ -241,5 +313,45 @@ mod tests {
     fn junk_reads_nothing() {
         let path = written("junk.m4a", &[0xFFu8; 4096]);
         assert_eq!(fragment_duration_secs(&path), None);
+    }
+
+    /// The writer's question about where the audio is. [`file`] writes one
+    /// fragment, so a second one has to show up as a second span rather
+    /// than being lost behind the first: a single range would describe
+    /// only a quarter of this file, and the hash taken over it would pass
+    /// no matter what happened to the rest.
+    #[test]
+    fn every_mdat_is_a_span_of_its_own() {
+        let mut bytes = file(&[mvhd(44_100)]);
+        let second = bytes.len() as u64;
+        bytes.extend(atom(b"moof", &[0u8; 16]));
+        bytes.extend(atom(b"mdat", &[1u8; 32]));
+        let path = written("spans.m4a", &bytes);
+
+        let spans = mdat_spans(&path).expect("both fragments");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[1], (second + 24 + 8)..(second + 24 + 8 + 32));
+        assert_eq!(spans[0].end - spans[0].start, 64);
+    }
+
+    /// A file with no audio box at all reads as nothing rather than an
+    /// empty list, so the writer can tell it apart from a file it hashed.
+    #[test]
+    fn no_mdat_is_no_span() {
+        let path = written("tagless.m4a", &atom(b"ftyp", b"isom\0\0\0\0iso5"));
+        assert_eq!(mdat_spans(&path), None);
+    }
+
+    /// The writer's other question. `mvex` is the whole test, the same one
+    /// the duration read makes, so the two can't disagree about what
+    /// fragmented means.
+    #[test]
+    fn fragmentation_is_the_mvex_test() {
+        let mvex = atom(b"mvex", &mehd(5_722_380));
+        let fragmented = written("frag-check.m4a", &file(&[mvhd(44_100), mvex]));
+        let plain = written("plain-check.m4a", &file(&[mvhd(44_100)]));
+        assert!(is_fragmented(&fragmented));
+        assert!(!is_fragmented(&plain));
+        assert!(!is_fragmented(&written("junk-check.m4a", &[0xFFu8; 4096])));
     }
 }

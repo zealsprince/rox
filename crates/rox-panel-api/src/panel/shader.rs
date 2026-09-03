@@ -28,10 +28,11 @@ use super::{AppState, PanelChrome};
 
 mod chain;
 mod cursor;
+pub mod edit;
 
 pub use chain::{
     fallback_cover, parse_chain, register_program, resolve_assets, uses_cover, uses_mask,
-    AssetImage, AssetRef, ChainSpec, PassSpec, ProgramCtx, COVER_SOURCE,
+    validate_program, AssetImage, AssetRef, ChainSpec, PassSpec, ProgramCtx, COVER_SOURCE,
 };
 pub use cursor::{cursor_presence, reads_cursor, watch_cursor, CURSOR_FADE, CURSOR_HOLD};
 

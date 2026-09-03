@@ -21,6 +21,8 @@ mod cover;
 mod duplicates;
 mod embeddings;
 mod eq_window;
+mod genre_tagger;
+mod health_window;
 mod integrations;
 mod keymap;
 mod lastfm;
@@ -34,9 +36,13 @@ mod pass_prompt;
 mod playlist_create;
 mod quick_play;
 mod replaygain_job;
+mod romanize_job;
+mod search_window;
 mod settings;
+mod shader_editor;
 mod signals_window;
 mod smart_playlist;
+mod sortnames_job;
 mod startup;
 mod stats_window;
 mod tags;
@@ -56,8 +62,8 @@ use rox_core::settings::{
     set_acoustic_analysis, set_app_font, set_app_frame, set_design_mode, set_experimental,
     set_fold_case, set_gain_mode, set_hide_menubar, set_language, set_os_decorations,
     set_quit_to_tray, set_rating_dots, set_rating_style, set_resize_border, set_resize_lock,
-    set_seams, set_tempo_analysis, set_theme, set_workspace_migrator, window_decorations, Settings,
-    MIN_WINDOW_SIZE,
+    set_seams, set_show_readings, set_tempo_analysis, set_theme, set_workspace_migrator,
+    window_decorations, Settings, MIN_WINDOW_SIZE,
 };
 use rox_core::{logging, APP_ID};
 use rox_design::assets::Assets;
@@ -236,7 +242,9 @@ fn install_openers() {
         smart_playlist: smart_playlist::open,
         eq_window: eq_window::open,
         stats_window: stats_window::open,
+        health_window: health_window::open,
         signals_window: signals_window::open,
+        shader_editor: shader_editor::open,
         console_notice: console_window::notice,
         lyrics_watch: watch_lyrics_panel,
         lyrics_edit: lyrics::edit::open,
@@ -407,6 +415,7 @@ fn main() {
         convert_dialog::init(cx);
         lyrics::edit::init(cx);
         lyrics::matcher::init(cx);
+        shader_editor::init(cx);
         cover::editor::init(cx);
         settings::shader_confirm::init(cx);
         rox_panel_api::panel_settings::init(cx);
@@ -442,6 +451,7 @@ fn main() {
         set_os_decorations(settings.look.bundle.appearance.os_decorations);
         set_resize_border(settings.look.bundle.appearance.resize_border);
         set_fold_case(settings.fold_case);
+        set_show_readings(settings.show_readings, cx);
         rox_library::genre::set_split_compounds(settings.split_genre_compounds);
         set_quit_to_tray(settings.quit_to_tray);
         set_design_mode(settings.design_mode, cx);

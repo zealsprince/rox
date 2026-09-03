@@ -132,10 +132,7 @@ impl SearchPanel {
     /// Point the box's suggestion menu at the current projection; at open and
     /// again whenever a scan produces a new one.
     fn attach_suggestions(&self, cx: &mut Context<Self>) {
-        let provider = {
-            let library = self.state.library.read(cx);
-            suggest::query_provider(library.projection())
-        };
+        let provider = suggest::query_provider(&self.state.library, cx);
         self.search
             .update(cx, |search, cx| search.set_completions(provider, cx));
     }

@@ -192,6 +192,7 @@ impl CoverEditor {
                         .db_id
                         .iter()
                         .enumerate()
+                        .filter(|(row, _)| !projection.is_dead(*row as u32))
                         .map(|(row, &id)| (id, row as u32))
                         .collect::<std::collections::HashMap<_, _>>()
                 });

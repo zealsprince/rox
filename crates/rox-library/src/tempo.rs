@@ -40,6 +40,12 @@ pub enum Source {
     /// Estimated by rox from the audio, for a file whose tags carried no
     /// tempo.
     Measured,
+    /// Measured by rox and refused: the estimator read the audio and found
+    /// no beat it would call a tempo, so the row holds NULL on purpose. The
+    /// marker is what keeps a library's classical and ambient shelves off
+    /// every later pass's work list, since decoding them again gives the
+    /// same answer; a pass asked to retry them reads past it.
+    Refused,
 }
 
 impl Source {
@@ -49,6 +55,7 @@ impl Source {
         match self {
             Source::Tags => 0,
             Source::Measured => 1,
+            Source::Refused => 2,
         }
     }
 
@@ -58,6 +65,7 @@ impl Source {
     pub fn from_code(code: Option<i64>) -> Self {
         match code {
             Some(1) => Source::Measured,
+            Some(2) => Source::Refused,
             _ => Source::Tags,
         }
     }
@@ -153,6 +161,10 @@ mod tests {
     #[test]
     fn the_source_codes_round_trip() {
         assert_eq!(Source::from_code(Some(Source::Tags.code())), Source::Tags);
+        assert_eq!(
+            Source::from_code(Some(Source::Refused.code())),
+            Source::Refused
+        );
         assert_eq!(
             Source::from_code(Some(Source::Measured.code())),
             Source::Measured

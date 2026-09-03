@@ -34,7 +34,7 @@ const PACE_FLOOR: usize = 16;
 /// of a row and the estimate before it is a minute of decoding, so the
 /// batch is about not holding a write lock per track rather than about the
 /// writes costing anything. Small enough that a pass stopped halfway has
-/// kept nearly everything it measured.
+/// kept nearly everything it measured. Refusals batch on the same count.
 const BATCH: usize = 32;
 
 /// Live progress of a tempo pass: the workers write it per track, the UI
@@ -129,6 +129,14 @@ pub fn stop(cx: &mut App) {
 /// no-op while a pass is already running, and while the feature is switched
 /// off.
 ///
+/// `retry_refused` runs the tracks an earlier pass listened to and refused,
+/// and only those. Off, the pass reaches the tracks nothing has heard yet,
+/// which is what Analyze Missing means; on is for an estimator that has
+/// improved since the refusals were written, and it re-decodes every one of
+/// them, so it's the deliberate button rather than the default. The two
+/// lists don't overlap either way, so a library gets through both piles in
+/// two runs without decoding anything twice.
+///
 /// The switch is read here rather than only at the caller, the acoustic
 /// pass's arrangement: the toggle is the feature as much as the permission,
 /// so with it off there's no button to keep working either.
@@ -136,7 +144,7 @@ pub fn stop(cx: &mut App) {
 /// Safe to call from inside the library's own update, which the watch sync
 /// does: nothing reads the entity until the spawned task, by which time the
 /// lease is gone, and reading a leased entity panics.
-pub fn start(library: Entity<Library>, cx: &mut App) {
+pub fn start(library: Entity<Library>, retry_refused: bool, cx: &mut App) {
     let settings = Settings::load();
     if progress(cx).is_some() || !settings.tempo_analysis {
         return;
@@ -171,7 +179,7 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
             .background_executor()
             .spawn({
                 let progress = progress.clone();
-                async move { run(&db_path, workers, &progress) }
+                async move { run(&db_path, workers, retry_refused, &progress) }
             })
             .await;
         cx.update(|cx| {
@@ -225,7 +233,7 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
 pub fn follow(library: &Entity<Library>, cx: &mut App) {
     App::subscribe(cx, library, |library, event, cx| {
         if matches!(event, LibraryJob::WatchSettled) && Settings::load().tempo_auto {
-            start(library, cx);
+            start(library, false, cx);
         }
     })
     .detach();
@@ -239,9 +247,12 @@ pub fn follow(library: &Entity<Library>, cx: &mut App) {
 /// to redo, and a button called Estimate that quietly filled in three rows
 /// would be doing work nobody asked it for. What it costs is a couple of
 /// minutes of decoding to avoid guessing at hours.
-pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
+///
+/// `retry_refused` picks which pile is sampled, so the estimate on the
+/// retry prompt is timed over the tracks that run would actually decode.
+pub fn measure_pace(db_path: &Path, retry_refused: bool) -> Result<f32, String> {
     let conn = store::open(db_path).map_err(|e| e.to_string())?;
-    let work = store::bpm_missing(&conn).map_err(|e| e.to_string())?;
+    let work = work_list(&conn, retry_refused)?;
     let picked = rox_core::pace::sample_indices(work.len(), rox_core::pace::PROBE_TRACKS);
     if picked.is_empty() {
         return Err("there's nothing left to measure".into());
@@ -253,10 +264,34 @@ pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
         let track = &work[index];
         // A track the estimator can't call still cost its decode, the thing
         // being timed, so it counts the same as one that produced a tempo.
-        rox_acoustic::tempo::estimate(Path::new(&track.path), track.duration_ms);
+        let _ = rox_acoustic::tempo::estimate(Path::new(&track.path), track.duration_ms);
         timed += 1;
     }
     Ok((started.elapsed().as_secs_f64() / timed as f64) as f32)
+}
+
+/// The tracks a pass will decode.
+///
+/// Off the retry that's the store's own missing list: rows with no tempo
+/// that nothing has refused. The retry wants the other pile, and the store
+/// can't hand it over on its own, since `bpm_missing(conn, true)` lifts the
+/// refusal filter rather than inverting it and returns both piles at once.
+/// The difference between the two lists is the refusals, which is what
+/// Retry Refused means and what its count on the prompt quotes.
+fn work_list(
+    conn: &rox_library::rusqlite::Connection,
+    retry_refused: bool,
+) -> Result<Vec<store::BpmToMeasure>, String> {
+    let missing = store::bpm_missing(conn, false).map_err(|e| e.to_string())?;
+    if !retry_refused {
+        return Ok(missing);
+    }
+    let untouched: std::collections::HashSet<i64> = missing.iter().map(|track| track.id).collect();
+    let both = store::bpm_missing(conn, true).map_err(|e| e.to_string())?;
+    Ok(both
+        .into_iter()
+        .filter(|track| !untouched.contains(&track.id))
+        .collect())
 }
 
 /// The blocking half: iterate the work list, estimate, write. Returns how many
@@ -271,9 +306,14 @@ pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
 /// only lock it once a batch has built up. That serializes the writes,
 /// which suits SQLite anyway, and they're a rounding error next to the
 /// decoding either way.
-fn run(db_path: &Path, workers: usize, progress: &Progress) -> Result<usize, String> {
+fn run(
+    db_path: &Path,
+    workers: usize,
+    retry_refused: bool,
+    progress: &Progress,
+) -> Result<usize, String> {
     let conn = store::open(db_path).map_err(|e| e.to_string())?;
-    let work = store::bpm_missing(&conn).map_err(|e| e.to_string())?;
+    let work = work_list(&conn, retry_refused)?;
     progress.total.store(work.len(), Ordering::Relaxed);
     progress.pace.begin();
 
@@ -296,6 +336,10 @@ fn run(db_path: &Path, workers: usize, progress: &Progress) -> Result<usize, Str
                 // Held per worker rather than shared, so the only thing
                 // two workers ever contend for is the write itself.
                 let mut batch: Vec<(String, u16, f32)> = Vec::with_capacity(BATCH);
+                // The tracks this worker listened to and got nothing from,
+                // written as refusals so the next pass doesn't decode them
+                // again for the same answer.
+                let mut refused: Vec<(String, u16)> = Vec::with_capacity(BATCH);
                 loop {
                     if !progress.keep_going() || failure.lock().unwrap().is_some() {
                         break;
@@ -308,19 +352,29 @@ fn run(db_path: &Path, workers: usize, progress: &Progress) -> Result<usize, Str
                     // in a couple of seconds, so a cancel is honoured
                     // between tracks rather than inside one.
                     match rox_acoustic::tempo::estimate(Path::new(&track.path), track.duration_ms) {
-                        Some(bpm) => batch.push((track.path.clone(), track.sub, bpm)),
-                        // Measured, no tempo. The row keeps its NULL,
-                        // which is how a track nobody has looked at and one
-                        // whose beat can't be called stay the same thing to
-                        // the store and different things in the log.
-                        None => {
+                        Ok(Some(bpm)) => batch.push((track.path.clone(), track.sub, bpm)),
+                        // Measured, no tempo. The row keeps its NULL and
+                        // takes the refused mark, so the store can tell a
+                        // track nobody has looked at from one whose beat
+                        // can't be called, and only the first kind comes
+                        // back on the next list.
+                        Ok(None) => {
                             log::debug!("tempo: no answer for {}", track.path);
+                            progress.failed.fetch_add(1, Ordering::Relaxed);
+                            refused.push((track.path.clone(), track.sub));
+                        }
+                        // Nothing decoded, so nothing was heard to refuse.
+                        // The row is left exactly as it was and comes back
+                        // on the next pass's list, which is what a file
+                        // that was busy, offline, or half-written wants.
+                        Err(rox_acoustic::tempo::Unreadable) => {
+                            log::debug!("tempo: nothing decoded for {}", track.path);
                             progress.failed.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                     progress.done.fetch_add(1, Ordering::Relaxed);
-                    if batch.len() >= BATCH {
-                        if let Err(e) = flush(&mut batch, &conn, &written) {
+                    if batch.len() >= BATCH || refused.len() >= BATCH {
+                        if let Err(e) = flush(&mut batch, &mut refused, &conn, &written) {
                             *failure.lock().unwrap() = Some(e);
                             return;
                         }
@@ -329,7 +383,7 @@ fn run(db_path: &Path, workers: usize, progress: &Progress) -> Result<usize, Str
                 // Whatever the worker was still holding when it ran out of
                 // work or was stopped: a cancel shouldn't throw away
                 // minutes of decoding that already has its result.
-                if let Err(e) = flush(&mut batch, &conn, &written) {
+                if let Err(e) = flush(&mut batch, &mut refused, &conn, &written) {
                     *failure.lock().unwrap() = Some(e);
                 }
             });
@@ -341,24 +395,33 @@ fn run(db_path: &Path, workers: usize, progress: &Progress) -> Result<usize, Str
     Ok(written.into_inner())
 }
 
-/// One batch onto its rows, in a single transaction, leaving the batch
-/// empty. Rows that picked up a tempo tag since the work list was built are
-/// skipped by the store, so the count is what actually took.
+/// One batch of tempos and one of refusals onto their rows, a transaction
+/// each, leaving both empty. Rows that picked up a tempo tag since the work
+/// list was built are skipped by the store, so the count is what actually
+/// took; a refusal only lands on a row still holding nothing.
 fn flush(
     batch: &mut Vec<(String, u16, f32)>,
+    refused: &mut Vec<(String, u16)>,
     conn: &Mutex<rox_library::rusqlite::Connection>,
     written: &AtomicUsize,
 ) -> Result<(), String> {
-    if batch.is_empty() {
-        return Ok(());
+    if !batch.is_empty() {
+        let rows: Vec<(&str, u16, f32)> = batch
+            .iter()
+            .map(|(path, sub, bpm)| (path.as_str(), *sub, *bpm))
+            .collect();
+        let took =
+            store::set_measured_bpm(&mut conn.lock().unwrap(), &rows).map_err(|e| e.to_string())?;
+        written.fetch_add(took, Ordering::Relaxed);
+        batch.clear();
     }
-    let rows: Vec<(&str, u16, f32)> = batch
-        .iter()
-        .map(|(path, sub, bpm)| (path.as_str(), *sub, *bpm))
-        .collect();
-    let took =
-        store::set_measured_bpm(&mut conn.lock().unwrap(), &rows).map_err(|e| e.to_string())?;
-    written.fetch_add(took, Ordering::Relaxed);
-    batch.clear();
+    if !refused.is_empty() {
+        let rows: Vec<(&str, u16)> = refused
+            .iter()
+            .map(|(path, sub)| (path.as_str(), *sub))
+            .collect();
+        store::set_refused_bpm(&mut conn.lock().unwrap(), &rows).map_err(|e| e.to_string())?;
+        refused.clear();
+    }
     Ok(())
 }

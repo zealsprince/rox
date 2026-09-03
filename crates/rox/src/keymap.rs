@@ -32,9 +32,14 @@ use rox_panel_api::actions::{
 use rox_panels::lyrics::StampLine;
 
 use crate::workspace::{
-    CloseWindow, DecreaseFontSize, FocusSearch, IncreaseFontSize, NewWindow, NextTrack, OpenAbout,
-    OpenConsole, OpenEqualizer, OpenQuickPlay, OpenSettings, OpenStats, OpenTasks, OpenWelcome,
-    PlayRandom, PreviousTrack, Quit, ResetFontSize, StopPlayback, TogglePostShader,
+    AnalyzeTempo, BuildAcoustic, ClosePanelAction, CloseWindow, CycleLoop, DecreaseFontSize,
+    FillSortNames, FindDuplicates, FocusSearch, ImportWorkspace, IncreaseFontSize,
+    MeasureReplayGain, NewEmptyWindow, NewWindow, NextTrack, OpenAbout, OpenConsole, OpenEqualizer,
+    OpenHealth, OpenPowerSearch, OpenQuickPlay, OpenSettings, OpenSignals, OpenStats, OpenTasks,
+    OpenWelcome, PlayRandom, PreviousTrack, Quit, RescanLibrary, ResetFontSize, RomanizeLibrary,
+    StopPlayback, TagGenres, ToggleArtTheming, ToggleDecorations, ToggleDesignMode, ToggleMenubar,
+    ToggleMute, TogglePostShader, ToggleQuitToTray, ToggleResizeLock, ToggleShuffle,
+    ToggleStopAfter, ToggleTheme, VolumeDown, VolumeUp,
 };
 
 /// Bindings match key contexts along the focus path, so this scope holds
@@ -78,6 +83,11 @@ const TYPE_AHEAD: Option<&str> = Some(rox_panel_kit::TYPE_AHEAD_CYCLE_CONTEXT);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Playback,
+    /// The library's own operations: the scan, the four analysis passes,
+    /// the duplicate finder, and the health report they feed. Everything
+    /// the Library menu holds, in the order it holds it. Tasks and Stats
+    /// stay in Windows, since neither is only about the library.
+    Library,
     Windows,
     Browsing,
     View,
@@ -88,6 +98,7 @@ impl Group {
     /// The groups the page steps through, in the order it draws them.
     pub const ALL: &'static [Group] = &[
         Group::Playback,
+        Group::Library,
         Group::Windows,
         Group::Browsing,
         Group::View,
@@ -97,6 +108,7 @@ impl Group {
     pub fn label(self) -> &'static str {
         match self {
             Group::Playback => rox_i18n::t_static("keymap-group-playback"),
+            Group::Library => rox_i18n::t_static("keymap-group-library"),
             Group::Windows => rox_i18n::t_static("keymap-group-windows"),
             Group::Browsing => rox_i18n::t_static("keymap-group-browsing"),
             Group::View => rox_i18n::t_static("keymap-group-view"),
@@ -108,6 +120,7 @@ impl Group {
         use rox_design::assets::icons;
         match self {
             Group::Playback => icons::PLAY,
+            Group::Library => icons::MUSIC,
             Group::Windows => icons::APP_WINDOW,
             Group::Browsing => icons::SEARCH,
             Group::View => icons::EYE,
@@ -129,7 +142,10 @@ pub struct Command {
     /// settings and about windows and popped-out panels.
     pub context: Option<&'static str>,
     /// The chords this command ships with, in gpui's own syntax
-    /// ("ctrl-shift-s"). More than one is an alias, not a sequence.
+    /// ("ctrl-shift-s"). More than one is an alias, not a sequence. Empty
+    /// is a real choice: a command nobody expects a chord for ships
+    /// unbound, so it's there to record onto without taking a key from
+    /// anything.
     pub defaults: &'static [&'static str],
     /// Builds the binding for one chord. Each command names a distinct
     /// action type, so the type has to be baked in here rather than
@@ -202,6 +218,8 @@ mod defaults {
     pub const SETTINGS: &[&str] = &["cmd-,", "ctrl-i"];
     pub const PANEL_SETTINGS: &[&str] = &["cmd-shift-,"];
     pub const STATS: &[&str] = &["cmd-shift-s"];
+    pub const HEALTH: &[&str] = &["cmd-shift-h"];
+    pub const POWER_SEARCH: &[&str] = &["cmd-shift-f"];
     pub const QUICK_PLAY: &[&str] = &["cmd-p", "cmd-f"];
     pub const FOCUS_SEARCH: &[&str] = &["cmd-l"];
     pub const ZOOM_IN: &[&str] = &["cmd-=", "cmd-+"];
@@ -217,6 +235,9 @@ mod defaults {
     pub const PREVIOUS_TRACK: &[&str] = &["cmd-left"];
     pub const STOP: &[&str] = &["cmd-."];
     pub const PLAY_RANDOM: &[&str] = &["cmd-r"];
+    pub const MUTE: &[&str] = &["cmd-shift-m"];
+    pub const DESIGN_MODE: &[&str] = &["cmd-shift-d"];
+    pub const THEME: &[&str] = &["cmd-shift-t"];
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -224,6 +245,8 @@ mod defaults {
     pub const SETTINGS: &[&str] = &["ctrl-,", "ctrl-i"];
     pub const PANEL_SETTINGS: &[&str] = &["ctrl-<"];
     pub const STATS: &[&str] = &["ctrl-shift-s"];
+    pub const HEALTH: &[&str] = &["ctrl-shift-h"];
+    pub const POWER_SEARCH: &[&str] = &["ctrl-shift-f"];
     pub const QUICK_PLAY: &[&str] = &["ctrl-p", "ctrl-f"];
     pub const FOCUS_SEARCH: &[&str] = &["ctrl-l"];
     pub const ZOOM_IN: &[&str] = &["ctrl-=", "ctrl-+"];
@@ -239,6 +262,9 @@ mod defaults {
     pub const PREVIOUS_TRACK: &[&str] = &["ctrl-left"];
     pub const STOP: &[&str] = &["ctrl-."];
     pub const PLAY_RANDOM: &[&str] = &["ctrl-r"];
+    pub const MUTE: &[&str] = &["ctrl-shift-m"];
+    pub const DESIGN_MODE: &[&str] = &["ctrl-shift-d"];
+    pub const THEME: &[&str] = &["ctrl-shift-t"];
 }
 
 /// Everything rox binds. The page draws this in order within each group,
@@ -316,6 +342,157 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             rox_i18n::t_static("keymap-play-random.description")
         ),
         command!(
+            "toggle_mute",
+            rox_i18n::t_static("keymap-toggle-mute"),
+            Group::Playback,
+            WORKSPACE,
+            defaults::MUTE,
+            ToggleMute,
+            rox_i18n::t_static("keymap-toggle-mute.description")
+        ),
+        command!(
+            "toggle_shuffle",
+            rox_i18n::t_static("keymap-toggle-shuffle"),
+            Group::Playback,
+            WORKSPACE,
+            &[],
+            ToggleShuffle,
+            rox_i18n::t_static("keymap-toggle-shuffle.description")
+        ),
+        command!(
+            "cycle_loop",
+            rox_i18n::t_static("keymap-cycle-loop"),
+            Group::Playback,
+            WORKSPACE,
+            &[],
+            CycleLoop,
+            rox_i18n::t_static("keymap-cycle-loop.description")
+        ),
+        command!(
+            "toggle_stop_after",
+            rox_i18n::t_static("keymap-toggle-stop-after"),
+            Group::Playback,
+            WORKSPACE,
+            &[],
+            ToggleStopAfter,
+            rox_i18n::t_static("keymap-toggle-stop-after.description")
+        ),
+        command!(
+            "volume_up",
+            rox_i18n::t_static("keymap-volume-up"),
+            Group::Playback,
+            WORKSPACE,
+            &[],
+            VolumeUp,
+            rox_i18n::t_static("keymap-volume-up.description")
+        ),
+        command!(
+            "volume_down",
+            rox_i18n::t_static("keymap-volume-down"),
+            Group::Playback,
+            WORKSPACE,
+            &[],
+            VolumeDown,
+            rox_i18n::t_static("keymap-volume-down.description")
+        ),
+        // The library's operations, in the Library menu's own order: the
+        // scan, then the four passes, then the duplicate finder, then the
+        // health report they all feed. Everything here ships unbound
+        // except the report, which keeps the chord it had in the Windows
+        // group: an operation that costs an afternoon is not something to
+        // reach by accident, and there's no chord a user expects for it
+        // either.
+        command!(
+            "rescan_library",
+            rox_i18n::t_static("keymap-rescan-library"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            RescanLibrary,
+            rox_i18n::t_static("keymap-rescan-library.description")
+        ),
+        command!(
+            "measure_replaygain",
+            rox_i18n::t_static("keymap-measure-replaygain"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            MeasureReplayGain,
+            rox_i18n::t_static("keymap-measure-replaygain.description")
+        ),
+        command!(
+            "analyze_tempo",
+            rox_i18n::t_static("keymap-analyze-tempo"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            AnalyzeTempo,
+            rox_i18n::t_static("keymap-analyze-tempo.description")
+        ),
+        command!(
+            "build_acoustic",
+            rox_i18n::t_static("keymap-build-acoustic"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            BuildAcoustic,
+            rox_i18n::t_static("keymap-build-acoustic.description")
+        ),
+        command!(
+            "fill_sort_names",
+            rox_i18n::t_static("keymap-fill-sort-names"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            FillSortNames,
+            rox_i18n::t_static("keymap-fill-sort-names.description")
+        ),
+        command!(
+            "romanize_library",
+            rox_i18n::t_static("keymap-romanize-library"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            RomanizeLibrary,
+            rox_i18n::t_static("keymap-romanize-library.description")
+        ),
+        command!(
+            "find_duplicates",
+            rox_i18n::t_static("keymap-find-duplicates"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            FindDuplicates,
+            rox_i18n::t_static("keymap-find-duplicates.description")
+        ),
+        command!(
+            "tag_genres",
+            rox_i18n::t_static("keymap-tag-genres"),
+            Group::Library,
+            WORKSPACE,
+            &[],
+            TagGenres,
+            rox_i18n::t_static("keymap-tag-genres.description")
+        ),
+        command!(
+            "open_health",
+            rox_i18n::t_static("keymap-open-health"),
+            Group::Library,
+            WORKSPACE,
+            defaults::HEALTH,
+            OpenHealth,
+            rox_i18n::t_static("keymap-open-health.description")
+        ),
+        command!(
+            "open_power_search",
+            rox_i18n::t_static("keymap-open-power-search"),
+            Group::Library,
+            WORKSPACE,
+            defaults::POWER_SEARCH,
+            OpenPowerSearch,
+            rox_i18n::t_static("keymap-open-power-search.description")
+        ),
+        command!(
             "type_ahead_next",
             rox_i18n::t_static("keymap-type-ahead-next"),
             Group::Browsing,
@@ -352,6 +529,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             rox_i18n::t_static("keymap-prev-tab.description")
         ),
         command!(
+            "close_panel",
+            rox_i18n::t_static("keymap-close-panel"),
+            Group::Browsing,
+            WORKSPACE,
+            &[],
+            ClosePanelAction,
+            rox_i18n::t_static("keymap-close-panel.description")
+        ),
+        command!(
             "new_window",
             rox_i18n::t_static("keymap-new-window"),
             Group::Windows,
@@ -359,6 +545,15 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             defaults::NEW_WINDOW,
             NewWindow,
             rox_i18n::t_static("keymap-new-window.description")
+        ),
+        command!(
+            "new_empty_window",
+            rox_i18n::t_static("keymap-new-empty-window"),
+            Group::Windows,
+            WORKSPACE,
+            &[],
+            NewEmptyWindow,
+            rox_i18n::t_static("keymap-new-empty-window.description")
         ),
         command!(
             "open_tasks",
@@ -442,6 +637,33 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             rox_i18n::t_static("keymap-open-quick-play.description")
         ),
         command!(
+            "open_signals",
+            rox_i18n::t_static("keymap-open-signals"),
+            Group::Windows,
+            WORKSPACE,
+            &[],
+            OpenSignals,
+            rox_i18n::t_static("keymap-open-signals.description")
+        ),
+        command!(
+            "import_workspace",
+            rox_i18n::t_static("keymap-import-workspace"),
+            Group::Windows,
+            WORKSPACE,
+            &[],
+            ImportWorkspace,
+            rox_i18n::t_static("keymap-import-workspace.description")
+        ),
+        command!(
+            "toggle_quit_to_tray",
+            rox_i18n::t_static("keymap-toggle-quit-to-tray"),
+            Group::Windows,
+            WORKSPACE,
+            &[],
+            ToggleQuitToTray,
+            rox_i18n::t_static("keymap-toggle-quit-to-tray.description")
+        ),
+        command!(
             "close_window",
             rox_i18n::t_static("keymap-close-window"),
             Group::Windows,
@@ -512,6 +734,60 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             defaults::POST_SHADER,
             TogglePostShader,
             rox_i18n::t_static("keymap-toggle-post-shader.description")
+        ),
+        command!(
+            "toggle_theme",
+            rox_i18n::t_static("keymap-toggle-theme"),
+            Group::View,
+            None,
+            defaults::THEME,
+            ToggleTheme,
+            rox_i18n::t_static("keymap-toggle-theme.description")
+        ),
+        command!(
+            "toggle_design_mode",
+            rox_i18n::t_static("keymap-toggle-design-mode"),
+            Group::View,
+            WORKSPACE,
+            defaults::DESIGN_MODE,
+            ToggleDesignMode,
+            rox_i18n::t_static("keymap-toggle-design-mode.description")
+        ),
+        command!(
+            "toggle_resize_lock",
+            rox_i18n::t_static("keymap-toggle-resize-lock"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            ToggleResizeLock,
+            rox_i18n::t_static("keymap-toggle-resize-lock.description")
+        ),
+        command!(
+            "toggle_menubar",
+            rox_i18n::t_static("keymap-toggle-menubar"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            ToggleMenubar,
+            rox_i18n::t_static("keymap-toggle-menubar.description")
+        ),
+        command!(
+            "toggle_decorations",
+            rox_i18n::t_static("keymap-toggle-decorations"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            ToggleDecorations,
+            rox_i18n::t_static("keymap-toggle-decorations.description")
+        ),
+        command!(
+            "toggle_art_theming",
+            rox_i18n::t_static("keymap-toggle-art-theming"),
+            Group::View,
+            WORKSPACE,
+            &[],
+            ToggleArtTheming,
+            rox_i18n::t_static("keymap-toggle-art-theming.description")
         ),
         command!(
             "stamp_line",

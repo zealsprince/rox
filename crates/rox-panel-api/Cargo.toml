@@ -39,6 +39,10 @@ sha2 = "0.10"
 # The images a shader chain declares arrive as encoded files and reach the
 # window as rgba8.
 image = "0.25"
+# The shader editor checks a buffer while it's typed, and registering it to
+# find out would leave a compiled pipeline behind per pause. Same naga the
+# window API validates with, so the verdict and the message match.
+naga = { version = "25.0", features = ["wgsl-in"] }
 # The tag suggestions ride the input widget's completion menu, whose
 # provider trait speaks these types; already in the tree through
 # gpui-component.

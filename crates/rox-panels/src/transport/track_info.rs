@@ -18,6 +18,7 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 
 use rox_services::thumbs::Thumb;
 
@@ -740,7 +741,27 @@ impl TrackInfoPanel {
     /// Flat checked items rather than a submenu: a plain
     /// `.checked()` only refreshes at the top level, and a nested flyout
     /// would show a stale tick until it was reopened.
-    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        // Copy reads the playing track when its entry is clicked, not when
+        // the menu opens, so a track change under an open menu copies what
+        // is actually playing.
+        let state = self.state.clone();
+        let menu = panel::copy_submenu(
+            menu,
+            window,
+            cx,
+            Rc::new(move |cx: &App| {
+                let Some(now) = state.player.read(cx).now_playing() else {
+                    return Vec::new();
+                };
+                vec![panel::CopyText::from_key(&now.key, state.library.read(cx))]
+            }),
+        );
         let mut menu = menu
             .separator()
             .label(rox_i18n::t!("track-info-menu-overflow"));

@@ -51,6 +51,7 @@ pub fn save_target(path: &Path) -> Source {
 fn duration_ms_for(library: &Entity<Library>, id: i64, cx: &App) -> Option<u32> {
     let catalog = library.read(cx);
     let projection = catalog.projection()?;
-    let row = projection.db_id.iter().position(|&db| db == id)?;
-    Some(projection.resolve(row as u32).duration_ms)
+    let row = (0..projection.len() as u32)
+        .find(|&row| projection.db_id[row as usize] == id && !projection.is_dead(row))?;
+    Some(projection.resolve(row).duration_ms)
 }

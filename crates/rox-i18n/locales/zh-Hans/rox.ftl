@@ -285,6 +285,12 @@ panel-add-to-queue = 加入队列
 panel-add-to-playlist = 添加到播放列表
 panel-favourite-add = 加入收藏
 panel-favourite-remove = 从收藏移除
+panel-copy = 复制
+panel-copy-title = 复制标题
+panel-copy-artist = 复制艺术家
+panel-copy-album = 复制专辑
+panel-copy-filename = 复制文件名
+panel-copy-path = 复制路径
 shader-pick-missing = { $name }（缺失）
 shader-pick-custom = 自定义
 
@@ -390,6 +396,12 @@ library-columns = 列
     .description = 显示哪些列；在面板里拖动表头可以调整顺序和宽度
 library-column-headers = 列表头
     .description = 列表上方可排序的表头行；隐藏后各列仍保持顺序和宽度
+library-column-rename = 重命名...
+library-column-rename-reset = 重置名称
+library-column-rename-name = 表头
+library-column-rename-note = 显示在内置表头的位置；留空即恢复内置表头，只输入一个空格则表头留白
+library-sort-on-click = 点击排序
+    .description = 点击表头任意位置即可排序，而不必点图标；此时拖动调整列顺序需要按住 Alt
 library-compact-plays = 紧凑播放次数
     .description = 播放次数列显示为一个小数字加一道横杠
 library-line-height = 行高
@@ -744,12 +756,20 @@ settings-library-tempo-enable = 算出曲目跑多快
     .description = 给标签里没写速度的曲目数拍子，媒体库就能显示速度并按它排序。全部在这台机器上跑，数字进媒体库数据库，你的文件不动
 settings-library-tempo-progress = 正在测速 { $done } / { $total }
 settings-library-tempo-progress-start = 正在算出缺哪些…
+settings-library-tempo-refused = 。有 { $count } 首曲目 rox 数不出节拍，“分析缺失项”不会碰它们
+settings-library-tempo-retry = 重试数不出的
 settings-library-tempo-status-measured = 扫描到的 { $total } 首曲目全都有速度，其中 { $measured } 首由 rox 算出
+settings-library-tempo-status-measured-some = 扫描到的 { $total } 首曲目里有 { $covered } 首有速度，其中 { $measured } 首由 rox 算出
+settings-library-tempo-status-none = 扫描到的 { $total } 首曲目都不知道速度。“分析缺失项”会算出来
+settings-library-tempo-status-partial = 扫描到的 { $total } 首曲目里有 { $covered } 首有速度，其中 { $measured } 首由 rox 算出。“分析缺失项”会处理其余 { $missing } 首
 settings-library-tempo-status-tagged = 扫描到的 { $total } 首曲目都有速度标签
+settings-library-tempo-status-tagged-some = 扫描到的 { $total } 首曲目里有 { $covered } 首有速度标签
 settings-library-watch-folders = 监视文件夹
     .description = 文件的添加、修改和删除随时并进媒体库，不用手动重新扫描
 settings-library-write-stored = 把已存储的内容写进文件
     .description = 三个保存设置只对下一次写入生效，所以在切到“标签”之前保存的东西还只在 rox 里。这一步会把 rox 里已有的歌词、增益和描述写进文件本身，别的播放器读这个文件夹时也就能看到。不会重新计算任何内容
+settings-show-readings = 显示读音
+    .description = 在拉丁字母读不出来的名称后面加上罗马字读音：秋ノ風 (Aki no kaze)。读音就是该值已有的排序名，所以没有排序名的名称什么都不显示，拉丁字母的名称也不会加
 
 ## Settings: MCP
 settings-mcp-client-config = 客户端配置
@@ -764,6 +784,11 @@ settings-mlmodels-custom-description-empty = 给 rox 指一个你自己的 PANNs
 settings-mlmodels-download-failed = { $label } 下载失败：{ $reason }
 settings-mlmodels-downloading = 正在下载 { $label }：{ $done } / { $total }
 settings-mlmodels-stopping = 正在停止 { $label } 的下载…
+settings-dictionary-description = { $summary }。{ $licence }
+settings-dictionary-download-failed = 词典下载失败：{ $reason }
+settings-dictionary-downloading = 正在下载词典：{ $done } / { $total }
+settings-dictionary-heading = 罗马化
+settings-dictionary-stopping = 正在停止词典的下载…
 settings-mlmodels-fallback-model = 模型
 settings-mlmodels-fallback-the-model = 这个模型
 settings-mlmodels-kind-custom = 自定义
@@ -966,9 +991,11 @@ settings-sidebar-settings-file = 设置文件
 
 ## Menubar
 menu-about = 关于
+menu-analyze-tempo = 分析速度…
 menu-application = 应用
 menu-apply-layout = 应用布局
 menu-apply-workspace = 应用工作区
+menu-build-acoustic = 构建声学向量…
 menu-chat = 聊天
 menu-close = 关闭
 menu-console = 控制台
@@ -977,8 +1004,16 @@ menu-discussions = 讨论
 menu-empty-window = 空窗口
 menu-equalizer = 均衡器
 menu-exit = 退出
+menu-fill-sort-names = 填充排序名称…
+menu-romanize-library = 罗马化媒体库…
+menu-find-duplicates = 查找重复曲目…
+menu-tag-genres = 标记流派…
+menu-health = 媒体库健康
+menu-power-search = 高级搜索
 menu-hide-menubar = 隐藏菜单栏
 menu-import-workspace = 导入工作区…
+menu-library = 媒体库
+menu-measure-replaygain = 测量 ReplayGain…
 menu-new-ellipsis = 新建…
 menu-new-window = 新建窗口
 menu-new-window-from-layout = 从布局新建窗口
@@ -1000,13 +1035,16 @@ menu-pause = 暂停
 menu-playback = 播放
 menu-remain-in-tray = 留在托盘
 menu-report-issue = 报告问题
+menu-rescan-library = 重新扫描媒体库
 menu-save-layout = 保存布局
 menu-save-workspace = 保存工作区
 menu-section-add = 添加
+menu-section-analyze = 分析
 menu-section-app = 应用
 menu-section-interface = 界面
 menu-section-layouts = 布局
-menu-section-library = 媒体库
+menu-section-listening = 收听
+menu-section-maintain = 维护
 menu-section-session = 会话
 menu-section-track = 曲目
 menu-section-tuning = 调校
@@ -1118,17 +1156,43 @@ tasks-start-rescan = 重新扫描
 tasks-stop = 停止
 tasks-stopping = 正在停止…
 tasks-tempo-all = { $count } 首曲目全都有速度
+tasks-tempo-counted = { $count } 首曲目有速度
 tasks-tempo-off = “算出曲目跑多快”在设置的“媒体库”里关着
 tasks-tempo-partial = { $total } 首曲目里有 { $missing } 首没有速度
+tasks-tempo-refused = 有 { $count } 首曲目 rox 数不出节拍
 tasks-timing = 正在测速 { $progress }
+tasks-filling = 正在填充 { $progress }
+tasks-job-sortnames = 排序名称
+tasks-sortnames-all = { $count } 位艺人全都有排序名称
+tasks-sortnames-non-latin = ，其中 { $count } 位不是拉丁字母，{ $estimate }
+tasks-sortnames-nothing = 还没扫描到可查询的内容
+tasks-sortnames-partial = { $total } 位艺人里有 { $missing } 位没有排序名称
+tasks-start-fill-missing = 填充缺失项
+tasks-job-romanize = 罗马化
+tasks-reading-takes = ，读出它们要 { $estimate }
+tasks-romanize-all = { $count ->
+   *[other] { $count } 个标题、专辑和艺人全都有排序名称
+}
+tasks-romanize-nothing = 还没扫描到可读的内容
+tasks-romanize-partial = { $total } 个标题、专辑和艺人里有 { $missing } 个没有排序名称
+tasks-romanizing = 正在读取 { $progress }
+tasks-romanize-skipped = 因缺少日文词典跳过了 { $count } 个
+tasks-romanize-skipping = 其中 { $kanji } 个是汉字，需要设置 > 媒体库里的日文词典
+tasks-start-romanize = 罗马化
 tasks-tip = 打开媒体库任务
 tasks-window-title = rox - 任务
 tasks-working-out-missing = 正在算出缺哪些…
 
 ## Stats window
+stats-bars-daily = 每天一根柱，点击可打开那一天
+stats-bars-days = 每 { $days } 天一根柱，点击可打开该时段
+stats-bars-hourly = 每小时一根柱，已是最细视图
+stats-bars-hours = 每 { $hours } 小时一根柱，点击可打开对应的一天
+stats-bars-weekly = 每周一根柱，点击可打开那一周
 stats-bucket-listens = { $count ->
-   *[other] { $count } 次收听，{ $ago }
+   *[other] { $count } 次收听，{ $ago }（{ $date }）
 }
+stats-chart-end-day = 午夜
 stats-chart-start-all = 首次收听
 stats-chart-start-month = 30 天前
 stats-chart-start-week = 7 天前
@@ -1139,6 +1203,7 @@ stats-count-menu = 计数
     .description = 这个数字统计最近哪一段时间的收听；悬停列表里始终全都有
 stats-empty-all = 还没有收听记录
 stats-empty-range = 这个区间没有收听记录
+stats-library-held = { $tracks } 首曲目，占用内存 { $size }
 stats-now = 现在
 stats-open = 打开统计
 stats-open-on-click = 点击打开统计
@@ -1154,6 +1219,7 @@ stats-range-day-short = 日
 stats-range-label = 区间
 stats-range-month = 本月
 stats-range-month-short = 月
+stats-range-span = { $from } 至 { $to }
 stats-range-today = 今天
 stats-range-week = 本周
 stats-range-week-short = 周
@@ -1173,6 +1239,82 @@ stats-show-number = 显示数字
 stats-title = 统计部件
 stats-tooltip-listens = 收听
 stats-window-title = rox - 统计
+
+## Library health window
+
+health-caption-art = { $albums } / { $total }，{ $tracks }
+health-caption-duplicates = { $groups } / { $tracks }
+health-caption-formats = { $unwritable } / { $total }
+health-caption-gaps = { $albums } / { $total }
+health-caption-missing = { $missing } 项缺失 / { $total }
+health-caption-sort = 专辑艺人 { $album_artists }，专辑 { $albums }，标题 { $titles }
+health-caption-split = { $tagged } 项已标记，{ $measured } 项已测量，{ $missing } 项缺失
+health-caption-split-refused = { $tagged } 项已标记，{ $measured } 项已测量，{ $missing } 项缺失，{ $refused } 项无节拍
+health-checks-menu = 计入的标签
+    .description = 读数计算五个核心标签中的哪些；悬停列表始终显示全部
+health-click-opens = 点击打开媒体库健康
+health-click-section = 点击
+health-complete = 没有缺失项
+health-count-groups = { $count ->
+   *[other] { $count } 组
+}
+health-desc-acoustic = 没有声学指纹的曲目，找不到与之相似的音乐。
+health-desc-art = 没有封面的专辑，文件里没有内嵌，旁边也没有图片。
+health-desc-duplicates = 艺人和曲名相同、时长也差不多的曲目组。
+health-desc-gaps = 曲目编号有跳号的专辑，或者其中有曲目根本没有编号。
+health-desc-genre = 文件里没有流派的曲目。
+health-desc-rating = 你还没有评分的曲目。
+health-desc-replaygain = 没有响度测量的曲目，播放时会比其他曲目更响或更轻。
+health-desc-sort-names = 有多少名称带有排序名，也就是决定名称排列位置的写法。
+health-desc-tempo = 没有速度的曲目，按 BPM 排序和匹配读的就是这个值。
+health-desc-writable = rox 能读取但无法写回标签的格式的曲目。分片 MP4 文件同样拒绝写入，但这里没有计入。
+health-desc-year = 没有发行年份的曲目。
+health-drill = 显示这些
+health-fix-analyze = 分析缺失项
+health-fix-duplicates = 打开重复曲目
+health-fix-genres = 标记流派
+health-fix-measure = 测量缺失项
+health-fix-fill = 填充缺失项
+health-measuring-art = 正在检查专辑封面，{ $done } / { $total }
+health-measuring-duplicates = 正在匹配重复项
+health-measuring-formats = 正在读取文件格式
+health-measuring-gaps = 正在检查曲目编号
+health-open = 打开媒体库健康
+health-open-on-click = 点击打开媒体库健康
+    .description = 点这个部件打开媒体库健康窗口，查看覆盖率的详细拆分
+health-overview-complete = { $complete } / { $total } 已完整打标签
+health-overview-missing = { $missing } 项缺失
+health-readout-section = 读数
+health-running = 运行中
+health-section-audio = 音频
+health-section-files = 文件与结构
+health-section-overview = 概览
+health-section-tags = 标签
+health-show-percent = 显示百分比
+    .description = 在图标旁边画出覆盖率；关掉就只剩图标，计数在悬停时显示
+health-tile-acoustic = 声学向量
+health-tile-album = 专辑
+health-tile-art = 专辑封面
+health-tile-artist = 艺术家
+health-tile-duplicates = 重复曲目
+health-tile-gaps = 专辑缺号
+health-tile-genre = 流派
+health-tile-rating = 评分
+health-tile-replaygain = ReplayGain
+health-tile-sort-names = 排序名称
+health-tile-tempo = 速度
+health-tile-writable = 不支持
+health-tile-year = 年份
+health-tile-title = 标题
+health-tooltip-missing = 缺失的标签
+health-waiting = 等待中
+health-widget-title = 健康部件
+health-window-title = rox - 媒体库健康
+
+## Power search window
+
+search-seed-caption = { $source }: { $count }
+search-window-title = rox - 高级搜索
 
 ## About window
 about-check-failed = 连不上 GitHub
@@ -1305,6 +1447,7 @@ keymap-focus-search = 聚焦搜索
     .description = 把光标放进媒体库搜索框
 keymap-group-browsing = 浏览
 keymap-group-editing = 编辑
+keymap-group-library = 媒体库
 keymap-group-playback = 播放
 keymap-group-view = 视图
 keymap-group-windows = 窗口
@@ -1348,6 +1491,10 @@ keymap-open-settings = 打开设置
     .description = 打开这个窗口
 keymap-open-panel-settings = 面板设置
     .description = 打开当前焦点面板的设置窗口
+keymap-open-health = 媒体库健康
+    .description = 打开媒体库健康窗口，查看标签覆盖情况和结构问题的统计
+keymap-open-power-search = 高级搜索
+    .description = 打开一个使用独立查询的搜索窗口，在这里搜索不会影响工作区
 keymap-open-stats = 打开统计
     .description = 打开收听统计窗口
 keymap-open-tasks = 任务
@@ -1384,6 +1531,56 @@ keymap-next-tab = 下一个标签页
     .description = 显示当前焦点面板组中的下一个标签页
 keymap-prev-tab = 上一个标签页
     .description = 显示当前焦点面板组中的上一个标签页
+keymap-toggle-mute = 静音
+    .description = 静音输出但保留音量。再按一次恢复
+keymap-toggle-shuffle = 切换随机播放
+    .description = 打开或关闭队列的随机播放
+keymap-cycle-loop = 切换循环
+    .description = 循环模式从关闭到全部、到单曲，再回到关闭
+keymap-toggle-stop-after = 播完即停
+    .description = 让当前曲目播完后暂停。再按一次取消
+keymap-volume-up = 增大音量
+    .description = 音量提高一格
+keymap-volume-down = 减小音量
+    .description = 音量降低一格
+keymap-close-panel = 关闭面板
+    .description = 关闭当前焦点面板组中的活动面板
+keymap-new-empty-window = 空窗口
+    .description = 打开一个空的工作区窗口
+keymap-open-signals = 信号
+    .description = 打开信号窗口，也就是每个面板路由背后的信号池
+keymap-import-workspace = 导入工作区
+    .description = 选择一个工作区文件并加入收藏
+keymap-toggle-quit-to-tray = 切换留在托盘
+    .description = 切换关闭最后一个窗口时 rox 是否留在托盘中运行
+keymap-toggle-design-mode = 切换设计模式
+    .description = 切换是否可以就地重新排列面板
+keymap-toggle-theme = 切换浅色 / 深色
+    .description = 切换到配色的另一侧。在所有位置生效，因为所有窗口共用同一主题
+keymap-toggle-resize-lock = 切换锁定面板大小
+    .description = 切换是否只在设计模式下才能调整面板大小
+keymap-toggle-menubar = 切换隐藏菜单栏
+    .description = 显示窗口内的菜单栏，或隐藏至按住 Alt 时才显示
+keymap-toggle-decorations = 切换系统窗口装饰
+    .description = 在系统窗口边框和 rox 自带边框之间切换工作区窗口
+keymap-toggle-art-theming = 切换歌曲配色
+    .description = 切换是否用当前曲目的封面为配色着色
+keymap-rescan-library = 重新扫描媒体库
+    .description = 再次扫描所有记住的媒体库文件夹
+keymap-measure-replaygain = 测量 ReplayGain
+    .description = 打开对话框，测量没有响度值的曲目
+keymap-analyze-tempo = 分析速度
+    .description = 打开对话框，聆听没有 BPM 的曲目的节拍
+keymap-build-acoustic = 构建声学向量
+    .description = 打开对话框，构建声学搜索所读取的向量
+keymap-fill-sort-names = 填充排序名称
+    .description = 打开对话框，向 MusicBrainz 询问文件中缺少的排序名称
+keymap-romanize-library = 罗马化媒体库
+    .description = 打开对话框，把非拉丁的标题、专辑和艺人读成拉丁字母
+keymap-find-duplicates = 查找重复曲目
+    .description = 打开媒体库的重复曲目查找器
+keymap-tag-genres = 标记流派
+    .description = 对没有流派的曲目打开流派标记器
 
 ## Panel catalog
 panel-catalog-album-carousel = 专辑转盘
@@ -1395,6 +1592,7 @@ panel-catalog-eq-widget = 均衡器部件
 panel-catalog-filter = 筛选
 panel-catalog-folder-tree = 文件夹树
 panel-catalog-genre-grid = 流派墙
+panel-catalog-health-widget = 健康部件
 panel-catalog-group-application = 应用
 panel-catalog-group-arrangement = 排布
 panel-catalog-group-catalogue = 目录
@@ -1443,6 +1641,7 @@ lastfm-import-matched = ，匹配 { $count } 首
 lastfm-import-added = ，加入收藏 { $count } 首
 
 ## Tag tools
+tags-editor-add-tag = 添加
 tags-editor-clear-all = 全部清空
 tags-editor-form-view = 表单
 tags-editor-format-unsupported-all = 这种格式的标签还读不了也写不了。
@@ -1457,12 +1656,17 @@ tags-editor-loading = 正在加载标签…
 tags-editor-look-up = 查询
 tags-editor-multiple-values = 多个值
 tags-editor-clear-on-save = 保存时清空
-tags-editor-other-tags = 其他标签（{ $count }）
+tags-editor-additional-tags = 附加标签（{ $count }）
 tags-editor-remove = 移除
 tags-editor-reveal = 在文件管理器中显示
 tags-editor-save-errors = { $count } 个文件失败；{ $error }
 tags-editor-saving-progress = 正在保存 { $done }/{ $total }…
+tags-editor-sort-names = 排序名称
 tags-editor-table-view = 表格
+tags-editor-tag-columns = 附加标签
+tags-editor-tag-field-conflict = { $field } 字段写入此标签
+tags-editor-tag-key-placeholder = 标签名
+tags-editor-tag-value-placeholder = 值
 tags-editor-tags-section = 标签
 tags-editor-unknown-partial = { $total } 个里 { $count } 个
 tags-editor-unread-count = { $total } 个文件里有 { $failed } 个的标签读不出来
@@ -1611,6 +1815,55 @@ duplicates-trash-result = { $count ->
 duplicates-trash-result-failed = 已把 { $count } 个移入回收站，{ $failed } 个失败
 duplicates-trashing = 正在移入回收站 { $done }/{ $total }…
 duplicates-window-title = rox - 重复曲目
+
+## 流派标记器
+
+tag-genres-empty = 每首曲目都有流派了。播放一首来重新设置。
+tag-genres-heading = 标记流派
+tag-genres-input-placeholder = 输入流派
+tag-genres-keys-hint = 1-8 选择一行，Shift+1-8 添加到输入框，Ctrl+1-8 应用到整张专辑，Enter 应用输入内容，L 查询 Last.fm，S 跳过，Ctrl+Z 撤销
+tag-genres-library-loading = 媒体库还在加载；稍后再试。
+tag-genres-no-file = 媒体库中没有这首曲目的文件。
+tag-genres-no-suggestions = 没有可推荐的流派；请手动输入。
+tag-genres-progress = { $total } 首未设置中的第 { $at } 首
+tag-genres-skip = 跳过
+tag-genres-thinking = 正在读取邻近曲目…
+tag-genres-undo = 撤销
+tag-genres-unwritable = 这首曲目位于共享的 cue 镜像中，无法写入流派。请跳过。
+tag-genres-window-title = rox - 标记流派
+tag-genres-looking-up = 正在询问 Last.fm…
+tag-genres-lookup = 在 Last.fm 上查找
+tag-genres-auto-lookup = 自动
+tag-genres-lookup-found = Last.fm 给 { $artist } 的标签：{ $tags }
+tag-genres-lookup-none = Last.fm 没有 { $artist } 的标签。
+tag-genres-lookup-off = 在线艺术家查找已在设置中关闭。
+tag-genres-why-acoustic = { $count ->
+   *[other] 听起来相似的 { $count } 首曲目
+}
+tag-genres-why-album = { $count ->
+   *[other] 这张专辑里的 { $count } 首曲目
+}
+tag-genres-why-artist = { $count ->
+   *[other] 这位艺术家的 { $count } 首曲目
+}
+tag-genres-why-lookup = Last.fm
+tag-genres-album-too = { $count ->
+   *[other] 给这首曲目的整张专辑和另外 { $count } 首曲目打上标签
+}
+tag-genres-apply = 应用
+tag-genres-begin = 开始队列
+tag-genres-col-genre = 流派
+tag-genres-col-match = 匹配
+tag-genres-col-why = 原因
+tag-genres-current-genre = 流派：{ $genre }
+tag-genres-idle = 当前没有播放。开始队列以逐首处理未设置流派的曲目，或播放一首来重新设置。
+tag-genres-no-genre = 尚无流派
+tag-genres-stop = 停止队列
+tag-genres-untagged-count = { $count ->
+   *[other] { $count } 首未设置流派的曲目
+}
+tag-genres-write-error = { $name }: { $error }
+tag-genres-writing = 正在写入第 { $done } 个，共 { $total } 个...
 
 ## Smart playlists
 smart-playlist-descending = 降序
@@ -1781,11 +2034,25 @@ pass-replaygain-title = { $count ->
    *[other] 测量 { $count } 首曲目？
 }
 pass-tempo-body = 每个文件解码两段半分钟的窗口并数拍子，媒体库就能显示曲目跑多快。它在跟点录制的音乐上最准，测不出来的会跳过。数字进媒体库数据库，你的文件不动。
+pass-tempo-retry-body = 这些曲目上一轮已经听过，没数出节拍。重试会把每一首重新解码一遍，所以只有在数拍子变好之后才值得跑。
+pass-tempo-retry-title = 重新听一遍这 { $count } 首数不出节拍的曲目？
 pass-tempo-title = { $count ->
    *[other] 找出 { $count } 首曲目的速度？
 }
 pass-timing = 正在给几首曲目测速…
 pass-timing-failed = 这个媒体库测速失败：{ $error }
+pass-fill = 填充
+pass-sortnames-body = 每位艺人都会到 MusicBrainz 查一遍其排序用的拉丁写法，这样米津玄師就会排在 Y 下面。该服务每秒只允许一次请求，节奏就由它定。答案写进媒体库数据库，绝不碰你的文件。
+pass-sortnames-scope-all = 连已经按拉丁字母排序的名字也一起查
+pass-romanize = 罗马化
+pass-romanize-body = 每个还没有排序名称的标题、专辑和艺人都会被读成拉丁字母，这样输入 "lemon" 就能找到レモン。韩文和中文不需要别的。日文汉字需要设置 > 媒体库里的词典，而 IPADIC 读错人名的频率高到需要用标签编辑器来更正。答案写进媒体库数据库，绝不碰你的文件。
+pass-romanize-title = { $count ->
+   *[other] 把 { $count } 个名字读成拉丁字母？
+}
+pass-romanize-skips-kanji = { $total } 个值里有 { $kanji } 个是汉字，在装上日文词典之前会被跳过。到设置 > 媒体库里获取。
+pass-sortnames-title = { $count ->
+   *[other] 要查 { $count } 位艺人吗？
+}
 pass-workers = 并发数
 
 ## Quick play
@@ -1795,10 +2062,22 @@ quick-play-cover = 封面
     .description = 在每条结果左边显示封面缩略图
 quick-play-duration = 时长
     .description = 在右边显示每条结果的长度
-quick-play-narrow-by = 缩小范围
 quick-play-search-placeholder = 搜索媒体库
 quick-play-subtitle = 副标题
     .description = 在每条结果下面显示艺术家和专辑
+quick-play-syntax-absent = 完全没有该值的条目
+    .example = -year
+quick-play-syntax-exclude = 除匹配项之外的一切
+    .example = -genre:rock
+quick-play-syntax-field = 锁定一个字段，带空格的值加引号
+    .example = artist:"Daft Punk"
+quick-play-syntax-free = 匹配标题、艺术家、专辑艺术家、专辑或流派
+    .example = daft punk
+quick-play-syntax-numeric = 比较数字；plays:0 和 added:<90d 用法相同
+    .example = rating:>=4
+quick-play-syntax-title = 搜索语法
+quick-play-syntax-year = 就是数字，所以前缀能取到整个年代
+    .example = year:199
 quick-play-tag-album = 专辑
 quick-play-tag-artist = 艺术家
 
@@ -2101,6 +2380,39 @@ shader-panel-run-shader = 运行着色器
     .description = 关掉会保留源码、书签和绑定，什么都不画
 shader-panel-section-routes = 路由
 
+## 着色器编辑器
+
+shader-edit-here = 编辑
+shader-editor-window-title = rox - 着色器编辑器
+shader-editor-target-screen = 屏幕着色器
+shader-editor-target-backdrop = 背景着色器
+shader-editor-origin-pool = 工作区着色器：应用后会到达每个使用它的表面
+shader-editor-origin-pool-file = 工作区着色器，工作副本位于 { $path }
+shader-editor-origin-file = 已关联到 { $path }，应用时也会写入该文件
+shader-editor-origin-inline = 此表面自己的源码
+shader-editor-apply = 应用
+shader-editor-revert = 还原
+shader-editor-close = 关闭
+shader-editor-hint-press = 按
+shader-editor-hint-apply = 应用
+shader-editor-status-unchecked = 暂无可检查的内容
+shader-editor-status-ok = 可以编译
+shader-editor-status-error = 此着色器未能编译：
+shader-editor-section-uniforms = Uniform
+shader-editor-section-textures = 纹理
+shader-editor-section-slots = 槽位
+shader-editor-section-signals = 信号
+shader-editor-slot-unnamed = 槽位 { $n }
+shader-editor-signals-empty = 信号池还没有信号。在信号窗口里添加后，它们会带着实时电平显示在这里。
+shader-editor-uniform-time = 着色器运行的秒数，音频流停止时也停止
+shader-editor-uniform-delta = 距上一帧的秒数，第一帧为 0
+shader-editor-uniform-resolution = 表面尺寸，设备像素
+shader-editor-uniform-mouse = xy 为光标位置（设备像素），z 和 w 为按键
+shader-editor-uniform-meta-0 = x 音量，y 曲目位置，z 播放中，w 曲目时长（秒）
+shader-editor-uniform-meta-1 = x 页面亮度，y 浅色主题，z 光标存在，w 内容形状
+shader-editor-texture-screen = 本帧表面之下的画面
+shader-editor-texture-prev = 此表面自己的上一帧，用于拖尾
+
 ## Genre grid panel
 genre-grid-clear-picked = 清除已选流派
 genre-grid-desaturate = 播放时去色
@@ -2168,6 +2480,7 @@ wall-tile-size = 图块大小
     .description = 图块的最长边；各列均分面板宽度
 
 ## Metadata panel
+metadata-copy-field = 复制{ $field }
 metadata-cover-background = 封面背景
     .description = 在字段后面放这首曲目的封面
 metadata-display = 显示
@@ -2175,18 +2488,28 @@ metadata-display = 显示
 metadata-display-sheet = 信息卡
 metadata-display-table = 表格
 metadata-edit-save = 保存
+metadata-field-album-artist-sort = 排序专辑艺术家
+metadata-field-album-sort = 排序专辑
+metadata-field-artist-sort = 排序艺术家
 metadata-field-bit-depth = 位深
 metadata-field-bitrate = 比特率
+metadata-field-bpm-measured = { $bpm }（rox 测得）
 metadata-field-codec = 编码
 metadata-field-comment = 注释
 metadata-field-disc = 碟片
 metadata-field-file = 文件
+metadata-field-gain-album = 专辑增益
+metadata-field-gain-track = 曲目增益
 metadata-field-sample-rate = 采样率
+metadata-field-title-sort = 排序标题
 metadata-field-track = 曲目
 metadata-fields = 字段
     .description = 信息卡列出哪些字段；曲目没有的字段保持隐藏
 metadata-find-online = 在线查找元数据…
 metadata-no-library = 没有媒体库
+metadata-romanize = 罗马化
+metadata-romanize-needs-dictionary = 带汉字的名称需要日文词典。到设置 > 媒体库里获取。
+metadata-romanize-sort-names = 罗马化排序名称
 metadata-row-borders-description = 表格里每一行下方的细线
 metadata-source = 来源
     .description = 跟随正在播放或选中的，或者读整个媒体库
@@ -2395,6 +2718,9 @@ output-start-track-hint = 播一首曲目就能看到设备接受的格式
 output-title = 输出
 
 ## Track columns
+columns-album-artist-sort = 排序专辑艺术家
+columns-album-sort = 排序专辑
+columns-artist-sort = 排序艺术家
 columns-bits = 位深
 columns-bpm = BPM
 columns-codec = 编码
@@ -2407,6 +2733,7 @@ columns-name = 名称
 columns-number = 序号
 columns-scanned = 扫描时间
 columns-similar = 相似度
+columns-title-sort = 排序标题
 
 ## Filter panel
 filter-add-column = 添加列
@@ -2415,6 +2742,7 @@ filter-all = 全部
 filter-clear-filters = 清除筛选
 filter-clear-selection = 清除选中
 filter-empty = 选一个字段开始筛选
+filter-over-cap = 还有 { $count } 项，搜索以缩小范围
 filter-remove-column = 移除列
 
 ## Search panel
@@ -2701,6 +3029,7 @@ settings-mlmodels-on-disk = ，占用 { $size }
 settings-mlmodels-to-download = ，需下载 { $size }
 model-summary-dsp-timbre-1 = 内置，无需下载。把每首曲目的对数频段能量、频谱形状和起音率概括一遍。和训练过的网络比是粗了，但它什么都不用装，哪儿都能跑
 model-summary-panns-cnn10 = 一个在 AudioSet 上训练的卷积网络，用来识别声音是什么。它对一首曲目的 512 维描述远比内置的草图丰富，代价是 24 MB 的下载和更慢的分析
+dictionary-summary-lindera-ipadic = 支撑汉字读音的日文词典。没有它，假名和谚文照样罗马化，中文照样读成拼音，但汉字标题会被跳过
 
 ## Shipped workspaces
 workspace-shipped-default = （默认）

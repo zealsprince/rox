@@ -353,6 +353,11 @@ struct TrackRow {
     title: String,
     artist: String,
     album: String,
+    /// The three sort names, off the projection by track id. All empty
+    /// for a member the library no longer holds a row for.
+    title_reading: String,
+    artist_reading: String,
+    album_reading: String,
     year: u16,
     genre: String,
     duration_ms: u32,
@@ -385,7 +390,14 @@ fn smart_key(playlist_id: i64, track_id: i64) -> i64 {
 impl TrackRow {
     /// Pull a member row's fields into a display row at a play-order spot,
     /// with the total play count resolved from the catalog.
-    fn new(playlist_id: i64, pos: u32, t: &PlaylistTrack, plays: u32, smart: bool) -> TrackRow {
+    fn new(
+        playlist_id: i64,
+        pos: u32,
+        t: &PlaylistTrack,
+        plays: u32,
+        sort: rox_services::catalog::SortNames,
+        smart: bool,
+    ) -> TrackRow {
         TrackRow {
             playlist_id,
             member_id: if smart {
@@ -399,6 +411,9 @@ impl TrackRow {
             title: t.title.clone(),
             artist: t.artist.clone(),
             album: t.album.clone(),
+            title_reading: sort.title,
+            artist_reading: sort.artist,
+            album_reading: sort.album,
             year: t.year,
             genre: t.genre.clone(),
             duration_ms: t.duration_ms,
@@ -781,6 +796,9 @@ impl PlaylistsPanel {
             let ids: Vec<i64> = visible.iter().map(|&i| all[i].track_id).collect();
             let plays = library.plays_for(&ids);
             let plays_of = |t: &PlaylistTrack| plays.get(&t.track_id).copied().unwrap_or(0);
+            // The readings, one projection lookup per shown row at
+            // rebuild time rather than per paint.
+            let sort_of = |t: &PlaylistTrack| library.sort_names_for_id(t.track_id);
             if self.config.headers == Headers::Off {
                 for &i in &visible {
                     rows.push(Row::Track(TrackRow::new(
@@ -788,6 +806,7 @@ impl PlaylistsPanel {
                         (i + 1) as u32,
                         &all[i],
                         plays_of(&all[i]),
+                        sort_of(&all[i]),
                         smart,
                     )));
                 }
@@ -824,6 +843,7 @@ impl PlaylistsPanel {
                         (i + 1) as u32,
                         &all[i],
                         plays_of(&all[i]),
+                        sort_of(&all[i]),
                         smart,
                     )));
                 }
@@ -1840,6 +1860,9 @@ impl PlaylistsPanel {
             title: &t.title,
             artist: &t.artist,
             album: &t.album,
+            title_reading: &t.title_reading,
+            artist_reading: &t.artist_reading,
+            album_reading: &t.album_reading,
             year: t.year,
             genre: &t.genre,
             duration_ms: t.duration_ms,

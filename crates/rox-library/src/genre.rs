@@ -87,6 +87,43 @@ pub fn canonical(s: &str) -> String {
     join(std::iter::once(s))
 }
 
+/// The string with each value's words capitalized: "ambient; hip-hop"
+/// reads as "Ambient; Hip-Hop". Services hand tags over in lowercase and
+/// a library shouldn't inherit that. A word that already carries a
+/// capital anywhere is left alone, so "IDM" and "nu-Disco" stay as typed;
+/// only all-lowercase words get their first letter raised, after a space
+/// or a hyphen.
+pub fn capitalize(s: &str) -> String {
+    join_owned(split(s).map(capitalize_value))
+}
+
+/// One value's words capitalized; see [`capitalize`].
+fn capitalize_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for word in value.split_inclusive([' ', '-']) {
+        let (body, sep) = match word.strip_suffix([' ', '-']) {
+            Some(body) => (body, &word[body.len()..]),
+            None => (word, ""),
+        };
+        let mut chars = body.chars();
+        match chars.next() {
+            Some(first) if body.chars().all(|c| !c.is_uppercase()) => {
+                out.extend(first.to_uppercase());
+                out.push_str(chars.as_str());
+            }
+            _ => out.push_str(body),
+        }
+        out.push_str(sep);
+    }
+    out
+}
+
+/// [`join`] over owned values.
+fn join_owned(values: impl Iterator<Item = String>) -> String {
+    let values: Vec<String> = values.collect();
+    join(values.iter().map(String::as_str))
+}
+
 /// Whether the genre string includes `value` as one of its values, exact
 /// or case-folded per the library's `fold` rule, both sides read through
 /// the alias map so a pick on the merged name takes the folded-away tags
@@ -103,6 +140,16 @@ pub fn has(s: &str, value: &str, fold: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capitalize_raises_lowercase_words_and_keeps_the_rest() {
+        assert_eq!(capitalize("ambient; hip-hop"), "Ambient; Hip-Hop");
+        assert_eq!(capitalize("drum & bass"), "Drum & Bass");
+        assert_eq!(capitalize("IDM; nu-Disco"), "IDM; Nu-Disco");
+        assert_eq!(capitalize("Progressive Trance"), "Progressive Trance");
+        assert_eq!(capitalize(" rock ;; pop "), "Rock; Pop");
+        assert_eq!(capitalize("rock;pop"), "Rock; Pop");
+    }
 
     #[test]
     fn split_trims_and_drops_empties() {

@@ -15,7 +15,7 @@ use rox_library::cue::TrackKey;
 use rox_library::embeddings;
 use rox_library::listens;
 use rox_library::playlists;
-use rox_library::projection::{Projection, RowView};
+use rox_library::projection::{self, Builder, Patch, Projection, RowView};
 use rox_library::rusqlite::{self, Connection};
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
@@ -83,6 +83,16 @@ fn meta_from_row(row: &RowView<'_>) -> store::TrackMeta {
     }
 }
 
+/// The sort names one row carries, what [`Library::sort_names_for_id`]
+/// hands a panel. Each empty where the value has none, which is the whole
+/// story for a Latin library.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct SortNames {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+}
+
 /// Read one M3U line back to a library track id, the other half of what
 /// [`Library::playlist_export_rows`] writes. None for an entry the library
 /// never scanned: there is no file behind it to play.
@@ -125,6 +135,25 @@ const SCAN_POLL: Duration = Duration::from_millis(100);
 const SCAN_REFRESH_EMPTY: Duration = Duration::from_secs(1);
 const SCAN_REFRESH_FIRST: Duration = Duration::from_secs(15);
 const SCAN_REFRESH_STEADY: Duration = Duration::from_secs(30);
+
+/// How much of the projection may be tombstoned before a sync stops
+/// patching and rebuilds instead. Patching appends: an upsert leaves the row
+/// it replaced behind in the columns, and the arenas and symbol tables only
+/// grow between rebuilds. A tenth is where the dead weight has cost more
+/// than the rebuild would, and a library that churns that hard pays for its
+/// own compaction. The rebuild is the same full load a scan does, off the UI
+/// thread, so compaction is a slower sync rather than a stall.
+const COMPACT_DEAD_FRACTION: f64 = 0.10;
+
+/// How many rows one sync may patch before rebuilding is the better deal.
+/// A patch reads its rows back one primary-key lookup at a time and pays a
+/// second and a third for the play count and the cue span, which is exactly
+/// what makes it cheap for the twenty files a watch batch usually carries.
+/// A renamed root arrives as one batch holding the whole library, and there
+/// the sharded rebuild wins by a mile. Five thousand is comfortably above
+/// any batch a person generates and comfortably below where the per-row
+/// lookups start costing more than the parallel load.
+const PATCH_MAX_ROWS: usize = 5_000;
 
 /// How stale the last scan must be before launch spends a full catch-up walk
 /// on edits made while the app was closed. Under this, a restart trusts the
@@ -267,6 +296,13 @@ pub struct Library {
     scan_roots: Vec<PathBuf>,
     /// Set while a scan or projection load runs in the background.
     busy: Option<SharedString>,
+    /// Set while an interim projection built during a scan is in flight, so
+    /// the next tick of the interim cadence skips instead of putting a
+    /// second whole-library load on the executor behind the first. A scan of
+    /// a big library takes longer to load a projection than the cadence
+    /// waits, and two loads racing only means the older one's work is thrown
+    /// away after it has already competed for cores with the scan.
+    interim_loading: bool,
     /// The running scan's progress, while one runs; the handle abort
     /// goes through.
     scan: Option<Arc<ScanProgress>>,
@@ -369,6 +405,7 @@ impl Library {
             row_by_id: HashMap::new(),
             scan_roots,
             busy: None,
+            interim_loading: false,
             scan: None,
             pending_ratings: HashMap::new(),
             rating_write_running: false,
@@ -415,18 +452,98 @@ impl Library {
         self.order.clone()
     }
 
-    /// Swap in a freshly loaded projection and its canonical order, rebuilding
-    /// the id -> row index off the same table. The only place `projection` and
-    /// `order` change, so it is the one place the index has to stay in sync.
-    fn swap_projection(&mut self, projection: Projection, order: Vec<u32>) {
-        self.row_by_id = projection
-            .db_id
-            .iter()
-            .enumerate()
-            .map(|(row, &id)| (id, row as u32))
-            .collect();
+    /// Swap in a freshly loaded projection, its canonical order, and the
+    /// id -> row index built beside them. The only place `projection` and
+    /// `order` change wholesale, so it is the one place the index has to
+    /// stay in sync.
+    ///
+    /// The index arrives built rather than being built here: at a million
+    /// rows it is a million hash inserts, and doing them inside the update
+    /// that installs the projection put every one of them on the UI thread
+    /// between two frames. [`load_projection`] builds it on the background
+    /// executor with the rest of the load, so this section only swaps Arcs.
+    fn swap_projection(
+        &mut self,
+        projection: Projection,
+        order: Vec<u32>,
+        row_by_id: HashMap<i64, u32>,
+    ) {
+        self.row_by_id = row_by_id;
         self.projection = Some(Arc::new(projection));
         self.order = Arc::new(order);
+    }
+
+    /// Fold a sync's rows into the live projection instead of replacing it:
+    /// the tombstone-and-append path, whose work is the size of what changed
+    /// rather than the size of the library.
+    ///
+    /// False means it couldn't be done and the caller owes the library a
+    /// full reload. Two ways that happens, and both are ordinary: something
+    /// else is holding a clone of the projection (a tag editor keeps one for
+    /// as long as its window is open), so nothing may mutate it underneath;
+    /// or the projection refused the patch outright, which is the arena
+    /// ceiling and nothing else.
+    fn apply_patch(
+        &mut self,
+        shard: Builder,
+        gone: &[i64],
+        plays: &HashMap<i64, u32>,
+        spans: &HashMap<i64, rox_library::cue::Span>,
+    ) -> bool {
+        let Some(shared) = self.projection.take() else {
+            return false;
+        };
+        let mut projection = match Arc::try_unwrap(shared) {
+            Ok(projection) => projection,
+            Err(shared) => {
+                // Somebody else is reading the projection right now, so it
+                // can't move under them. Says how many, because the answer
+                // is meant to be nobody and every holder that keeps one
+                // across events costs the library its incremental sync.
+                log::debug!(
+                    "catalog: {} other holders of the projection, rebuilding instead of patching",
+                    Arc::strong_count(&shared) - 1
+                );
+                self.projection = Some(shared);
+                return false;
+            }
+        };
+        let Some(mut patch) = projection.apply_upserts(shard, &self.row_by_id, plays, spans) else {
+            log::warn!("catalog: the projection refused a patch, rebuilding instead");
+            self.projection = Some(Arc::new(projection));
+            return false;
+        };
+        // The two halves of one sync: rows that changed and rows that went.
+        // They fold into a single patch so the order is walked once.
+        let removed = projection.remove_ids(gone, &self.row_by_id);
+        patch.dropped.extend(removed.dropped);
+        patch.gone = removed.gone;
+        self.install_patch(projection, patch);
+        true
+    }
+
+    /// Fix the two indexes that live beside the projection, now that it has
+    /// moved: the canonical order and the id -> row map.
+    fn install_patch(&mut self, projection: Projection, patch: Patch) {
+        if !patch.is_empty() {
+            // A patch that moved a value the projection already knew (an
+            // artist adopting a sort name, say) took rows this patch never
+            // saw with it, so the order can't be merged into any more. It
+            // costs a full sort, which is the price of the answer being
+            // right; it takes a tag edit or a metadata lookup to get here.
+            self.order = Arc::new(if patch.reordered {
+                projection.sort_canonical()
+            } else {
+                projection.patch_order(&self.order, &patch)
+            });
+            for &row in &patch.added {
+                self.row_by_id.insert(projection.db_id[row as usize], row);
+            }
+            for id in &patch.gone {
+                self.row_by_id.remove(id);
+            }
+        }
+        self.projection = Some(Arc::new(projection));
     }
 
     /// The running background operation's label, for the menubar's badge.
@@ -896,17 +1013,32 @@ impl Library {
         if self.scan_roots.is_empty() {
             return;
         }
-        // A library past the ceiling never arms: the recursive watch would be
-        // too heavy to build and to keep running. The stored preference stays put, so
-        // dropping back under the limit lets it watch again on the next re-arm.
-        if self.watch_limited() {
-            return;
-        }
         let roots = self.scan_roots.clone();
+        let db_path = self.db_path.clone();
         self.watch_task = Some(cx.spawn(async move |this, cx| {
+            // The ceiling check and the watcher build go on the same
+            // background hop. Asking whether the library is past the limit
+            // means counting distinct track folders, which is a full table
+            // scan with string surgery in it; on the UI thread that was a
+            // stall at every arm, and arming happens at launch and on every
+            // folder added or removed. A library past the ceiling never
+            // arms: the recursive watch would be too heavy to build and to
+            // keep running. The stored preference stays put, so dropping
+            // back under the limit lets it watch again on the next re-arm.
             let Some(watcher) = cx
                 .background_executor()
-                .spawn(async move { LibraryWatcher::new(&roots) })
+                .spawn(async move {
+                    if let Some(limit) = watch_limit_dirs() {
+                        let dirs = store::open(&db_path)
+                            .and_then(|conn| store::stats(&conn))
+                            .map(|stats| stats.dirs)
+                            .unwrap_or(0);
+                        if dirs > limit {
+                            return None;
+                        }
+                    }
+                    LibraryWatcher::new(&roots)
+                })
                 .await
             else {
                 return;
@@ -1057,6 +1189,32 @@ impl Library {
         projection.sub.get(row as usize).copied().unwrap_or(0)
     }
 
+    /// A track's three sort names, for the panels that draw their rows
+    /// off the store's tags rather than a projection row: the queue, the
+    /// history and the playlists all hold a track id and want the reading
+    /// beside each name.
+    ///
+    /// Off the projection through the same id -> row index the rating
+    /// click uses, so the artist and album readings are the interned
+    /// ones their symbol tables carry rather than whatever a single
+    /// file's tag said. All three empty for an id the projection has no
+    /// row for, and for a library that hasn't loaded, which reads the
+    /// same as a track with no sort names at all.
+    pub fn sort_names_for_id(&self, id: i64) -> SortNames {
+        let (Some(projection), Some(&row)) = (&self.projection, self.row_by_id.get(&id)) else {
+            return SortNames::default();
+        };
+        if projection.db_id.get(row as usize) != Some(&id) {
+            return SortNames::default();
+        }
+        let v = projection.resolve(row);
+        SortNames {
+            title: v.title_sort.to_string(),
+            artist: v.artist_sort.to_string(),
+            album: v.album_sort.to_string(),
+        }
+    }
+
     /// Resolve a playing track back to its tags on the UI-side connection,
     /// for the track info panel. None when the key is not in the library.
     pub fn meta_for_key(&self, key: &TrackKey) -> Option<store::TrackMeta> {
@@ -1106,8 +1264,8 @@ impl Library {
     /// The history views' reads, on the UI-side connection: SQL over the
     /// indexed events table at panel-open and listen-append cadence, per
     /// ADR 11, never per keystroke or frame.
-    pub fn recent_listens(&self, since: i64, limit: usize) -> Vec<listens::TrackPlays> {
-        self.listen_query(|conn| listens::recent(conn, since, limit))
+    pub fn recent_listens(&self, since: i64, until: i64, limit: usize) -> Vec<listens::TrackPlays> {
+        self.listen_query(|conn| listens::recent(conn, since, until, limit))
     }
 
     pub fn most_played(&self, limit: usize) -> Vec<listens::TrackPlays> {
@@ -1129,17 +1287,24 @@ impl Library {
         &self,
         by: listens::Rollup,
         since: i64,
+        until: i64,
         limit: usize,
     ) -> Vec<listens::NamePlays> {
         let fold = rox_core::settings::fold_case();
-        self.listen_query(|conn| listens::rollup(conn, by, since, limit, fold))
+        self.listen_query(|conn| listens::rollup(conn, by, since, until, limit, fold))
     }
 
     /// How many listens were recorded at or after `since` (unix seconds).
     pub fn listens_since(&self, since: i64) -> u64 {
+        self.listens_between(since, i64::MAX)
+    }
+
+    /// Listens at or after `since` and before `until`, the stats window's
+    /// picked stretch.
+    pub fn listens_between(&self, since: i64, until: i64) -> u64 {
         self.conn
             .as_ref()
-            .and_then(|conn| listens::count_since(conn, since).ok())
+            .and_then(|conn| listens::count_between(conn, since, until).ok())
             .unwrap_or_default()
     }
 
@@ -1152,8 +1317,8 @@ impl Library {
     }
 
     /// Listens bucketed over time, the stats chart's bars.
-    pub fn listen_histogram(&self, since: i64, bucket: i64, now: i64) -> Vec<u64> {
-        self.listen_query(|conn| listens::histogram(conn, since, bucket, now))
+    pub fn listen_histogram(&self, since: i64, bucket: i64, end: i64, until: i64) -> Vec<u64> {
+        self.listen_query(|conn| listens::histogram(conn, since, bucket, end, until))
     }
 
     /// Resolve a rollup name to its library tracks in browse order, so
@@ -1625,8 +1790,11 @@ impl Library {
         let Some(projection) = &self.projection else {
             return;
         };
-        if let Some(row) = projection.db_id.iter().position(|&other| other == id) {
-            projection.plays[row].fetch_add(1, Ordering::Relaxed);
+        // Through the id map rather than a column scan: after a patch the
+        // id also sits on a tombstoned row, and the map is what tracks the
+        // live one.
+        if let Some(&row) = self.row_by_id.get(&id) {
+            projection.plays[row as usize].fetch_add(1, Ordering::Relaxed);
             cx.emit(LibraryEvent::Played);
         }
     }
@@ -1638,13 +1806,11 @@ impl Library {
         let Some(projection) = &self.projection else {
             return HashMap::new();
         };
-        let wanted: HashSet<i64> = ids.iter().copied().collect();
-        projection
-            .db_id
-            .iter()
-            .enumerate()
-            .filter(|(_, id)| wanted.contains(id))
-            .map(|(row, &id)| (id, projection.plays[row].load(Ordering::Relaxed)))
+        ids.iter()
+            .filter_map(|&id| {
+                let row = *self.row_by_id.get(&id)? as usize;
+                Some((id, projection.plays[row].load(Ordering::Relaxed)))
+            })
             .collect()
     }
 
@@ -1765,21 +1931,59 @@ impl Library {
         // scan somebody asked for, which decides below whether the
         // acoustic pass follows on its own.
         let was_watch = matches!(refresh, Refresh::Watch { .. });
+        // Whether this refresh may patch the live projection instead of
+        // rebuilding it, and under which case-fold setting if so. A sync
+        // reads back only what it touched; every other refresh reconciles
+        // the library with disk wholesale and has nothing to gain. The
+        // dead-weight check is where compaction happens: past the ceiling
+        // the next sync takes the rebuild and the tombstones go with it.
+        let patch = matches!(refresh, Refresh::Watch { .. } | Refresh::Reindex(_))
+            .then_some(self.projection.as_ref())
+            .flatten()
+            .filter(|p| !p.is_empty() && p.dead_fraction() < COMPACT_DEAD_FRACTION)
+            .map(|p| p.fold);
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { load(&db_path, refresh, &progress) })
+                .spawn(async move { load(&db_path, refresh, &progress, patch) })
                 .await;
             this.update(cx, |this, cx| {
                 this.busy = None;
                 this.scan = None;
                 let ok = result.is_ok();
+                // A patch the projection wouldn't take leaves the library
+                // where it was, so the reload that follows is owed, not
+                // optional.
+                let mut owed = false;
                 match result {
-                    Ok((projection, order, summary, watch)) => {
-                        this.status =
-                            status_line(projection.len(), summary.as_ref(), watch.as_ref()).into();
-                        this.swap_projection(projection, order);
+                    Ok((loaded, summary, watch)) => {
+                        match loaded {
+                            Loaded::Full {
+                                projection,
+                                order,
+                                row_by_id,
+                            } => {
+                                this.status = status_line(
+                                    projection.live_len(),
+                                    summary.as_ref(),
+                                    watch.as_ref(),
+                                )
+                                .into();
+                                this.swap_projection(*projection, order, row_by_id);
+                            }
+                            Loaded::Patch {
+                                shard,
+                                gone,
+                                plays,
+                                spans,
+                            } => {
+                                owed = !this.apply_patch(*shard, &gone, &plays, &spans);
+                                let total = this.projection.as_ref().map_or(0, |p| p.live_len());
+                                this.status =
+                                    status_line(total, summary.as_ref(), watch.as_ref()).into();
+                            }
+                        }
                         // A finished scan reconciled with disk; stamp now so
                         // the next launch's catch-up only fires once it ages. An
                         // aborted walk never finished, so leave last_scan alone
@@ -1816,6 +2020,12 @@ impl Library {
                 // into pending, and re-pumping it here would busy-loop against
                 // whatever is failing. The next watch event or a manual rescan
                 // picks it back up.
+                // The projection turned the patch down, so the library is
+                // still where it was and the rebuild it fell back to goes
+                // first; the pump below finds the badge taken and waits.
+                if owed {
+                    this.reload(Refresh::Load, cx);
+                }
                 if ok {
                     this.pump_watch(cx);
                 }
@@ -1901,17 +2111,32 @@ impl Library {
                 if !matches!(this.read_with(cx, |this, _| this.scan.is_some()), Ok(true)) {
                     break;
                 }
+                // Skip the tick if the last interim load hasn't landed.
+                let claimed = this.update(cx, |this, _| {
+                    if this.interim_loading {
+                        return false;
+                    }
+                    this.interim_loading = true;
+                    true
+                });
+                match claimed {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => break,
+                }
                 let db_path = db_path.clone();
                 let loaded = cx
                     .background_executor()
                     .spawn(async move { load_projection(&db_path) })
                     .await;
-                let Ok((projection, order)) = loaded else {
+                let Ok((projection, order, row_by_id)) = loaded else {
+                    this.update(cx, |this, _| this.interim_loading = false).ok();
                     continue;
                 };
                 // Nothing indexed yet: keep the fast poll until the
                 // first batch is committed.
                 if projection.is_empty() && delay == SCAN_REFRESH_EMPTY {
+                    this.update(cx, |this, _| this.interim_loading = false).ok();
                     continue;
                 }
                 delay = if delay == SCAN_REFRESH_EMPTY {
@@ -1920,12 +2145,13 @@ impl Library {
                     SCAN_REFRESH_STEADY
                 };
                 let live = this.update(cx, |this, cx| {
+                    this.interim_loading = false;
                     // The scan finished while this projection loaded; the
                     // final reload's swap is newer, keep it.
                     if this.scan.is_none() {
                         return false;
                     }
-                    this.swap_projection(projection, order);
+                    this.swap_projection(projection, order, row_by_id);
                     cx.emit(LibraryEvent::Updated);
                     cx.notify();
                     true
@@ -1939,21 +2165,59 @@ impl Library {
     }
 }
 
+/// What a background refresh brings back: either a whole new projection to
+/// swap in, or the handful of rows a sync touched, for the live one to be
+/// patched with. Which of the two a refresh takes is decided before it runs
+/// (see [`Library::reload`]), because only the UI thread knows whether the
+/// projection can be patched at all.
+enum Loaded {
+    Full {
+        /// Boxed so the variant's size doesn't ride the projection's. It's
+        /// one allocation per full load, and without it every field added
+        /// to `Projection` fails clippy's large-variant lint here, in a
+        /// file that gives no hint why.
+        projection: Box<Projection>,
+        order: Vec<u32>,
+        row_by_id: HashMap<i64, u32>,
+    },
+    Patch {
+        /// The changed rows, read back out of the database into the same
+        /// shard builder a full load fills. Boxed for the same reason the
+        /// projection is: neither variant's size should decide the other's.
+        shard: Box<Builder>,
+        /// The ids whose rows are gone from the database.
+        gone: Vec<i64>,
+        /// The two columns a row can't read off its own `tracks` row.
+        plays: HashMap<i64, u32>,
+        spans: HashMap<i64, rox_library::cue::Span>,
+    },
+}
+
+/// Which rows a sync touched, collected as it goes so the projection can be
+/// patched rather than rebuilt. Ids, not paths: a path is how the watcher
+/// names a change and an id is how the projection does, and the translation
+/// only the database can do happens here, while the connection is open and
+/// the rows are in front of us.
+#[derive(Default)]
+struct Touched {
+    /// Ids whose row may have changed: re-read them and upsert. An id in
+    /// here whose row has since gone joins `removed` once the read comes
+    /// back empty, which is how a cue track that a re-cut sheet dropped
+    /// leaves the projection.
+    changed: Vec<i64>,
+    /// Ids whose row was deleted outright.
+    removed: Vec<i64>,
+}
+
 #[allow(clippy::type_complexity)]
 fn load(
     db_path: &std::path::Path,
     refresh: Refresh,
     progress: &ScanProgress,
-) -> Result<
-    (
-        Projection,
-        Vec<u32>,
-        Option<ScanSummary>,
-        Option<WatchSummary>,
-    ),
-    rox_library::rusqlite::Error,
-> {
+    patch: Option<bool>,
+) -> Result<(Loaded, Option<ScanSummary>, Option<WatchSummary>), rox_library::rusqlite::Error> {
     let mut watch = None;
+    let mut touched = Touched::default();
     let summary = match refresh {
         Refresh::Load => None,
         Refresh::Scan(roots) => {
@@ -1992,7 +2256,15 @@ fn load(
         Refresh::Reindex(paths) => {
             let mut conn = store::open(db_path)?;
             store::init_schema(&conn)?;
+            // Both sides of the re-read: what sat at these paths before and
+            // what sits there after. A row the reindex dropped is in the
+            // first list and not the second, and that difference is the only
+            // way to see it go.
+            touched.changed = store::ids_for_paths(&conn, &paths)?;
+            touched.changed.extend(cue_neighbours(&conn, &paths)?);
             scanner::reindex(&mut conn, &paths)?;
+            touched.changed.extend(store::ids_for_paths(&conn, &paths)?);
+            touched.changed.extend(cue_neighbours(&conn, &paths)?);
             None
         }
         Refresh::Prune(paths) => {
@@ -2010,12 +2282,98 @@ fn load(
         } => {
             let mut conn = store::open(db_path)?;
             store::init_schema(&conn)?;
-            watch = Some(watch_sync(&mut conn, paths, renames, &roots)?);
+            watch = Some(watch_sync(&mut conn, paths, renames, &roots, &mut touched)?);
             None
         }
     };
-    let (projection, order) = load_projection(db_path)?;
-    Ok((projection, order, summary, watch))
+    if let Some(fold) = patch {
+        let conn = store::open(db_path)?;
+        let removed: HashSet<i64> = touched.removed.iter().copied().collect();
+        let mut changed: Vec<i64> = touched
+            .changed
+            .iter()
+            .copied()
+            .filter(|id| !removed.contains(id))
+            .collect();
+        changed.sort_unstable();
+        changed.dedup();
+        if changed.len() + removed.len() <= PATCH_MAX_ROWS {
+            // The same shard builder the parallel load fills, so the patch and
+            // the rebuild read a row exactly alike.
+            let shard = projection::shard_for_ids(&conn, &changed, fold)?;
+            let present: HashSet<i64> = shard.ids().iter().copied().collect();
+            let mut gone = touched.removed;
+            gone.extend(changed.into_iter().filter(|id| !present.contains(id)));
+            let plays = store::plays_for_ids(&conn, shard.ids())?;
+            let spans = store::cue_spans_for_ids(&conn, shard.ids())?;
+            return Ok((
+                Loaded::Patch {
+                    shard: Box::new(shard),
+                    gone,
+                    plays,
+                    spans,
+                },
+                summary,
+                watch,
+            ));
+        }
+    }
+    let (projection, order, row_by_id) = load_projection(db_path)?;
+    Ok((
+        Loaded::Full {
+            projection: Box::new(projection),
+            order,
+            row_by_id,
+        },
+        summary,
+        watch,
+    ))
+}
+
+/// Every row sitting in a directory one of these paths has a cue sheet in,
+/// so a sheet's arrival or edit brings its neighbours along.
+///
+/// A .cue is not a row and names none: the rows it changes are the image's,
+/// and [`store::ids_for_paths`] can only find those once the cue_tracks side
+/// table points at the sheet. That leaves the case this exists for. A sheet
+/// appears next to a plain image, the reindex cuts the image into tracks and
+/// retires the plain sub-0 row it had, and the id of that row is in neither
+/// list: not in the before, because nothing linked it to the sheet yet, and
+/// not in the after, because it's gone. The projection keeps showing it.
+/// Asking the directory instead is coarse and cheap: a sheet event is rare,
+/// an album directory is a few dozen rows, and the ids that didn't change
+/// re-read to exactly what they already were.
+fn cue_neighbours(conn: &Connection, paths: &[PathBuf]) -> Result<Vec<i64>, rusqlite::Error> {
+    let mut dirs: Vec<&Path> = paths
+        .iter()
+        .filter(|path| scanner::is_cue(path))
+        .filter_map(|path| path.parent())
+        .collect();
+    dirs.sort_unstable();
+    dirs.dedup();
+    let mut out = Vec::new();
+    for dir in dirs {
+        out.extend(store::ids_under(conn, dir)?);
+    }
+    Ok(out)
+}
+
+/// The audio files sitting directly beside a path, the re-read a vanished
+/// cue sheet asks for. Not the recursive walk [`scanner::audio_files`] is:
+/// a sheet only ever cuts images in its own directory, and reindexing a
+/// whole subtree because one sheet went away would be a scan by another name.
+fn siblings(path: &Path) -> Vec<PathBuf> {
+    let Some(dir) = path.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| scanner::is_audio(path))
+        .collect()
 }
 
 /// Sort one watch batch into renames, re-reads, and prunes and apply all
@@ -2036,6 +2394,7 @@ fn watch_sync(
     paths: Vec<PathBuf>,
     renames: Vec<(PathBuf, PathBuf)>,
     roots: &[PathBuf],
+    touched: &mut Touched,
 ) -> Result<WatchSummary, rox_library::rusqlite::Error> {
     let under_root = |path: &Path| {
         roots
@@ -2048,6 +2407,10 @@ fn watch_sync(
     // the existence routing, which handles it as a plain create or delete.
     for (from, to) in renames {
         if under_root(&from) && under_root(&to) {
+            // Read the ids before the move, while the rows still answer to
+            // the old path. They keep their ids and change their folder, so
+            // they are changes to re-read, not removals.
+            touched.changed.extend(store::ids_under(conn, &from)?);
             summary.renamed += store::rename_within(conn, &from, &to)?;
         }
     }
@@ -2070,29 +2433,59 @@ fn watch_sync(
                 changed.push(path);
             }
         } else if under_root(&path) {
-            removed.push(path);
+            if scanner::is_cue(&path) {
+                // A sheet that went away is not a row leaving, it's an
+                // instruction to put the image back the way it was: one
+                // plain row instead of the tracks the sheet cut it into.
+                // Routing it to the prune below would delete nothing (a
+                // sheet never had a row) and leave the cue rows standing
+                // for an album nothing says how to cut any more.
+                changed.extend(siblings(&path));
+            } else {
+                removed.push(path);
+            }
         }
     }
     if !changed.is_empty() {
+        touched
+            .changed
+            .extend(store::ids_for_paths(conn, &changed)?);
+        touched.changed.extend(cue_neighbours(conn, &changed)?);
         summary.updated += scanner::reindex(conn, &changed)?;
+        touched
+            .changed
+            .extend(store::ids_for_paths(conn, &changed)?);
+        touched.changed.extend(cue_neighbours(conn, &changed)?);
     }
     for path in &removed {
+        // Before the delete: afterwards there is nothing left to ask.
+        touched.removed.extend(store::ids_under(conn, path)?);
         summary.removed += store::remove_subtree(conn, path)?;
     }
     Ok(summary)
 }
 
-/// Load the projection and its canonical order, sharded across cores.
-/// Blocking; run it off the UI thread.
+/// Load the projection, its canonical order, and the id -> row index,
+/// sharded across cores. Blocking; run it off the UI thread. The index is
+/// built here rather than at the swap for the reason [`Library::swap_projection`]
+/// gives: at a million rows it is a million hash inserts, and they have no
+/// business happening between two frames.
+#[allow(clippy::type_complexity)]
 fn load_projection(
     db_path: &std::path::Path,
-) -> Result<(Projection, Vec<u32>), rox_library::rusqlite::Error> {
+) -> Result<(Projection, Vec<u32>, HashMap<i64, u32>), rox_library::rusqlite::Error> {
     let shards = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
     let projection = Projection::load_parallel(db_path, shards, rox_core::settings::fold_case())?;
     let order = projection.sort_canonical();
-    Ok((projection, order))
+    let row_by_id = projection
+        .db_id
+        .iter()
+        .enumerate()
+        .map(|(row, &id)| (id, row as u32))
+        .collect();
+    Ok((projection, order, row_by_id))
 }
 
 fn status_line(
@@ -2166,7 +2559,7 @@ pub fn browse(library: &Entity<Library>, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_m3u_entry, watch_sync};
+    use super::{resolve_m3u_entry, watch_sync, Touched};
     use rox_library::store;
 
     /// The watcher's per-change sync: a new file on disk becomes a row, a
@@ -2190,14 +2583,23 @@ mod tests {
         std::fs::write(&two, b"not audio").unwrap();
         // A cover write arrives in the same batch and must not become a row.
         std::fs::write(dir.join("Album/cover.jpg"), b"jpeg").unwrap();
+        let mut touched = Touched::default();
         watch_sync(
             &mut conn,
             vec![one.clone(), two.clone(), dir.join("Album/cover.jpg")],
             Vec::new(),
             &roots,
+            &mut touched,
         )
         .unwrap();
         assert_eq!(store::count(&conn).unwrap(), 2);
+        // The ids the sync touched come back with it, which is what lets the
+        // projection be patched instead of rebuilt. The cover is not a row
+        // and so is not one of them.
+        touched.changed.sort_unstable();
+        touched.changed.dedup();
+        assert_eq!(touched.changed.len(), 2);
+        assert!(touched.removed.is_empty());
 
         // A correlated rename moves the row and keeps its id, so the moved
         // file is not a fresh insert. The renamed-then-present path re-reads
@@ -2207,13 +2609,19 @@ mod tests {
             .unwrap();
         let renamed = dir.join("Album/renamed.mp3");
         std::fs::rename(&one, &renamed).unwrap();
+        let mut touched = Touched::default();
         let s = watch_sync(
             &mut conn,
             vec![one.clone(), renamed.clone()],
             vec![(one.clone(), renamed.clone())],
             &roots,
+            &mut touched,
         )
         .unwrap();
+        // A rename is a change, not a removal: the row keeps its id and
+        // changes the folder it sorts and filters under.
+        assert!(touched.changed.contains(&one_id));
+        assert!(touched.removed.is_empty());
         assert_eq!(s.renamed, 1);
         assert_eq!(
             store::id_for_path(&conn, renamed.to_str().unwrap()).unwrap(),
@@ -2227,8 +2635,17 @@ mod tests {
 
         // Delete one file on disk, then sync its path: only its row goes.
         std::fs::remove_file(&two).unwrap();
-        watch_sync(&mut conn, vec![two.clone()], Vec::new(), &roots).unwrap();
+        let mut touched = Touched::default();
+        watch_sync(
+            &mut conn,
+            vec![two.clone()],
+            Vec::new(),
+            &roots,
+            &mut touched,
+        )
+        .unwrap();
         assert_eq!(store::count(&conn).unwrap(), 1);
+        assert_eq!(touched.removed.len(), 1);
         assert!(store::id_for_path(&conn, renamed.to_str().unwrap())
             .unwrap()
             .is_some());
@@ -2236,17 +2653,38 @@ mod tests {
         // Delete the whole Album folder, sync its path: the subtree prunes
         // with no walk.
         std::fs::remove_dir_all(dir.join("Album")).unwrap();
-        watch_sync(&mut conn, vec![dir.join("Album")], Vec::new(), &roots).unwrap();
+        watch_sync(
+            &mut conn,
+            vec![dir.join("Album")],
+            Vec::new(),
+            &roots,
+            &mut Touched::default(),
+        )
+        .unwrap();
         assert_eq!(store::count(&conn).unwrap(), 0);
 
         // Re-seed a row, then hand the sync the root path itself as if it
         // vanished: the guard won't prune a root, so the row stays.
         std::fs::create_dir_all(dir.join("Album")).unwrap();
         std::fs::write(&one, b"not audio").unwrap();
-        watch_sync(&mut conn, vec![one.clone()], Vec::new(), &roots).unwrap();
+        watch_sync(
+            &mut conn,
+            vec![one.clone()],
+            Vec::new(),
+            &roots,
+            &mut Touched::default(),
+        )
+        .unwrap();
         assert_eq!(store::count(&conn).unwrap(), 1);
         let _ = std::fs::remove_dir_all(&dir);
-        watch_sync(&mut conn, vec![dir.clone()], Vec::new(), &roots).unwrap();
+        watch_sync(
+            &mut conn,
+            vec![dir.clone()],
+            Vec::new(),
+            &roots,
+            &mut Touched::default(),
+        )
+        .unwrap();
         assert_eq!(
             store::count(&conn).unwrap(),
             1,
@@ -2340,6 +2778,10 @@ mod tests {
     /// A row for a plain file: the fields the fragment round trip reads.
     fn plain_row(path: &str) -> rox_library::TrackRow {
         rox_library::TrackRow {
+            title_sort: String::new(),
+            artist_sort: String::new(),
+            album_artist_sort: String::new(),
+            album_sort: String::new(),
             path: path.to_string(),
             sub: 0,
             cue: None,

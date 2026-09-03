@@ -26,10 +26,11 @@ use gpui::{
 use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
 
-use rox_core::fmt::fmt_ago;
+use rox_core::fmt::{fmt_ago, fmt_date};
 use rox_core::QUEUE_CAP;
 use rox_library::listens::{NamePlays, Rollup, TrackPlays};
 use rox_panel_kit::motif;
+use rox_playback::engine::shuffle_slice;
 
 use rox_core::settings::{Settings, StatsWindowState};
 use rox_design::assets::icons;
@@ -75,7 +76,7 @@ const CARD_GROUP: &str = "stats-card";
 const PLAY_SLOT_W: f32 = 28.;
 
 /// How far back the page counts. Trailing windows, no calendar math,
-/// like the recency rows.
+/// like the recency rows, plus one stretch picked off the chart.
 #[derive(Clone, Copy, Default, PartialEq)]
 enum StatsRange {
     #[default]
@@ -83,6 +84,13 @@ enum StatsRange {
     Year,
     Month,
     Week,
+    /// A bar's worth: the calendar day a bucket fell on, or a wider
+    /// bucket's own stretch. `until` is exclusive. Never persisted; the
+    /// knob's own picks come back on reopen.
+    Span {
+        since: i64,
+        until: i64,
+    },
 }
 
 impl StatsRange {
@@ -93,17 +101,27 @@ impl StatsRange {
             StatsRange::Year => now - 365 * DAY,
             StatsRange::Month => now - 30 * DAY,
             StatsRange::Week => now - 7 * DAY,
+            StatsRange::Span { since, .. } => since,
+        }
+    }
+
+    /// The range's exclusive upper bound; the trailing windows have none.
+    fn until(self) -> i64 {
+        match self {
+            StatsRange::Span { until, .. } => until,
+            _ => i64::MAX,
         }
     }
 
     /// The pick's key in the settings file, and the way back; an unknown
-    /// key falls back to all time.
-    fn key(self) -> &'static str {
+    /// key falls back to all time. A chart pick has no key.
+    fn key(self) -> Option<&'static str> {
         match self {
-            StatsRange::All => "all",
-            StatsRange::Year => "year",
-            StatsRange::Month => "month",
-            StatsRange::Week => "week",
+            StatsRange::All => Some("all"),
+            StatsRange::Year => Some("year"),
+            StatsRange::Month => Some("month"),
+            StatsRange::Week => Some("week"),
+            StatsRange::Span { .. } => None,
         }
     }
 
@@ -116,23 +134,61 @@ impl StatsRange {
         }
     }
 
-    /// The overview card this range scopes the page to, and what the
-    /// chart's left edge is called.
-    fn card(self) -> &'static str {
+    /// The overview card this range scopes the page to; a chart pick
+    /// has none.
+    fn card(self) -> Option<&'static str> {
         match self {
-            StatsRange::All => rox_i18n::t_static("stats-range-all"),
-            StatsRange::Year => rox_i18n::t_static("stats-range-year"),
-            StatsRange::Month => rox_i18n::t_static("stats-range-month"),
-            StatsRange::Week => rox_i18n::t_static("stats-range-week"),
+            StatsRange::All => Some(rox_i18n::t_static("stats-range-all")),
+            StatsRange::Year => Some(rox_i18n::t_static("stats-range-year")),
+            StatsRange::Month => Some(rox_i18n::t_static("stats-range-month")),
+            StatsRange::Week => Some(rox_i18n::t_static("stats-range-week")),
+            StatsRange::Span { .. } => None,
         }
     }
 
+    /// Whether a chart pick covers one calendar day, which changes how
+    /// its ends are named.
+    fn single_day(self) -> bool {
+        match self {
+            StatsRange::Span { since, until } => fmt_date(since) == fmt_date(until - 1),
+            _ => false,
+        }
+    }
+
+    /// A chart pick's own segment on the knob, so the page always shows
+    /// what it's scoped to: the day, or the stretch's two ends.
+    fn label(self) -> Option<SharedString> {
+        match self {
+            StatsRange::Span { since, .. } if self.single_day() => Some(fmt_date(since).into()),
+            StatsRange::Span { since, until } => Some(rox_i18n::t!(
+                "stats-range-span",
+                from = fmt_date(since),
+                to = fmt_date(until - 1)
+            )),
+            _ => None,
+        }
+    }
+
+    /// What the chart's left edge is called.
     fn chart_start(self) -> SharedString {
         match self {
             StatsRange::All => rox_i18n::t!("stats-chart-start-all"),
             StatsRange::Year => rox_i18n::t!("stats-chart-start-year"),
             StatsRange::Month => rox_i18n::t!("stats-chart-start-month"),
             StatsRange::Week => rox_i18n::t!("stats-chart-start-week"),
+            StatsRange::Span { since, .. } => fmt_date(since).into(),
+        }
+    }
+
+    /// And its right edge: now for the trailing windows and for a pick
+    /// still running, else where the pick ended.
+    fn chart_end(self, now: i64) -> SharedString {
+        match self {
+            StatsRange::Span { until, .. } if until <= now && self.single_day() => {
+                rox_i18n::t!("stats-chart-end-day")
+            }
+            StatsRange::Span { until, .. } if until <= now => fmt_date(until - 1).into(),
+            _ => rox_i18n::t!("stats-now"),
         }
     }
 }
@@ -200,6 +256,12 @@ struct StatsData {
     bars: Vec<u64>,
     chart_since: i64,
     bucket: i64,
+    /// What the browsing model costs to hold: the projection's row count
+    /// and the heap it occupies. Read off the shared projection, which is
+    /// already in memory, so this is arithmetic over its columns' capacities
+    /// rather than a measurement of anything.
+    tracks: usize,
+    heap_bytes: usize,
     /// The range-bounded rollups and the newest listens in range.
     artists: Vec<NamePlays>,
     albums: Vec<NamePlays>,
@@ -292,37 +354,44 @@ impl StatsWindow {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         let since = self.range.since(now);
+        let until = self.range.until();
         let library = self.state.library.read(cx);
         // The chart's span: the range's own for the bounded picks; all
         // time runs from the first listen, bucketed to come out near 48
-        // bars whatever the record's age.
-        let (chart_since, bucket) = match self.range {
+        // bars whatever the record's age. The third is where the last
+        // bar stands.
+        let (chart_since, bucket, chart_end) = match self.range {
             // Six-hour buckets over a week, so the bars still read as a
             // shape rather than seven blocks.
-            StatsRange::Week => (now - 7 * DAY, DAY / 4),
-            StatsRange::Month => (now - 30 * DAY, DAY),
-            StatsRange::Year => (now - 365 * DAY, 7 * DAY),
+            StatsRange::Week => (now - 7 * DAY, DAY / 4, now),
+            StatsRange::Month => (now - 30 * DAY, DAY, now),
+            StatsRange::Year => (now - 365 * DAY, 7 * DAY, now),
             StatsRange::All => match library.first_listen() {
                 Some(first) if first < now => {
                     let span = (now - first).max(DAY);
-                    (first, (span / 48).max(DAY))
+                    (first, (span / 48).max(DAY), now)
                 }
-                _ => (now - 30 * DAY, DAY),
+                _ => (now - 30 * DAY, DAY, now),
             },
+            // Twenty-four bars over the stretch, an hour each for a day.
+            // The last bar ends at the edge rather than starting on it.
+            StatsRange::Span { since, until } => (since, ((until - since) / 24).max(60), until - 1),
         };
         self.data = StatsData {
             week: library.listens_since(now - 7 * DAY),
             month: library.listens_since(now - 30 * DAY),
             year: library.listens_since(now - 365 * DAY),
             total: library.listens_since(0),
-            range_total: library.listens_since(since),
-            bars: library.listen_histogram(chart_since, bucket, now),
+            range_total: library.listens_between(since, until),
+            bars: library.listen_histogram(chart_since, bucket, chart_end, until),
             chart_since,
             bucket,
-            artists: library.listen_rollup(Rollup::Artist, since, TOP_NAMES),
-            albums: library.listen_rollup(Rollup::Album, since, TOP_NAMES),
-            genres: library.listen_rollup(Rollup::Genre, since, TOP_GENRES),
-            recents: library.recent_listens(since, RECENT_ROWS),
+            artists: library.listen_rollup(Rollup::Artist, since, until, TOP_NAMES),
+            albums: library.listen_rollup(Rollup::Album, since, until, TOP_NAMES),
+            genres: library.listen_rollup(Rollup::Genre, since, until, TOP_GENRES),
+            recents: library.recent_listens(since, until, RECENT_ROWS),
+            tracks: library.projection().map_or(0, |p| p.live_len()),
+            heap_bytes: library.projection().map_or(0, |p| p.heap_bytes()),
         };
         cx.notify();
     }
@@ -332,27 +401,74 @@ impl StatsWindow {
             return;
         }
         self.range = range;
+        // The chart re-buckets under a pointer that hasn't moved, so the
+        // old pick would name a bar the new chart may not have.
+        self.bar_hover.clear();
         // The pick is written as it's made, so it persists across a quit
         // that never runs the close hook; the frame keeps writing on close.
-        Settings::update(move |s| {
-            let state = s
-                .windows
-                .stats
-                .get_or_insert_with(StatsWindowState::default);
-            state.range = range.key().into();
-        });
+        if let Some(key) = range.key() {
+            Settings::update(move |s| {
+                let state = s
+                    .windows
+                    .stats
+                    .get_or_insert_with(StatsWindowState::default);
+                state.range = key.into();
+            });
+        }
         self.refresh(cx);
     }
 
-    /// Queue one rollup name's library tracks on the shared player, in
-    /// browse order under the queue cap. A name whose tracks are all
-    /// gone resolves to nothing and queues nothing, quietly.
+    /// Scope the page to a clicked bar: the calendar day it fell on when
+    /// the buckets are a day or finer, else the bucket's own stretch, so
+    /// a week bar out of the year view reads as that week and a click
+    /// inside it can go on down to a day.
+    fn pick_bar(&mut self, ix: usize, cx: &mut Context<Self>) {
+        // The index came off a drawn frame; a stale one past the bars
+        // names nothing.
+        if ix >= self.data.bars.len() {
+            return;
+        }
+        let began = self.data.chart_since + ix as i64 * self.data.bucket;
+        let range = if self.data.bucket <= DAY {
+            let Some((since, until)) = local_day(began) else {
+                return;
+            };
+            StatsRange::Span { since, until }
+        } else {
+            StatsRange::Span {
+                since: began,
+                until: began + self.data.bucket,
+            }
+        };
+        self.set_range(range, cx);
+    }
+
+    /// Queue one rollup name's library tracks on the shared player under
+    /// the queue cap. An album plays in its own order; an artist or a
+    /// genre plays a random draw from the whole pool, since the top row
+    /// is the one you already know front to back and the same first
+    /// album every press wears thin. A name whose tracks are all gone
+    /// resolves to nothing and queues nothing, quietly.
     fn play_name(&mut self, by: Rollup, name: &str, cx: &mut Context<Self>) {
-        let ids = self
-            .state
-            .library
-            .read(cx)
-            .ids_for_rollup(by, name, QUEUE_CAP);
+        let ids = match by {
+            Rollup::Artist | Rollup::Genre => {
+                // Cap after the shuffle, not before: a cap on the query
+                // would draw from the first albums only.
+                let mut ids = self
+                    .state
+                    .library
+                    .read(cx)
+                    .ids_for_rollup(by, name, usize::MAX);
+                shuffle_slice(&mut ids);
+                ids.truncate(QUEUE_CAP);
+                ids
+            }
+            _ => self
+                .state
+                .library
+                .read(cx)
+                .ids_for_rollup(by, name, QUEUE_CAP),
+        };
         let Ok(keys) = self.state.library.read(cx).keys_for(&ids) else {
             return;
         };
@@ -419,21 +535,54 @@ impl StatsWindow {
     /// The recency overview: one card per trailing window, whatever the
     /// range knob is set to. The window the knob is on takes the accent,
     /// which ties the rest of the page to a card.
-    fn listens_section(&self) -> Stateful<Div> {
+    fn listens_section(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let cards = [
-            (rox_i18n::t_static("stats-range-week"), self.data.week),
-            (rox_i18n::t_static("stats-range-month"), self.data.month),
-            (rox_i18n::t_static("stats-range-year"), self.data.year),
-            (rox_i18n::t_static("stats-range-all"), self.data.total),
+            (
+                rox_i18n::t_static("stats-range-week"),
+                self.data.week,
+                StatsRange::Week,
+            ),
+            (
+                rox_i18n::t_static("stats-range-month"),
+                self.data.month,
+                StatsRange::Month,
+            ),
+            (
+                rox_i18n::t_static("stats-range-year"),
+                self.data.year,
+                StatsRange::Year,
+            ),
+            (
+                rox_i18n::t_static("stats-range-all"),
+                self.data.total,
+                StatsRange::All,
+            ),
         ];
         let scoped = self.range.card();
+        // What the browsing model weighs, beside the counts it feeds. The
+        // page is otherwise all record and no cost, and the cost is the
+        // one number a big library wants stated plainly.
+        let held = (self.data.tracks > 0).then(|| {
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(rox_i18n::t!(
+                    "stats-library-held",
+                    tracks = rox_i18n::format::format_int(self.data.tracks as i64),
+                    size = heap_size(self.data.heap_bytes),
+                ))
+                .into_any_element()
+        });
         section(
             rox_i18n::t!("stats-section-listens"),
-            None,
+            held,
             div().flex().flex_row().gap(tokens::SPACE_SM).children(
                 cards
                     .into_iter()
-                    .map(|(label, count)| stat_card(label, count, label == scoped)),
+                    .enumerate()
+                    .map(|(i, (label, count, range))| {
+                        stat_card(i, label, count, range, Some(label) == scoped, cx)
+                    }),
             ),
         )
     }
@@ -450,18 +599,36 @@ impl StatsWindow {
                 empty_note(self.range),
             );
         }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         let start = self.range.chart_start();
-        // The hovered bucket's readout: its count and how long ago the
-        // bucket began, in the caption's middle.
+        let end = self.range.chart_end(now);
+        // A day's hour bars are the floor: nothing narrower to open, so
+        // the chart stops offering.
+        let pickable = !self.range.single_day();
+        // The hovered bucket's readout: its count, how long ago the bucket
+        // began, and the calendar day that was, in the caption's middle.
+        // Under a day the bars need the clock too.
         let picked = self.bar_hover.index().and_then(|ix| {
             let count = *self.data.bars.get(ix)?;
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
             let began = self.data.chart_since + ix as i64 * self.data.bucket;
             let ago = fmt_ago(now - began);
-            Some(rox_i18n::t!("stats-bucket-listens", count = count, ago = ago).to_string())
+            let date = if self.data.bucket < DAY {
+                fmt_stamp(began)
+            } else {
+                fmt_date(began)
+            };
+            Some(
+                rox_i18n::t!(
+                    "stats-bucket-listens",
+                    count = count,
+                    ago = ago,
+                    date = date
+                )
+                .to_string(),
+            )
         });
         let chart = charts::bars(
             self.data.bars.clone(),
@@ -469,6 +636,9 @@ impl StatsWindow {
             palette::alpha(palette::accent(), 0x59),
             palette::accent(),
             palette::highlight(),
+            pickable.then_some(|this: &mut Self, ix: usize, cx: &mut Context<Self>| {
+                this.pick_bar(ix, cx)
+            }),
             cx,
         );
         let body = div()
@@ -491,9 +661,13 @@ impl StatsWindow {
                                 .child(SharedString::from(picked)),
                         )
                     })
-                    .child(rox_i18n::t!("stats-now")),
+                    .child(end),
             );
-        section(rox_i18n::t!("stats-section-listens-over-time"), None, body)
+        section(
+            rox_i18n::t!("stats-section-listens-over-time"),
+            Some(bars_note(self.data.bucket, pickable)),
+            body,
+        )
     }
 
     /// One name rollup as art-led rows: the rank, the artist's face or
@@ -749,10 +923,90 @@ impl StatsWindow {
     }
 }
 
-/// One trailing window's card: the count large over its name, the page's
-/// opening line. `scoped` marks the window the range knob is on.
-fn stat_card(label: &'static str, count: u64, scoped: bool) -> Div {
+/// A heap figure as MB or GB, one decimal. The projection is tens of MB
+/// at the scale the ADRs were sized for and near a gigabyte at ten
+/// million tracks, so those are the only two units this ever needs.
+fn heap_size(bytes: usize) -> String {
+    let mb = bytes as f64 / 1_000_000.;
+    if mb < 1000. {
+        rox_i18n::format::format_unit(mb, 1, "MB")
+    } else {
+        rox_i18n::format::format_unit(mb / 1000., 1, "GB")
+    }
+}
+
+/// A unix second as the locale's date and wall-clock time, for a bar
+/// finer than a day.
+fn fmt_stamp(unix: i64) -> String {
+    use chrono::{Datelike, Local, TimeZone, Timelike};
+    let Some(local) = Local.timestamp_opt(unix, 0).single() else {
+        return String::new();
+    };
+    rox_i18n::format::format_datetime(
+        local.year(),
+        local.month() as u8,
+        local.day() as u8,
+        local.hour() as u8,
+        local.minute() as u8,
+    )
+}
+
+/// What a bar stands for and what a click on one does, in the chart's
+/// corner, so the level the page is at reads without guessing and the
+/// floor announces itself.
+fn bars_note(bucket: i64, pickable: bool) -> AnyElement {
+    const HOUR: i64 = 3600;
+    let text = if !pickable {
+        rox_i18n::t!("stats-bars-hourly")
+    } else if bucket < DAY {
+        let hours = ((bucket + HOUR / 2) / HOUR).max(1) as u64;
+        rox_i18n::t!("stats-bars-hours", hours = hours)
+    } else if bucket == DAY {
+        rox_i18n::t!("stats-bars-daily")
+    } else if bucket == 7 * DAY {
+        rox_i18n::t!("stats-bars-weekly")
+    } else {
+        let days = ((bucket + DAY / 2) / DAY) as u64;
+        rox_i18n::t!("stats-bars-days", days = days)
+    };
     div()
+        .text_xs()
+        .text_color(palette::text_muted())
+        .child(text)
+        .into_any_element()
+}
+
+/// The local calendar day around a unix second: its midnight and the
+/// next, so a chart pick means the day the clock showed rather than 24
+/// hours off a bucket edge. None for a second chrono can't place.
+fn local_day(unix: i64) -> Option<(i64, i64)> {
+    use chrono::{Days, Local, NaiveDate, NaiveTime, TimeZone};
+    let date = Local.timestamp_opt(unix, 0).single()?.date_naive();
+    let midnight = |date: NaiveDate| {
+        date.and_time(NaiveTime::MIN)
+            .and_local_timezone(Local)
+            .earliest()
+            .map(|t| t.timestamp())
+    };
+    Some((
+        midnight(date)?,
+        midnight(date.checked_add_days(Days::new(1))?)?,
+    ))
+}
+
+/// One trailing window's card: the count large over its name, the page's
+/// opening line. `scoped` marks the window the range knob is on; a click
+/// moves the knob there.
+fn stat_card(
+    ix: usize,
+    label: &'static str,
+    count: u64,
+    range: StatsRange,
+    scoped: bool,
+    cx: &mut Context<StatsWindow>,
+) -> Stateful<Div> {
+    div()
+        .id(("stats-card", ix))
         .flex_1()
         .min_w_0()
         .flex()
@@ -767,6 +1021,11 @@ fn stat_card(label: &'static str, count: u64, scoped: bool) -> Div {
         } else {
             palette::border()
         })
+        .cursor_pointer()
+        .when(!scoped, |d| {
+            d.hover(|d| d.border_color(palette::alpha(palette::accent(), 0x80)))
+        })
+        .on_click(cx.listener(move |this, _, _, cx| this.set_range(range, cx)))
         .child(
             div()
                 .text_xl()
@@ -942,6 +1201,17 @@ impl Render for StatsWindow {
             // bar at the top rather than scrolling away with the first one.
             // The right inset matches the page's scrollbar lane, so the
             // picker lines up with the sections beneath it.
+            // A chart pick joins the knob as its own segment, the one
+            // place the page names what it's scoped to.
+            let mut options = vec![
+                (rox_i18n::t!("stats-range-all"), StatsRange::All),
+                (rox_i18n::t!("stats-range-year"), StatsRange::Year),
+                (rox_i18n::t!("stats-range-month"), StatsRange::Month),
+                (rox_i18n::t!("stats-range-week"), StatsRange::Week),
+            ];
+            if let Some(label) = self.range.label() {
+                options.push((label, self.range));
+            }
             let range = div()
                 .flex()
                 .flex_row()
@@ -957,12 +1227,7 @@ impl Render for StatsWindow {
                         rox_i18n::t!("stats-range-label"),
                         None,
                         panel::choices_shared(
-                            &[
-                                (rox_i18n::t!("stats-range-all"), StatsRange::All),
-                                (rox_i18n::t!("stats-range-year"), StatsRange::Year),
-                                (rox_i18n::t!("stats-range-month"), StatsRange::Month),
-                                (rox_i18n::t!("stats-range-week"), StatsRange::Week),
-                            ],
+                            &options,
                             self.range,
                             |this: &mut Self, range, cx| this.set_range(range, cx),
                             cx,
@@ -975,7 +1240,7 @@ impl Render for StatsWindow {
                 .flex()
                 .flex_col()
                 .gap(SECTION_GAP)
-                .child(self.listens_section())
+                .child(self.listens_section(cx))
                 .child(self.chart_section(cx))
                 .child(self.name_section(
                     rox_i18n::t_static("stats-section-top-artists"),

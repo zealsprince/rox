@@ -285,6 +285,12 @@ panel-add-to-queue = キューに追加
 panel-add-to-playlist = プレイリストに追加
 panel-favourite-add = お気に入りに追加
 panel-favourite-remove = お気に入りから削除
+panel-copy = コピー
+panel-copy-title = タイトルをコピー
+panel-copy-artist = アーティストをコピー
+panel-copy-album = アルバムをコピー
+panel-copy-filename = ファイル名をコピー
+panel-copy-path = パスをコピー
 shader-pick-missing = { $name } (見つかりません)
 shader-pick-custom = カスタム
 
@@ -390,6 +396,12 @@ library-columns = 列
     .description = どの列を表示するか。パネル内の見出しをドラッグして並べ替えと幅の調整ができる
 library-column-headers = 列見出し
     .description = リスト上の並べ替え用の見出し行。隠しても列の順序と幅は保たれる
+library-column-rename = 名前を変更...
+library-column-rename-reset = 名前をリセット
+library-column-rename-name = 見出し
+library-column-rename-note = 組み込みの見出しの代わりに表示される。空にすると元に戻り、スペース1つだけなら見出しは空欄になる
+library-sort-on-click = クリックで並べ替え
+    .description = アイコンではなく見出しのどこをクリックしても並べ替える。列の並べ替えは Alt を押しながらのドラッグになる
 library-compact-plays = 再生回数を詰めて表示
     .description = 再生回数の列を、横にダッシュを添えた小さな数字にする
 library-line-height = 行送り
@@ -744,12 +756,20 @@ settings-library-tempo-enable = 曲の速さを割り出す
     .description = タグにテンポが無い曲のビートを数え、ライブラリでテンポの表示と並べ替えができるようにする。処理はすべてこのマシンで走り、数値はライブラリのデータベースに入り、ファイルには触らない
 settings-library-tempo-progress = { $total } 件中 { $done } 件のテンポを解析中
 settings-library-tempo-progress-start = 何が未処理か調べています...
+settings-library-tempo-refused = 。{ $count } 曲は rox が拍を数えられなかったので、「未処理を解析」は手を付けません
+settings-library-tempo-retry = 数えられなかった曲を再試行
 settings-library-tempo-status-measured = スキャン済み { $total } 曲すべてにテンポがあり、うち { $measured } 曲は rox が割り出しました
+settings-library-tempo-status-measured-some = スキャン済み { $total } 曲のうち { $covered } 曲にテンポがあり、うち { $measured } 曲は rox が割り出しました
+settings-library-tempo-status-none = スキャン済み { $total } 曲のどれもテンポが分かりません。「未処理を解析」が割り出します
+settings-library-tempo-status-partial = スキャン済み { $total } 曲のうち { $covered } 曲にテンポがあり、うち { $measured } 曲は rox が割り出しました。「未処理を解析」が残り { $missing } 曲を処理します
 settings-library-tempo-status-tagged = スキャン済み { $total } 曲すべてにテンポのタグがあります
+settings-library-tempo-status-tagged-some = スキャン済み { $total } 曲のうち { $covered } 曲にテンポのタグがあります
 settings-library-watch-folders = フォルダーを監視
     .description = 追加・編集・削除されたファイルを、手動の再スキャンなしでその場でライブラリに取り込む
 settings-library-write-stored = 保存済みの内容をファイルに書き込む
     .description = 3 つの保存先設定は次回の書き込みからしか効かないので、タグに切り替える前に保存したものは rox の中だけにある。これは rox が既に持っている歌詞・ゲイン・記述をファイル自体に書き込み、そのフォルダーを読む他のプレイヤーにも見えるようにする。再計算はしない
+settings-show-readings = 読みを表示
+    .description = ラテン文字では読めない表記の名前の後ろにローマ字の読みを添える：秋ノ風 (Aki no kaze)。読みは値がすでに持っているソート名なので、ソート名のない名前には何も出ず、ラテン文字の名前には付かない
 
 ## Settings: MCP
 settings-mcp-client-config = クライアント設定
@@ -764,6 +784,11 @@ settings-mlmodels-custom-description-empty = 自前の PANNs CNN10 チェック�
 settings-mlmodels-download-failed = { $label } をダウンロードできませんでした: { $reason }
 settings-mlmodels-downloading = { $label } をダウンロード中: { $done } / { $total }
 settings-mlmodels-stopping = { $label } のダウンロードを停止中...
+settings-dictionary-description = { $summary }。{ $licence }
+settings-dictionary-download-failed = 辞書をダウンロードできませんでした: { $reason }
+settings-dictionary-downloading = 辞書をダウンロード中: { $done } / { $total }
+settings-dictionary-heading = ローマ字化
+settings-dictionary-stopping = 辞書のダウンロードを停止中...
 settings-mlmodels-fallback-model = モデル
 settings-mlmodels-fallback-the-model = このモデル
 settings-mlmodels-kind-custom = カスタム
@@ -966,9 +991,11 @@ settings-sidebar-settings-file = 設定ファイル
 
 ## Menubar
 menu-about = rox について
+menu-analyze-tempo = テンポを解析...
 menu-application = アプリケーション
 menu-apply-layout = レイアウトを適用
 menu-apply-workspace = ワークスペースを適用
+menu-build-acoustic = 音響ベクトルを作成...
 menu-chat = チャット
 menu-close = 閉じる
 menu-console = コンソール
@@ -977,8 +1004,16 @@ menu-discussions = ディスカッション
 menu-empty-window = 空のウィンドウ
 menu-equalizer = イコライザー
 menu-exit = 終了
+menu-fill-sort-names = ソート名を取得...
+menu-romanize-library = ライブラリをローマ字化...
+menu-find-duplicates = 重複を検索...
+menu-tag-genres = ジャンルを付ける...
+menu-health = ライブラリの健全性
+menu-power-search = パワーサーチ
 menu-hide-menubar = メニューバーを隠す
 menu-import-workspace = ワークスペースをインポート...
+menu-library = ライブラリ
+menu-measure-replaygain = ReplayGain を測定...
 menu-new-ellipsis = 新規...
 menu-new-window = 新しいウィンドウ
 menu-new-window-from-layout = レイアウトから新しいウィンドウ
@@ -1000,13 +1035,16 @@ menu-pause = 一時停止
 menu-playback = 再生
 menu-remain-in-tray = トレイに残す
 menu-report-issue = 問題を報告
+menu-rescan-library = ライブラリを再スキャン
 menu-save-layout = レイアウトを保存
 menu-save-workspace = ワークスペースを保存
 menu-section-add = 追加
+menu-section-analyze = 解析
 menu-section-app = アプリ
 menu-section-interface = インターフェース
 menu-section-layouts = レイアウト
-menu-section-library = ライブラリ
+menu-section-listening = 再生履歴
+menu-section-maintain = メンテナンス
 menu-section-session = セッション
 menu-section-track = トラック
 menu-section-tuning = 調整
@@ -1118,17 +1156,43 @@ tasks-start-rescan = 再スキャン
 tasks-stop = 停止
 tasks-stopping = 停止中...
 tasks-tempo-all = { $count } 曲すべてにテンポがあります
+tasks-tempo-counted = { $count } 曲にテンポがあります
 tasks-tempo-off = 曲の速さの割り出しは、設定のライブラリでオフになっています
 tasks-tempo-partial = { $total } 曲中 { $missing } 曲にテンポがありません
+tasks-tempo-refused = { $count } 曲は rox が拍を数えられませんでした
 tasks-timing = 計測中 { $progress }
+tasks-filling = 取得中 { $progress }
+tasks-job-sortnames = ソート名
+tasks-sortnames-all = { $count } 組のアーティストすべてにソート名があります
+tasks-sortnames-non-latin = 、うち { $count } 組はラテン文字ではありません、{ $estimate }
+tasks-sortnames-nothing = 問い合わせできるスキャン済みのものがまだありません
+tasks-sortnames-partial = { $total } 組中 { $missing } 組のアーティストにソート名がありません
+tasks-start-fill-missing = 未取得を取得
+tasks-job-romanize = ローマ字化
+tasks-reading-takes = 、読むのに { $estimate }
+tasks-romanize-all = { $count ->
+   *[other] { $count } 件のタイトル・アルバム・アーティストすべてにソート名があります
+}
+tasks-romanize-nothing = 読める対象がまだスキャンされていません
+tasks-romanize-partial = { $total } 件中 { $missing } 件のタイトル・アルバム・アーティストにソート名がありません
+tasks-romanizing = 読み取り中 { $progress }
+tasks-romanize-skipped = 日本語辞書がないため { $count } 件を飛ばしました
+tasks-romanize-skipping = うち { $kanji } 件は漢字で、設定 > ライブラリの日本語辞書が必要です
+tasks-start-romanize = ローマ字化
 tasks-tip = ライブラリのタスクを開く
 tasks-window-title = rox - タスク
 tasks-working-out-missing = 何が未処理か調べています...
 
 ## Stats window
+stats-bars-daily = 1日ごとのバー、クリックでその日を開きます
+stats-bars-days = { $days }日ごとのバー、クリックでその期間を開きます
+stats-bars-hourly = 1時間ごとのバー、これ以上は拡大できません
+stats-bars-hours = { $hours }時間ごとのバー、クリックでその日を開きます
+stats-bars-weekly = 1週間ごとのバー、クリックでその週を開きます
 stats-bucket-listens = { $count ->
-   *[other] { $count } 回再生、{ $ago }
+   *[other] { $count } 回再生、{ $ago }（{ $date }）
 }
+stats-chart-end-day = 深夜0時
 stats-chart-start-all = 最初の再生
 stats-chart-start-month = 30 日前
 stats-chart-start-week = 7 日前
@@ -1139,6 +1203,7 @@ stats-count-menu = 集計
     .description = 数字がどの期間の再生数を数えるか。ホバーの一覧には常に全期間が出る
 stats-empty-all = 再生の記録がまだありません
 stats-empty-range = この期間の再生はありません
+stats-library-held = { $tracks } 曲、メモリ使用 { $size }
 stats-now = 現在
 stats-open = 統計を開く
 stats-open-on-click = クリックで統計を開く
@@ -1154,6 +1219,7 @@ stats-range-day-short = 日
 stats-range-label = 期間
 stats-range-month = 今月
 stats-range-month-short = 月
+stats-range-span = { $from } から { $to }
 stats-range-today = 今日
 stats-range-week = 今週
 stats-range-week-short = 週
@@ -1173,6 +1239,82 @@ stats-show-number = 数字を表示
 stats-title = 統計ウィジェット
 stats-tooltip-listens = 再生数
 stats-window-title = rox - 統計
+
+## Library health window
+
+health-caption-art = { $albums } / { $total }、{ $tracks }
+health-caption-duplicates = { $groups } / { $tracks }
+health-caption-formats = { $unwritable } / { $total }
+health-caption-gaps = { $albums } / { $total }
+health-caption-missing = { $missing } 件不足 / { $total }
+health-caption-sort = アルバムアーティスト { $album_artists }、アルバム { $albums }、タイトル { $titles }
+health-caption-split = { $tagged } 件タグ済み、{ $measured } 件測定済み、{ $missing } 件不足
+health-caption-split-refused = { $tagged } 件タグ済み、{ $measured } 件測定済み、{ $missing } 件不足、{ $refused } 件拍不明
+health-checks-menu = カウント対象のタグ
+    .description = 件数が5つの主要タグのうちどれを数えるか。ホバーの一覧には常に全て出る
+health-click-opens = クリックでライブラリの健全性を開く
+health-click-section = クリック
+health-complete = 不足なし
+health-count-groups = { $count ->
+   *[other] { $count } グループ
+}
+health-desc-acoustic = 音響フィンガープリントのないトラック。似た響きの曲を探せません。
+health-desc-art = カバーのないアルバム。ファイルへの埋め込みも、隣に置いた画像もありません。
+health-desc-duplicates = アーティストとタイトルが同じで、長さもほぼ同じトラックのまとまり。
+health-desc-gaps = トラック番号が飛んでいるアルバム、または番号のないトラックを含むアルバム。
+health-desc-genre = ファイルにジャンルが入っていないトラック。
+health-desc-rating = まだ評価していないトラック。
+health-desc-replaygain = ラウドネス測定のないトラック。ほかより大きく、または小さく再生されます。
+health-desc-sort-names = ソート名を持つ名前の割合。名前を並べる順番を決める読みです。
+health-desc-tempo = テンポのないトラック。BPM での並べ替えや照合が読むのはこの値です。
+health-desc-writable = rox が読めてもタグを書き戻せない形式のトラック。断片化した MP4 も書き込みを拒みますが、ここには数えていません。
+health-desc-year = リリース年のないトラック。
+health-drill = これらを表示
+health-fix-analyze = 未処理を解析
+health-fix-duplicates = 重複を開く
+health-fix-genres = ジャンルを付ける
+health-fix-measure = 未測定を測る
+health-fix-fill = 未取得を取得
+health-measuring-art = アルバムアートを確認中、{ $total } 件中 { $done } 件
+health-measuring-duplicates = 重複を照合中
+health-measuring-formats = ファイル形式を読み込み中
+health-measuring-gaps = トラック番号を確認中
+health-open = ライブラリの健全性を開く
+health-open-on-click = クリックでライブラリの健全性を開く
+    .description = ウィジェットをクリックすると、内訳を確認できるライブラリの健全性ウィンドウが開く
+health-overview-complete = { $complete } / { $total } が完全にタグ付け済み
+health-overview-missing = { $missing } 件不足
+health-readout-section = 表示
+health-running = 実行中
+health-section-audio = オーディオ
+health-section-files = ファイルと構造
+health-section-overview = 概要
+health-section-tags = タグ
+health-show-percent = パーセンテージを表示
+    .description = アイコンの横にカバー率を描く。オフならアイコンだけになり、件数はホバーで出る
+health-tile-acoustic = 音響ベクトル
+health-tile-album = アルバム
+health-tile-art = アルバムアート
+health-tile-artist = アーティスト
+health-tile-duplicates = 重複
+health-tile-gaps = アルバムの欠番
+health-tile-genre = ジャンル
+health-tile-rating = レーティング
+health-tile-replaygain = ReplayGain
+health-tile-sort-names = ソート名
+health-tile-tempo = テンポ
+health-tile-writable = 非対応
+health-tile-year = 年
+health-tile-title = タイトル
+health-tooltip-missing = 不足しているタグ
+health-waiting = 待機中
+health-widget-title = 健全性ウィジェット
+health-window-title = rox - ライブラリの健全性
+
+## Power search window
+
+search-seed-caption = { $source }: { $count }
+search-window-title = rox - パワーサーチ
 
 ## About window
 about-check-failed = GitHub に接続できませんでした
@@ -1305,6 +1447,7 @@ keymap-focus-search = 検索にフォーカス
     .description = ライブラリの検索ボックスにカーソルを置く
 keymap-group-browsing = ナビゲーション
 keymap-group-editing = 編集
+keymap-group-library = ライブラリ
 keymap-group-playback = 再生
 keymap-group-view = 表示
 keymap-group-windows = ウィンドウ
@@ -1348,6 +1491,10 @@ keymap-open-settings = 設定を開く
     .description = このウィンドウを開く
 keymap-open-panel-settings = パネル設定
     .description = フォーカス中のパネルの設定ウィンドウを開きます
+keymap-open-health = ライブラリの健全性
+    .description = ライブラリの健全性ウィンドウを開く。タグの網羅率や構造上の問題点を数える
+keymap-open-power-search = パワーサーチ
+    .description = 独自のクエリで検索ウィンドウを開く。ここでの検索はワークスペースに影響しない
 keymap-open-stats = 統計を開く
     .description = 再生統計のウィンドウを開く
 keymap-open-tasks = タスク
@@ -1384,6 +1531,56 @@ keymap-next-tab = 次のタブ
     .description = フォーカス中のパネルグループの次のタブを表示します
 keymap-prev-tab = 前のタブ
     .description = フォーカス中のパネルグループの前のタブを表示します
+keymap-toggle-mute = ミュート
+    .description = 音量を保ったまま出力を消音します。もう一度押すと戻ります
+keymap-toggle-shuffle = シャッフルを切り替え
+    .description = キューのシャッフルをオンまたはオフにします
+keymap-cycle-loop = リピートを切り替え
+    .description = リピートをオフ、すべて、1曲の順に切り替えて元に戻ります
+keymap-toggle-stop-after = この曲で停止
+    .description = 再生中の曲を最後まで流してから一時停止します。もう一度押すと解除されます
+keymap-volume-up = 音量を上げる
+    .description = 音量を1段階上げます
+keymap-volume-down = 音量を下げる
+    .description = 音量を1段階下げます
+keymap-close-panel = パネルを閉じる
+    .description = フォーカス中のパネルグループのアクティブなパネルを閉じます
+keymap-new-empty-window = 空のウィンドウ
+    .description = 何も入っていないワークスペースウィンドウを開きます
+keymap-open-signals = シグナル
+    .description = シグナルウィンドウを開きます。各パネルのルートの背後にあるプールです
+keymap-import-workspace = ワークスペースをインポート
+    .description = ワークスペースファイルを選んでコレクションに追加します
+keymap-toggle-quit-to-tray = トレイに残すを切り替え
+    .description = 最後のウィンドウを閉じたときに rox をトレイに残すかどうかを切り替えます
+keymap-toggle-design-mode = デザインモードを切り替え
+    .description = パネルをその場で並べ替えられるかどうかを切り替えます
+keymap-toggle-theme = ライト / ダークを切り替え
+    .description = パレットのもう一方の側に切り替えます。すべてのウィンドウがテーマを共有するため、どこでも有効です
+keymap-toggle-resize-lock = パネルのリサイズロックを切り替え
+    .description = パネルのリサイズをデザインモード中に限るかどうかを切り替えます
+keymap-toggle-menubar = メニューバーを隠すを切り替え
+    .description = ウィンドウ内のメニューバーを表示するか、Alt を押している間だけ表示するかを切り替えます
+keymap-toggle-decorations = OS のウィンドウ枠を切り替え
+    .description = ワークスペースウィンドウを OS の枠と rox 独自の枠の間で切り替えます
+keymap-toggle-art-theming = 曲テーマを切り替え
+    .description = 再生中の曲のアートでパレットを色付けするかどうかを切り替えます
+keymap-rescan-library = ライブラリを再スキャン
+    .description = 記憶されたライブラリフォルダーをすべて再スキャンします
+keymap-measure-replaygain = ReplayGain を測定
+    .description = 測定値のないトラックのラウドネスを測るダイアログを開きます
+keymap-analyze-tempo = テンポを解析
+    .description = BPM のないトラックのビートを聴き取るダイアログを開きます
+keymap-build-acoustic = 音響ベクトルを作成
+    .description = 音響検索が読むベクトルを作るダイアログを開きます
+keymap-fill-sort-names = ソート名を取得
+    .description = ファイルにないソート名を MusicBrainz に問い合わせるダイアログを開きます
+keymap-romanize-library = ライブラリをローマ字化
+    .description = ラテン文字でないタイトル・アルバム・アーティストをラテン文字に読み下すダイアログを開きます
+keymap-find-duplicates = 重複を検索
+    .description = ライブラリの重複検索を開きます
+keymap-tag-genres = ジャンルを付ける
+    .description = ジャンルのないトラックにジャンルタガーを開きます
 
 ## Panel catalog
 panel-catalog-album-carousel = アルバムカルーセル
@@ -1395,6 +1592,7 @@ panel-catalog-eq-widget = EQ ウィジェット
 panel-catalog-filter = フィルター
 panel-catalog-folder-tree = フォルダーツリー
 panel-catalog-genre-grid = ジャンルグリッド
+panel-catalog-health-widget = 健全性ウィジェット
 panel-catalog-group-application = アプリケーション
 panel-catalog-group-arrangement = 配置
 panel-catalog-group-catalogue = カタログ
@@ -1443,6 +1641,7 @@ lastfm-import-matched = 、{ $count } 件が一致
 lastfm-import-added = 、{ $count } 件をお気に入りに追加
 
 ## Tag tools
+tags-editor-add-tag = 追加
 tags-editor-clear-all = すべて消去
 tags-editor-form-view = フォーム
 tags-editor-format-unsupported-all = この形式のタグは、まだ読み書きできません。
@@ -1457,12 +1656,17 @@ tags-editor-loading = タグを読み込み中...
 tags-editor-look-up = 検索
 tags-editor-multiple-values = 複数の値
 tags-editor-clear-on-save = 保存すると消去されます
-tags-editor-other-tags = その他のタグ ({ $count })
+tags-editor-additional-tags = 追加タグ ({ $count })
 tags-editor-remove = 削除
 tags-editor-reveal = 場所を開く
 tags-editor-save-errors = { $count } 件のファイルが失敗しました。{ $error }
 tags-editor-saving-progress = 保存中 { $done }/{ $total }...
+tags-editor-sort-names = ソート名
 tags-editor-table-view = テーブル
+tags-editor-tag-columns = 追加タグ
+tags-editor-tag-field-conflict = { $field } 欄がこのタグに書き込みます
+tags-editor-tag-key-placeholder = タグ名
+tags-editor-tag-value-placeholder = 値
 tags-editor-tags-section = タグ
 tags-editor-unknown-partial = { $total } 件中 { $count } 件
 tags-editor-unread-count = { $total } 件中 { $failed } 件のファイルのタグを読めませんでした
@@ -1611,6 +1815,55 @@ duplicates-trash-result = { $count ->
 duplicates-trash-result-failed = { $count } 件をゴミ箱へ移動、{ $failed } 件が失敗
 duplicates-trashing = ゴミ箱へ移動中 { $done }/{ $total }...
 duplicates-window-title = rox - 重複
+
+## ジャンルタガー
+
+tag-genres-empty = すべての曲にジャンルがあります。付け直すには何かを再生してください。
+tag-genres-heading = ジャンルを付ける
+tag-genres-input-placeholder = ジャンルを入力
+tag-genres-keys-hint = 1-8 で行を選択、Shift+1-8 で入力欄に追加、Ctrl+1-8 でアルバム全体に適用、Enter で入力を適用、L で Last.fm を検索、S でスキップ、Ctrl+Z で取り消し
+tag-genres-library-loading = ライブラリをまだ読み込み中です。少ししてからもう一度お試しください。
+tag-genres-no-file = このトラックのファイルがライブラリにありません。
+tag-genres-no-suggestions = 候補がありません。ジャンルを入力してください。
+tag-genres-progress = 未設定 { $total } 曲中 { $at } 曲目
+tag-genres-skip = スキップ
+tag-genres-thinking = 近傍を読み込み中...
+tag-genres-undo = 取り消し
+tag-genres-unwritable = このトラックは共有の cue イメージの中にあるため、ジャンルを書き込めません。スキップしてください。
+tag-genres-window-title = rox - ジャンルを付ける
+tag-genres-looking-up = Last.fm に問い合わせ中...
+tag-genres-lookup = Last.fm で調べる
+tag-genres-auto-lookup = 自動で
+tag-genres-lookup-found = Last.fm での { $artist } のタグ: { $tags }
+tag-genres-lookup-none = Last.fm に { $artist } のタグはありません。
+tag-genres-lookup-off = オンラインのアーティスト検索は設定でオフになっています。
+tag-genres-why-acoustic = { $count ->
+   *[other] 似た響きの { $count } 曲
+}
+tag-genres-why-album = { $count ->
+   *[other] このアルバムの { $count } 曲
+}
+tag-genres-why-artist = { $count ->
+   *[other] このアーティストの { $count } 曲
+}
+tag-genres-why-lookup = Last.fm
+tag-genres-album-too = { $count ->
+   *[other] この曲のアルバム全体と隣の { $count } 曲にも付ける
+}
+tag-genres-apply = 適用
+tag-genres-begin = キューを開始
+tag-genres-col-genre = ジャンル
+tag-genres-col-match = 一致
+tag-genres-col-why = 理由
+tag-genres-current-genre = ジャンル: { $genre }
+tag-genres-idle = 何も再生していません。キューを開始して未設定の曲を順に進めるか、何かを再生して付け直してください。
+tag-genres-no-genre = ジャンル未設定
+tag-genres-stop = キューを停止
+tag-genres-untagged-count = { $count ->
+   *[other] ジャンル未設定 { $count } 曲
+}
+tag-genres-write-error = { $name }: { $error }
+tag-genres-writing = { $total } 件中 { $done } 件を書き込み中...
 
 ## Smart playlists
 smart-playlist-descending = 降順
@@ -1781,11 +2034,25 @@ pass-replaygain-title = { $count ->
    *[other] { $count } 曲を測定しますか?
 }
 pass-tempo-body = 各ファイルから 30 秒の区間を 2 つデコードしてビートを数え、曲の速さをライブラリに出せるようにします。クリックに合わせて録音された音楽で最もよく働き、測れないものは飛ばします。数値はライブラリのデータベースに入り、ファイルには触れません。
+pass-tempo-retry-body = これらは前の解析がすでに聴いて、拍を見つけられなかった曲です。再試行すると全曲をもう一度デコードするので、拍の数え方がよくなってから走らせる価値が出ます。
+pass-tempo-retry-title = 数えられなかった { $count } 曲をもう一度聴きますか?
 pass-tempo-title = { $count ->
    *[other] { $count } 曲のテンポを調べますか?
 }
 pass-timing = 数曲を計測中...
 pass-timing-failed = このライブラリを計測できませんでした: { $error }
+pass-fill = 取得
+pass-sortnames-body = 各アーティストの並び順を決めるラテン文字表記を MusicBrainz に問い合わせます。これで米津玄師が Y に並びます。サービスの上限は毎秒 1 リクエストで、それが所要時間を決めます。答えはライブラリのデータベースに入り、ファイルには一切触れません。
+pass-sortnames-scope-all = すでにラテン文字で並ぶ名前も問い合わせる
+pass-romanize = ローマ字化
+pass-romanize-body = ソート名のないタイトル・アルバム・アーティストをすべてラテン文字に読み下します。これで「レモン」が lemon で見つかります。韓国語と中国語には何も要りません。日本語の漢字には設定 > ライブラリの辞書が必要で、IPADIC は人名をかなりの頻度で読み間違えるため、タグエディタで直せるようにしてあります。答えはライブラリのデータベースに入り、ファイルには一切触れません。
+pass-romanize-title = { $count ->
+   *[other] { $count } 件の名前をラテン文字に読み下しますか?
+}
+pass-romanize-skips-kanji = { $total } 件のうち { $kanji } 件は漢字のため、日本語辞書を入れるまで飛ばされます。設定 > ライブラリから取得してください。
+pass-sortnames-title = { $count ->
+   *[other] { $count } 組のアーティストを問い合わせますか?
+}
 pass-workers = 並列数
 
 ## Quick play
@@ -1795,10 +2062,22 @@ quick-play-cover = カバー
     .description = 各結果の左にカバーのサムネイルを出す
 quick-play-duration = 長さ
     .description = 各結果の右に長さを出す
-quick-play-narrow-by = 絞り込み
 quick-play-search-placeholder = ライブラリを検索
 quick-play-subtitle = サブタイトル
     .description = 各結果の下にアーティストとアルバムを出す
+quick-play-syntax-absent = 値がまったくない行
+    .example = -year
+quick-play-syntax-exclude = 一致するもの以外すべて
+    .example = -genre:rock
+quick-play-syntax-field = フィールドを一つ指定、空白を含む値は引用符で
+    .example = artist:"Daft Punk"
+quick-play-syntax-free = タイトル、アーティスト、アルバムアーティスト、アルバム、ジャンルに一致
+    .example = daft punk
+quick-play-syntax-numeric = 数値を比較。plays:0 や added:<90d も同じように使える
+    .example = rating:>=4
+quick-play-syntax-title = 検索構文
+quick-play-syntax-year = 数字なので、前方一致でその年代がまとめて取れる
+    .example = year:199
 quick-play-tag-album = アルバム
 quick-play-tag-artist = アーティスト
 
@@ -2101,6 +2380,39 @@ shader-panel-run-shader = シェーダーを動かす
     .description = オフにするとソース、参照先、バインドはそのままで、何も描かれない
 shader-panel-section-routes = ルート
 
+## シェーダーエディタ
+
+shader-edit-here = 編集
+shader-editor-window-title = rox - シェーダーエディタ
+shader-editor-target-screen = 画面シェーダー
+shader-editor-target-backdrop = 背景シェーダー
+shader-editor-origin-pool = ワークスペースのシェーダー: 適用すると使っているすべてのサーフェスに届きます
+shader-editor-origin-pool-file = ワークスペースのシェーダー、作業コピーは { $path }
+shader-editor-origin-file = { $path } にブックマーク済み、適用時にそのファイルにも書き込みます
+shader-editor-origin-inline = このサーフェス自身のソース
+shader-editor-apply = 適用
+shader-editor-revert = 元に戻す
+shader-editor-close = 閉じる
+shader-editor-hint-press = 適用は
+shader-editor-hint-apply = を押します
+shader-editor-status-unchecked = まだ確認するものがありません
+shader-editor-status-ok = コンパイルできます
+shader-editor-status-error = このシェーダーはコンパイルできませんでした:
+shader-editor-section-uniforms = ユニフォーム
+shader-editor-section-textures = テクスチャ
+shader-editor-section-slots = スロット
+shader-editor-section-signals = シグナル
+shader-editor-slot-unnamed = スロット { $n }
+shader-editor-signals-empty = プールにまだシグナルがありません。シグナルウィンドウで追加すると、ここにライブメーター付きで表示されます。
+shader-editor-uniform-time = シェーダーの経過秒数、フィードが止まっている間は止まります
+shader-editor-uniform-delta = 前のフレームからの秒数、最初は 0
+shader-editor-uniform-resolution = サーフェスのサイズ、デバイスピクセル
+shader-editor-uniform-mouse = xy はカーソル位置 (デバイスピクセル)、z と w はボタン
+shader-editor-uniform-meta-0 = x 音量、y トラック位置、z 再生中、w トラック長 (秒)
+shader-editor-uniform-meta-1 = x ページの明るさ、y ライトテーマ、z カーソルの存在、w コンテンツの形
+shader-editor-texture-screen = このフレームでサーフェスの下にあるもの
+shader-editor-texture-prev = このサーフェス自身の前のフレーム、残像用
+
 ## Genre grid panel
 genre-grid-clear-picked = 選んだジャンルをクリア
 genre-grid-desaturate = 再生中は彩度を落とす
@@ -2168,6 +2480,7 @@ wall-tile-size = タイルサイズ
     .description = タイルの長辺。列はパネルの幅を均等に割る
 
 ## Metadata panel
+metadata-copy-field = { $field } をコピー
 metadata-cover-background = カバーを背景に
     .description = 項目の後ろに曲のカバーアートを敷く
 metadata-display = 表示
@@ -2175,18 +2488,28 @@ metadata-display = 表示
 metadata-display-sheet = シート
 metadata-display-table = テーブル
 metadata-edit-save = 保存
+metadata-field-album-artist-sort = ソート用アルバムアーティスト
+metadata-field-album-sort = ソート用アルバム
+metadata-field-artist-sort = ソート用アーティスト
 metadata-field-bit-depth = ビット深度
 metadata-field-bitrate = ビットレート
+metadata-field-bpm-measured = { $bpm }（rox が計測）
 metadata-field-codec = コーデック
 metadata-field-comment = コメント
 metadata-field-disc = ディスク
 metadata-field-file = ファイル
+metadata-field-gain-album = アルバムゲイン
+metadata-field-gain-track = トラックゲイン
 metadata-field-sample-rate = サンプルレート
+metadata-field-title-sort = ソート用タイトル
 metadata-field-track = トラック
 metadata-fields = 項目
     .description = シートにどの項目を並べるか。曲が持っていない項目は出ない
 metadata-find-online = オンラインでメタデータを探す...
 metadata-no-library = ライブラリなし
+metadata-romanize = ローマ字化
+metadata-romanize-needs-dictionary = 漢字の名前には日本語辞書が要ります。設定 > ライブラリから取得してください。
+metadata-romanize-sort-names = ソート名をローマ字化
 metadata-row-borders-description = 表の各行の下の細い線
 metadata-source = ソース
     .description = 再生中か選択中のものを追うか、ライブラリ全体を読むか
@@ -2395,6 +2718,9 @@ output-start-track-hint = 曲を再生すると、デバイスが受け入れた
 output-title = 出力
 
 ## Track columns
+columns-album-artist-sort = ソート用アルバムアーティスト
+columns-album-sort = ソート用アルバム
+columns-artist-sort = ソート用アーティスト
 columns-bits = ビット
 columns-bpm = BPM
 columns-codec = コーデック
@@ -2407,6 +2733,7 @@ columns-name = 名前
 columns-number = 番号
 columns-scanned = スキャン日
 columns-similar = 類似度
+columns-title-sort = ソート用タイトル
 
 ## Filter panel
 filter-add-column = 列を追加
@@ -2415,6 +2742,7 @@ filter-all = すべて
 filter-clear-filters = フィルターをクリア
 filter-clear-selection = 選択をクリア
 filter-empty = 絞り込む項目を選んでください
+filter-over-cap = 他 { $count } 件、検索で絞り込んでください
 filter-remove-column = 列を削除
 
 ## Search panel
@@ -2701,6 +3029,7 @@ settings-mlmodels-on-disk = 、ディスク上 { $size }
 settings-mlmodels-to-download = 、ダウンロード { $size }
 model-summary-dsp-timbre-1 = 組み込み、ダウンロード不要。各曲の対数帯域エネルギー、スペクトル形状、オンセット密度をまとめたもの。学習済みネットワークに比べれば粗いが、何も要らずどこでも動く
 model-summary-panns-cnn10 = 音が何であるかを認識するよう AudioSet で学習させた畳み込みネットワーク。512 個の値による曲の記述は組み込みの概略よりはるかに豊かだが、24 MB のダウンロードと遅い解析パスが要る
+dictionary-summary-lindera-ipadic = 漢字の読みを支える日本語辞書です。なくても仮名とハングルはローマ字になり、中国語はピンインで読まれますが、漢字のタイトルは飛ばされます
 
 ## Shipped workspaces
 workspace-shipped-default = (既定)

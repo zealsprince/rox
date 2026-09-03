@@ -1,15 +1,16 @@
 //! The tasks window: one OS window listing the long library jobs, running
 //! or not, so the settings window doesn't have to stay open to watch one.
 //!
-//! Four jobs are listed here. The library scan belongs to a workspace's
+//! Six jobs are listed here. The library scan belongs to a workspace's
 //! catalog; the acoustic pass ([`crate::embeddings`]), the ReplayGain measurement
-//! ([`crate::replaygain_job`]) and the tempo pass ([`crate::tempo_job`]) are
-//! app-global, outliving the window that started them. All three were
-//! unwatchable once their page was closed: no count, no estimate, and no
-//! way to stop short of reopening whatever started them. This is that
-//! missing half.
+//! ([`crate::replaygain_job`]), the tempo pass ([`crate::tempo_job`]), the
+//! sort-name fill ([`crate::sortnames_job`]) and the romanization pass
+//! ([`crate::romanize_job`]) are app-global, outliving the
+//! window that started them. All of them were unwatchable once their page
+//! was closed: no count, no estimate, and no way to stop short of
+//! reopening whatever started them. This is that missing half.
 //!
-//! Those four rows are always there, idle or not. A list that only exists
+//! Those six rows are always there, idle or not. A list that only exists
 //! while something is running is a progress bar with extra steps; this one
 //! is also the answer to "what can I set going, and what would it cost",
 //! which is the question someone opens it with before they've started
@@ -39,7 +40,9 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
 
 use crate::lastfm::import;
-use crate::{bake, convert, embeddings, pass_prompt, replaygain_job, tempo_job};
+use crate::{
+    bake, convert, embeddings, pass_prompt, replaygain_job, romanize_job, sortnames_job, tempo_job,
+};
 use rox_core::settings::{LayoutSize, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
@@ -85,6 +88,8 @@ pub fn repaint_while_running(cx: &mut App) {
             embeddings::progress(cx).is_some()
                 || replaygain_job::progress(cx).is_some()
                 || tempo_job::progress(cx).is_some()
+                || sortnames_job::progress(cx).is_some()
+                || romanize_job::progress(cx).is_some()
                 || import::progress(cx).is_some()
                 || convert::progress(cx).is_some()
                 || bake::progress(cx).is_some()
@@ -136,6 +141,22 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
         live.push((
             Job::Tempo.icon(),
             rox_i18n::t!("tasks-timing", progress = share(job.done(), job.total())).to_string(),
+        ));
+    }
+    if let Some(job) = sortnames_job::progress(cx) {
+        live.push((
+            Job::SortNames.icon(),
+            rox_i18n::t!("tasks-filling", progress = share(job.done(), job.total())).to_string(),
+        ));
+    }
+    if let Some(job) = romanize_job::progress(cx) {
+        live.push((
+            Job::Romanize.icon(),
+            rox_i18n::t!(
+                "tasks-romanizing",
+                progress = share(job.done(), job.total())
+            )
+            .to_string(),
         ));
     }
     if let Some(job) = import::progress(cx) {
@@ -299,6 +320,12 @@ enum Job {
     /// The tempo pass ([`crate::tempo_job`]): what every track with no BPM
     /// runs at.
     Tempo,
+    /// The sort-name fill ([`crate::sortnames_job`]): the Latin spelling
+    /// each artist files under, asked of MusicBrainz.
+    SortNames,
+    /// The romanization pass ([`crate::romanize_job`]): a Latin spelling
+    /// for every title, album and artist that still has none.
+    Romanize,
     /// The dynamic one: Last.fm's loved tracks pulled in as hearts, started
     /// from the settings window rather than from here.
     LovedImport,
@@ -312,10 +339,19 @@ enum Job {
     Bake,
 }
 
-/// Top to bottom, cheapest first: a scan is minutes and the three passes are
-/// afternoons, and the passes read what the scan writes. The dynamic jobs
-/// fall in under these when they have anything to say.
-const JOBS: [Job; 4] = [Job::Scan, Job::Acoustic, Job::ReplayGain, Job::Tempo];
+/// Top to bottom, cheapest first: a scan is minutes and the analysis passes
+/// are afternoons, and the passes read what the scan writes. Romanization
+/// is last rather than first despite being the quickest of them, because it
+/// belongs beside the fill it finishes: the two answer the same question
+/// from different sources, and the fill should have had its go first.
+const JOBS: [Job; 6] = [
+    Job::Scan,
+    Job::Acoustic,
+    Job::ReplayGain,
+    Job::Tempo,
+    Job::SortNames,
+    Job::Romanize,
+];
 
 impl Job {
     fn label(self) -> SharedString {
@@ -324,6 +360,8 @@ impl Job {
             Job::Acoustic => rox_i18n::t!("tasks-job-acoustic"),
             Job::ReplayGain => rox_i18n::t!("tasks-job-replaygain"),
             Job::Tempo => rox_i18n::t!("tasks-job-tempo"),
+            Job::SortNames => rox_i18n::t!("tasks-job-sortnames"),
+            Job::Romanize => rox_i18n::t!("tasks-job-romanize"),
             Job::LovedImport => rox_i18n::t!("tasks-job-loved-import"),
             Job::Convert => rox_i18n::t!("tasks-job-convert"),
             Job::Bake => "Embed Stored Metadata".into(),
@@ -339,6 +377,14 @@ impl Job {
             // glyph in the set that says so without borrowing the gauge the
             // measurement pass uses.
             Job::Tempo => icons::CLOCK,
+            // The same glyph the health window's sort tile carries, since
+            // a row of names filed under their initial is what both are
+            // about.
+            Job::SortNames => icons::ALIGN_LEFT,
+            // The globe rather than another alignment glyph: this is the
+            // one job in the list about which alphabet a name is written
+            // in rather than about the audio or the ordering.
+            Job::Romanize => icons::GLOBE,
             Job::LovedImport => icons::HEART,
             Job::Convert => icons::AUDIO_LINES,
             Job::Bake => icons::UPLOAD,
@@ -354,6 +400,8 @@ impl Job {
             Job::Acoustic => Some((rox_i18n::t!("tasks-start-analyze-missing"), icons::FLASK)),
             Job::ReplayGain => Some((rox_i18n::t!("tasks-start-measure-missing"), icons::GAUGE)),
             Job::Tempo => Some((rox_i18n::t!("tasks-start-analyze-missing"), icons::CLOCK)),
+            Job::SortNames => Some((rox_i18n::t!("tasks-start-fill-missing"), icons::ALIGN_LEFT)),
+            Job::Romanize => Some((rox_i18n::t!("tasks-start-romanize"), icons::GLOBE)),
             // The import belongs to an account, not to a library, and it
             // reads its user off the settings it's started from. Offering
             // it here would be a second door into a room with one chair.
@@ -380,6 +428,8 @@ impl Job {
             Job::Acoustic => embeddings::stop(cx),
             Job::ReplayGain => replaygain_job::stop(cx),
             Job::Tempo => tempo_job::stop(cx),
+            Job::SortNames => sortnames_job::stop(cx),
+            Job::Romanize => romanize_job::stop(cx),
             Job::LovedImport => import::stop(cx),
             Job::Convert => convert::stop(cx),
             Job::Bake => bake::stop(cx),
@@ -477,6 +527,39 @@ impl Snapshot {
         }
     }
 
+    /// The fill counts artists, and the ones MusicBrainz had no confident
+    /// answer for are its failed count: nothing is stored for them, so
+    /// the next run asks about them again.
+    fn sortnames(job: &sortnames_job::Progress) -> Snapshot {
+        Snapshot {
+            done: job.done(),
+            total: job.total(),
+            failed: job.failed(),
+            current: job.current(),
+            // Artist names, which are already what to show.
+            current_is_path: false,
+            eta: job.eta_secs(),
+            stopping: job.stopping(),
+        }
+    }
+
+    /// The romanization pass counts values, and the ones nothing could be
+    /// read out of are its failed count: a script it doesn't cover, or
+    /// kanji with no dictionary loaded. Nothing is stored for them, so the
+    /// next run looks at them again.
+    fn romanize(job: &romanize_job::Progress) -> Snapshot {
+        Snapshot {
+            done: job.done(),
+            total: job.total(),
+            failed: job.failed(),
+            current: job.current(),
+            // Titles and names, which are already what to show.
+            current_is_path: false,
+            eta: job.eta_secs(),
+            stopping: job.stopping(),
+        }
+    }
+
     fn replaygain(job: &replaygain_job::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
@@ -531,6 +614,16 @@ pub(crate) fn aggregate(cx: &mut App) -> Option<(usize, usize)> {
             .map(Snapshot::replaygain),
     );
     running.extend(tempo_job::progress(cx).as_deref().map(Snapshot::tempo));
+    running.extend(
+        sortnames_job::progress(cx)
+            .as_deref()
+            .map(Snapshot::sortnames),
+    );
+    running.extend(
+        romanize_job::progress(cx)
+            .as_deref()
+            .map(Snapshot::romanize),
+    );
     running.extend(import::progress(cx).as_deref().map(Snapshot::import));
     running.extend(convert::progress(cx).as_deref().map(Snapshot::convert));
     running.extend(bake::progress(cx).as_deref().map(Snapshot::bake));
@@ -582,6 +675,8 @@ struct Live {
     acoustic: Option<Arc<rox_acoustic::Progress>>,
     replaygain: Option<Arc<replaygain_job::Progress>>,
     tempo: Option<Arc<tempo_job::Progress>>,
+    sortnames: Option<Arc<sortnames_job::Progress>>,
+    romanize: Option<Arc<romanize_job::Progress>>,
 }
 
 /// What the idle rows state about the library, and what it costs to find
@@ -617,6 +712,26 @@ struct Facts {
     /// off, so the row says so rather than offering a dead button.
     tempo_on: bool,
     tempo_estimate: Option<String>,
+    /// Artists with no sort name from either source, and the whole count
+    /// they're out of. Values rather than tracks: a sort name belongs to
+    /// the artist, so one lookup fixes every row they're on.
+    sort_missing: u64,
+    sort_total: u64,
+    /// The narrow scope's share of that backlog, the one the prompt opens
+    /// on, so the idle line prices what the button will actually do.
+    sort_non_latin: u64,
+    sort_estimate: Option<String>,
+    /// Values with no sort name and something to read, and the whole count
+    /// they're out of. Values rather than tracks for the sort fill's
+    /// reason, with titles counted once however many rows carry them.
+    romanize_missing: u64,
+    romanize_total: u64,
+    /// How many of that backlog are kanji. They run when the Japanese
+    /// dictionary is installed and are skipped when it isn't; either way
+    /// the rest of the pass goes ahead, so this is a line under the row
+    /// rather than a reason it can't start.
+    romanize_kanji: u64,
+    romanize_estimate: Option<String>,
 }
 
 struct TasksWindow {
@@ -635,6 +750,13 @@ struct TasksWindow {
     acoustic_done: Option<Finished>,
     replaygain_done: Option<Finished>,
     tempo_done: Option<Finished>,
+    sortnames_done: Option<Finished>,
+    romanize_done: Option<Finished>,
+    /// Values the last run left alone for want of the dictionary. Kept
+    /// beside its `Finished` rather than in it: the other four passes have
+    /// no equivalent, and a field they all set to zero would be four lies
+    /// to carry one truth.
+    romanize_skipped: usize,
     facts: Facts,
     /// The start prompt, while one is up: the same dialog the settings page
     /// raises, with the worker slider and the estimate.
@@ -728,6 +850,9 @@ impl TasksWindow {
             acoustic_done: None,
             replaygain_done: None,
             tempo_done: None,
+            sortnames_done: None,
+            romanize_done: None,
+            romanize_skipped: 0,
             facts: Facts::default(),
             prompt: None,
             value_edit: panel::ValueEdit::default(),
@@ -758,6 +883,11 @@ impl TasksWindow {
         let acoustic = library.acoustic_coverage(source.id());
         let gains = library.replaygain_breakdown();
         let bpm = library.bpm_breakdown();
+        let sort = sortnames_job::coverage(library.projection().map(|p| p.as_ref()));
+        let romanize = romanize_job::coverage(
+            library.projection().map(|p| p.as_ref()),
+            &romanize_job::stale(&library.db_path()),
+        );
         self.facts =
             Facts {
                 roots: library.roots().len(),
@@ -782,6 +912,17 @@ impl TasksWindow {
                     bpm.missing,
                     settings.tempo_workers,
                 ),
+                sort_missing: sort.missing,
+                sort_total: sort.total,
+                sort_non_latin: sort.non_latin,
+                // Priced off the rate limit rather than off a measured
+                // pace: the service sets this pass's speed, so there's a
+                // real estimate before anything has ever run here.
+                sort_estimate: priced(sortnames_job::PACE, sort.non_latin, 1),
+                romanize_missing: romanize.missing,
+                romanize_total: romanize.total,
+                romanize_kanji: romanize.kanji,
+                romanize_estimate: priced(settings.session.romanize_pace, romanize.missing, 1),
             };
     }
 
@@ -819,9 +960,32 @@ impl TasksWindow {
                 ended = true;
             }
         }
+        if let Some(job) = self.live.sortnames.take() {
+            if sortnames_job::progress(cx).is_none() {
+                self.sortnames_done = Some(Finished {
+                    done: job.done(),
+                    failed: job.failed(),
+                    stopped: job.stopping(),
+                });
+                ended = true;
+            }
+        }
+        if let Some(job) = self.live.romanize.take() {
+            if romanize_job::progress(cx).is_none() {
+                self.romanize_done = Some(Finished {
+                    done: job.done(),
+                    failed: job.failed(),
+                    stopped: job.stopping(),
+                });
+                self.romanize_skipped = job.skipped();
+                ended = true;
+            }
+        }
         self.live.acoustic = embeddings::progress(cx);
         self.live.replaygain = replaygain_job::progress(cx);
         self.live.tempo = tempo_job::progress(cx);
+        self.live.sortnames = sortnames_job::progress(cx);
+        self.live.romanize = romanize_job::progress(cx);
         // A pass that started again clears what the last one left, so the
         // row never shows a finished line under a running bar.
         if self.live.acoustic.is_some() {
@@ -832,6 +996,12 @@ impl TasksWindow {
         }
         if self.live.tempo.is_some() {
             self.tempo_done = None;
+        }
+        if self.live.sortnames.is_some() {
+            self.sortnames_done = None;
+        }
+        if self.live.romanize.is_some() {
+            self.romanize_done = None;
         }
         // A pass that just ended moved the count its own row states. The
         // scan's finish comes through the library's event instead.
@@ -854,6 +1024,8 @@ impl TasksWindow {
                 .as_ref()
                 .map(|j| Snapshot::replaygain(j)),
             Job::Tempo => self.live.tempo.as_ref().map(|j| Snapshot::tempo(j)),
+            Job::SortNames => self.live.sortnames.as_ref().map(|j| Snapshot::sortnames(j)),
+            Job::Romanize => self.live.romanize.as_ref().map(|j| Snapshot::romanize(j)),
             // Read live rather than off the poll: the import is seconds
             // long, so a sample taken a frame ago is a sample of a
             // different job.
@@ -993,7 +1165,15 @@ impl TasksWindow {
                 } else if bpm.total() == 0 {
                     lines.push("Nothing scanned to analyze yet".into());
                 } else if bpm.missing == 0 {
-                    lines.push(rox_i18n::t!("tasks-tempo-all", count = bpm.total()).to_string());
+                    // "All of them" only holds when there's no refused pile:
+                    // those tracks were scanned too, and Analyze Missing
+                    // having nothing left to reach isn't the same as the
+                    // library being timed.
+                    lines.push(if bpm.refused > 0 {
+                        rox_i18n::t!("tasks-tempo-counted", count = bpm.covered()).to_string()
+                    } else {
+                        rox_i18n::t!("tasks-tempo-all", count = bpm.total()).to_string()
+                    });
                 } else {
                     let mut line = rox_i18n::t!(
                         "tasks-tempo-partial",
@@ -1009,8 +1189,93 @@ impl TasksWindow {
                     }
                     lines.push(line);
                 }
+                // Its own line under whichever status ran above, since it's
+                // neither work the button will do nor coverage the library
+                // has. Retrying them lives on Settings > Library.
+                if self.facts.tempo_on && bpm.refused > 0 {
+                    lines
+                        .push(rox_i18n::t!("tasks-tempo-refused", count = bpm.refused).to_string());
+                }
                 if let Some(done) = &self.tempo_done {
                     lines.push(done.line());
+                }
+            }
+            Job::SortNames => {
+                if self.facts.sort_total == 0 {
+                    lines.push(rox_i18n::t!("tasks-sortnames-nothing").to_string());
+                } else if self.facts.sort_missing == 0 {
+                    lines.push(
+                        rox_i18n::t!("tasks-sortnames-all", count = self.facts.sort_total)
+                            .to_string(),
+                    );
+                } else {
+                    let mut line = rox_i18n::t!(
+                        "tasks-sortnames-partial",
+                        missing = self.facts.sort_missing,
+                        total = self.facts.sort_total
+                    )
+                    .to_string();
+                    // The button opens on the narrow scope, so the
+                    // estimate beside it has to be that scope's, not the
+                    // whole backlog's.
+                    if let Some(estimate) = &self.facts.sort_estimate {
+                        line.push_str(&rox_i18n::t!(
+                            "tasks-sortnames-non-latin",
+                            count = self.facts.sort_non_latin,
+                            estimate = estimate.clone()
+                        ));
+                    }
+                    lines.push(line);
+                }
+                if let Some(done) = &self.sortnames_done {
+                    lines.push(done.line());
+                }
+            }
+            Job::Romanize => {
+                if self.facts.romanize_total == 0 {
+                    lines.push(rox_i18n::t!("tasks-romanize-nothing").to_string());
+                } else if self.facts.romanize_missing == 0 {
+                    lines.push(
+                        rox_i18n::t!("tasks-romanize-all", count = self.facts.romanize_total)
+                            .to_string(),
+                    );
+                } else {
+                    let mut line = rox_i18n::t!(
+                        "tasks-romanize-partial",
+                        missing = self.facts.romanize_missing,
+                        total = self.facts.romanize_total
+                    )
+                    .to_string();
+                    if let Some(estimate) = &self.facts.romanize_estimate {
+                        line.push_str(&rox_i18n::t!(
+                            "tasks-reading-takes",
+                            estimate = estimate.clone()
+                        ));
+                    }
+                    lines.push(line);
+                }
+                // Its own line under whichever status ran above: work the
+                // button will do, but only once the download is there.
+                if self.facts.romanize_kanji > 0
+                    && self.facts.romanize_missing > 0
+                    && !romanize_job::dictionary_installed()
+                {
+                    lines.push(
+                        rox_i18n::t!("tasks-romanize-skipping", kanji = self.facts.romanize_kanji)
+                            .to_string(),
+                    );
+                }
+                if let Some(done) = &self.romanize_done {
+                    lines.push(done.line());
+                    if self.romanize_skipped > 0 {
+                        lines.push(
+                            rox_i18n::t!(
+                                "tasks-romanize-skipped",
+                                count = self.romanize_skipped as u64
+                            )
+                            .to_string(),
+                        );
+                    }
                 }
             }
             Job::LovedImport => match import::last(cx) {
@@ -1112,6 +1377,12 @@ impl TasksWindow {
             Job::Tempo => {
                 (!self.facts.tempo_on || self.facts.bpm.missing == 0).then_some(Blocked(None))
             }
+            Job::SortNames => (self.facts.sort_missing == 0).then_some(Blocked(None)),
+            // Nothing blocks this one but an empty backlog. A missing
+            // Japanese dictionary costs it the kanji values and nothing
+            // else, which the idle line says and the button shouldn't
+            // refuse over.
+            Job::Romanize => (self.facts.romanize_missing == 0).then_some(Blocked(None)),
             // Returned above; a watched job never reaches here.
             Job::LovedImport | Job::Convert | Job::Bake => None,
         }
@@ -1272,7 +1543,23 @@ impl TasksWindow {
             Job::Scan => library.update(cx, |library, cx| library.rescan(cx)),
             Job::Acoustic => pass_prompt::raise(self, pass_prompt::Pass::Acoustic, library, cx),
             Job::ReplayGain => pass_prompt::raise(self, pass_prompt::Pass::ReplayGain, library, cx),
-            Job::Tempo => pass_prompt::raise(self, pass_prompt::Pass::Tempo, library, cx),
+            Job::Tempo => pass_prompt::raise(
+                self,
+                pass_prompt::Pass::Tempo {
+                    retry_refused: false,
+                },
+                library,
+                cx,
+            ),
+            Job::SortNames => pass_prompt::raise(
+                self,
+                pass_prompt::Pass::SortNames {
+                    scope: sortnames_job::Scope::default(),
+                },
+                library,
+                cx,
+            ),
+            Job::Romanize => pass_prompt::raise(self, pass_prompt::Pass::Romanize, library, cx),
             // Watched, not started: none of these has a button here to reach
             // this.
             Job::LovedImport | Job::Convert | Job::Bake => {}

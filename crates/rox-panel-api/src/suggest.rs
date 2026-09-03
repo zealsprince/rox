@@ -6,9 +6,8 @@
 //! Attach through [`provider`] wherever a tag field gets typed.
 
 use std::rc::Rc;
-use std::sync::Arc;
 
-use gpui::{Context, Task, Window};
+use gpui::{App, Context, Entity, Task, Window};
 use gpui_component::input::{CompletionProvider, InputState, Rope, RopeExt as _};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionResponse, CompletionTextEdit, TextEdit,
@@ -16,6 +15,7 @@ use lsp_types::{
 
 use rox_library::projection::{Projection, QueryField, SymTable, QUERY_FIELDS};
 use rox_library::writer::Field;
+use rox_services::catalog::Library;
 
 /// How many suggestions the completion menu shows at once.
 const CAP: usize = 20;
@@ -97,8 +97,9 @@ fn ranked_years(years: &[u16], typed: &str) -> Vec<String> {
 /// across a library and there's a projection to draw them from. Free
 /// text and numeric fields get none.
 pub fn provider(
-    projection: Option<&Arc<Projection>>,
+    library: &Entity<Library>,
     field: &Field,
+    cx: &App,
 ) -> Option<Rc<dyn CompletionProvider>> {
     if !matches!(
         field,
@@ -106,29 +107,34 @@ pub fn provider(
     ) {
         return None;
     }
+    library.read(cx).projection()?;
     Some(Rc::new(FieldSuggestions {
-        projection: projection?.clone(),
+        library: library.clone(),
         field: field.clone(),
     }))
 }
 
 /// One field's suggestion source: the projection's interned distinct
-/// values, shared with the library they came from. Typing filters them
+/// values, read off the catalog per keystroke. Typing filters them
 /// case-folded the way the library search does, prefix matches first.
+///
+/// The catalog is what's held, never the projection itself: a kept
+/// `Arc<Projection>` is the thing that stops a sync patching the library
+/// in place, and an editor window can stay open for hours.
 struct FieldSuggestions {
-    projection: Arc<Projection>,
+    library: Entity<Library>,
     field: Field,
 }
 
 impl FieldSuggestions {
-    fn table(&self) -> &SymTable {
+    fn table<'a>(&self, projection: &'a Projection) -> &'a SymTable {
         match self.field {
-            Field::Artist => &self.projection.artists,
-            Field::AlbumArtist => &self.projection.album_artists,
-            Field::Album => &self.projection.albums,
+            Field::Artist => &projection.artists,
+            Field::AlbumArtist => &projection.album_artists,
+            Field::Album => &projection.albums,
             // The split terms, not the raw symbols: a completion offers
             // "Shoegaze", never a whole "Rock; Shoegaze" list.
-            _ => self.projection.genre_terms(),
+            _ => projection.genre_terms(),
         }
     }
 }
@@ -140,8 +146,14 @@ impl CompletionProvider for FieldSuggestions {
         _offset: usize,
         _trigger: CompletionContext,
         _window: &mut Window,
-        _cx: &mut Context<InputState>,
+        cx: &mut Context<InputState>,
     ) -> Task<anyhow::Result<CompletionResponse>> {
+        let catalog = self.library.read(cx);
+        // No library loaded, or one that went away under an open editor:
+        // the menu stays empty rather than the input holding the old one.
+        let Some(projection) = catalog.projection() else {
+            return Task::ready(Ok(CompletionResponse::Array(Vec::new())));
+        };
         let full = text.to_string();
         // A genre input holds a "; " list; complete the value being
         // typed (the segment after the last separator) and leave the
@@ -164,7 +176,7 @@ impl CompletionProvider for FieldSuggestions {
             text.offset_to_position(seg_start),
             text.offset_to_position(text.len()),
         );
-        let items = ranked(self.table(), &typed)
+        let items = ranked(self.table(projection), &typed)
             .into_iter()
             .map(|value| CompletionItem {
                 label: value.clone(),
@@ -197,18 +209,22 @@ impl CompletionProvider for FieldSuggestions {
 /// the `field:` term under the cursor, drawn from that field's table,
 /// and the field prefixes themselves for a bare word that starts one.
 /// Anything else gets no menu, so plain title searches stay quiet.
-pub fn query_provider(projection: Option<&Arc<Projection>>) -> Option<Rc<dyn CompletionProvider>> {
-    let projection = projection?.clone();
+pub fn query_provider(library: &Entity<Library>, cx: &App) -> Option<Rc<dyn CompletionProvider>> {
+    let years = library.read(cx).projection()?.distinct_years();
     Some(Rc::new(QuerySuggestions {
+        library: library.clone(),
         // Snapshot the distinct years once per attach rather than scanning
-        // the year column on every keystroke.
-        years: projection.distinct_years(),
-        projection,
+        // the year column on every keystroke. Callers reattach on a
+        // library change, so the list follows the catalog.
+        years,
     }))
 }
 
 struct QuerySuggestions {
-    projection: Arc<Projection>,
+    /// The catalog, read per keystroke. Holding the projection instead
+    /// would pin it for as long as the box lives and cost every sync its
+    /// incremental patch.
+    library: Entity<Library>,
     /// The library's distinct years, newest first, for the `year:` field's
     /// value suggestions.
     years: Vec<u16>,
@@ -240,7 +256,9 @@ fn token_at(text: &str, offset: usize) -> Option<(usize, usize)> {
 }
 
 /// The field a raw token pins and the offset its value starts at within
-/// the token, for a token with a known unquoted `field:` prefix.
+/// the token, for a token with a known unquoted `field:` prefix. A leading
+/// hyphen negates the term, so `-artist:daf` pins the same field and
+/// completes the same values as `artist:daf`.
 fn field_term(raw: &str) -> Option<(QueryField, usize)> {
     let colon = raw.find(':')?;
     let name = &raw[..colon];
@@ -248,8 +266,41 @@ fn field_term(raw: &str) -> Option<(QueryField, usize)> {
         return None;
     }
     let name = name.to_lowercase();
-    let (_, field) = QUERY_FIELDS.iter().find(|(n, _)| *n == name)?;
+    let bare = name.strip_prefix('-').unwrap_or(&name);
+    let (_, field) = QUERY_FIELDS.iter().find(|(n, _)| *n == bare)?;
     Some((*field, colon + 1))
+}
+
+/// The field terms a bare word completes to, in menu order: the `field:`
+/// pin for every field whose name starts with the typed text, and, when
+/// the word carries the query syntax's negating hyphen, the bare `-field`
+/// absence form beside each pin that has one. None when the word is too
+/// short to be starting a field term, which keeps the menu off ordinary
+/// title typing.
+fn field_completions(typed: &str) -> Option<Vec<String>> {
+    // The hyphen negates, so the names match on what follows it and every
+    // suggestion carries it back. The two-char floor counts after it, or
+    // "-a" would pop the menu a keystroke early.
+    let (hyphen, name) = match typed.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", typed),
+    };
+    if name.len() < 2 {
+        return None;
+    }
+    Some(
+        QUERY_FIELDS
+            .iter()
+            .filter(|(field, _)| field.starts_with(name))
+            .flat_map(|(field, kind)| {
+                // `-year` asks for the untagged years; a field with no
+                // absent value (folder, codec, added) offers the pin alone.
+                let absence = (!hyphen.is_empty() && kind.absence()).then(|| format!("-{field}"));
+                [Some(format!("{hyphen}{field}:")), absence]
+            })
+            .flatten()
+            .collect(),
+    )
 }
 
 /// The comparisons a numeric field suggests. Not every legal form, the
@@ -271,9 +322,13 @@ impl CompletionProvider for QuerySuggestions {
         offset: usize,
         _trigger: CompletionContext,
         _window: &mut Window,
-        _cx: &mut Context<InputState>,
+        cx: &mut Context<InputState>,
     ) -> Task<anyhow::Result<CompletionResponse>> {
         let none = || Task::ready(Ok(CompletionResponse::Array(Vec::new())));
+        let catalog = self.library.read(cx);
+        let Some(projection) = catalog.projection() else {
+            return none();
+        };
         let string = text.to_string();
         let Some((start, end)) = token_at(&string, offset.min(string.len())) else {
             return none();
@@ -294,14 +349,14 @@ impl CompletionProvider for QuerySuggestions {
                 text.offset_to_position(end),
             );
             let table = match field {
-                QueryField::Artist => &self.projection.artists,
-                QueryField::AlbumArtist => &self.projection.album_artists,
-                QueryField::Album => &self.projection.albums,
+                QueryField::Artist => &projection.artists,
+                QueryField::AlbumArtist => &projection.album_artists,
+                QueryField::Album => &projection.albums,
                 // The split terms: `genre:` should offer "Shoegaze", and
                 // the substring match finds it inside any "; " list.
-                QueryField::Genre => self.projection.genre_terms(),
-                QueryField::Folder => &self.projection.folders,
-                QueryField::Codec => &self.projection.codecs,
+                QueryField::Genre => projection.genre_terms(),
+                QueryField::Folder => &projection.folders,
+                QueryField::Codec => &projection.codecs,
                 // The year column has no symbol table; suggest from the
                 // distinct year list instead. Years never contain spaces, so
                 // they need no quoting.
@@ -369,30 +424,30 @@ impl CompletionProvider for QuerySuggestions {
                 })
                 .collect()
         } else {
-            // A bare word offers the field prefixes themselves, teaching
-            // the syntax in place. Two chars before the menu pops, so it
-            // stays out of the way of ordinary title typing; a colon
-            // here means an unknown field, which stays quiet.
+            // A bare word offers the field terms themselves, teaching the
+            // syntax in place: a colon here means an unknown field, which
+            // stays quiet.
             let typed = strip(raw);
-            if typed.len() < 2 || raw.contains(':') {
+            if raw.contains(':') {
                 return none();
             }
+            let Some(terms) = field_completions(&typed) else {
+                return none();
+            };
             let span =
                 lsp_types::Range::new(text.offset_to_position(start), text.offset_to_position(end));
-            QUERY_FIELDS
-                .iter()
-                .filter(|(name, _)| name.starts_with(&typed))
-                .map(|(name, _)| {
-                    let term = format!("{name}:");
-                    CompletionItem {
-                        label: term.clone(),
-                        filter_text: Some(name[..typed.len()].to_string()),
-                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range: span,
-                            new_text: term,
-                        })),
-                        ..Default::default()
-                    }
+            terms
+                .into_iter()
+                .map(|term| CompletionItem {
+                    // The typed text is a prefix of every one of these
+                    // labels, so the highlight is always its own length.
+                    filter_text: Some(term[..typed.len()].to_string()),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: span,
+                        new_text: term.clone(),
+                    })),
+                    label: term,
+                    ..Default::default()
                 })
                 .collect()
         };
@@ -470,5 +525,29 @@ mod tests {
         assert_eq!(field_term("ac:dc"), None);
         // A cursor in trailing whitespace has no token.
         assert_eq!(token_at("artist:x ", 9), None);
+        // A negated pin completes its values like the positive form, and
+        // the hyphen doesn't turn an unknown prefix into a field.
+        assert_eq!(field_term("-artist:daf"), Some((QueryField::Artist, 8)));
+        assert_eq!(field_term("-rating:>="), Some((QueryField::Rating, 8)));
+        assert_eq!(field_term("-ac:dc"), None);
+    }
+
+    /// A bare word completes to the field pins, and a hyphen in front of
+    /// it completes to the negated pin plus the bare absence form for the
+    /// fields that have one.
+    #[test]
+    fn words_complete_to_field_terms() {
+        assert_eq!(field_completions("art").unwrap(), ["artist:"]);
+        assert_eq!(field_completions("-art").unwrap(), ["-artist:", "-artist"]);
+        // Folder has no absent value, so the negation offers the pin alone.
+        assert_eq!(field_completions("-fol").unwrap(), ["-folder:"]);
+        // A prefix several fields share offers each of them.
+        assert_eq!(field_completions("al").unwrap(), ["albumartist:", "album:"]);
+        // Two chars before the menu pops, counted after the hyphen.
+        assert!(field_completions("a").is_none());
+        assert!(field_completions("-a").is_none());
+        assert!(field_completions("-").is_none());
+        // A word that names no field has nothing to offer.
+        assert!(field_completions("-zzz").unwrap().is_empty());
     }
 }

@@ -549,7 +549,12 @@ impl TransportPanel {
     /// The panel's own dropdown entries: quick show/hide for the opt-in
     /// buttons. A re-shown one goes back where it was; the order changes in
     /// the settings window's arrange editor.
-    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
             (rox_i18n::t!("playback-menu-stop"), PlaybackItem::Stop),

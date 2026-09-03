@@ -54,13 +54,20 @@ enum Sink {
 
 /// The fields the compare shows, in tag-sheet order: the writer field, its
 /// label, and how to pull the value off a candidate. Rating and lyrics stay
-/// out, since a release lookup doesn't return them.
+/// out, since a release lookup doesn't return them. Only two of the four
+/// sort fields are here for the same reason: MusicBrainz has sort names for
+/// artists, none for titles or releases, so title sort and album sort stay
+/// hand-typed in the editor.
 type Pull = fn(&MetadataCandidate) -> String;
 const FIELDS: &[(Field, &str, Pull)] = &[
     (Field::Title, "Title", |c| c.title.clone()),
     (Field::Artist, "Artist", |c| c.artist.clone()),
+    (Field::ArtistSort, "Artist Sort", |c| c.artist_sort.clone()),
     (Field::AlbumArtist, "Album Artist", |c| {
         c.album_artist.clone()
+    }),
+    (Field::AlbumArtistSort, "Album Artist Sort", |c| {
+        c.album_artist_sort.clone()
     }),
     (Field::Album, "Album", |c| c.album.clone()),
     (Field::Year, "Year", |c| c.year.clone()),
@@ -636,8 +643,9 @@ impl TagMatch {
 fn duration_secs_for(library: &Entity<Library>, id: i64, cx: &App) -> Option<f64> {
     let library = library.read(cx);
     let projection = library.projection()?;
-    let row = projection.db_id.iter().position(|&db| db == id)?;
-    let ms = projection.resolve(row as u32).duration_ms;
+    let row = (0..projection.len() as u32)
+        .find(|&row| projection.db_id[row as usize] == id && !projection.is_dead(row))?;
+    let ms = projection.resolve(row).duration_ms;
     (ms > 0).then(|| ms as f64 / 1000.0)
 }
 

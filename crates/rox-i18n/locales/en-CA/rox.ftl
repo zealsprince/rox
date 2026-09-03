@@ -310,6 +310,12 @@ panel-add-to-queue = Add to Queue
 panel-add-to-playlist = Add to Playlist
 panel-favourite-add = Add to Favourites
 panel-favourite-remove = Remove from Favourites
+panel-copy = Copy
+panel-copy-title = Copy Title
+panel-copy-artist = Copy Artist
+panel-copy-album = Copy Album
+panel-copy-filename = Copy Filename
+panel-copy-path = Copy Path
 shader-pick-missing = { $name } (missing)
 shader-pick-custom = Custom
 
@@ -421,6 +427,12 @@ library-columns = Columns
     .description = Which columns show; drag the headers in the panel to reorder and size them
 library-column-headers = Column Headers
     .description = The sortable header row over the list; hide it and the columns keep their order and widths
+library-column-rename = Rename...
+library-column-rename-reset = Reset Name
+library-column-rename-name = Header
+library-column-rename-note = Shown in place of the built-in header; empty goes back to it, and a single space leaves the header blank
+library-sort-on-click = Click to Sort
+    .description = Sort by clicking anywhere in a header instead of on its icon; reordering a column then takes Alt and a drag
 library-compact-plays = Compact Plays
     .description = The plays column as a small count with a dash beside it
 library-line-height = Line Height
@@ -793,18 +805,32 @@ settings-library-tempo-enable = Work Out How Fast Tracks Run
     .description = Count the beats in tracks whose tags don't say, so the library can show and sort by tempo. Everything runs on this machine, the numbers go in the library database, and your files are untouched
 settings-library-tempo-progress = Timing { $done } of { $total }
 settings-library-tempo-progress-start = Working out what's missing...
+settings-library-tempo-refused = { $count ->
+    [one] . One track has no beat rox could count, so Analyze Missing leaves it alone
+   *[other] . { $count } tracks have no beat rox could count, so Analyze Missing leaves them alone
+}
+settings-library-tempo-retry = Retry Refused
 settings-library-tempo-status-measured = { $total ->
     [one] The one scanned track has a tempo, { $measured } of them worked out by rox
    *[other] All { $total } scanned tracks have a tempo, { $measured } of them worked out by rox
 }
+settings-library-tempo-status-measured-some = { $covered } of { $total } scanned tracks have a tempo, { $measured } of them worked out by rox
+settings-library-tempo-status-none = { $total ->
+    [one] The one scanned track doesn't say how fast it runs. Analyze Missing works it out
+   *[other] None of the { $total } scanned tracks say how fast they run. Analyze Missing works them out
+}
+settings-library-tempo-status-partial = { $covered } of { $total } scanned tracks have a tempo, { $measured } of them worked out by rox. Analyze Missing works through the other { $missing }
 settings-library-tempo-status-tagged = { $total ->
     [one] The one scanned track has a tempo tag
    *[other] All { $total } scanned tracks have a tempo tag
 }
+settings-library-tempo-status-tagged-some = { $covered } of { $total } scanned tracks have a tempo tag
 settings-library-watch-folders = Watch folders
     .description = Fold added, edited, and deleted files into the library as they happen, without a manual rescan
 settings-library-write-stored = Write What's Stored Into the Files
     .description = The three save settings only apply to the next write, so anything saved before one was switched to Tags is still in rox alone. This writes the lyrics, gains and descriptions rox already holds into the files themselves, so another player reading the folder sees them. Nothing is recalculated
+settings-show-readings = Show readings
+    .description = Put the romanized reading after a name written in a script this alphabet can't sound out: 秋ノ風 (Aki no kaze). The reading is the sort name the value already carries, so a name without one shows nothing and a Latin name never gets one
 
 ## Settings: MCP
 
@@ -821,6 +847,11 @@ settings-mlmodels-custom-description-empty = Point rox at a PANNs CNN10 checkpoi
 settings-mlmodels-download-failed = { $label } could not be downloaded: { $reason }
 settings-mlmodels-downloading = Downloading { $label }: { $done } of { $total }
 settings-mlmodels-stopping = Stopping the { $label } download...
+settings-dictionary-description = { $summary }. { $licence }
+settings-dictionary-download-failed = The dictionary could not be downloaded: { $reason }
+settings-dictionary-downloading = Downloading the dictionary: { $done } of { $total }
+settings-dictionary-heading = Romanization
+settings-dictionary-stopping = Stopping the dictionary download...
 settings-mlmodels-fallback-model = model
 settings-mlmodels-fallback-the-model = The model
 settings-mlmodels-kind-custom = Custom
@@ -1037,9 +1068,11 @@ settings-sidebar-settings-file = Settings File
 ## Menubar
 
 menu-about = About
+menu-analyze-tempo = Analyze Tempo...
 menu-application = Application
 menu-apply-layout = Apply Layout
 menu-apply-workspace = Apply Workspace
+menu-build-acoustic = Build Acoustic Vectors...
 menu-chat = Chat
 menu-close = Close
 menu-console = Console
@@ -1048,8 +1081,16 @@ menu-discussions = Discussions
 menu-empty-window = Empty Window
 menu-equalizer = Equalizer
 menu-exit = Exit
+menu-fill-sort-names = Fill Sort Names...
+menu-romanize-library = Romanize Library...
+menu-find-duplicates = Find Duplicates...
+menu-tag-genres = Tag Genres...
+menu-health = Library Health
+menu-power-search = Power Search
 menu-hide-menubar = Hide Menubar
 menu-import-workspace = Import Workspace...
+menu-library = Library
+menu-measure-replaygain = Measure ReplayGain...
 menu-new-ellipsis = New...
 menu-new-window = New Window
 menu-new-window-from-layout = New Window from Layout
@@ -1071,13 +1112,16 @@ menu-pause = Pause
 menu-playback = Playback
 menu-remain-in-tray = Remain in Tray
 menu-report-issue = Report Issue
+menu-rescan-library = Rescan Library
 menu-save-layout = Save Layout
 menu-save-workspace = Save Workspace
 menu-section-add = Add
+menu-section-analyze = Analyze
 menu-section-app = App
 menu-section-interface = Interface
 menu-section-layouts = Layouts
-menu-section-library = Library
+menu-section-listening = Listening
+menu-section-maintain = Maintain
 menu-section-session = Session
 menu-section-track = Track
 menu-section-tuning = Tuning
@@ -1202,19 +1246,55 @@ tasks-tempo-all = { $count ->
     [one] The one track has a tempo
    *[other] All { $count } tracks have a tempo
 }
+tasks-tempo-counted = { $count ->
+    [one] The one track has a tempo
+   *[other] { $count } tracks have a tempo
+}
 tasks-tempo-off = Working out how fast tracks run is switched off in Settings, under Library
 tasks-tempo-partial = { $missing } of { $total } tracks have no tempo
+tasks-tempo-refused = { $count ->
+    [one] One track has no beat rox could count
+   *[other] { $count } tracks have no beat rox could count
+}
 tasks-timing = Timing { $progress }
+tasks-filling = Filling { $progress }
+tasks-job-sortnames = Sort Names
+tasks-sortnames-all = { $count ->
+    [one] The one artist has a sort name
+   *[other] All { $count } artists have a sort name
+}
+tasks-sortnames-non-latin = , { $count } of them not in Latin letters, { $estimate }
+tasks-sortnames-nothing = Nothing scanned to look up yet
+tasks-sortnames-partial = { $missing } of { $total } artists have no sort name
+tasks-start-fill-missing = Fill Missing
+tasks-job-romanize = Romanize
+tasks-reading-takes = , reading them takes { $estimate }
+tasks-romanize-all = { $count ->
+    [one] The one title, album or artist has a sort name
+   *[other] All { $count } titles, albums and artists have a sort name
+}
+tasks-romanize-nothing = Nothing scanned to read yet
+tasks-romanize-partial = { $missing } of { $total } titles, albums and artists have no sort name
+tasks-romanizing = Reading { $progress }
+tasks-romanize-skipped = { $count } were skipped for want of the Japanese dictionary
+tasks-romanize-skipping = { $kanji } of them are kanji and need the Japanese dictionary from Settings > Library
+tasks-start-romanize = Romanize
 tasks-tip = Open library tasks
 tasks-window-title = rox - Tasks
 tasks-working-out-missing = Working out what's missing...
 
 ## Stats window
 
+stats-bars-daily = Daily bars, click one to open it
+stats-bars-days = { $days }-day bars, click one to open them
+stats-bars-hourly = Hourly bars, the closest view
+stats-bars-hours = { $hours }-hour bars, click one to open its day
+stats-bars-weekly = Weekly bars, click one to open it
 stats-bucket-listens = { $count ->
-    [one] { $count } listen, { $ago }
-   *[other] { $count } listens, { $ago }
+    [one] { $count } listen, { $ago } ({ $date })
+   *[other] { $count } listens, { $ago } ({ $date })
 }
+stats-chart-end-day = Midnight
 stats-chart-start-all = First listen
 stats-chart-start-month = 30 days ago
 stats-chart-start-week = 7 days ago
@@ -1225,6 +1305,7 @@ stats-count-menu = Count
     .description = Which trailing window the number counts listens over; the hover list always shows them all
 stats-empty-all = No listens yet
 stats-empty-range = No listens in this range
+stats-library-held = { $tracks } tracks, { $size } in memory
 stats-now = Now
 stats-open = Open Stats
 stats-open-on-click = Open Stats on Click
@@ -1241,6 +1322,7 @@ stats-range-day-short = Day
 stats-range-label = Range
 stats-range-month = This Month
 stats-range-month-short = Month
+stats-range-span = { $from } to { $to }
 stats-range-today = Today
 stats-range-week = This Week
 stats-range-week-short = Week
@@ -1260,6 +1342,83 @@ stats-show-number = Show the Number
 stats-title = Stats Widget
 stats-tooltip-listens = Listens
 stats-window-title = rox - Stats
+
+## Library health window
+
+health-caption-art = { $albums } of { $total }, { $tracks }
+health-caption-duplicates = { $groups } over { $tracks }
+health-caption-formats = { $unwritable } of { $total }
+health-caption-gaps = { $albums } of { $total }
+health-caption-missing = { $missing } missing of { $total }
+health-caption-sort = Album artists { $album_artists }, albums { $albums }, titles { $titles }
+health-caption-split = { $tagged } tagged, { $measured } measured, { $missing } missing
+health-caption-split-refused = { $tagged } tagged, { $measured } measured, { $missing } missing, { $refused } no beat
+health-checks-menu = Counted Tags
+    .description = Which of the five core tags the readout counts; the hover list always shows them all
+health-click-opens = Click Opens Library Health
+health-click-section = Click
+health-complete = Nothing missing
+health-count-groups = { $count ->
+    [one] { $count } group
+   *[other] { $count } groups
+}
+health-desc-acoustic = Tracks with no acoustic fingerprint, so nothing similar-sounding can be found for them.
+health-desc-art = Albums with no cover, either embedded in the files or sitting beside them as an image.
+health-desc-duplicates = Groups of tracks that share an artist and a title and run about the same length.
+health-desc-gaps = Albums whose track numbers skip a number, or where a track carries no number at all.
+health-desc-genre = Tracks whose files carry no genre.
+health-desc-rating = Tracks you haven't rated yet.
+health-desc-replaygain = Tracks with no loudness measurement, so they play louder or quieter than the rest.
+health-desc-sort-names = How many names carry a sort name, the spelling that decides where they file alphabetically.
+health-desc-tempo = Tracks with no tempo, which is what sorting and matching by BPM read.
+health-desc-writable = Tracks in formats rox can read but can't write tags back into. Fragmented MP4 files refuse a write too, and they aren't counted here.
+health-desc-year = Tracks with no release year.
+health-drill = Show These
+health-fix-analyze = Analyze Missing
+health-fix-duplicates = Open Duplicates
+health-fix-genres = Tag Genres
+health-fix-measure = Measure Missing
+health-fix-fill = Fill Missing
+health-measuring-art = Probing album art, { $done } of { $total }
+health-measuring-duplicates = Matching duplicates
+health-measuring-formats = Reading file formats
+health-measuring-gaps = Checking track numbers
+health-open = Open Library Health
+health-open-on-click = Open Library Health on Click
+    .description = Click the widget to open the library health window, where the coverage is broken down
+health-overview-complete = { $complete } of { $total } fully tagged
+health-overview-missing = { $missing } missing
+health-readout-section = Readout
+health-running = Running
+health-section-audio = Audio
+health-section-files = Files and Structure
+health-section-overview = Overview
+health-section-tags = Tagging
+health-show-percent = Show the Percentage
+    .description = Draw the coverage beside the icon; off leaves a bare icon with the counts on hover
+health-tile-acoustic = Acoustic Vectors
+health-tile-album = Album
+health-tile-art = Album Art
+health-tile-artist = Artist
+health-tile-duplicates = Duplicates
+health-tile-gaps = Album Gaps
+health-tile-genre = Genre
+health-tile-rating = Rating
+health-tile-replaygain = ReplayGain
+health-tile-sort-names = Sort Names
+health-tile-tempo = Tempo
+health-tile-writable = Unsupported
+health-tile-year = Year
+health-tile-title = Title
+health-tooltip-missing = Missing tags
+health-waiting = Waiting
+health-widget-title = Health Widget
+health-window-title = rox - Library Health
+
+## Power search window
+
+search-seed-caption = { $source }: { $count }
+search-window-title = rox - Power Search
 
 ## About window
 
@@ -1400,6 +1559,7 @@ keymap-focus-search = Focus Search
     .description = Put the cursor in the library search box
 keymap-group-browsing = Browsing
 keymap-group-editing = Editing
+keymap-group-library = Library
 keymap-group-playback = Playback
 keymap-group-view = View
 keymap-group-windows = Windows
@@ -1443,6 +1603,10 @@ keymap-open-settings = Open Settings
     .description = Open this window
 keymap-open-panel-settings = Panel Settings
     .description = Open the settings window for the focused panel
+keymap-open-health = Library Health
+    .description = Open the library health window, where the tag coverage and the structural gaps are counted
+keymap-open-power-search = Power Search
+    .description = Open a search window over its own query, so a search here leaves the workspace alone
 keymap-open-stats = Open Statistics
     .description = Open the listening statistics window
 keymap-open-tasks = Tasks
@@ -1479,6 +1643,56 @@ keymap-next-tab = Next Tab
     .description = Show the next tab in the focused panel group
 keymap-prev-tab = Previous Tab
     .description = Show the previous tab in the focused panel group
+keymap-toggle-mute = Mute
+    .description = Silence the output without losing the level. Press again to bring it back
+keymap-toggle-shuffle = Toggle Shuffle
+    .description = Turn shuffle on or off for the queue
+keymap-cycle-loop = Cycle Loop
+    .description = Step loop from off to all to one and back around
+keymap-toggle-stop-after = Stop After
+    .description = Let the playing track finish, then pause. Press again to disarm
+keymap-volume-up = Volume Up
+    .description = Raise the volume one notch
+keymap-volume-down = Volume Down
+    .description = Lower the volume one notch
+keymap-close-panel = Close Panel
+    .description = Close the active panel in the focused panel group
+keymap-new-empty-window = Empty Window
+    .description = Open a workspace window with nothing in it
+keymap-open-signals = Signals
+    .description = Open the signals window, the pool behind every panel's routes
+keymap-import-workspace = Import Workspace
+    .description = Pick a workspace file and add it to the collection
+keymap-toggle-quit-to-tray = Toggle Remain in Tray
+    .description = Flip whether closing the last window keeps rox running in the tray
+keymap-toggle-design-mode = Toggle Design Mode
+    .description = Flip whether panels can be rearranged in place
+keymap-toggle-theme = Toggle Light / Dark
+    .description = Switch to the other palette side. Bound everywhere, since every window shares the theme
+keymap-toggle-resize-lock = Toggle Lock Panel Resize
+    .description = Flip whether panel resizing is reserved for design mode
+keymap-toggle-menubar = Toggle Hide Menubar
+    .description = Show the in-window menubar, or hide it until alt is held
+keymap-toggle-decorations = Toggle OS Decorations
+    .description = Switch the workspace windows between the OS frame and rox's own
+keymap-toggle-art-theming = Toggle Song Theming
+    .description = Flip whether the playing track's art tints the palette
+keymap-rescan-library = Rescan Library
+    .description = Scan every remembered library folder again
+keymap-measure-replaygain = Measure ReplayGain
+    .description = Raise the prompt that measures loudness for the tracks that carry none
+keymap-analyze-tempo = Analyze Tempo
+    .description = Raise the prompt that listens for a beat in the tracks with no BPM
+keymap-build-acoustic = Build Acoustic Vectors
+    .description = Raise the prompt that builds the vectors the acoustic search reads
+keymap-fill-sort-names = Fill Sort Names
+    .description = Raise the prompt that asks MusicBrainz for the sort names the files don't carry
+keymap-romanize-library = Romanize Library
+    .description = Raise the prompt that reads non-Latin titles, albums and artists into Latin letters
+keymap-find-duplicates = Find Duplicates
+    .description = Open the duplicate finder over the library
+keymap-tag-genres = Tag Genres
+    .description = Open the genre tagger over the tracks with no genre
 
 ## Panel catalog
 
@@ -1491,6 +1705,7 @@ panel-catalog-eq-widget = EQ Widget
 panel-catalog-filter = Filter
 panel-catalog-folder-tree = Folder Tree
 panel-catalog-genre-grid = Genre Grid
+panel-catalog-health-widget = Health Widget
 panel-catalog-group-application = Application
 panel-catalog-group-arrangement = Arrangement
 panel-catalog-group-catalogue = Catalogue
@@ -1542,6 +1757,7 @@ lastfm-import-added = , added { $count } to favourites
 
 ## Tag tools
 
+tags-editor-add-tag = Add
 tags-editor-clear-all = clear all
 tags-editor-form-view = Form
 tags-editor-format-unsupported-all = Tags for this format can't be read or written yet.
@@ -1551,17 +1767,22 @@ tags-editor-guess-folded = { $status }, { $count } more not shown
 tags-editor-guess-help = { $placeholders }; / matches the folder above, %skip% discards
 tags-editor-guess-match-count = { $hits } of { $total } match
 tags-editor-guess-no-match = no match
-tags-editor-guess-pattern-label = pattern
+tags-editor-guess-pattern-label = Pattern
 tags-editor-loading = Loading tags...
 tags-editor-look-up = Look Up
 tags-editor-multiple-values = Multiple values
 tags-editor-clear-on-save = Clear on save
-tags-editor-other-tags = Other Tags ({ $count })
+tags-editor-additional-tags = Additional Tags ({ $count })
 tags-editor-remove = remove
 tags-editor-reveal = Reveal
 tags-editor-save-errors = { $count } files failed; { $error }
 tags-editor-saving-progress = Saving { $done }/{ $total }...
+tags-editor-sort-names = Sort names
 tags-editor-table-view = Table
+tags-editor-tag-columns = Additional tags
+tags-editor-tag-field-conflict = the { $field } field writes this tag
+tags-editor-tag-key-placeholder = Tag name
+tags-editor-tag-value-placeholder = Value
 tags-editor-tags-section = Tags
 tags-editor-unknown-partial = { $count } of { $total }
 tags-editor-unread-count = Couldn't read tags for { $failed } of { $total } files
@@ -1719,6 +1940,60 @@ duplicates-trash-result = { $count ->
 duplicates-trash-result-failed = Moved { $count } to trash, { $failed } failed
 duplicates-trashing = Trashing { $done }/{ $total }...
 duplicates-window-title = rox - Duplicates
+
+## Genre tagger
+
+tag-genres-empty = Every track has a genre. Play something to retag it.
+tag-genres-heading = Tag Genres
+tag-genres-input-placeholder = Type a genre
+tag-genres-keys-hint = 1-8 pick a row, Shift+1-8 add it to the box, Ctrl+1-8 pick it for the whole album, Enter applies what you typed, L looks up on Last.fm, S skips, Ctrl+Z undoes
+tag-genres-library-loading = The library is still loading; try again shortly.
+tag-genres-no-file = The library has no file for this track.
+tag-genres-no-suggestions = Nothing to suggest; type a genre.
+tag-genres-progress = { $at } of { $total } untagged
+tag-genres-skip = Skip
+tag-genres-thinking = Reading the neighbourhood...
+tag-genres-undo = Undo
+tag-genres-unwritable = This track lives inside a shared cue image, so its genre can't be written. Skip it.
+tag-genres-window-title = rox - Tag Genres
+tag-genres-looking-up = Asking Last.fm...
+tag-genres-lookup = Look up on Last.fm
+tag-genres-auto-lookup = Automatically
+tag-genres-lookup-found = Last.fm tags { $artist } as: { $tags }
+tag-genres-lookup-none = Last.fm has no tags for { $artist }.
+tag-genres-lookup-off = Online artist lookups are off in Settings.
+tag-genres-why-acoustic = { $count ->
+    [one] { $count } track that sounds alike
+   *[other] { $count } tracks that sound alike
+}
+tag-genres-why-album = { $count ->
+    [one] { $count } track on this album
+   *[other] { $count } tracks on this album
+}
+tag-genres-why-artist = { $count ->
+    [one] { $count } track by this artist
+   *[other] { $count } tracks by this artist
+}
+tag-genres-why-lookup = Last.fm
+tag-genres-album-too = { $count ->
+    [one] Tag the track's whole album and its { $count } sibling
+   *[other] Tag the track's whole album and its { $count } siblings
+}
+tag-genres-apply = Apply
+tag-genres-begin = Begin queue
+tag-genres-col-genre = Genre
+tag-genres-col-match = Match
+tag-genres-col-why = Why
+tag-genres-current-genre = Genre: { $genre }
+tag-genres-idle = Nothing is playing. Begin the queue to work through the untagged tracks, or play something to retag it.
+tag-genres-no-genre = No genre yet
+tag-genres-stop = Stop queue
+tag-genres-untagged-count = { $count ->
+    [one] { $count } untagged track
+   *[other] { $count } untagged tracks
+}
+tag-genres-write-error = { $name }: { $error }
+tag-genres-writing = Writing { $done } of { $total }...
 
 ## Smart playlists
 
@@ -1899,12 +2174,31 @@ pass-replaygain-title = { $count ->
    *[other] Measure { $count } tracks?
 }
 pass-tempo-body = Two half-minute windows of each file are decoded and the beats counted, so the library can show what a track runs at. It works best on music recorded to a click and skips anything it can't measure. The numbers go in the library database and your files are untouched.
+pass-tempo-retry-body = An earlier pass already listened to these tracks and heard no beat in any of them. Retrying decodes every one again, so it's worth the wait only once the beat counting has improved.
+pass-tempo-retry-title = { $count ->
+    [one] Listen to 1 refused track again?
+   *[other] Listen to { $count } refused tracks again?
+}
 pass-tempo-title = { $count ->
     [one] Find the tempo of 1 track?
    *[other] Find the tempo of { $count } tracks?
 }
 pass-timing = Timing a few tracks...
 pass-timing-failed = Couldn't time this library: { $error }
+pass-fill = Fill
+pass-sortnames-body = Each artist is looked up on MusicBrainz for the Latin spelling they file under, so 米津玄師 lands under Y. The service allows one request a second, and that's what sets the pace. The answers go in the library database; your files are never touched.
+pass-sortnames-scope-all = Also look up names that already file in Latin
+pass-romanize = Romanize
+pass-romanize-body = Every title, album and artist that still has no sort name is read into Latin letters, so レモン is found by typing "lemon". Korean and Chinese need nothing. Japanese kanji needs the dictionary from Settings > Library, and IPADIC gets names wrong often enough that the tag editor is there to correct it. The answers go in the library database; your files are never touched.
+pass-romanize-title = { $count ->
+    [one] Read 1 name into Latin letters?
+   *[other] Read { $count } names into Latin letters?
+}
+pass-romanize-skips-kanji = { $kanji } of { $total } values are kanji and will be skipped until the Japanese dictionary is installed. Get it from Settings > Library.
+pass-sortnames-title = { $count ->
+    [one] Look up 1 artist?
+   *[other] Look up { $count } artists?
+}
 pass-workers = Workers
 
 ## Quick play
@@ -1915,10 +2209,22 @@ quick-play-cover = Cover
     .description = Show a cover thumbnail at the left of each result
 quick-play-duration = Duration
     .description = Show each result's length on the right
-quick-play-narrow-by = Narrow By
 quick-play-search-placeholder = Search the library
 quick-play-subtitle = Subtitle
     .description = Show the artist and album under each result
+quick-play-syntax-absent = Rows with no value at all
+    .example = -year
+quick-play-syntax-exclude = Everything but the matches
+    .example = -genre:rock
+quick-play-syntax-field = Pin one field, quote a value with spaces
+    .example = artist:"Daft Punk"
+quick-play-syntax-free = Match the title, artist, album artist, album, or genre
+    .example = daft punk
+quick-play-syntax-numeric = Compare a number; plays:0 and added:<90d work the same way
+    .example = rating:>=4
+quick-play-syntax-title = Search Syntax
+quick-play-syntax-year = Digits, so a prefix takes the whole decade
+    .example = year:199
 quick-play-tag-album = Album
 quick-play-tag-artist = Artist
 
@@ -2235,6 +2541,39 @@ shader-panel-run-shader = Run Shader
     .description = Off keeps the source, the bookmark and the bindings in place and paints nothing
 shader-panel-section-routes = Routes
 
+## Shader editor
+
+shader-edit-here = Edit
+shader-editor-window-title = rox - Shader Editor
+shader-editor-target-screen = Screen Shader
+shader-editor-target-backdrop = Backdrop Shader
+shader-editor-origin-pool = A workspace shader: an apply reaches every surface using it
+shader-editor-origin-pool-file = A workspace shader, with its working copy at { $path }
+shader-editor-origin-file = Bookmarked to { $path }, which an apply writes too
+shader-editor-origin-inline = This surface's own source
+shader-editor-apply = Apply
+shader-editor-revert = Revert
+shader-editor-close = Close
+shader-editor-hint-press = Press
+shader-editor-hint-apply = to apply
+shader-editor-status-unchecked = Nothing to check yet
+shader-editor-status-ok = Compiles
+shader-editor-status-error = This shader didn't compile:
+shader-editor-section-uniforms = Uniforms
+shader-editor-section-textures = Textures
+shader-editor-section-slots = Slots
+shader-editor-section-signals = Signals
+shader-editor-slot-unnamed = Slot { $n }
+shader-editor-signals-empty = The pool has no signals yet. Add some in the Signals window and they show here with live meters.
+shader-editor-uniform-time = Seconds the shader has run, frozen while the feed is
+shader-editor-uniform-delta = Seconds since its last frame, 0 on the first
+shader-editor-uniform-resolution = The surface in device pixels
+shader-editor-uniform-mouse = xy the cursor in device pixels, z and w the buttons
+shader-editor-uniform-meta-0 = x volume, y track position, z playing, w track length in seconds
+shader-editor-uniform-meta-1 = x page brightness, y light theme, z cursor presence, w content shape
+shader-editor-texture-screen = What's under the surface this frame
+shader-editor-texture-prev = This surface's own last frame, for trails
+
 ## Genre grid panel
 
 genre-grid-clear-picked = Clear Picked Genres
@@ -2309,6 +2648,7 @@ wall-tile-size = Tile Size
 
 ## Metadata panel
 
+metadata-copy-field = Copy { $field }
 metadata-cover-background = Cover Background
     .description = The track's cover art behind the fields
 metadata-display = Display
@@ -2316,18 +2656,28 @@ metadata-display = Display
 metadata-display-sheet = Sheet
 metadata-display-table = Table
 metadata-edit-save = Save
+metadata-field-album-artist-sort = Album artist sort
+metadata-field-album-sort = Album sort
+metadata-field-artist-sort = Artist sort
 metadata-field-bit-depth = Bit Depth
 metadata-field-bitrate = Bitrate
+metadata-field-bpm-measured = { $bpm } (measured by rox)
 metadata-field-codec = Codec
 metadata-field-comment = Comment
 metadata-field-disc = Disc
 metadata-field-file = File
+metadata-field-gain-album = Album gain
+metadata-field-gain-track = Track gain
 metadata-field-sample-rate = Sample Rate
+metadata-field-title-sort = Title sort
 metadata-field-track = Track
 metadata-fields = Fields
     .description = Which fields the sheet lists; a field the track doesn't have stays hidden
 metadata-find-online = Find Metadata Online...
 metadata-no-library = No library
+metadata-romanize = Romanize
+metadata-romanize-needs-dictionary = A kanji name needs the Japanese dictionary. Get it from Settings > Library.
+metadata-romanize-sort-names = Romanize Sort Names
 metadata-row-borders-description = The hairline under each row of the table
 metadata-source = Source
     .description = Follow what's playing or selected, or read the library as a whole
@@ -2558,6 +2908,9 @@ output-title = Output
 
 ## Track columns
 
+columns-album-artist-sort = Album artist sort
+columns-album-sort = Album sort
+columns-artist-sort = Artist sort
 columns-bits = Bits
 columns-bpm = BPM
 columns-codec = Codec
@@ -2570,6 +2923,7 @@ columns-name = Name
 columns-number = Number
 columns-scanned = Scanned
 columns-similar = Similar
+columns-title-sort = Title sort
 
 ## Filter panel
 
@@ -2579,6 +2933,7 @@ filter-all = All
 filter-clear-filters = Clear Filters
 filter-clear-selection = Clear Selection
 filter-empty = Pick a field to start filtering
+filter-over-cap = { $count } more, search to narrow
 filter-remove-column = Remove Column
 
 ## Search panel
@@ -2899,6 +3254,7 @@ settings-mlmodels-on-disk = , { $size } on disk
 settings-mlmodels-to-download = , { $size } to download
 model-summary-dsp-timbre-1 = Built in, no download. A summary of each track's log-band energy, spectral shape, and onset rate. Coarse next to a trained network, but it needs nothing and it runs everywhere
 model-summary-panns-cnn10 = A convolutional network trained on AudioSet to recognize what a sound is. Its 512-value description of a track is far richer than the built-in sketch, at the cost of a 24 MB download and a slower analysis pass
+dictionary-summary-lindera-ipadic = The Japanese dictionary behind kanji readings. Without it, kana and hangul still romanize and Chinese still reads as pinyin, but a kanji title is skipped
 
 ## Shipped workspaces
 

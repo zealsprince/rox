@@ -251,7 +251,12 @@ impl VolumePanel {
     /// stretch knob. The menu shows and hides a piece, putting it back
     /// where it was; the order changes in the customize window's arrange
     /// editor.
-    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
             (rox_i18n::t!("volume-item-icon"), VolumeItem::Icon),

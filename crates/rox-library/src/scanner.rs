@@ -74,19 +74,16 @@ pub fn scan(
     let stored_cues = store::cue_subs(conn)?;
     let mut walk = Walk::default();
     collect(root, &mut walk);
-    walk.audio.sort();
-    // The walk is the ground truth for what's under the root this pass:
-    // an unreadable file (permissions, transient IO) still shows up here from
-    // its parent's directory entry, so it never counts as gone. Built before
-    // the batch loop consumes the list, keyed the same way process_file keys
-    // a stored row so the two sets compare byte for byte. Claimed images are
-    // in here too: the sheet changes what rows they get, not whether the file
-    // is there.
-    let present: std::collections::HashSet<String> = walk
-        .audio
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    // Sorted by the string form a stored row is keyed with, not by PathBuf's
+    // own order, which compares component by component and puts "/m/a/b.mp3"
+    // before "/m/a.mp3" where the strings run the other way. The prune below
+    // binary-searches this list against stored paths, so the order it is in
+    // has to be the order those comparisons are made in. Nothing else cares
+    // which of the two it gets: both group a folder's files together, and a
+    // walk holds no duplicates for the unstable sort to shuffle, which saves
+    // the half-sized scratch buffer a stable one wants at ten million paths.
+    walk.audio
+        .sort_unstable_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
 
     let claimed = claims(&walk.cues, &walk.audio);
     // An image a sheet no longer claims has to be re-read even if its own
@@ -99,12 +96,14 @@ pub fn scan(
         }
     }
     // Claimed images get their rows from the cue pass below, never a plain
-    // row of their own.
-    let files: Vec<PathBuf> = walk
+    // row of their own. Borrowed out of the walk rather than cloned: the walk
+    // outlives the batch loop (the prune reads it at the end), and at ten
+    // million files a second owned copy of every path is a gigabyte nothing
+    // reads.
+    let files: Vec<&PathBuf> = walk
         .audio
         .iter()
         .filter(|path| !claimed.contains_key(*path))
-        .cloned()
         .collect();
     let total = files.len() + claimed.len();
 
@@ -121,7 +120,7 @@ pub fn scan(
             .map(|path| {
                 let outcome = process_file(path, &known);
                 let done = scanned.fetch_add(1, Ordering::Relaxed) + 1;
-                if !progress(done, total, path) {
+                if !progress(done, total, path.as_path()) {
                     cancelled.store(true, Ordering::Relaxed);
                 }
                 outcome
@@ -208,13 +207,18 @@ pub fn scan(
     }
 
     // Diff the stored rows under root against what the walk found and drop
-    // the rows whose files are gone. Skipped on two counts, both to keep a
-    // bad pass from wiping the library: an aborted scan never finished the
-    // walk, and a root that won't even list its entries (unplugged drive,
-    // dropped network mount) reads as empty when the files are really still
-    // there. A genuinely emptied but readable root still prunes.
+    // the rows whose files are gone. The walk is the ground truth for what's
+    // under the root this pass: an unreadable file (permissions, transient
+    // IO) still shows up in it from its parent's directory entry, so it never
+    // counts as gone, and claimed images are in there too, since a sheet
+    // changes what rows a file gets rather than whether the file is there.
+    // Skipped on two counts, both to keep a bad pass from wiping the library:
+    // an aborted scan never finished the walk, and a root that won't even list
+    // its entries (unplugged drive, dropped network mount) reads as empty when
+    // the files are really still there. A genuinely emptied but readable root
+    // still prunes.
     if !summary.aborted && std::fs::read_dir(root).is_ok() {
-        summary.removed = store::prune_missing(conn, root, &present)?;
+        summary.removed = store::prune_missing(conn, root, &walk.audio)?;
     }
     // With the store squared against disk, match playlist members and listens
     // whose track id died with an earlier prune back to files this pass
@@ -332,8 +336,11 @@ fn process_file(path: &Path, known: &HashMap<String, (i64, u64)>) -> Outcome {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let path_str = path.to_string_lossy().into_owned();
-    if known.get(&path_str) == Some(&(mtime, size)) {
+    // Borrowed for the lookup and owned only where a row is actually built.
+    // Nearly every file of a rescan is unchanged, and on a big library that
+    // one allocation per skipped file is most of what the fast path costs.
+    let path_str = path.to_string_lossy();
+    if known.get(path_str.as_ref()) == Some(&(mtime, size)) {
         return Outcome::Unchanged;
     }
 
@@ -343,7 +350,7 @@ fn process_file(path: &Path, known: &HashMap<String, (i64, u64)>) -> Outcome {
     };
     Outcome::Indexed {
         row: Box::new(TrackRow {
-            path: path_str,
+            path: path_str.into_owned(),
             size,
             mtime,
             ..row
@@ -653,27 +660,51 @@ fn cue_rows(
                 .len_ms()
                 .unwrap_or_else(|| image_tags.duration_ms.saturating_sub(track.span.start_ms));
             let artist = track.performer.clone();
+            // A sheet that named no title leaves the row the same
+            // filename fallback an unreadable file would get.
+            let title = if track.title.is_empty() {
+                image_tags.title.clone()
+            } else {
+                track.title.clone()
+            };
+            let album_artist = if claim.album_artist.is_empty() {
+                artist.clone()
+            } else {
+                claim.album_artist.clone()
+            };
+            let album = if claim.album.is_empty() {
+                image_tags.album.clone()
+            } else {
+                claim.album.clone()
+            };
+            // A sort name belongs to the value it sorts, so a subsong
+            // carries the image's sort name exactly when it ended up with
+            // the image's value for that field, whether the sheet fell
+            // silent or spelled the same name. A sheet that names its own
+            // performer or title gets no sort name from a tag written about
+            // something else.
+            let inherit = |value: &str, image_value: &str, image_sort: &str| {
+                if value == image_value {
+                    image_sort.to_string()
+                } else {
+                    String::new()
+                }
+            };
             TrackRow {
+                title_sort: inherit(&title, &image_tags.title, &image_tags.title_sort),
+                artist_sort: inherit(&artist, &image_tags.artist, &image_tags.artist_sort),
+                album_artist_sort: inherit(
+                    &album_artist,
+                    &image_tags.album_artist,
+                    &image_tags.album_artist_sort,
+                ),
+                album_sort: inherit(&album, &image_tags.album, &image_tags.album_sort),
                 path: path.clone(),
                 sub: track.number,
-                // A sheet that named no title leaves the row the same
-                // filename fallback an unreadable file would get.
-                title: if track.title.is_empty() {
-                    image_tags.title.clone()
-                } else {
-                    track.title.clone()
-                },
-                album_artist: if claim.album_artist.is_empty() {
-                    artist.clone()
-                } else {
-                    claim.album_artist.clone()
-                },
+                title,
+                album_artist,
                 artist,
-                album: if claim.album.is_empty() {
-                    image_tags.album.clone()
-                } else {
-                    claim.album.clone()
-                },
+                album,
                 genre: if claim.genre.is_empty() {
                     image_tags.genre.clone()
                 } else {
@@ -727,8 +758,11 @@ fn cue_rows(
 /// TXXX/POPM frames and unmapped Vorbis keys the generic tag drops) reads
 /// off the same parse that fills the row: one open per file, not two. The
 /// native file converts to a `TaggedFile` exactly as `Probe::read` does, so
-/// the generic tags below match the old probe path byte for byte. Any other
-/// format keeps the plain probe; those have no rating rox reads anyway.
+/// the generic tags below match the old probe path byte for byte. MP4 is
+/// here for the same reason: its rating sits in a freeform atom the
+/// generic tag drops, and a rating rox wrote that a scan couldn't see
+/// again would read as data loss. Any other format keeps the plain
+/// probe; those have no rating rox reads anyway.
 fn read_tags(path: &Path) -> Option<TrackRow> {
     let source = crate::tag_source::open(path).ok()?;
     let (file, rating) = catch_unwind(AssertUnwindSafe(move || {
@@ -751,6 +785,12 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
                 let flac = FlacFile::read_from(&mut reader, opts).ok()?;
                 let rating = flac.vorbis_comments().and_then(crate::rating::from_vorbis);
                 Some((TaggedFile::from(flac), rating))
+            }
+            Some(lofty::file::FileType::Mp4) => {
+                let mut reader = probe.into_inner();
+                let mp4 = lofty::mp4::Mp4File::read_from(&mut reader, opts).ok()?;
+                let rating = mp4.ilst().and_then(crate::rating::from_ilst);
+                Some((TaggedFile::from(mp4), rating))
             }
             _ => probe.read().ok().map(|f| (f, None)),
         }
@@ -807,6 +847,31 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
             .unwrap_or(&row.artist)
             .to_string();
         row.album = text(tag.album());
+        // The Latin sort names, straight off the primary tag. No fallback
+        // to the displayed name: an absent sort name is absent, and the
+        // projection is what decides to fall back when it orders or matches.
+        row.title_sort = tag
+            .get_string(lofty::tag::ItemKey::TrackTitleSortOrder)
+            .unwrap_or_default()
+            .to_string();
+        row.artist_sort = tag
+            .get_string(lofty::tag::ItemKey::TrackArtistSortOrder)
+            .unwrap_or_default()
+            .to_string();
+        row.album_artist_sort = tag
+            .get_string(lofty::tag::ItemKey::AlbumArtistSortOrder)
+            .unwrap_or_default()
+            .to_string();
+        // The one exception to that: a sort name belongs to the value it
+        // sorts, so an album artist borrowed from the track artist borrows
+        // the artist's sort name too. The cue path inherits the same way.
+        if row.album_artist_sort.is_empty() && row.album_artist == row.artist {
+            row.album_artist_sort = row.artist_sort.clone();
+        }
+        row.album_sort = tag
+            .get_string(lofty::tag::ItemKey::AlbumTitleSortOrder)
+            .unwrap_or_default()
+            .to_string();
         // Every genre item, joined to the "; " list form: Vorbis stores
         // multiples as repeated GENRE comments, ID3v2.4 as one
         // null-separated TCON, and lofty hands both over as separate items.
@@ -864,6 +929,10 @@ fn replay_gain_across_tags(file: &TaggedFile) -> crate::replaygain::ReplayGain {
 /// filled in by the caller.
 fn fallback_row(path: &Path) -> TrackRow {
     TrackRow {
+        title_sort: String::new(),
+        artist_sort: String::new(),
+        album_artist_sort: String::new(),
+        album_sort: String::new(),
         path: String::new(),
         sub: 0,
         cue: None,
@@ -966,6 +1035,143 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rating, 75);
+    }
+
+    /// The four sort names make the whole round trip: written onto the
+    /// file, read back off the primary tag, and landed in the store's
+    /// columns. Absence stays absence, which is why the four start empty
+    /// rather than mirroring the displayed names.
+    #[test]
+    fn reindex_reads_sort_names() {
+        let dir = std::env::temp_dir().join("rox-scanner-sortnames");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let path = dir.join("track.mp3");
+        std::fs::write(&path, &audio).unwrap();
+
+        let mut conn = store::open(&dir.join("library.db")).unwrap();
+        store::init_schema(&conn).unwrap();
+
+        let sorts = |conn: &Connection| {
+            conn.query_row(
+                "SELECT title_sort, artist_sort, album_artist_sort, album_sort
+                 FROM tracks WHERE path = ?1",
+                [path.to_str().unwrap()],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+
+        // An untagged file scans in with four empty columns.
+        writer::commit(
+            &path,
+            &[Change {
+                field: Field::Title,
+                value: Some("Lemon".into()),
+            }],
+        )
+        .unwrap();
+        assert_eq!(reindex(&mut conn, std::slice::from_ref(&path)).unwrap(), 1);
+        assert_eq!(
+            sorts(&conn),
+            (String::new(), String::new(), String::new(), String::new())
+        );
+
+        writer::commit(
+            &path,
+            &[
+                Change {
+                    field: Field::TitleSort,
+                    value: Some("Lemon".into()),
+                },
+                Change {
+                    field: Field::ArtistSort,
+                    value: Some("Yonezu, Kenshi".into()),
+                },
+                Change {
+                    field: Field::AlbumArtistSort,
+                    value: Some("Yonezu, Kenshi".into()),
+                },
+                Change {
+                    field: Field::AlbumSort,
+                    value: Some("Bootleg".into()),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(reindex(&mut conn, std::slice::from_ref(&path)).unwrap(), 1);
+        assert_eq!(
+            sorts(&conn),
+            (
+                "Lemon".to_string(),
+                "Yonezu, Kenshi".to_string(),
+                "Yonezu, Kenshi".to_string(),
+                "Bootleg".to_string(),
+            )
+        );
+    }
+
+    /// An album artist borrowed from the track artist borrows the artist's
+    /// sort name with it. Without that the row sorts the borrowed name by
+    /// nothing, which on a Japanese or Cyrillic name is the difference
+    /// between the artist list reading Latin and reading unsorted.
+    #[test]
+    fn a_borrowed_album_artist_borrows_its_sort_name() {
+        let dir = std::env::temp_dir().join("rox-scanner-borrowed-sort");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let path = dir.join("track.mp3");
+        std::fs::write(&path, &audio).unwrap();
+        writer::commit(
+            &path,
+            &[
+                Change {
+                    field: Field::Artist,
+                    value: Some("米津玄師".into()),
+                },
+                Change {
+                    field: Field::ArtistSort,
+                    value: Some("Yonezu, Kenshi".into()),
+                },
+            ],
+        )
+        .unwrap();
+
+        let row = read_one(&path).unwrap();
+        assert_eq!(row.album_artist, "米津玄師");
+        assert_eq!(row.album_artist_sort, "Yonezu, Kenshi");
+
+        // A compilation names its own album artist, and that name has no
+        // sort name of its own until someone tags one.
+        writer::commit(
+            &path,
+            &[Change {
+                field: Field::AlbumArtist,
+                value: Some("Various Artists".into()),
+            }],
+        )
+        .unwrap();
+        let row = read_one(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(row.album_artist, "Various Artists");
+        assert_eq!(row.album_artist_sort, "");
     }
 
     /// The combined read_tags path and the standalone rating::read agree on
@@ -1150,6 +1356,82 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         let s = scan(&mut conn);
         assert_eq!(s.removed, 0);
+        assert_eq!(store::count(&conn).unwrap(), 2);
+    }
+
+    /// A folder and a file whose names differ only by what follows them
+    /// ("a/" against "a.mp3") are where path order and string order part
+    /// company, and the prune searches the walk's list rather than holding a
+    /// set of it. Sorted the wrong way it would fail to find files that are
+    /// sitting right there and delete their rows on a clean rescan.
+    #[test]
+    fn a_rescan_keeps_files_whose_names_straddle_a_folder() {
+        let dir = std::env::temp_dir().join("rox-scanner-prune-order");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("a b")).unwrap();
+        let files = [
+            "a.mp3",
+            "a b.mp3",
+            "a-b.mp3",
+            "a/1.mp3",
+            "a/2.mp3",
+            "a b/1.mp3",
+        ];
+        for name in files {
+            std::fs::write(dir.join(name), b"not audio").unwrap();
+        }
+        let mut conn = store::open(&dir.join("library.db")).unwrap();
+        store::init_schema(&conn).unwrap();
+        assert_eq!(
+            scan(&mut conn, &dir, |_, _, _| true).unwrap().indexed,
+            files.len()
+        );
+
+        // Nothing moved on disk, so nothing may leave the store.
+        let s = scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!(s.removed, 0);
+        assert_eq!(s.unchanged, files.len());
+        assert_eq!(store::count(&conn).unwrap(), files.len() as u64);
+
+        // And the one file that did go still goes.
+        std::fs::remove_file(dir.join("a/1.mp3")).unwrap();
+        let s = scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!(s.removed, 1);
+        assert!(
+            store::id_for_path(&conn, dir.join("a.mp3").to_str().unwrap())
+                .unwrap()
+                .is_some(),
+            "the file next to the folder is untouched"
+        );
+    }
+
+    /// The other prune guard: a scan the caller stopped never finished its
+    /// walk, so the list it would diff the store against is short, and
+    /// pruning off it would delete files that are sitting right there.
+    #[test]
+    fn an_aborted_scan_prunes_nothing() {
+        let dir = std::env::temp_dir().join("rox-scanner-prune-aborted");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["1.mp3", "2.mp3", "3.mp3"] {
+            std::fs::write(dir.join(name), b"not audio").unwrap();
+        }
+        let mut conn = store::open(&dir.join("library.db")).unwrap();
+        store::init_schema(&conn).unwrap();
+        assert_eq!(scan(&mut conn, &dir, |_, _, _| true).unwrap().indexed, 3);
+
+        // A file really is gone this time, and the scan still must not act
+        // on that: it stopped before it knew what else was there.
+        std::fs::remove_file(dir.join("2.mp3")).unwrap();
+        let s = scan(&mut conn, &dir, |_, _, _| false).unwrap();
+        assert!(s.aborted, "the progress callback said stop");
+        assert_eq!(s.removed, 0);
+        assert_eq!(store::count(&conn).unwrap(), 3);
+
+        // The same tree scanned to the end does prune it.
+        let s = scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!(s.removed, 1);
         assert_eq!(store::count(&conn).unwrap(), 2);
     }
 
@@ -1494,5 +1776,77 @@ FILE "disc.wav" WAVE
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(&data);
         out
+    }
+
+    /// A sort name belongs to the value it sorts, so a subsong carries the
+    /// image's sort name exactly where it kept the image's value: the album
+    /// and album artist a silent sheet left alone, the performer that
+    /// spells the image's artist. A track naming its own performer or its
+    /// own title gets no sort name written about something else.
+    #[test]
+    fn cue_tracks_inherit_the_sort_names_of_the_values_they_keep() {
+        let image = fallback_row(Path::new("/music/disc.flac"));
+        let image_tags = TrackRow {
+            title: "Disc".into(),
+            title_sort: "Disc, The".into(),
+            artist: "米津玄師".into(),
+            artist_sort: "Yonezu, Kenshi".into(),
+            album_artist: "米津玄師".into(),
+            album_artist_sort: "Yonezu, Kenshi".into(),
+            album: "STRAY SHEEP".into(),
+            album_sort: "Stray Sheep".into(),
+            ..image
+        };
+        let track = |number: u16, title: &str, performer: &str| crate::cue::CueTrack {
+            number,
+            title: title.into(),
+            performer: performer.into(),
+            span: crate::cue::Span {
+                start_ms: u32::from(number) * 1_000,
+                end_ms: None,
+            },
+        };
+        let claim = Claim {
+            cue_path: PathBuf::from("/music/disc.cue"),
+            cue_mtime: 0,
+            album: String::new(),
+            album_artist: String::new(),
+            genre: String::new(),
+            year: 0,
+            tracks: vec![track(1, "One", "米津玄師"), track(2, "Two", "Guest")],
+        };
+
+        let rows = cue_rows(Path::new("/music/disc.flac"), &claim, &image_tags, 0, 0);
+        let sorts = |row: &TrackRow| {
+            (
+                row.title_sort.clone(),
+                row.artist_sort.clone(),
+                row.album_artist_sort.clone(),
+                row.album_sort.clone(),
+            )
+        };
+        // The sheet named a title, so the image's title sort stays behind;
+        // the performer spells the image's artist, so its sort name rides
+        // along, and the album-level pair comes with the album-level values.
+        assert_eq!(
+            sorts(&rows[0]),
+            (
+                String::new(),
+                "Yonezu, Kenshi".to_string(),
+                "Yonezu, Kenshi".to_string(),
+                "Stray Sheep".to_string()
+            )
+        );
+        // A guest performer is not the image's artist, and the album artist
+        // fell back to that guest, so neither carries the image's sort name.
+        assert_eq!(
+            sorts(&rows[1]),
+            (
+                String::new(),
+                String::new(),
+                String::new(),
+                "Stray Sheep".to_string()
+            )
+        );
     }
 }

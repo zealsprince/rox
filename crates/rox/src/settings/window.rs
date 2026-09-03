@@ -715,6 +715,11 @@ struct SettingsWindow {
     /// rather than per frame: a stat per model per paint is a syscall per
     /// model per paint.
     model_sizes: Vec<(&'static str, u64)>,
+    /// The running dictionary download, while one runs. Its own field
+    /// rather than a second arm on `model_job`: the two are different
+    /// downloads of different things for different jobs, and one Stop
+    /// button that could cancel either would be a bug waiting to happen.
+    dictionary_job: Option<Arc<rox_romanize::dictionary::Progress>>,
     /// The stored language pick, copied from settings like the icon
     /// pack below: None is System, and the row marks its segment without
     /// re-reading the settings file per render.
@@ -850,7 +855,10 @@ impl SettingsWindow {
             palette::Mode::Dark => settings.palette_dark(),
             palette::Mode::Light => settings.palette_light(),
         };
-        let root_stats = library.read(cx).root_stats();
+        // The folders show as soon as the window does; their rollups land
+        // when the measure comes back.
+        let root_stats = seed_root_stats(&library, cx);
+        Self::measure_root_stats(&library, cx);
         let rg_coverage = library.read(cx).replaygain_breakdown();
         // A pass started from an earlier settings window may still be
         // running; pick it up rather than showing the button as idle.
@@ -866,6 +874,10 @@ impl SettingsWindow {
         if acoustic_job.is_some() || model_job.is_some() {
             Self::poll_analyzing(cx);
         }
+        let dictionary_job = crate::romanize_job::dictionary::progress(cx);
+        if dictionary_job.is_some() {
+            Self::poll_dictionary(cx);
+        }
         let bpm_coverage = library.read(cx).bpm_breakdown();
         let tempo_job = tempo_job::progress(cx);
         if tempo_job.is_some() {
@@ -877,7 +889,10 @@ impl SettingsWindow {
                 if !matches!(event, LibraryEvent::Updated) {
                     return;
                 }
-                this.root_stats = library.read(cx).root_stats();
+                if this.root_stats.len() != library.read(cx).roots().len() {
+                    this.root_stats = seed_root_stats(&library, cx);
+                }
+                Self::measure_root_stats(&library, cx);
                 // A scan and a finished measurement pass both fill the
                 // ReplayGain columns in, so the Audio page's coverage line
                 // moves with either.
@@ -1215,6 +1230,7 @@ impl SettingsWindow {
             acoustic_local_checking: false,
             model_job,
             model_sizes: Self::measure_models(),
+            dictionary_job,
             language: settings.language.clone(),
             active_icon_pack: settings.icon_pack.clone(),
             icon_packs: crate::startup::icon_packs::all(),
@@ -1525,6 +1541,17 @@ impl SettingsWindow {
             .ok();
         })
         .detach();
+        cx.notify();
+    }
+
+    /// The readings switch: through the live static, which every name cell
+    /// reads as it draws, and into the file. Nothing is rebuilt, since the
+    /// sort names are already in the projection; the windows just repaint.
+    /// The toggle reads the static rather than a cached field, so it can't
+    /// drift from what the panels are drawing.
+    fn set_show_readings(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings::set_show_readings(on, cx);
+        Settings::update(move |s| s.show_readings = on);
         cx.notify();
     }
 
@@ -2186,6 +2213,7 @@ impl SettingsWindow {
             use_example: |this: &mut Self, index, cx| this.use_post_shader_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_post_shader_pool(name, cx),
             choose_file: |this: &mut Self, window, cx| this.pick_post_shader(window, cx),
+            edit: |this: &mut Self, window, cx| this.edit_post_shader_in_app(window, cx),
             eject: |this: &mut Self, cx| this.eject_post_shader(cx),
             detach: |this: &mut Self, cx| this.detach_post_shader(cx),
             reload: |this: &mut Self, cx| this.reload_post_shader(cx),
@@ -2521,6 +2549,59 @@ impl SettingsWindow {
         self.edit_post_shader_source(Some(name), String::new(), None, true, cx);
     }
 
+    /// Open the in-app editor over the screen shader. A named one edits
+    /// the pool entry; anything else edits the inline text, seeded from
+    /// the file in file mode, and an apply lands as an inline source with
+    /// the file kept as its bookmark. The write goes straight to the
+    /// settings and the reapply rather than through this window, since
+    /// the editor outlives it; the generation counter brings this page's
+    /// copies along. No countdown: an apply is the user's own text, the
+    /// same trust a hot reload from their editor gets.
+    fn edit_post_shader_in_app(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        use panel::shader::edit::{EditKey, ShaderEditTarget};
+
+        self.sync_post_shader();
+        let target = match self.post_shader_name.as_deref() {
+            Some(name) => ShaderEditTarget::pool(name),
+            None => {
+                let path = self.post_shader_path.clone();
+                let source = if self.post_shader_source.trim().is_empty() {
+                    path.as_deref()
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                        .unwrap_or_default()
+                } else {
+                    self.post_shader_source.clone()
+                };
+                let bookmark = path.clone();
+                Some(ShaderEditTarget {
+                    key: EditKey::Screen,
+                    title: rox_i18n::t!("shader-editor-target-screen"),
+                    source,
+                    ctx: panel::shader::ProgramCtx::of(None, path.as_deref()),
+                    path,
+                    write: Arc::new(move |source, cx| {
+                        let bookmark = bookmark.clone();
+                        Settings::update(move |s| {
+                            s.post_shader.name = None;
+                            s.post_shader.source = source;
+                            s.post_shader.path = bookmark;
+                        });
+                        crate::workspace::apply_post_shader(cx);
+                    }),
+                })
+            }
+        };
+        let Some(target) = target else {
+            return;
+        };
+        // The front workspace's state, the same bundle every other window
+        // opened from here runs on.
+        let Some((_, state)) = rox_panel_api::windows::front_workspace(cx) else {
+            return;
+        };
+        crate::shader_editor::open(state, target, cx);
+    }
+
     /// Take a private copy of the pool shader the screen is using. The
     /// same text keeps running, so there's nothing for a countdown to do.
     fn detach_post_shader(&mut self, cx: &mut Context<Self>) {
@@ -2739,6 +2820,57 @@ impl SettingsWindow {
         self.edit_backdrop_source(Some(name), String::new(), None, cx);
     }
 
+    /// Open the in-app editor over the backdrop shader, the screen
+    /// shader's twin: a name edits the pool entry, anything else the
+    /// inline text, written through the same cache-file-repaint trio as
+    /// [`write_backdrop`](Self::write_backdrop), outside this window so
+    /// the editor outlives it.
+    fn edit_backdrop_in_app(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        use panel::shader::edit::{EditKey, ShaderEditTarget};
+
+        let config = Self::backdrop_config();
+        let target = match config.name.as_deref() {
+            Some(name) => ShaderEditTarget::pool(name),
+            None => {
+                let path = config.path.clone();
+                let source = if config.source.trim().is_empty() {
+                    path.as_deref()
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                        .unwrap_or_default()
+                } else {
+                    config.source.clone()
+                };
+                let bookmark = path.clone();
+                Some(ShaderEditTarget {
+                    key: EditKey::Backdrop,
+                    title: rox_i18n::t!("shader-editor-target-backdrop"),
+                    source,
+                    ctx: panel::shader::ProgramCtx::of(None, path.as_deref()),
+                    path,
+                    write: Arc::new(move |source, cx| {
+                        let mut config = Self::backdrop_config();
+                        config.name = None;
+                        config.source = source;
+                        config.path = bookmark.clone();
+                        let config = Some(config);
+                        settings::note_backdrop_shader(config.clone());
+                        Settings::update(move |s| s.look.bundle.backdrop_shader = config);
+                        crate::workspace::refresh_backdrop(cx);
+                    }),
+                })
+            }
+        };
+        let Some(target) = target else {
+            return;
+        };
+        // The front workspace's state, the same bundle every other window
+        // opened from here runs on.
+        let Some((_, state)) = rox_panel_api::windows::front_workspace(cx) else {
+            return;
+        };
+        crate::shader_editor::open(state, target, cx);
+    }
+
     /// Take a private copy of the pool shader the backdrop is using.
     fn detach_backdrop(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = Self::backdrop_config()
@@ -2935,6 +3067,7 @@ impl SettingsWindow {
             use_example: |this: &mut Self, index, cx| this.use_backdrop_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_backdrop_pool(name, cx),
             choose_file: |this: &mut Self, window, cx| this.pick_backdrop_file(window, cx),
+            edit: |this: &mut Self, window, cx| this.edit_backdrop_in_app(window, cx),
             eject: |this: &mut Self, cx| this.eject_backdrop(cx),
             detach: |this: &mut Self, cx| this.detach_backdrop(cx),
             reload: |this: &mut Self, cx| this.reload_backdrop(cx),
@@ -5353,6 +5486,11 @@ impl SettingsWindow {
                         panel::toggle(self.fold_case, Self::set_fold_case, cx),
                     )
                     .keyed(
+                        "settings-show-readings",
+                        &["romaji", "reading", "pronunciation", "sort name"],
+                        panel::toggle(settings::show_readings(), Self::set_show_readings, cx),
+                    )
+                    .keyed(
                         "settings-library-split-genres",
                         &["separator", "multi-genre"],
                         panel::toggle(
@@ -5371,6 +5509,7 @@ impl SettingsWindow {
             ))
             .section(self.acoustic_section(q, cx))
             .section(self.tempo_section(q, cx))
+            .section(self.dictionary_section(q, cx))
             .section(self.embed_section(q, cx))
     }
 
@@ -5417,6 +5556,47 @@ impl SettingsWindow {
                 )
             },
         )
+    }
+
+    /// Roll each scan folder up off the UI thread. Every row of that table
+    /// is a COUNT and a SUM over the tracks under one path, which is a
+    /// full table scan on a big library, and opening this window used to
+    /// pay for all of them before it drew anything. The rows are already
+    /// on screen by then; their numbers fill in when this lands.
+    ///
+    /// Its own connection rather than the catalog's, since the catalog's
+    /// lives on the UI thread. WAL gives readers concurrency for free, so
+    /// a scan running alongside this doesn't block it.
+    fn measure_root_stats(library: &Entity<Library>, cx: &mut Context<Self>) {
+        let db = library.read(cx).db_path();
+        let roots = library.read(cx).roots();
+        cx.spawn(async move |this, cx| {
+            let measured = cx
+                .background_executor()
+                .spawn(async move {
+                    let conn = rox_library::store::open(&db).ok()?;
+                    Some(
+                        roots
+                            .into_iter()
+                            .map(|root| {
+                                let stats = rox_library::store::stats_under(&conn, &root)
+                                    .unwrap_or_default();
+                                (root, stats)
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .await;
+            // A database that wouldn't open is nothing to report: leave the
+            // folders listed with whatever they last showed.
+            let Some(measured) = measured else { return };
+            this.update(cx, |this, cx| {
+                this.root_stats = measured;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Measure everything the storage page shows, off the UI thread. It used
@@ -6012,6 +6192,202 @@ impl SettingsWindow {
     /// it was custom for.
     fn ml_models_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         PageBody::new().section(self.acoustic_models_section(q, cx))
+    }
+
+    /// The Japanese dictionary behind kanji readings.
+    ///
+    /// On the Library page rather than beside the acoustic weights, which
+    /// is where it looks like it belongs: it's a download with a size and
+    /// a licence, the same shape those have. The ML Models page comes and
+    /// goes with the AI switch, and with that switch off the dictionary
+    /// would be unreachable while the romanization pass still ran and
+    /// still pointed people at a page that wasn't in the sidebar. It also
+    /// isn't a model. It's a lookup table of Japanese words and their
+    /// readings, compiled in 2007, and nothing about it is learned.
+    ///
+    /// A second row rather than one shared with the model rows. The
+    /// acoustic rows carry a Use button, an active mark and an extractor
+    /// pick, because a library runs exactly one of several models and
+    /// choosing between them is what that page half is for. There's one
+    /// dictionary, nothing to choose, and no state for a Use button to
+    /// move; factoring the two together would mean a row builder taking
+    /// half its arguments as None from one caller. The download button,
+    /// the progress readout and the licence line are the parts that
+    /// repeat, and they're four lines each.
+    fn dictionary_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let dictionary = &rox_romanize::dictionary::IPADIC;
+        let note = self.dictionary_note(cx);
+        Section::new(
+            q,
+            icons::GLOBE,
+            rox_i18n::t!("settings-dictionary-heading"),
+            None,
+            move |rows| {
+                let installed = dictionary.installed();
+                let size = dictionary.size_on_disk();
+                let summary =
+                    rox_i18n::try_translate(&format!("dictionary-summary-{}", dictionary.id))
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| dictionary.summary.to_string());
+                let mut description = rox_i18n::t!(
+                    "settings-dictionary-description",
+                    summary = summary,
+                    licence = dictionary.licence
+                )
+                .to_string();
+                if installed && size > 0 {
+                    description.push_str(&rox_i18n::t!(
+                        "settings-mlmodels-on-disk",
+                        size = human_size(size)
+                    ));
+                } else {
+                    description.push_str(&rox_i18n::t!(
+                        "settings-mlmodels-to-download",
+                        size = human_size(dictionary.bytes)
+                    ));
+                }
+                let rows = rows.row_dyn(
+                    &["dictionary", "japanese", "romanize", "kanji", "download"],
+                    dictionary.label,
+                    Some(description.into()),
+                    self.dictionary_controls(dictionary, cx),
+                );
+                match note {
+                    Some(note) => rows.custom(&["dictionary", "download", "progress"], || {
+                        coverage_note(note).into_any_element()
+                    }),
+                    None => rows,
+                }
+            },
+        )
+    }
+
+    /// The dictionary row's buttons: where it came from, then the one
+    /// button that changes state.
+    fn dictionary_controls(
+        &self,
+        dictionary: &'static rox_romanize::dictionary::Dictionary,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let downloading = self
+            .dictionary_job
+            .as_ref()
+            .is_some_and(|job| job.dictionary() == dictionary.id);
+        let source = dictionary.source;
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "dictionary-source-{}",
+                        dictionary.id
+                    )))
+                    .child(settings_ui::icon_button(
+                        icons::EXTERNAL_LINK,
+                        false,
+                        move |_, _, cx| cx.open_url(source),
+                    )),
+            )
+            .child(if downloading {
+                let job = self
+                    .dictionary_job
+                    .clone()
+                    .expect("downloading implies a job");
+                small_button(
+                    rox_i18n::format::format_percent(f64::from(job.fraction() * 100.0).round()),
+                    icons::STOP,
+                    false,
+                    cx.listener(|_, _, _, cx| crate::romanize_job::dictionary::stop(cx)),
+                )
+            } else if dictionary.installed() {
+                small_button(
+                    rox_i18n::t!("settings-common-delete"),
+                    icons::TRASH,
+                    // Deleting under a running pass would pull the
+                    // dictionary out from under it mid-title.
+                    crate::romanize_job::progress(cx).is_some(),
+                    cx.listener(move |this, _, _, cx| this.delete_dictionary(dictionary, cx)),
+                )
+            } else {
+                small_button(
+                    rox_i18n::t!("settings-common-download"),
+                    icons::DOWNLOAD,
+                    self.dictionary_job.is_some(),
+                    cx.listener(move |this, _, _, cx| this.download_dictionary(dictionary, cx)),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// What the dictionary row says under itself: the download's progress,
+    /// or why the last one didn't finish.
+    fn dictionary_note(&self, cx: &Context<Self>) -> Option<String> {
+        if let Some(job) = &self.dictionary_job {
+            if job.stopping() {
+                return Some(rox_i18n::t!("settings-dictionary-stopping").to_string());
+            }
+            return Some(
+                rox_i18n::t!(
+                    "settings-dictionary-downloading",
+                    done = human_size(job.done()),
+                    total = human_size(job.total())
+                )
+                .to_string(),
+            );
+        }
+        let (_, reason) = crate::romanize_job::dictionary::last_failure(cx)?;
+        Some(rox_i18n::t!("settings-dictionary-download-failed", reason = reason).to_string())
+    }
+
+    /// Fetch and unpack the dictionary.
+    fn download_dictionary(
+        &mut self,
+        dictionary: &'static rox_romanize::dictionary::Dictionary,
+        cx: &mut Context<Self>,
+    ) {
+        crate::romanize_job::dictionary::start(dictionary, cx);
+        self.dictionary_job = crate::romanize_job::dictionary::progress(cx);
+        Self::poll_dictionary(cx);
+        cx.notify();
+    }
+
+    /// Drop the dictionary. What it already romanized stays in the
+    /// library's tables: those rows are still the best answer rox has, and
+    /// making a delete cost a re-run would turn a reclaim-some-disk into a
+    /// second pass.
+    fn delete_dictionary(
+        &mut self,
+        dictionary: &'static rox_romanize::dictionary::Dictionary,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(e) = dictionary.delete() {
+            log::error!("deleting {}: {e}", dictionary.id);
+        }
+        // Whatever the shared accessor handed out stays mapped, but the
+        // next caller has to find out the files are gone.
+        rox_romanize::reload();
+        cx.notify();
+    }
+
+    /// Keep the dictionary row moving while its download runs. Its own
+    /// loop rather than a branch in [`Self::poll_analyzing`], since the two
+    /// downloads are independent and either can run without the other.
+    fn poll_dictionary(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(RG_POLL).await;
+            let live = this.update(cx, |this, cx| {
+                this.dictionary_job = crate::romanize_job::dictionary::progress(cx);
+                cx.notify();
+                this.dictionary_job.is_some()
+            });
+            if !matches!(live, Ok(true)) {
+                break;
+            }
+        })
+        .detach();
     }
 
     /// Where the acoustic vectors come from: the catalog's downloads, or a
@@ -6854,10 +7230,10 @@ impl SettingsWindow {
                     );
                 }
                 match note {
-                    Some(note) => rows
-                        .custom(&["coverage", "analyze", "missing", "progress"], || {
-                            coverage_note(note).into_any_element()
-                        }),
+                    Some(note) => rows.custom(
+                        &["coverage", "analyze", "missing", "refused", "progress"],
+                        || coverage_note(note).into_any_element(),
+                    ),
                     None => rows,
                 }
             },
@@ -6882,7 +7258,14 @@ impl SettingsWindow {
         Settings::update(move |s| s.tempo_auto = on);
         if on && self.bpm_coverage.missing > 0 && self.tempo_job.is_none() {
             let library = self.library.clone();
-            pass_prompt::raise_for_switch(self, pass_prompt::Pass::Tempo, library, cx);
+            pass_prompt::raise_for_switch(
+                self,
+                pass_prompt::Pass::Tempo {
+                    retry_refused: false,
+                },
+                library,
+                cx,
+            );
         }
         cx.notify();
     }
@@ -6933,22 +7316,60 @@ impl SettingsWindow {
         if total == 0 {
             return rox_i18n::t!("settings-analyze-nothing-scanned").to_string();
         }
-        if split.covered() == 0 {
+        // Refused gets its own sentence rather than a share of either count.
+        // They're not missing, since nothing will pick them up again on its
+        // own, and they're not covered either, so folding them into one of
+        // the two would misreport it.
+        let refused = match split.refused {
+            0 => String::new(),
+            // Carries its own sentence break, the way the other appended
+            // messages carry their leading comma: where one sentence ends
+            // and the next starts is the translator's call, not something
+            // to hard-code as ". " here and get wrong in Japanese.
+            count => rox_i18n::t!("settings-library-tempo-refused", count = count).to_string(),
+        };
+        // The missing check rides along because a library where every track
+        // was refused has no tempos and no work either, and this line offers
+        // to do some.
+        if split.covered() == 0 && split.missing > 0 {
             return format!(
-                "None of the {total} tracks scanned say how fast they run. Analyze Missing \
-                 works them out{}",
+                "{}{}{refused}",
+                rox_i18n::t!("settings-library-tempo-status-none", total = total),
                 self.tempo_estimate_suffix(split.missing)
             );
         }
         if split.missing > 0 {
             return format!(
-                "{} of {total} scanned tracks have a tempo, {} of them worked out by rox. \
-                 Analyze Missing works through the other {}{}",
-                split.covered(),
-                split.measured,
-                split.missing,
+                "{}{}{refused}",
+                rox_i18n::t!(
+                    "settings-library-tempo-status-partial",
+                    covered = split.covered(),
+                    total = total,
+                    measured = split.measured,
+                    missing = split.missing
+                ),
                 self.tempo_estimate_suffix(split.missing)
             );
+        }
+        // Nothing left to reach, but a refused pile still means the library
+        // isn't fully timed, so the "all of them" wording is kept for the
+        // case where it's true of every scanned track.
+        if split.refused > 0 {
+            let line = if split.measured > 0 {
+                rox_i18n::t!(
+                    "settings-library-tempo-status-measured-some",
+                    covered = split.covered(),
+                    total = total,
+                    measured = split.measured
+                )
+            } else {
+                rox_i18n::t!(
+                    "settings-library-tempo-status-tagged-some",
+                    covered = split.covered(),
+                    total = total
+                )
+            };
+            return format!("{line}{refused}");
         }
         if split.measured > 0 {
             return rox_i18n::t!(
@@ -6996,17 +7417,51 @@ impl SettingsWindow {
             )
             .into_any_element();
         }
-        let idle = self.bpm_coverage.missing == 0 || self.library.read(cx).busy().is_some();
-        small_button(
-            rox_i18n::t!("settings-common-analyze-missing"),
-            icons::CLOCK,
-            idle,
-            cx.listener(|this, _, _, cx| {
-                let library = this.library.clone();
-                pass_prompt::raise(this, pass_prompt::Pass::Tempo, library, cx);
-            }),
-        )
-        .into_any_element()
+        let busy = self.library.read(cx).busy().is_some();
+        // Retry Refused stands beside Analyze Missing rather than replacing
+        // it: the two work through different piles, and the refused one is
+        // the only work left once missing hits zero. It goes inert with an
+        // empty pile the way its neighbour does with nothing missing, so the
+        // pair reads as two standing offers rather than a button that comes
+        // and goes.
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(small_button(
+                rox_i18n::t!("settings-common-analyze-missing"),
+                icons::CLOCK,
+                self.bpm_coverage.missing == 0 || busy,
+                cx.listener(|this, _, _, cx| {
+                    let library = this.library.clone();
+                    pass_prompt::raise(
+                        this,
+                        pass_prompt::Pass::Tempo {
+                            retry_refused: false,
+                        },
+                        library,
+                        cx,
+                    );
+                }),
+            ))
+            .child(small_button(
+                rox_i18n::t!("settings-library-tempo-retry"),
+                icons::REFRESH_CW,
+                self.bpm_coverage.refused == 0 || busy,
+                cx.listener(|this, _, _, cx| {
+                    let library = this.library.clone();
+                    pass_prompt::raise(
+                        this,
+                        pass_prompt::Pass::Tempo {
+                            retry_refused: true,
+                        },
+                        library,
+                        cx,
+                    );
+                }),
+            ))
+            .into_any_element()
     }
 
     /// Copy the running tempo pass into the section, `poll_measuring`'s
@@ -7382,6 +7837,18 @@ fn output_mode(exclusive: bool) -> output::Mode {
     }
 }
 
+/// The scan folders with their rollups blank, what the table shows until
+/// [`SettingsWindow::measure_root_stats`] comes back. Reading the roots
+/// costs nothing; it's counting under them that's the scan.
+fn seed_root_stats(library: &Entity<Library>, cx: &App) -> Vec<(PathBuf, Stats)> {
+    library
+        .read(cx)
+        .roots()
+        .into_iter()
+        .map(|root| (root, Stats::default()))
+        .collect()
+}
+
 /// Bytes as a short human size: whole numbers through KB, one decimal
 /// from MB up, decimal units like the file managers show.
 fn human_size(bytes: u64) -> String {
@@ -7522,10 +7989,14 @@ impl pass_prompt::Host for SettingsWindow {
                 self.playback
                     .update(cx, |player, cx| player.set_replay_gain_auto(false, cx));
             }
-            pass_prompt::Pass::Tempo => {
+            pass_prompt::Pass::Tempo { .. } => {
                 self.tempo_auto = false;
                 Settings::update(|s| s.tempo_auto = false);
             }
+            // No switch stands behind either of the last two, so nothing
+            // here ever raises them through `raise_for_switch` and there's
+            // nothing to put back.
+            pass_prompt::Pass::SortNames { .. } | pass_prompt::Pass::Romanize => {}
         }
     }
 }

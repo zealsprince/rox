@@ -36,6 +36,16 @@ rox-playback = { path = "../rox-playback" }
 rox-net = { path = "../rox-net" }
 # The PCM feed and the signal pool the audio views draw from.
 rox-viz = { path = "../rox-viz" }
+# The metadata panel's Romanize button reads sort names out of Japanese,
+# Korean and Chinese titles the same way the library pass does. A leaf
+# crate, and the heavy half is a download rather than a link: the engine
+# adds about 520 KiB to the binary (measured in that crate's own manifest)
+# and the forty-megabyte dictionary arrives from the Models page.
+rox-romanize = { path = "../rox-romanize" }
+# The filter panel's per-column count pass walks every row in the library
+# once per column, so it splits across cores the way the projection's own
+# passes do. Same version the library crate pins.
+rayon = "1.10"
 # Panel configs round-trip through the layout dumps as JSON.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

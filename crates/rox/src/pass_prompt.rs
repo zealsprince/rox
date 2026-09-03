@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use gpui::{div, prelude::*, px, Context, Div, Entity, KeyDownEvent, SharedString, Window};
 
-use crate::{embeddings, replaygain_job, tempo_job};
+use crate::{embeddings, replaygain_job, romanize_job, sortnames_job, tempo_job};
 use rox_core::settings::{AcousticSave, ReplayGainSave, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
@@ -43,8 +43,25 @@ pub enum Pass {
     Acoustic,
     /// The ReplayGain measurement pass, Measure Missing.
     ReplayGain,
-    /// The tempo pass, Analyze Missing on the Library page.
-    Tempo,
+    /// The tempo pass, Analyze Missing on the Library page. `retry_refused`
+    /// is the Retry Refused button rather than a second pass: same worker
+    /// count, same estimate, same job, but over the tracks an earlier pass
+    /// listened to and heard no beat in instead of the ones nothing has
+    /// reached yet. It rides on the variant because everything downstream
+    /// (the count the estimate multiplies, the copy, the start call) has to
+    /// know which of the two the user is looking at.
+    Tempo { retry_refused: bool },
+    /// The sort-name fill, Fill Missing on the health window's sort tile.
+    /// The scope rides on the variant the way the tempo retry does, since
+    /// the count the estimate multiplies and the work list both follow it;
+    /// unlike the retry, this one is switched inside the dialog, because
+    /// the two scopes are ten minutes and an hour and a half over the same
+    /// library and that's a choice to make in front of the estimate.
+    SortNames { scope: sortnames_job::Scope },
+    /// The romanization pass, Romanize Library. No options: it reaches
+    /// everything with a non-Latin value and no sort name, and there's no
+    /// narrower half of that worth offering.
+    Romanize,
 }
 
 /// A window that can raise the prompt. It holds the state and hands this
@@ -96,6 +113,14 @@ pub struct Prompt {
     acoustic_save: AcousticSave,
     probing: bool,
     error: Option<String>,
+    /// The sort-name pass's two scopes as counted when this was raised,
+    /// non-Latin first. Held so switching between them reprices without
+    /// walking the symbol tables again; (0, 0) for every other pass.
+    sort_scopes: (u64, u64),
+    /// How many of the romanization pass's values are kanji, and so need
+    /// the download to read. Counted when the prompt was raised, since the
+    /// answer needs the whole backlog; zero for every other pass.
+    kanji: u64,
     /// Whether a switch the host just flipped is standing behind this. Cancel
     /// then means the switch was a no as well, and the host is told.
     switched: bool,
@@ -116,7 +141,45 @@ impl Prompt {
         match self.pass {
             Pass::Acoustic => Settings::update(move |s| s.acoustic_workers = workers),
             Pass::ReplayGain => Settings::update(move |s| s.replaygain_workers = workers),
-            Pass::Tempo => Settings::update(move |s| s.tempo_workers = workers),
+            // Both tempo prompts write the one worker count: it's the tempo
+            // pass's setting, and which half of the library it's pointed at
+            // doesn't change how many workers this machine wants.
+            Pass::Tempo { .. } => Settings::update(move |s| s.tempo_workers = workers),
+            // Nothing to write: the sort-name pass runs one worker
+            // whatever the machine has, because MusicBrainz's rate limit
+            // is the pace and a second worker would sleep through it.
+            Pass::SortNames { .. } => {}
+            // Nothing to write either: the pass is one pass over values in
+            // memory and a batch of small writes, and splitting that over
+            // workers would buy a second or two on the longest library.
+            Pass::Romanize => {}
+        }
+    }
+
+    /// Whether the worker slider means anything for this pass. It doesn't
+    /// for the sort-name fill, and a slider that moves an estimate it
+    /// can't change would be a lie in the one dialog that exists to be
+    /// honest about cost.
+    fn takes_workers(&self) -> bool {
+        !matches!(self.pass, Pass::SortNames { .. } | Pass::Romanize)
+    }
+
+    /// What the pass will leave behind, or None when it gets through
+    /// everything. Only the romanization pass has one: without the
+    /// Japanese dictionary its kanji values are skipped and every other
+    /// value still runs, which is a note rather than a wall. It was a wall
+    /// once, and a dimmed Romanize button over a backlog that was nine
+    /// tenths runnable read as broken.
+    fn shortfall(&self) -> Option<SharedString> {
+        match self.pass {
+            Pass::Romanize if self.kanji > 0 && !romanize_job::dictionary_installed() => {
+                Some(rox_i18n::t!(
+                    "pass-romanize-skips-kanji",
+                    kanji = self.kanji,
+                    total = self.missing
+                ))
+            }
+            _ => None,
         }
     }
 }
@@ -136,6 +199,37 @@ pub fn cores() -> usize {
 pub fn raise<V: Host>(this: &mut V, pass: Pass, library: Entity<Library>, cx: &mut Context<V>) {
     let settings = Settings::load();
     let source = rox_services::acoustic::acoustic_source();
+    // Both sort-name scopes at once: one walk of the symbol tables
+    // answers both, and the dialog switches between them without asking
+    // the library again.
+    let sort_scopes = match pass {
+        Pass::SortNames { .. } => library
+            .read(cx)
+            .projection()
+            .map(|projection| {
+                let all = sortnames_job::backlog(projection, sortnames_job::Scope::All);
+                let non_latin = all
+                    .iter()
+                    .filter(|name| !sortnames_job::is_latin(name))
+                    .count();
+                (non_latin as u64, all.len() as u64)
+            })
+            .unwrap_or_default(),
+        _ => (0, 0),
+    };
+    // The romanization backlog is one walk of the library, and both the
+    // count and whether it needs a download come out of it.
+    let romanize = match pass {
+        Pass::Romanize => {
+            let library = library.read(cx);
+            let stale = romanize_job::stale(&library.db_path());
+            library
+                .projection()
+                .map(|projection| romanize_job::backlog(projection, &stale))
+                .unwrap_or_default()
+        }
+        _ => romanize_job::Backlog::default(),
+    };
     let (missing, pace, workers) = match pass {
         Pass::Acoustic => (
             library.read(cx).acoustic_coverage(source.id()).missing() as u64,
@@ -152,12 +246,44 @@ pub fn raise<V: Host>(this: &mut V, pass: Pass, library: Entity<Library>, cx: &m
             settings.session.replaygain_pace,
             settings.replaygain_workers,
         ),
-        Pass::Tempo => (
-            library.read(cx).bpm_breakdown().missing,
-            settings.session.tempo_pace,
-            settings.tempo_workers,
+        // The retry's count is the refused pile, not the missing one: those
+        // are the tracks it would decode, and pricing it off `missing` would
+        // quote a wait for work this run isn't doing.
+        Pass::Tempo { retry_refused } => {
+            let split = library.read(cx).bpm_breakdown();
+            (
+                if retry_refused {
+                    split.refused
+                } else {
+                    split.missing
+                },
+                settings.session.tempo_pace,
+                settings.tempo_workers,
+            )
+        }
+        // The rate limit is the pace, so this is the one pass that opens
+        // with a real estimate and never offers a probe. One worker, and
+        // the slider that would move it isn't drawn.
+        Pass::SortNames { scope } => (
+            match scope {
+                sortnames_job::Scope::NonLatin => sort_scopes.0,
+                sortnames_job::Scope::All => sort_scopes.1,
+            },
+            sortnames_job::PACE,
+            1,
+        ),
+        // Priced off a measured pace like the three analysis passes, not
+        // off a constant like the fill: nothing external sets this one's
+        // speed, so what it costs is what this machine costs, and that
+        // swings by an order of magnitude between a library of kana and
+        // one of kanji.
+        Pass::Romanize => (
+            romanize.items.len() as u64,
+            settings.session.romanize_pace,
+            1,
         ),
     };
+    let kanji = romanize.kanji();
     *this.prompt_mut() = Some(Prompt {
         pass,
         library,
@@ -170,6 +296,8 @@ pub fn raise<V: Host>(this: &mut V, pass: Pass, library: Entity<Library>, cx: &m
         acoustic_save: settings.acoustic_save,
         probing: false,
         error: None,
+        sort_scopes,
+        kanji,
         switched: false,
         generation: 0,
     });
@@ -223,7 +351,11 @@ fn start<V: Host>(this: &mut V, cx: &mut Context<V>) {
     match prompt.pass {
         Pass::Acoustic => embeddings::start(prompt.library.clone(), cx),
         Pass::ReplayGain => replaygain_job::start(prompt.library.clone(), cx),
-        Pass::Tempo => tempo_job::start(prompt.library.clone(), cx),
+        Pass::Tempo { retry_refused } => {
+            tempo_job::start(prompt.library.clone(), retry_refused, cx)
+        }
+        Pass::SortNames { scope } => sortnames_job::start(prompt.library.clone(), scope, cx),
+        Pass::Romanize => romanize_job::start(prompt.library.clone(), cx),
     }
     this.pass_changed(cx);
     // The pass outlives whichever window started it, so hand the user
@@ -251,6 +383,24 @@ fn probe<V: Host>(this: &mut V, cx: &mut Context<V>) {
     // Resolved here, on the UI thread, so the probe measures the model the
     // prompt is talking about.
     let source = matches!(pass, Pass::Acoustic).then(rox_services::acoustic::acoustic_source);
+    // The romanization probe reads values rather than files, so its sample
+    // comes off the projection here rather than out of the database in the
+    // background. A hundred is enough to average one slow segmentation
+    // out; see `romanize_job::measure_pace`.
+    let sample = match pass {
+        Pass::Romanize => prompt
+            .library
+            .read(cx)
+            .projection()
+            .map(|projection| {
+                let stale = romanize_job::stale(&db_path);
+                let mut items = romanize_job::backlog(projection, &stale).items;
+                items.truncate(100);
+                items
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
     cx.spawn(async move |this, cx| {
         let measured = cx
             .background_executor()
@@ -264,7 +414,23 @@ fn probe<V: Host>(this: &mut V, cx: &mut Context<V>) {
                     (Pass::ReplayGain, _) => {
                         replaygain_job::measure_pace(&db_path).map(Measured::ReplayGain)
                     }
-                    (Pass::Tempo, _) => tempo_job::measure_pace(&db_path).map(Measured::Tempo),
+                    // Timed over the pile this prompt would run, so the
+                    // retry's estimate samples refusals rather than the
+                    // tracks it isn't going to touch.
+                    (Pass::Tempo { retry_refused }, _) => {
+                        tempo_job::measure_pace(&db_path, retry_refused).map(Measured::Tempo)
+                    }
+                    // Unreachable in practice: the sort-name prompt always
+                    // has an estimate, so the button that gets here is
+                    // never drawn for it.
+                    (Pass::SortNames { .. }, _) => Err(
+                        "the sort-name pass is paced by MusicBrainz's rate limit, so there's \
+                         nothing to time here"
+                            .to_string(),
+                    ),
+                    (Pass::Romanize, _) => {
+                        romanize_job::measure_pace(sample).map(Measured::Romanize)
+                    }
                 }
             })
             .await;
@@ -313,15 +479,17 @@ enum Measured {
     Acoustic(String, f32),
     ReplayGain(f32),
     Tempo(f32),
+    Romanize(f32),
 }
 
 impl Measured {
     /// Worker-seconds per track, whichever pass it came from.
     fn pace(&self) -> f32 {
         match self {
-            Measured::Acoustic(_, pace) | Measured::ReplayGain(pace) | Measured::Tempo(pace) => {
-                *pace
-            }
+            Measured::Acoustic(_, pace)
+            | Measured::ReplayGain(pace)
+            | Measured::Tempo(pace)
+            | Measured::Romanize(pace) => *pace,
         }
     }
 }
@@ -342,6 +510,7 @@ fn remember(measured: &Result<Measured, String>) {
         }
         Measured::ReplayGain(_) => Settings::update(move |s| s.session.replaygain_pace = pace),
         Measured::Tempo(_) => Settings::update(move |s| s.session.tempo_pace = pace),
+        Measured::Romanize(_) => Settings::update(move |s| s.session.romanize_pace = pace),
     }
 }
 
@@ -387,10 +556,35 @@ fn copy(prompt: &Prompt) -> Copy {
                 action: rox_i18n::t!("pass-measure"),
             }
         }
-        Pass::Tempo => Copy {
+        // The retry is the one prompt that offers to redo work rox already
+        // did, so it says so: the count is tracks that were listened to and
+        // came back with nothing, and hearing a beat this time means the
+        // counting itself changed underneath them.
+        Pass::Tempo {
+            retry_refused: true,
+        } => Copy {
+            title: rox_i18n::t!("pass-tempo-retry-title", count = prompt.missing),
+            body: rox_i18n::t!("pass-tempo-retry-body"),
+            action: rox_i18n::t!("pass-analyze"),
+        },
+        Pass::Tempo { .. } => Copy {
             title: rox_i18n::t!("pass-tempo-title", count = prompt.missing),
             body: rox_i18n::t!("pass-tempo-body"),
             action: rox_i18n::t!("pass-analyze"),
+        },
+        // The one pass that talks to a service, so the body says whose
+        // service and that nothing it finds is written into a file.
+        Pass::SortNames { .. } => Copy {
+            title: rox_i18n::t!("pass-sortnames-title", count = prompt.missing),
+            body: rox_i18n::t!("pass-sortnames-body"),
+            action: rox_i18n::t!("pass-fill"),
+        },
+        // The one pass that reads rather than asks, so the body says what
+        // it's reading and that the guess is a guess.
+        Pass::Romanize => Copy {
+            title: rox_i18n::t!("pass-romanize-title", count = prompt.missing),
+            body: rox_i18n::t!("pass-romanize-body"),
+            action: rox_i18n::t!("pass-romanize"),
         },
     }
 }
@@ -406,6 +600,10 @@ pub fn overlay<V: Host>(this: &V, window: &mut Window, cx: &mut Context<V>) -> O
     let cores = cores();
     let copy = copy(prompt);
     let estimate = prompt.estimate();
+    // A pass that will leave part of its backlog behind says so under the
+    // estimate, rather than in place of it: it's still going to run, and
+    // how long that takes is the line this dialog exists for.
+    let shortfall = prompt.shortfall();
     // The estimate is the reason this dialog exists, so it says something
     // either way: the number, why there isn't one yet, or what went wrong
     // measuring it.
@@ -498,7 +696,7 @@ pub fn overlay<V: Host>(this: &V, window: &mut Window, cx: &mut Context<V>) -> O
                                     .text_color(palette::text_muted())
                                     .child(copy.body),
                             )
-                            .child(
+                            .children(prompt.takes_workers().then(|| {
                                 div()
                                     .flex()
                                     .flex_row()
@@ -519,8 +717,9 @@ pub fn overlay<V: Host>(this: &V, window: &mut Window, cx: &mut Context<V>) -> O
                                         panel::SliderWidth::Fill,
                                         set_workers::<V>,
                                         cx,
-                                    ))),
-                            ),
+                                    )))
+                            }))
+                            .children(scope_row(prompt, cx)),
                     )
                     // The windows' footer, run inside a card: what the pass
                     // costs across the top, what to do about it in a button
@@ -546,6 +745,12 @@ pub fn overlay<V: Host>(this: &V, window: &mut Window, cx: &mut Context<V>) -> O
                                     })
                                     .child(timing),
                             )
+                            // Warn-toned, because it's work the person
+                            // asked for that won't happen, and there's
+                            // something they can do about it.
+                            .children(shortfall.map(|note| {
+                                div().text_xs().text_color(palette::tone_warn()).child(note)
+                            }))
                             .child(
                                 div()
                                     .flex()
@@ -578,6 +783,56 @@ pub fn overlay<V: Host>(this: &V, window: &mut Window, cx: &mut Context<V>) -> O
                                     ),
                             ),
                     ),
+            ),
+    )
+}
+
+/// The sort-name pass's scope, where the worker slider would be: off is
+/// the names a Latin reader can't file at all, on is every artist without
+/// a sort name. A checkbox rather than two options, because the wide scope
+/// is the narrow one plus the rest, and the estimate beneath it moves as
+/// it's ticked, which is the whole argument the dialog is making.
+///
+/// Only for that pass; every other one returns nothing here.
+fn scope_row<V: Host>(prompt: &Prompt, cx: &mut Context<V>) -> Option<gpui::Stateful<Div>> {
+    let Pass::SortNames { scope } = prompt.pass else {
+        return None;
+    };
+    let on = scope == sortnames_job::Scope::All;
+    Some(
+        div()
+            .id("pass-scope")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .cursor_pointer()
+            .on_click(cx.listener(|this: &mut V, _, _, cx| {
+                let Some(prompt) = this.prompt_mut() else {
+                    return;
+                };
+                let Pass::SortNames { scope } = &mut prompt.pass else {
+                    return;
+                };
+                *scope = match scope {
+                    sortnames_job::Scope::NonLatin => sortnames_job::Scope::All,
+                    sortnames_job::Scope::All => sortnames_job::Scope::NonLatin,
+                };
+                // Both counts were taken when the prompt was raised, so
+                // the estimate reprices without another walk.
+                prompt.missing = match scope {
+                    sortnames_job::Scope::NonLatin => prompt.sort_scopes.0,
+                    sortnames_job::Scope::All => prompt.sort_scopes.1,
+                };
+                cx.notify();
+            }))
+            .child(settings_ui::checkbox(on))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .child(rox_i18n::t!("pass-sortnames-scope-all")),
             ),
     )
 }

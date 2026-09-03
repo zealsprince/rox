@@ -46,9 +46,12 @@
 //! only ever halves, so a grid counted in threes ends up wherever a power
 //! of two from it does.
 //!
-//! Nothing here decides what a missing answer means. [`estimate`] returns
-//! None and the caller stores NULL, which is how a track that was measured
-//! and refused stays distinguishable from one nobody has looked at.
+//! Nothing here decides what a missing answer means, but it does say which
+//! kind of missing it is. [`estimate`] separates a track that was listened
+//! to and refused, `Ok(None)`, from one no window of which would decode,
+//! [`Unreadable`]. Both leave the row's tempo NULL, and only the first is a
+//! verdict worth recording: a refusal takes the track off the next pass's
+//! list, and a file that wouldn't open is worth asking again for.
 
 use std::path::Path;
 
@@ -246,6 +249,13 @@ const CONFIDENCE_FLOOR: f32 = 0.25;
 const OUT_MIN: f32 = 40.0;
 const OUT_MAX: f32 = 300.0;
 
+/// A track no window of which decoded, which is a read failure rather than
+/// a tempo verdict: the file is missing, truncated, or in something the
+/// decoder won't open. Distinct from `Ok(None)`, where the audio arrived
+/// and didn't give a straight answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unreadable;
+
 /// One window's answer and how much the window believes it.
 #[derive(Clone, Copy, Debug)]
 struct Vote {
@@ -253,7 +263,11 @@ struct Vote {
     confidence: f32,
 }
 
-/// One track's tempo, or None if the track didn't give a straight answer.
+/// One track's tempo: `Ok(Some)` for a tempo, `Ok(None)` for a track that
+/// was heard and didn't give a straight answer, and [`Unreadable`] for one
+/// where not a single window decoded. The last is the caller's cue to leave
+/// the row alone and try again later, since nothing about the track has
+/// been measured yet.
 ///
 /// Two windows of thirty seconds are decoded at 44.1 kHz and downmixed the
 /// same way the sketch does it, so this costs a minute of decoding per
@@ -270,17 +284,22 @@ struct Vote {
 /// pass has always described cue tracks that way, and fixing it is one
 /// change to [`rox_playback::engine::decode_window`]'s span argument, for
 /// both callers at once.
-pub fn estimate(path: &Path, duration_ms: u32) -> Option<f32> {
+pub fn estimate(path: &Path, duration_ms: u32) -> Result<Option<f32>, Unreadable> {
     let duration = duration_ms as f64 / 1000.0;
     let path = path.to_path_buf();
     let single = duration <= SINGLE_SECS;
     let span = (duration - WINDOW_SECS).max(0.0);
 
+    // Whether any audio came back at all. One window that decoded is enough
+    // to make the outcome a verdict: the track was heard, and what the rest
+    // of the windows did with it is a measurement either way.
+    let mut decoded = false;
     let mut votes = Vec::with_capacity(PROBES.len() + WIDEN.len() * 2);
     for probe in PROBES {
         let at = if single { 0.0 } else { span * probe };
-        if let Some(vote) = probe_window(&path, at) {
-            votes.push(vote);
+        if let Ok(vote) = probe_window(&path, at) {
+            decoded = true;
+            votes.extend(vote);
         }
         if single {
             break;
@@ -309,8 +328,9 @@ pub fn estimate(path: &Path, duration_ms: u32) -> Option<f32> {
             }
             widened = true;
             for probe in pair {
-                if let Some(vote) = probe_window(&path, span * probe) {
-                    votes.push(vote);
+                if let Ok(vote) = probe_window(&path, span * probe) {
+                    decoded = true;
+                    votes.extend(vote);
                 }
             }
             answer = combine(&votes);
@@ -319,14 +339,21 @@ pub fn estimate(path: &Path, duration_ms: u32) -> Option<f32> {
     if widened && answer.is_none() {
         log::debug!("tempo: {}: windows disagree, {:?}", path.display(), votes);
     }
-    answer
+    // Nothing decoded is nothing measured. Saying so rather than answering
+    // None keeps the caller from filing a file it couldn't open as a track
+    // whose beat can't be called, which is a mark that sticks.
+    if !decoded {
+        return Err(Unreadable);
+    }
+    Ok(answer)
 }
 
 /// One probe's vote: a window decoded off the track at `at` seconds,
-/// downmixed, and measured. None for a window that won't decode or won't
-/// produce a vote; the decode failure goes to the log, since a track this
-/// pass couldn't read isn't a track without a tempo.
-fn probe_window(path: &Path, at: f64) -> Option<Vote> {
+/// downmixed, and measured. `Ok(None)` for a window that decoded and had no
+/// tempo in it, [`Unreadable`] for one that wouldn't decode at all; the
+/// decode failure goes to the log too, since a track this pass couldn't
+/// read isn't a track without a tempo.
+fn probe_window(path: &Path, at: f64) -> Result<Option<Vote>, Unreadable> {
     let frames = (WINDOW_SECS * RATE as f64) as usize;
     match rox_playback::engine::decode_window(&path.to_path_buf(), at, RATE, frames) {
         Ok(stereo) => {
@@ -336,11 +363,11 @@ fn probe_window(path: &Path, at: f64) -> Option<Vote> {
                 .iter()
                 .map(|c| (c[0] + c[1]) * 0.5)
                 .collect();
-            window(&mono)
+            Ok(window(&mono))
         }
         Err(e) => {
             log::debug!("tempo: {}: {e}", path.display());
-            None
+            Err(Unreadable)
         }
     }
 }
@@ -1048,7 +1075,9 @@ mod tests {
 
         let got = estimate(&path, (secs * 1000.0) as u32);
         let _ = std::fs::remove_dir_all(&dir);
-        let got = got.expect("a click track on disk has a tempo");
+        let got = got
+            .expect("a readable file")
+            .expect("a click track on disk has a tempo");
         assert!(error(got, 128.0) < 0.01, "128 on disk read as {got:.2}");
     }
 
@@ -1071,7 +1100,9 @@ mod tests {
 
         let got = estimate(&path, (secs * 1000.0) as u32);
         let _ = std::fs::remove_dir_all(&dir);
-        let got = got.expect("a majority should settle the split");
+        let got = got
+            .expect("a readable file")
+            .expect("a majority should settle the split");
         assert!(
             error(got, 128.0) < 0.02,
             "the track runs at 128 around its bridge, read {got:.2}"
@@ -1095,7 +1126,35 @@ mod tests {
 
         let got = estimate(&path, (secs * 1000.0) as u32);
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(got, None, "an even split is a track with two tempos");
+        assert_eq!(
+            got,
+            Ok(None),
+            "an even split is a track with two tempos, and the file read fine"
+        );
+    }
+
+    /// The two ways an answer goes missing, told apart. A path with no file
+    /// behind it decodes nothing and comes back unreadable; a file full of
+    /// noise decodes fine and is refused. The caller writes a refusal mark
+    /// off the second and leaves the first for the next pass, so a decoder
+    /// that couldn't open a file today doesn't take the track off the list
+    /// forever.
+    #[test]
+    fn a_file_that_wont_decode_is_told_apart_from_one_with_no_tempo() {
+        let dir = std::env::temp_dir().join(format!("rox-tempo-unread-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            estimate(&dir.join("nothing-here.wav"), 200_000),
+            Err(Unreadable),
+            "a file that isn't there was never listened to"
+        );
+
+        let path = dir.join("noise.wav");
+        let secs = 70.0;
+        std::fs::write(&path, wav(&noise(secs))).unwrap();
+        let got = estimate(&path, (secs * 1000.0) as u32);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, Ok(None), "noise was heard and has no tempo in it");
     }
 
     /// Mono 16-bit PCM at [`RATE`], which is the least a decoder needs to

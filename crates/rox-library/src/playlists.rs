@@ -133,14 +133,25 @@ pub(crate) fn add_smart_columns(conn: &Connection) -> rusqlite::Result<()> {
 /// snapshot first, then by their tag snapshot when it names exactly one
 /// track, so an ambiguous match never guesses. Members with a live track
 /// just keep their path snapshot current (a rename moves the path under the
-/// same id). Returns how many members relinked.
-pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
+/// same id).
+///
+/// Returns how many members relinked, or None when nothing was dangling and
+/// the matchers never ran at all.
+pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
     conn.execute(
         "UPDATE playlist_tracks SET path = t.path FROM tracks t
          WHERE t.id = playlist_tracks.track_id AND t.source = 'local'
            AND playlist_tracks.path <> t.path",
         [],
     )?;
+    // Nothing dangling, nothing to match. The two passes below are the
+    // expensive half (the tag one joins on the tag triple and counts the
+    // matches to refuse an ambiguous one), and a healthy library runs this
+    // after every scan and every reindex, so it pays one indexed probe
+    // instead.
+    if !has_dangling(conn)? {
+        return Ok(None);
+    }
     let by_path = conn.execute(
         "UPDATE playlist_tracks SET track_id = t.id FROM tracks t
          WHERE playlist_tracks.path <> ''
@@ -161,7 +172,20 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
                 AND c.album = playlist_tracks.album) = 1",
         [],
     )?;
-    Ok(by_path + by_tags)
+    Ok(Some(by_path + by_tags))
+}
+
+/// Whether any member points at a track row that no longer exists. One
+/// indexed lookup per member and it stops at the first hit, so the answer
+/// costs nothing on a library whose playlists all still have their files.
+fn has_dangling(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM playlist_tracks
+            WHERE NOT EXISTS (SELECT 1 FROM tracks x WHERE x.id = playlist_tracks.track_id))",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|found| found == 1)
 }
 
 /// Which kind of list a playlist row is. A static playlist owns member
@@ -886,6 +910,10 @@ mod tests {
 
     fn track(path: &str, title: &str, artist: &str, album: &str) -> TrackRow {
         TrackRow {
+            title_sort: String::new(),
+            artist_sort: String::new(),
+            album_artist_sort: String::new(),
+            album_sort: String::new(),
             sub: 0,
             cue: None,
             path: path.into(),
@@ -1379,7 +1407,7 @@ mod tests {
         let new_id = store::id_for_path(&conn, "/m/1.mp3").unwrap().unwrap();
         assert_ne!(new_id, 1, "the returned file lands under a fresh id");
 
-        assert_eq!(reattach(&conn).unwrap(), 1);
+        assert_eq!(reattach(&conn).unwrap(), Some(1));
         assert_eq!(ids(&conn, pl).unwrap(), [new_id], "the member plays again");
     }
 
@@ -1395,7 +1423,7 @@ mod tests {
         store::insert_batch(&mut conn, &[track("/new/1.mp3", "One", "A", "First")]).unwrap();
         let new_id = store::id_for_path(&conn, "/new/1.mp3").unwrap().unwrap();
 
-        assert_eq!(reattach(&conn).unwrap(), 1);
+        assert_eq!(reattach(&conn).unwrap(), Some(1));
         let members = tracks(&conn, pl).unwrap();
         assert_eq!(members[0].track_id, new_id);
         assert_eq!(
@@ -1422,12 +1450,34 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(reattach(&conn).unwrap(), 0);
+        assert_eq!(reattach(&conn).unwrap(), Some(0));
         assert!(
             ids(&conn, pl).unwrap().is_empty(),
             "the member stays a snapshot"
         );
         assert_eq!(tracks(&conn, pl).unwrap()[0].title, "One", "still readable");
+    }
+
+    /// Playlists whose members all still have their tracks never reach the
+    /// matchers, the same gate the listen pass runs: this is called after
+    /// every scan and every reindex, and the tag matcher is far too
+    /// expensive to run for nothing.
+    #[test]
+    fn reattach_gates_on_a_library_with_nothing_dangling() {
+        let mut conn = seed();
+        let pl = create(&conn, "Mix", 100).unwrap();
+        add(&mut conn, pl, &[1, 2], 100).unwrap();
+        assert_eq!(reattach(&conn).unwrap(), None, "nothing to match");
+        assert_eq!(reattach(&conn).unwrap(), None);
+
+        // One pruned file is enough to open the gate, and the pass behind it
+        // does what it always did.
+        conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First")]).unwrap();
+        let new_id = store::id_for_path(&conn, "/m/1.mp3").unwrap().unwrap();
+        assert_eq!(reattach(&conn).unwrap(), Some(1));
+        assert_eq!(ids(&conn, pl).unwrap(), [new_id, 2]);
+        assert_eq!(reattach(&conn).unwrap(), None, "and it closes again");
     }
 
     #[test]
@@ -1440,14 +1490,18 @@ mod tests {
         // pass moves its path snapshot along so a later prune can still be
         // matched back.
         store::rename_within(&mut conn, Path::new("/m/1.mp3"), Path::new("/m/one.mp3")).unwrap();
-        assert_eq!(reattach(&conn).unwrap(), 0, "nothing dangles on a rename");
+        assert_eq!(
+            reattach(&conn).unwrap(),
+            None,
+            "nothing dangles on a rename, so the matchers never run"
+        );
         let member = tracks(&conn, pl).unwrap()[0].member_id;
         assert_eq!(member_path(&conn, member), "/m/one.mp3");
 
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
         store::insert_batch(&mut conn, &[track("/m/one.mp3", "One", "A", "First")]).unwrap();
         let new_id = store::id_for_path(&conn, "/m/one.mp3").unwrap().unwrap();
-        assert_eq!(reattach(&conn).unwrap(), 1);
+        assert_eq!(reattach(&conn).unwrap(), Some(1));
         assert_eq!(
             ids(&conn, pl).unwrap(),
             [new_id],

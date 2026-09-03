@@ -505,6 +505,176 @@ pub fn register_program(
     window.register_user_shader_chain(&chain)
 }
 
+/// The uniform block every pass gets in scope, mirrored from the window
+/// API's own template so a check can compile what registration would
+/// compile without registering anything.
+///
+/// This is a copy, and copies drift. It's here because the only other way
+/// to put naga's verdict on a buffer is to register it, and registration
+/// leaves a compiled pipeline behind in the window it ran in: fine once
+/// per applied shader, not once per pause in typing. Apply still goes
+/// through the real registration, so the surface's readout is always the
+/// window's own answer and this one only ever gets ahead of it.
+const PARAMS_STRUCT: &str = "
+struct ShaderParams {
+    time: f32,
+    delta: f32,
+    resolution: vec2<f32>,
+    mouse: vec4<f32>,
+    user_meta: array<vec4<f32>, 2>,
+    signals: array<vec4<f32>, 4>,
+}
+";
+
+/// The screen-pass template a chain pass composes against: the fullscreen
+/// triangle and the entry point that calls the source's `fs_user`. Same
+/// copy caveat as [`PARAMS_STRUCT`].
+const SCREEN_TEMPLATE: &str = "
+struct PostVarying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_post(@builtin(vertex_index) vertex_id: u32) -> PostVarying {
+    let corner = vec2<f32>(f32((vertex_id << 1u) & 2u), f32(vertex_id & 2u));
+    var out = PostVarying();
+    out.position = vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
+    out.uv = corner;
+    return out;
+}
+
+@fragment
+fn fs_post(input: PostVarying) -> @location(0) vec4<f32> {
+    return fs_user(input.uv);
+}
+";
+
+/// One global a composed pass declares: the name the WGSL binds it under,
+/// how it's declared, and its type.
+struct Binding {
+    name: String,
+    declaration: &'static str,
+    kind: &'static str,
+}
+
+impl Binding {
+    /// A texture a pass can sample: the screen, the mask, a neighbour
+    /// pass, a declared image.
+    fn texture(name: impl Into<String>) -> Binding {
+        Binding {
+            name: name.into(),
+            declaration: "var ",
+            kind: "texture_2d<f32>",
+        }
+    }
+}
+
+/// Everything a pass may bind, in the order registration pins: the
+/// uniform block, the screen under it, the sampler, its own last frame,
+/// its mask span, then the passes ahead of it and the declared images.
+/// A validating check offers all of them, the way registration's superset
+/// variant does, so what a pass doesn't reference costs it nothing and a
+/// reference to a later pass still comes back as an unknown identifier.
+fn pass_bindings(spec: &ChainSpec, index: usize) -> Vec<Binding> {
+    let mut bindings = vec![
+        Binding {
+            name: "params".to_string(),
+            declaration: "var<uniform> ",
+            kind: "ShaderParams",
+        },
+        Binding::texture("screen"),
+        Binding {
+            name: "samp".to_string(),
+            declaration: "var ",
+            kind: "sampler",
+        },
+        Binding::texture("prev"),
+        Binding::texture("mask"),
+    ];
+    bindings.extend(
+        spec.passes[..index]
+            .iter()
+            .map(|pass| Binding::texture(pass.name.clone())),
+    );
+    bindings.extend(
+        spec.assets
+            .iter()
+            .map(|asset| Binding::texture(asset.name.clone())),
+    );
+    bindings
+}
+
+/// One pass as a standalone module: the template, the explicit bind
+/// points naga wants on a module nobody is building a pipeline layout
+/// for, then the source itself.
+fn compose_pass(user_source: &str, bindings: &[Binding]) -> String {
+    let mut declarations = String::new();
+    for (slot, binding) in bindings.iter().enumerate() {
+        declarations.push_str(&format!(
+            "@group(0) @binding({slot}) {}{}: {};\n",
+            binding.declaration, binding.name, binding.kind
+        ));
+    }
+    format!("{PARAMS_STRUCT}\n{SCREEN_TEMPLATE}\n{declarations}\n{user_source}")
+}
+
+/// Put a whole program through naga without registering it: split the
+/// text, resolve its images, and validate every pass the way the window
+/// would.
+///
+/// This is [`register_program`] minus the pipeline, for the shader
+/// editor's check-while-you-type. The message on the way out reads the
+/// same, since it's naga's own and it carries the same `pass 'name':`
+/// prefix. What it can't tell you is that the backend has no shader
+/// pipeline at all: that verdict only exists inside a window.
+pub fn validate_program(source: &str, ctx: &ProgramCtx) -> Result<(), String> {
+    let spec = parse_chain(source)?;
+    // The same resolution registration does, so a plate that isn't there
+    // reads out while typing rather than on apply. The cover falls back,
+    // which is what a window with nothing playing hands over anyway.
+    resolve_assets(&spec, ctx, None)?;
+    for (index, pass) in spec.passes.iter().enumerate() {
+        let bindings = pass_bindings(&spec, index);
+        let composed = compose_pass(&pass.body, &bindings);
+        let module =
+            validate_wgsl(&composed).map_err(|err| format!("pass '{}': {err}", pass.name))?;
+        // A pass declaring its own module-scope variables validates and
+        // then falls over the renderer's pipeline layout, so registration
+        // turns it down by name and so does this.
+        for variable in module.global_variables.iter() {
+            let name = variable.1.name.as_deref().unwrap_or_default();
+            if bindings.iter().any(|binding| binding.name == name) {
+                continue;
+            }
+            let offered = bindings
+                .iter()
+                .map(|binding| binding.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "pass '{}': user shaders can't declare module-scope variables, found \
+                 `{name}`; the template provides {offered}",
+                pass.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// naga's verdict on one composed module, with its message rendered
+/// against the source the way the window renders it.
+fn validate_wgsl(source: &str) -> Result<naga::Module, String> {
+    let module = naga::front::wgsl::parse_str(source).map_err(|err| err.emit_to_string(source))?;
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::default(),
+    )
+    .validate(&module)
+    .map_err(|err| err.emit_to_string(source))?;
+    Ok(module)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +767,52 @@ fn fs_user(uv: vec2<f32>) -> vec4<f32> { return textureSample(down, samp, uv); }
         // escape it.
         assert!(err("// @asset plate: ../../secrets.png\n").contains("plain file name"));
         assert!(err("// @asset plate:\n").contains("needs a name and a file"));
+    }
+
+    /// The editor's check reaches the same verdicts registration does,
+    /// with no window to register into: the template's bindings are in
+    /// scope, a chain's neighbours with them, and what's wrong comes back
+    /// named by the pass it's wrong in.
+    #[test]
+    fn a_program_gets_its_verdict_without_being_registered() {
+        let detached = ProgramCtx::detached();
+        validate_program(FS_USER, &detached).expect("a plain shader compiles");
+
+        let chained = "\
+// @pass down: 0.5
+fn fs_user(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(screen, samp, uv) * params.time;
+}
+// @pass up
+fn fs_user(uv: vec2<f32>) -> vec4<f32> { return textureSample(down, samp, uv); }";
+        validate_program(chained, &detached).expect("a chain compiles");
+
+        let broken = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return nope(uv); }";
+        let err = validate_program(broken, &detached).expect_err("no such function");
+        assert!(err.starts_with("pass 'main':"), "{err}");
+
+        // A pass reaching for a later one finds nothing declared, the same
+        // as any unknown identifier.
+        let ahead = "\
+// @pass a
+fn fs_user(uv: vec2<f32>) -> vec4<f32> { return textureSample(b, samp, uv); }
+// @pass b
+fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }";
+        assert!(validate_program(ahead, &detached).is_err());
+
+        // Module-scope variables fall over the renderer's pipeline layout,
+        // so they're turned down by name here too.
+        let global = "\
+var<private> drift: f32;
+fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(drift); }";
+        let err = validate_program(global, &detached).expect_err("module-scope");
+        assert!(err.contains("module-scope variables"), "{err}");
+
+        // An image with nowhere to come from reads out here rather than
+        // waiting for an apply.
+        let plate = format!("// @asset plate: plate.png\n{FS_USER}");
+        let err = validate_program(&plate, &detached).expect_err("detached");
+        assert!(err.contains("asset 'plate'"), "{err}");
     }
 
     /// A 2x2 PNG, small enough to inline in a test and real enough to decode.

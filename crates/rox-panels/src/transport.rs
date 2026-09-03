@@ -141,7 +141,7 @@ macro_rules! transport_panel {
             ) -> PopupMenu {
                 // The config block: the panel's quick entries and the
                 // settings window, apart from the core panel items.
-                let menu = self.config_menu(menu, cx);
+                let menu = self.config_menu(menu, _window, cx);
                 let menu = panel_settings::rename_item(
                     menu,
                     &cx.entity(),

@@ -58,7 +58,9 @@ const QUEUE_WAIT_STEP: Duration = Duration::from_millis(25);
 ///
 /// Settling reorders nothing by itself. The band a run widened to is already
 /// in the queue and stays there, so the narrowing only shows in what the next
-/// skip draws from; nothing undoes it while you listen.
+/// skip draws from. What does re-rank it is the next track ending on its own
+/// (see [`reseed_at_boundary`]), and that keeps the band's tracks, it just
+/// puts the nearest of them first.
 const SKIP_SETTLE: Duration = Duration::from_secs(30);
 
 /// The band a skip draws the next track from, as a count of the nearest
@@ -301,6 +303,99 @@ fn queue_running_dry(upcoming: usize, loop_mode: LoopMode) -> bool {
 /// it, which is the same stickiness the transport button has.
 fn continuation_wanted(playing: bool, stop_after: bool) -> bool {
     playing && !stop_after
+}
+
+/// Whether engaging the Similar order should ask for a batch right now rather
+/// than wait for the queue to run down to the floor.
+///
+/// Similar is the radio draw (see [`continuation::provider`]), so turning it
+/// on is turning radio on, and a listener who does that with ten browse-order
+/// tracks still queued wants the radio ahead of those ten rather than twenty
+/// minutes behind them. The ordering alone can't give them that: it sorts what
+/// is queued, and what's queued is the wrong music.
+///
+/// Off outranks it. A queue told to end doesn't start growing because the
+/// shuffle order changed under it, which is the same call `provider` makes
+/// when it hands Off a None whatever the order says. A paused queue and an
+/// armed stop-after say no here for the reasons they say no to the pump.
+fn similar_draw_now(
+    mode: continuation::Mode,
+    similar: bool,
+    playing: bool,
+    stop_after: bool,
+) -> bool {
+    similar && mode != continuation::Mode::Off && continuation_wanted(playing, stop_after)
+}
+
+/// Whether the pump owes the queue a fresh ranking now the audible track has
+/// moved on to pool index `audible`.
+///
+/// The similarity order ranks the whole tail against one track, so a batch
+/// played straight through is walking down an answer to a question about a
+/// track several songs back. Re-seeding at the boundary is what keeps the
+/// ordering about what's actually playing.
+///
+/// `skipped` is a skip having already paid for this boundary: `next` re-seeds
+/// on where it lands, at a band its run widened, and the pump sees that same
+/// landing a tick later. Re-ranking it again here would be a second pass at a
+/// band of one, which throws the widening away and undoes the steering.
+///
+/// No marker yet means nothing is owed: that's a session that has only just
+/// come up, and starting one orders its own tail.
+fn reseed_at_boundary(similar: bool, skipped: bool, audible: usize, last: Option<usize>) -> bool {
+    similar && !skipped && last.is_some_and(|at| at != audible)
+}
+
+/// Where a skip's re-ranking stands against the boundary it caused.
+///
+/// The two race, and the boundary usually wins: the ranking waits for the
+/// engine to adopt the track the skip landed on and then scores the library
+/// against it, while the boundary check runs off a 16 ms pump. So the claim
+/// can't just be "the ranking went out", it has to be made when the skip
+/// fires and released when the ranking is done one way or the other. Every
+/// give-up inside the ranking (nothing to seed on, nothing the library
+/// scored, the mode changed under it) ends without touching the queue, and a
+/// claim left standing over one of those means the boundary declined to
+/// re-seed for a ranking that never happened, which leaves the tail ordered
+/// against a track the listener has already left.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SkipReseed {
+    /// No skip ranking outstanding, so boundaries re-seed themselves.
+    Idle,
+    /// A skip's ranking is being computed. It owns the next boundary
+    /// whichever way round the two arrive; `passed` records that the boundary
+    /// got there first.
+    InFlight { passed: bool },
+    /// The ranking went out ahead of the boundary. The next boundary spends
+    /// it and ranks nothing itself.
+    Ready,
+}
+
+impl SkipReseed {
+    /// A boundary just went past. Returns the new claim and whether the
+    /// boundary is already paid for.
+    fn spend(self) -> (Self, bool) {
+        match self {
+            Self::Idle => (Self::Idle, false),
+            Self::InFlight { .. } => (Self::InFlight { passed: true }, true),
+            Self::Ready => (Self::Idle, true),
+        }
+    }
+
+    /// The skip's ranking reached the engine. It only has a boundary left to
+    /// pay for if one hasn't gone by already.
+    fn landed(self) -> Self {
+        match self {
+            Self::InFlight { passed: false } => Self::Ready,
+            _ => Self::Idle,
+        }
+    }
+
+    /// The skip's ranking gave up. Returns the released claim and whether a
+    /// boundary was held off for it, in which case that re-seed is still owed.
+    fn abandon(self) -> (Self, bool) {
+        (Self::Idle, self == Self::InFlight { passed: true })
+    }
 }
 
 /// The band `skips` consecutive skips earns.
@@ -707,6 +802,15 @@ pub struct Player {
     /// should not steer today's radio.
     similar_skips: u32,
     last_skip: Option<Instant>,
+    /// The pool index the similarity ordering was last seeded on, and whether
+    /// a skip has already paid for the next boundary. Together they are how
+    /// the pump tells a track that ended on its own from one the listener
+    /// skipped past: the first owes the queue a fresh ranking against what's
+    /// playing now, the second was ranked on the way through `next` and must
+    /// not be ranked again at a narrower band. See [`reseed_at_boundary`]
+    /// and [`SkipReseed`].
+    reseeded_at: Option<usize>,
+    skip_reseed: SkipReseed,
     /// The rate the next stream asks for, exclusive mode's rate follow
     /// (ADR 19). Holds whatever the last stream negotiated, so a rebuild
     /// comes back up on the rate it went down on instead of dropping to the
@@ -774,6 +878,8 @@ impl Player {
             stop_after: false,
             similar_skips: 0,
             last_skip: None,
+            reseeded_at: None,
+            skip_reseed: SkipReseed::Idle,
             follow_rate: None,
             refused_rates: Vec::new(),
             scope: continuation::Scope::default(),
@@ -1247,6 +1353,12 @@ impl Player {
         self.scope = continuation::Scope::default();
         self.continuing = false;
         self.continued_rev = None;
+        // Nothing has been seeded against this pool, and the indices in the
+        // marker belong to the pool going out. The first pump tick adopts the
+        // new one without asking for a ranking, since the start below orders
+        // its own tail when the mode calls for it.
+        self.reseeded_at = None;
+        self.skip_reseed = SkipReseed::Idle;
         self.session = None;
         // A fresh context takes the current shuffle mode; a restore preserves
         // the saved order and passes None so the engine leaves it untouched.
@@ -1301,7 +1413,7 @@ impl Player {
                     && self.settings.session.shuffle
                     && self.shuffle_mode() == ShuffleMode::Similar
                 {
-                    self.order_tail_by_similarity(1, None, cx);
+                    self.order_tail_by_similarity(1, None, false, cx);
                 }
             }
             Err(e) => self.error = Some(format!("audio output: {e}").into()),
@@ -1366,6 +1478,10 @@ impl Player {
                 // and does nothing at all on the overwhelming majority of
                 // ticks, which is why it can run on a 60 Hz timer.
                 this.continue_if_dry(cx);
+                // Track boundaries ride the same clock, and for the same
+                // reason: this is the only thing watching what's audible
+                // often enough to notice one going past.
+                this.reseed_on_boundary(cx);
                 let playing = this.is_playing();
                 let rev = this.queue_rev();
                 // A seek while paused moves the clock without touching any
@@ -1402,6 +1518,28 @@ impl Player {
     /// keeps clean. The engine stays a decoder stepping through a list, with
     /// no notion of continuation.
     fn continue_if_dry(&mut self, cx: &mut Context<Self>) {
+        self.request_continuation(false, cx);
+    }
+
+    /// Ask the active provider for a batch and append it. `force` is the draw
+    /// the pump would never have made: it skips the dry-out test and the
+    /// per-revision guard, which is what engaging the Similar order needs,
+    /// since the queue it's about to re-rank is full of tracks that have
+    /// nothing to do with what's playing.
+    ///
+    /// What a forced draw doesn't skip is `continuing`. One query at a time is
+    /// the rule for both, or a press landing on the same tick as a dry-out
+    /// splices two batches for one gap.
+    ///
+    /// The revision guard goes the other way. It exists so an empty batch
+    /// doesn't have the pump asking the same exhausted provider sixty times a
+    /// second, and a forced draw happens once per press, so it stamps the
+    /// revision on the way in (a pump tick during the query must not double
+    /// it) and clears it again on the way out. Clearing matters: a forced
+    /// batch lands on a full queue, so nothing else is going to move the
+    /// revision, and leaving the stamp would mean the queue it filled couldn't
+    /// ask for more when it really did run down.
+    fn request_continuation(&mut self, force: bool, cx: &mut Context<Self>) {
         let mode = self.settings.session.continuation;
         if mode == continuation::Mode::Off || self.continuing {
             return;
@@ -1414,14 +1552,14 @@ impl Player {
             return;
         };
         let rev = session.shared.queue_rev();
-        if self.continued_rev == Some(rev) {
+        if !force && self.continued_rev == Some(rev) {
             return;
         }
         // The audible cursor, not the decode cursor: that one has run a track
         // ahead for the gapless boundary, and a batch seeded off a track
         // nobody has heard yet is a batch for the wrong taste.
         let audible = session.shared.position(session.device_rate).map(|(t, _)| t);
-        if !self.running_dry() {
+        if !force && !self.running_dry() {
             return;
         }
         let seed = continuation::Seed {
@@ -1460,7 +1598,19 @@ impl Player {
                 .unwrap_or_default();
             this.update(cx, |this, cx| {
                 this.continuing = false;
-                this.land_continuation(mode, similar, picks, cx);
+                this.land_continuation(mode, similar, force, picks, cx);
+                if force {
+                    this.continued_rev = None;
+                }
+                // The Similar order was engaged while this query was out. The
+                // press that engaged it asked for a forced draw and was turned
+                // away by `continuing`, and the batch it waited on has just
+                // been dropped by the landing for being the wrong order, so
+                // nothing is left to bring the radio in before the floor. Ask
+                // again on the press's behalf.
+                if !similar && this.similar_order() {
+                    this.request_continuation(true, cx);
+                }
             })
             .ok();
         })
@@ -1478,6 +1628,7 @@ impl Player {
         &mut self,
         mode: continuation::Mode,
         similar: bool,
+        force: bool,
         picks: Vec<Pick>,
         cx: &mut Context<Self>,
     ) {
@@ -1500,7 +1651,13 @@ impl Player {
         // assumed to have held. Twenty context tracks appended behind a queue
         // the listener just filled is the same wrong answer as one appended to
         // a queue they just paused.
-        if !continuation_wanted(self.is_playing(), self.stop_after) || !self.running_dry() {
+        //
+        // All but the dry-out, which a forced batch was never waiting on: the
+        // queue that asked for this one is full on purpose, and re-asking here
+        // would drop every batch the Similar order fires for.
+        if !continuation_wanted(self.is_playing(), self.stop_after)
+            || (!force && !self.running_dry())
+        {
             return;
         }
         if picks.is_empty() {
@@ -1542,7 +1699,40 @@ impl Player {
         // here: an explicit queue under this mode was always going to be
         // reordered by it.
         if self.similar_order() {
-            self.order_tail_by_similarity(1, None, cx);
+            self.order_tail_by_similarity(1, None, false, cx);
+        }
+    }
+
+    /// Re-rank the tail against whatever is audible now, once per track
+    /// boundary (see [`reseed_at_boundary`]).
+    ///
+    /// The audible pool index rather than the queue entry: it's the identity
+    /// the seed is looked up by anyway, and reading it costs a couple of
+    /// atomics where a queue snapshot clones a `PathBuf` per entry, which is
+    /// not something to do sixty times a second. Under a crossfade it flips at
+    /// the fade's midpoint (ADR 19), which is exactly when the new track
+    /// becomes the one to sound like.
+    fn reseed_on_boundary(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some((audible, _)) = session.shared.position(session.device_rate) else {
+            return;
+        };
+        let last = self.reseeded_at.replace(audible);
+        // The overwhelming majority of ticks stop here, three minutes of them
+        // per boundary.
+        if last == Some(audible) {
+            return;
+        }
+        // Whatever moved the queue on, the skip's re-seed is spent: it was for
+        // this boundary and there won't be another one to spend it at. A
+        // ranking still in flight keeps its claim, since it lands on this
+        // boundary too, and releases it when it gives up.
+        let (claim, skipped) = self.skip_reseed.spend();
+        self.skip_reseed = claim;
+        if reseed_at_boundary(self.similar_order(), skipped, audible, last) {
+            self.order_tail_by_similarity(1, None, false, cx);
         }
     }
 
@@ -2323,7 +2513,13 @@ impl Player {
         // engaged: that's what turns skipping into steering rather than
         // drifting outward from a track the listener already left.
         let leaving = self.seed_entry();
-        self.order_tail_by_similarity(skip_band(self.similar_skips), leaving, cx);
+        // The pump sees where this lands a tick or two from now and would read
+        // it as a track that ended on its own. Claim that boundary before the
+        // ranking starts, since the ranking waits for the engine to adopt the
+        // new track and the pump gets there first; the ranking hands the claim
+        // back if it can't produce an order.
+        self.skip_reseed = SkipReseed::InFlight { passed: false };
+        self.order_tail_by_similarity(skip_band(self.similar_skips), leaving, true, cx);
     }
 
     /// The queue entry the ordering currently treats as the seed, for a
@@ -2560,7 +2756,22 @@ impl Player {
     fn apply_shuffle_order(&mut self, cx: &mut Context<Self>) {
         match self.shuffle_mode() {
             ShuffleMode::Random => self.send(Cmd::SetShuffle(true)),
-            ShuffleMode::Similar => self.order_tail_by_similarity(1, None, cx),
+            ShuffleMode::Similar => {
+                self.order_tail_by_similarity(1, None, false, cx);
+                // Ordering sorts what's queued; the draw is what makes it
+                // worth sorting. Ten browse-order tracks sorted by sound are
+                // still ten tracks the listener didn't turn radio on for, so
+                // the batch is asked for now and the landing re-ranks the tail
+                // with the fresh picks folded into it.
+                if similar_draw_now(
+                    self.settings.session.continuation,
+                    self.similar_order(),
+                    self.is_playing(),
+                    self.stop_after,
+                ) {
+                    self.request_continuation(true, cx);
+                }
+            }
         }
     }
 
@@ -2584,10 +2795,16 @@ impl Player {
     /// order: press Next and you got track one, which looked far more broken
     /// than doing nothing would have. Touching the queue only once, when
     /// there's an answer, makes the failure case invisible.
+    ///
+    /// `from_skip` marks the ranking a skip fired, which holds a claim on the
+    /// boundary that skip caused ([`SkipReseed`]). Every path out of here
+    /// settles that claim, so a ranking that gives up hands the boundary back
+    /// to the pump instead of silently eating its re-seed.
     fn order_tail_by_similarity(
         &mut self,
         band: usize,
         leaving: Option<u64>,
+        from_skip: bool,
         cx: &mut Context<Self>,
     ) {
         let db_path = rox_core::settings::data_dir().join("library.db");
@@ -2612,6 +2829,10 @@ impl Player {
                 }
             }
             let Some((seed, tail)) = inputs else {
+                if from_skip {
+                    this.update(cx, |this, cx| this.release_skip_reseed(cx))
+                        .ok();
+                }
                 return;
             };
             // Read on this thread, before the spawn: the pick is a process
@@ -2665,6 +2886,10 @@ impl Player {
                 // it had, which is the right answer, but say so rather than
                 // leaving the mode looking broken.
                 log::info!("shuffle: nothing analyzed to order the queue by");
+                if from_skip {
+                    this.update(cx, |this, cx| this.release_skip_reseed(cx))
+                        .ok();
+                }
                 return;
             };
             this.update(cx, |this, cx| {
@@ -2672,13 +2897,31 @@ impl Player {
                 // while the scan ran means this answer is for a queue nobody
                 // asked about any more.
                 if this.settings.session.shuffle && this.shuffle_mode() == ShuffleMode::Similar {
+                    if from_skip {
+                        this.skip_reseed = this.skip_reseed.landed();
+                    }
                     this.send(Cmd::OrderTail(ids));
                     cx.notify();
+                } else if from_skip {
+                    this.release_skip_reseed(cx);
                 }
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Hand a skip's boundary claim back after its ranking came to nothing.
+    /// When the boundary went by while the claim was held, that re-seed is
+    /// still owed: the pump declined it for an order that never arrived, and
+    /// without this the tail stays ranked against a track the listener already
+    /// skipped past, for the rest of the queue.
+    fn release_skip_reseed(&mut self, cx: &mut Context<Self>) {
+        let (claim, owed) = self.skip_reseed.abandon();
+        self.skip_reseed = claim;
+        if owed && self.similar_order() {
+            self.order_tail_by_similarity(1, None, false, cx);
+        }
     }
 
     /// The seed track and the upcoming entries a similarity ordering works
@@ -3285,6 +3528,129 @@ mod tests {
         assert!(!continuation_wanted(false, true));
     }
 
+    /// Turning the Similar order on is turning radio on, so it asks for a
+    /// batch there and then instead of leaving the listener with the queue
+    /// they had until it runs down to the floor.
+    #[test]
+    fn engaging_the_similar_order_draws_without_waiting_for_the_floor() {
+        assert!(similar_draw_now(
+            continuation::Mode::Continue,
+            true,
+            true,
+            false
+        ));
+        assert!(similar_draw_now(
+            continuation::Mode::Weighted,
+            true,
+            true,
+            false
+        ));
+        // The random order refills from wherever the mode points, at the
+        // floor, exactly as it did before.
+        assert!(!similar_draw_now(
+            continuation::Mode::Continue,
+            false,
+            true,
+            false
+        ));
+    }
+
+    /// Off still means off, which is the same call `continuation::provider`
+    /// makes: a queue told to end must not start growing because the shuffle
+    /// order changed under it. Nor may a paused queue or an armed stop-after.
+    #[test]
+    fn the_similar_draw_respects_off_and_the_transport() {
+        assert!(!similar_draw_now(
+            continuation::Mode::Off,
+            true,
+            true,
+            false
+        ));
+        assert!(continuation::provider(continuation::Mode::Off, true).is_none());
+        assert!(!similar_draw_now(
+            continuation::Mode::Continue,
+            true,
+            false,
+            false
+        ));
+        assert!(!similar_draw_now(
+            continuation::Mode::Continue,
+            true,
+            true,
+            true
+        ));
+    }
+
+    /// A track that ended on its own re-seeds the ordering on what's playing
+    /// now, so a batch played through doesn't walk down a ranking made
+    /// against a track four songs ago.
+    #[test]
+    fn a_natural_boundary_reseeds_the_ordering() {
+        assert!(reseed_at_boundary(true, false, 7, Some(6)));
+        // Same track, same tick, nothing owed. This is the case that runs
+        // sixty times a second.
+        assert!(!reseed_at_boundary(true, false, 7, Some(7)));
+        // Another order is another question; nothing to re-rank.
+        assert!(!reseed_at_boundary(false, false, 7, Some(6)));
+        // A session that has only just come up orders its own tail, so the
+        // first tick adopts the marker rather than asking again.
+        assert!(!reseed_at_boundary(true, false, 0, None));
+    }
+
+    /// A skip already ranked where it landed, at the band its run widened, so
+    /// the boundary that follows leaves it alone: re-ranking at a band of one
+    /// would throw the widening away and turn steering back into drifting.
+    #[test]
+    fn a_skip_pays_for_the_boundary_it_causes() {
+        assert!(!reseed_at_boundary(true, true, 7, Some(6)));
+        // One boundary each. The next track to end on its own gets the
+        // re-seed, since the flag is spent at the first change it sees.
+        assert!(reseed_at_boundary(true, false, 8, Some(7)));
+    }
+
+    /// The usual order of events on a skip: the pump sees the boundary while
+    /// the ranking is still being computed, so the claim covers it there and
+    /// the ranking that lands afterwards owes nothing to the boundary after
+    /// that one.
+    #[test]
+    fn a_skips_claim_covers_the_boundary_that_beats_it() {
+        let claim = SkipReseed::InFlight { passed: false };
+        let (claim, paid) = claim.spend();
+        assert!(paid, "the boundary is the skip's, ranked or not yet");
+        assert_eq!(claim, SkipReseed::InFlight { passed: true });
+        // The ranking arrives after the fact and reorders the tail, which is
+        // the answer to that same boundary. Nothing is held over.
+        assert_eq!(claim.landed(), SkipReseed::Idle);
+        assert!(!SkipReseed::Idle.spend().1, "so the next one re-seeds");
+    }
+
+    /// The other way round, where the ranking is quick enough to go out
+    /// first: the claim waits for the boundary and is spent there.
+    #[test]
+    fn a_skips_claim_waits_when_the_ranking_lands_first() {
+        let claim = SkipReseed::InFlight { passed: false }.landed();
+        assert_eq!(claim, SkipReseed::Ready);
+        let (claim, paid) = claim.spend();
+        assert!(paid, "already ranked at the band the run earned");
+        assert_eq!(claim, SkipReseed::Idle, "and only for the one boundary");
+    }
+
+    /// The bug the claim's release exists for: every give-up inside the
+    /// ranking returns without touching the queue. A boundary held off for
+    /// one of those is owed its re-seed, or the tail stays ranked against the
+    /// track the listener skipped away from.
+    #[test]
+    fn a_ranking_that_gives_up_hands_the_boundary_back() {
+        let (claim, owed) = SkipReseed::InFlight { passed: true }.abandon();
+        assert!(owed, "the pump declined for an order that never arrived");
+        assert_eq!(claim, SkipReseed::Idle);
+        // Given up before the boundary, there's nothing to make good: the
+        // claim is gone, so the boundary re-seeds itself when it arrives.
+        let (claim, owed) = SkipReseed::InFlight { passed: false }.abandon();
+        assert!(!owed);
+        assert!(!claim.spend().1);
+    }
+
     /// Loop is the user saying remain here, so the trigger never fires while
     /// one is on however short the queue has run.
     #[test]
@@ -3411,6 +3777,10 @@ mod tests {
     /// A row on one album, for the group compares above.
     fn album_row(path: &str, album: &str) -> rox_library::TrackRow {
         rox_library::TrackRow {
+            title_sort: String::new(),
+            artist_sort: String::new(),
+            album_artist_sort: String::new(),
+            album_sort: String::new(),
             path: path.to_string(),
             sub: 0,
             cue: None,

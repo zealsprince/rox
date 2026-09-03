@@ -191,6 +191,74 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
             )
         },
     },
+    // The Latin sort names a file's tags carry (TSOP and friends), one
+    // column each. Text defaulting to empty rather than nullable, since a
+    // missing sort name and an empty one mean the same thing here: fall
+    // back to the displayed name. The mtime reset comes with them for the
+    // tempo rung's reason: these are filled from file tags, and without it
+    // the next scan skips unchanged files and they stay empty forever.
+    crate::migrate::Migration {
+        name: "sort-names",
+        up: |conn| {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN title_sort TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE tracks ADD COLUMN artist_sort TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE tracks ADD COLUMN album_artist_sort TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE tracks ADD COLUMN album_sort TEXT NOT NULL DEFAULT '';
+                 UPDATE tracks SET mtime = 0;",
+            )
+        },
+    },
+    // The tag triple the post-scan reattach matches a dangling playlist
+    // member or listen on. Without it both the join and the correlated
+    // count that keeps an ambiguous match from guessing read the table end
+    // to end, once per row, so a handful of moved files turned into
+    // repeated full scans of a ten-million-row table. No mtime reset: this
+    // adds no column the scanner fills, so nothing has to be re-read.
+    crate::migrate::Migration {
+        name: "idx-tracks-tags",
+        up: |conn| {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_tracks_tags ON tracks (title, artist, album);",
+            )
+        },
+    },
+    // The column behind insert_batch's measured-gain question. That probe
+    // runs once per batch, and unindexed it walked every local row to answer
+    // it: 0.3s per batch at a million tracks, 3.5s at ten million, against a
+    // batch of 512 files. One low-cardinality index turns it into a seek.
+    crate::migrate::Migration {
+        name: "idx-tracks-rg-source",
+        up: |conn| {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_tracks_rg_source ON tracks (rg_source);",
+            )
+        },
+    },
+    // The library's own sort names for artists, filled from MusicBrainz by
+    // the background pass and never from a file. Its own table beside the
+    // genre one rather than a column on tracks, because a sort name
+    // belongs to the artist rather than to each of their tracks. No mtime
+    // reset: nothing here is read out of tags, so there's nothing a
+    // re-scan would fill and no reason to make every file be read again.
+    crate::migrate::Migration {
+        name: "artist-meta",
+        up: crate::artist_meta::init_schema,
+    },
+    // Sort names for album titles, which no service publishes: the
+    // romanization pass reads the characters and writes the answer here.
+    // Its own table beside the artist one for the same reason, and no
+    // mtime reset for the same reason: nothing here comes out of a tag.
+    crate::migrate::Migration {
+        name: "album-meta",
+        up: crate::album_meta::init_schema,
+    },
+    // The same for track titles, keyed by track id rather than by value,
+    // because a title is per row rather than interned. No mtime reset.
+    crate::migrate::Migration {
+        name: "track-meta",
+        up: crate::track_meta::init_schema,
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -318,9 +386,12 @@ const KEEPS_MEASURED_GAIN: &str = "rg_source = 1
 /// to replace it with, so the estimate stands. A tag always wins, since the
 /// file is the better authority on what it runs at, and a rescan that finds
 /// a tag-sourced tempo gone clears it rather than keep a number the file no
-/// longer claims. The literal 1 is [`crate::tempo::Source::Measured`]'s
-/// code, which SQL can't reference; `measured_code_matches_the_sql` pins it.
-const KEEPS_MEASURED_BPM: &str = "bpm_source = 1 AND excluded.bpm IS NULL";
+/// longer claims. A refusal is kept on the same terms: rox listened and
+/// found no beat, and a rescan that brought no tag has nothing to say
+/// against that. The literals are [`crate::tempo::Source::Measured`]'s and
+/// [`crate::tempo::Source::Refused`]'s codes, which SQL can't reference;
+/// `measured_code_matches_the_sql` pins them.
+const KEEPS_MEASURED_BPM: &str = "bpm_source IN (1, 2) AND excluded.bpm IS NULL";
 
 /// Insert or refresh one batch of local rows inside a single transaction. An
 /// existing (source, path, sub) row keeps its id, so projection db_ids stay
@@ -356,7 +427,8 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
     };
     // Whether any measurement is at stake this batch. A library nobody has
     // measured returns false once and skips the per-row question below, the
-    // same deal as the cue check.
+    // same deal as the cue check. It rides the `idx-tracks-rg-source` index,
+    // which is the only reason it is cheap enough to ask per batch.
     let measured_in_play = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM tracks WHERE source = 'local' AND rg_source = ?1)",
         [crate::replaygain::Source::Measured.code()],
@@ -369,13 +441,18 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
              (path, sub, title, artist, album_artist, album, genre, year, disc_no, track_no,
               duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added, size, mtime,
               rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source,
-              bpm, bpm_source)
+              bpm, bpm_source,
+              title_sort, artist_sort, album_artist_sort, album_sort)
              VALUES (?1, ?23, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                     ?17, ?18, ?19, ?20, ?21, ?22, 0, ?24, 0)
+                     ?17, ?18, ?19, ?20, ?21, ?22, 0, ?24, 0, ?25, ?26, ?27, ?28)
              ON CONFLICT (source, path, sub) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
                 album = excluded.album, genre = excluded.genre,
+                title_sort = excluded.title_sort,
+                artist_sort = excluded.artist_sort,
+                album_artist_sort = excluded.album_artist_sort,
+                album_sort = excluded.album_sort,
                 year = excluded.year, disc_no = excluded.disc_no,
                 track_no = excluded.track_no,
                 duration_ms = excluded.duration_ms, codec = excluded.codec,
@@ -456,6 +533,10 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.replay_gain.album_peak,
                 r.sub,
                 r.bpm,
+                r.title_sort,
+                r.artist_sort,
+                r.album_artist_sort,
+                r.album_sort,
             ])?;
             if !spans_in_play {
                 continue;
@@ -743,24 +824,29 @@ pub fn replaygain_breakdown(conn: &Connection) -> rusqlite::Result<GainCoverage>
     )
 }
 
-/// The library's tempo coverage split three ways, the [`GainCoverage`] shape
-/// over the bpm column. Every track counts in exactly one bucket, so the three
-/// sum to the track count.
+/// The library's tempo coverage split four ways, the [`GainCoverage`] shape
+/// over the bpm column with one more bucket. Every track counts in exactly
+/// one, so the four sum to the track count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BpmCoverage {
     /// Tracks whose own file said what they run at.
     pub tagged: u64,
     /// Tracks rox estimated from the audio.
     pub measured: u64,
-    /// Tracks with no tempo from either source. These are the work an
-    /// analysis pass has left.
+    /// Tracks rox listened to and found no beat in, marked
+    /// [`crate::tempo::Source::Refused`]. Not work: a pass leaves them alone
+    /// unless it's asked to retry them.
+    pub refused: u64,
+    /// Tracks with no tempo from either source that nothing has listened to
+    /// yet. These are the work an analysis pass has left.
     pub missing: u64,
 }
 
 impl BpmCoverage {
-    /// Every track counted, whatever its source.
+    /// Every track counted, whatever its source, the refused ones included:
+    /// they were scanned like the rest, they just have nothing to show.
     pub fn total(self) -> u64 {
-        self.tagged + self.measured + self.missing
+        self.tagged + self.measured + self.refused + self.missing
     }
 
     /// Tracks with a tempo at all, whichever source wrote it.
@@ -769,24 +855,99 @@ impl BpmCoverage {
     }
 }
 
-/// The three-way tempo split, for a UI that distinguishes what a tagger
-/// wrote from what rox estimated. A row marked measured that somehow holds
-/// no tempo counts as missing: the marker never invents a number.
+/// The four-way tempo split, for a UI that distinguishes what a tagger
+/// wrote from what rox estimated, and what rox gave up on from what it
+/// hasn't reached. A row marked measured that somehow holds no tempo counts
+/// as missing: the marker never invents a number. The literal 2 is
+/// [`crate::tempo::Source::Refused`]'s code, pinned beside the others.
 pub fn bpm_breakdown(conn: &Connection) -> rusqlite::Result<BpmCoverage> {
     conn.query_row(
         "SELECT COUNT(CASE WHEN bpm IS NOT NULL AND COALESCE(bpm_source, 0) <> 1 THEN 1 END),
                 COUNT(CASE WHEN bpm IS NOT NULL AND COALESCE(bpm_source, 0) = 1 THEN 1 END),
-                COUNT(CASE WHEN bpm IS NULL THEN 1 END)
+                COUNT(CASE WHEN bpm IS NULL AND COALESCE(bpm_source, 0) = 2 THEN 1 END),
+                COUNT(CASE WHEN bpm IS NULL AND COALESCE(bpm_source, 0) <> 2 THEN 1 END)
          FROM tracks",
         [],
         |row| {
             Ok(BpmCoverage {
                 tagged: row.get::<_, i64>(0)? as u64,
                 measured: row.get::<_, i64>(1)? as u64,
-                missing: row.get::<_, i64>(2)? as u64,
+                refused: row.get::<_, i64>(2)? as u64,
+                missing: row.get::<_, i64>(3)? as u64,
             })
         },
     )
+}
+
+/// The filename extensions the tag writer has a path for, lowercased and
+/// without their dot. Mirrors the format matrix in
+/// [`crate::writer::file_type`], which is the source of truth: that matcher
+/// admits MPEG, FLAC and MP4, and these are the extensions those three
+/// containers arrive under. `writable_extensions_match_the_writer` fails if
+/// the two ever drift.
+///
+/// An extension is a guess about a container, not a promise about a file.
+/// The writer probes the bytes, and it turns one shape down that no
+/// extension can show: a fragmented MP4 is refused at write time even though
+/// `.m4a` is on this list. A count built from here reads as "formats rox has
+/// a writer for", not "files rox will definitely retag".
+pub const WRITABLE_EXTENSIONS: &[&str] = &["flac", "m4a", "m4b", "mp3", "mp4"];
+
+/// A path's lowered filename extension, in SQL. SQLite has no suffix
+/// function, so this leans on `rtrim`'s character-set form: `replace(path,
+/// '.', '')` is the path's characters minus the dot, and trimming those off
+/// the right stops at the last dot, so what's left is the head through that
+/// dot and `substr` past it is the extension.
+///
+/// Two shapes come back empty rather than wrong: a path with no dot at all
+/// (the trim eats everything, and the tail comes back as the whole path),
+/// and a dot that turns out to be in a directory name rather than the
+/// filename (the tail still holds a separator). Both read as "no extension",
+/// which is what they are.
+const EXT_EXPR: &str = "CASE WHEN tail = path OR instr(tail, '/') > 0 OR instr(tail, '\\') > 0
+                             THEN '' ELSE lower(tail) END";
+
+/// The subquery the two extension readouts share: every local track with the
+/// candidate tail [`EXT_EXPR`] then judges, `id` carried along for the
+/// caller that wants rows rather than counts.
+const EXT_ROWS: &str =
+    "SELECT id, path, substr(path, length(rtrim(path, replace(path, '.', ''))) + 1)
+                        AS tail FROM tracks WHERE source = 'local'";
+
+/// Whether [`WRITABLE_EXTENSIONS`] claims this extension, which arrives
+/// lowered from [`extension_breakdown`].
+pub fn extension_writable(ext: &str) -> bool {
+    WRITABLE_EXTENSIONS.contains(&ext)
+}
+
+/// How many local tracks sit in each container, keyed by lowered extension
+/// with the empty string for the files that carry none. A full scan of the
+/// path column, so it belongs on a background connection rather than the
+/// UI-side one.
+pub fn extension_breakdown(conn: &Connection) -> rusqlite::Result<Vec<(String, u64)>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {EXT_EXPR} AS ext, COUNT(*) FROM ({EXT_ROWS}) GROUP BY ext"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+    })?;
+    rows.collect()
+}
+
+/// The ids of local tracks whose extension the writer has no path for, up to
+/// `limit`. The health window narrows the library view to these, and a pinned
+/// id list is matched row by row, so the caller caps what it asks for.
+pub fn unwritable_ids(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<i64>> {
+    let list = WRITABLE_EXTENSIONS
+        .iter()
+        .map(|ext| format!("'{ext}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id FROM ({EXT_ROWS}) WHERE {EXT_EXPR} NOT IN ({list}) LIMIT ?1"
+    ))?;
+    let rows = stmt.query_map([limit as i64], |row| row.get::<_, i64>(0))?;
+    rows.collect()
 }
 
 /// Where the library database's bytes went, one bucket per thing somebody
@@ -1002,27 +1163,67 @@ pub struct BpmToMeasure {
 /// Every local track with no tempo from either source, in id order. What an
 /// analysis pass draws its work from.
 ///
+/// Tracks a pass already listened to and refused stay off the list unless
+/// `retry_refused` says otherwise: a beat the estimator couldn't call last
+/// time is the beat it can't call this time, and a library with a classical
+/// shelf would otherwise decode the whole shelf on every press. The retry is
+/// for an estimator that has since improved, which is a decision the caller
+/// makes on purpose.
+///
 /// Zero-duration rows are skipped, and streaming sources with them: the pass
 /// opens a path with a decoder, and a row claiming no running time has
 /// nothing to count beats over. Cue subsongs are in the list, unlike the
 /// ReplayGain work list: a span of an image decodes fine and runs at its own
 /// tempo, where an album gain measured per path would be measured once and
 /// written onto every track of the disc.
-pub fn bpm_missing(conn: &Connection) -> rusqlite::Result<Vec<BpmToMeasure>> {
+pub fn bpm_missing(conn: &Connection, retry_refused: bool) -> rusqlite::Result<Vec<BpmToMeasure>> {
     let mut stmt = conn.prepare(
         "SELECT id, path, duration_ms, sub FROM tracks
          WHERE bpm IS NULL AND source = 'local' AND duration_ms > 0
+           AND (?1 OR COALESCE(bpm_source, 0) <> ?2)
          ORDER BY id",
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(BpmToMeasure {
-            id: r.get(0)?,
-            path: r.get(1)?,
-            duration_ms: r.get::<_, i64>(2)? as u32,
-            sub: r.get::<_, i64>(3)? as u16,
-        })
-    })?;
+    let rows = stmt.query_map(
+        rusqlite::params![retry_refused, crate::tempo::Source::Refused.code()],
+        |r| {
+            Ok(BpmToMeasure {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                duration_ms: r.get::<_, i64>(2)? as u32,
+                sub: r.get::<_, i64>(3)? as u16,
+            })
+        },
+    )?;
     rows.collect()
+}
+
+/// Mark tracks an analysis pass listened to and found no tempo in, so the
+/// next pass leaves them alone (see [`bpm_missing`]). Only rows still
+/// holding NULL take the mark: one that picked up a tag or a measurement
+/// since the work list was built keeps what it has. Returns how many rows
+/// took it.
+///
+/// No embeddings write is noted, unlike [`set_measured_bpm`]: nothing the
+/// acoustic side reads back has changed, since a refused row's tempo was
+/// missing before and is missing still.
+pub fn set_refused_bpm(conn: &mut Connection, refused: &[(&str, u16)]) -> rusqlite::Result<usize> {
+    let tx = conn.transaction()?;
+    let mut written = 0;
+    {
+        let mut stmt = tx.prepare_cached(
+            "UPDATE tracks SET bpm_source = ?3
+             WHERE source = 'local' AND path = ?1 AND sub = ?2 AND bpm IS NULL",
+        )?;
+        for (path, sub) in refused {
+            written += stmt.execute(rusqlite::params![
+                path,
+                sub,
+                crate::tempo::Source::Refused.code()
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(written)
 }
 
 /// Write one analysis pass's tempos onto the tracks it measured, marked as
@@ -1080,10 +1281,16 @@ pub fn set_measured_bpm(
 /// both columns, which is the shape the work list and the coverage split
 /// already understand.
 pub fn clear_measured_bpm(conn: &Connection) -> rusqlite::Result<usize> {
+    // Refusals go with the measurements: both are the pass's own verdicts,
+    // and the clear exists so an improved pass can have another go at
+    // everything the old one decided.
     let cleared = conn.execute(
         "UPDATE tracks SET bpm = NULL, bpm_source = NULL
-         WHERE source = 'local' AND bpm_source = ?1",
-        [crate::tempo::Source::Measured.code()],
+         WHERE source = 'local' AND bpm_source IN (?1, ?2)",
+        [
+            crate::tempo::Source::Measured.code(),
+            crate::tempo::Source::Refused.code(),
+        ],
     )?;
     // One bump, not one per row: the acoustic cache only asks whether the
     // counter moved, and it reads the tempos back, so a clear invalidates it
@@ -1212,17 +1419,24 @@ pub fn rename_within(conn: &mut Connection, from: &Path, to: &Path) -> rusqlite:
     Ok(moving.len())
 }
 
-/// Drop the local rows under `root` whose path is not in `present`, the set
-/// of files the walk actually found on disk. This is the rescan's delete
-/// half: a file removed from disk loses its row so the rebuilt projection
-/// drops it. Rows outside `root` are untouched, so scanning one folder never
-/// prunes another's. The listen history and playlist entries keep their own
-/// snapshot columns and only lose the join back to the track, by design.
-/// Returns the number of rows removed.
+/// Drop the local rows under `root` whose path is not in `present`, the files
+/// the walk actually found on disk. This is the rescan's delete half: a file
+/// removed from disk loses its row so the rebuilt projection drops it. Rows
+/// outside `root` are untouched, so scanning one folder never prunes
+/// another's. The listen history and playlist entries keep their own snapshot
+/// columns and only lose the join back to the track, by design. Returns the
+/// number of rows removed.
+///
+/// `present` is the walk's own list, sorted by each path's
+/// `to_string_lossy` form, and it is searched rather than copied into a set:
+/// a second owned string per path is a gigabyte and a half at ten million
+/// files, and the walk already has to hold the list anyway. The lossy string
+/// is what keys a stored row too, so a path that isn't valid UTF-8 compares
+/// the same on both sides.
 pub fn prune_missing(
     conn: &mut Connection,
     root: &Path,
-    present: &std::collections::HashSet<String>,
+    present: &[PathBuf],
 ) -> rusqlite::Result<usize> {
     let (lo, hi) = path_range(root);
     // The stored paths under root the walk didn't find. Collected first so
@@ -1237,7 +1451,7 @@ pub fn prune_missing(
         )?;
         let rows = stmt.query_map(rusqlite::params![lo, hi], |r| r.get::<_, String>(0))?;
         rows.filter_map(Result::ok)
-            .filter(|path| !present.contains(path))
+            .filter(|path| !walked(present, path))
             .collect()
     };
     if gone.is_empty() {
@@ -1257,6 +1471,16 @@ pub fn prune_missing(
     tx.commit()?;
     sweep_cue_orphans(conn)?;
     Ok(removed)
+}
+
+/// Whether the walk found this stored path, over the sorted list
+/// [`prune_missing`] takes. The comparison is on the same lossy string a row
+/// is keyed with, which is also the order the list is sorted in, so the
+/// search and the sort agree.
+fn walked(present: &[PathBuf], path: &str) -> bool {
+    present
+        .binary_search_by(|walked| walked.to_string_lossy().as_ref().cmp(path))
+        .is_ok()
 }
 
 /// Every local path with its (mtime, size), so a rescan can skip files that
@@ -1335,6 +1559,10 @@ pub fn apply_changes(
             Field::Album => ("album", false),
             Field::AlbumArtist => ("album_artist", false),
             Field::Genre => ("genre", false),
+            Field::TitleSort => ("title_sort", false),
+            Field::ArtistSort => ("artist_sort", false),
+            Field::AlbumArtistSort => ("album_artist_sort", false),
+            Field::AlbumSort => ("album_sort", false),
             Field::Year => ("year", true),
             Field::TrackNo => ("track_no", true),
             Field::DiscNo => ("disc_no", true),
@@ -1347,9 +1575,12 @@ pub fn apply_changes(
             )?;
         } else if column == "album_artist" && value.is_empty() {
             // A cleared album artist falls back to the track artist, the
-            // scanner's grouping rule.
+            // scanner's grouping rule, and the sort name comes with it:
+            // the old album_artist_sort sorted a name the row no longer
+            // carries.
             conn.execute(
-                "UPDATE tracks SET album_artist = artist WHERE id = ?1",
+                "UPDATE tracks SET album_artist = artist, album_artist_sort = artist_sort \
+                 WHERE id = ?1",
                 rusqlite::params![id],
             )?;
         } else {
@@ -1670,8 +1901,8 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
 /// call, so a sink that keeps one copies it; the projection interns or
 /// arena-copies every string it takes, so nothing does.
 ///
-/// The field order matches the SELECT in [`scan_range`]: the tags, then the
-/// codec and stream numbers, the rating and scan time, the two ReplayGain
+/// The field order matches the SELECT in [`scan_range`]: the tags with the
+/// sort names beside them, then the codec and stream numbers, the rating and scan time, the two ReplayGain
 /// figures, the tempo and where it came from, and last the subsong number.
 /// The path is selected so the projection can derive each track's folder, the
 /// sub so it can build a TrackKey. Spans aren't: they're sparse, and the
@@ -1683,6 +1914,11 @@ pub struct ScanRow<'a> {
     pub artist: &'a str,
     pub album_artist: &'a str,
     pub album: &'a str,
+    /// The four sort names, empty where the file's tags carried none.
+    pub title_sort: &'a str,
+    pub artist_sort: &'a str,
+    pub album_artist_sort: &'a str,
+    pub album_sort: &'a str,
     pub genre: &'a str,
     pub year: u16,
     pub disc_no: u16,
@@ -1713,7 +1949,9 @@ pub fn scan_range(
     mut sink: impl FnMut(ScanRow<'_>),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, path, title, artist, album_artist, album, genre, year, disc_no, track_no,
+        "SELECT id, path, title, artist, album_artist, album,
+                title_sort, artist_sort, album_artist_sort, album_sort,
+                genre, year, disc_no, track_no,
                 duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added,
                 rg_track_gain, rg_album_gain, bpm, bpm_source, sub
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
@@ -1727,25 +1965,129 @@ pub fn scan_range(
             artist: row.get_ref(3)?.as_str().unwrap_or(""),
             album_artist: row.get_ref(4)?.as_str().unwrap_or(""),
             album: row.get_ref(5)?.as_str().unwrap_or(""),
-            genre: row.get_ref(6)?.as_str().unwrap_or(""),
-            year: row.get::<_, i64>(7)? as u16,
-            disc_no: row.get::<_, i64>(8)? as u16,
-            track_no: row.get::<_, i64>(9)? as u16,
-            duration_ms: row.get::<_, i64>(10)? as u32,
-            codec: row.get_ref(11)?.as_str().unwrap_or(""),
-            bitrate_kbps: row.get::<_, i64>(12)? as u16,
-            sample_rate_hz: row.get::<_, i64>(13)? as u32,
-            bit_depth: row.get::<_, i64>(14)? as u8,
-            rating: row.get::<_, i64>(15)? as u8,
-            added: row.get::<_, i64>(16)?,
-            track_gain_db: row.get(17)?,
-            album_gain_db: row.get(18)?,
-            bpm: row.get(19)?,
-            bpm_source: crate::tempo::Source::from_code(row.get(20)?),
-            sub: row.get::<_, i64>(21)? as u16,
+            title_sort: row.get_ref(6)?.as_str().unwrap_or(""),
+            artist_sort: row.get_ref(7)?.as_str().unwrap_or(""),
+            album_artist_sort: row.get_ref(8)?.as_str().unwrap_or(""),
+            album_sort: row.get_ref(9)?.as_str().unwrap_or(""),
+            genre: row.get_ref(10)?.as_str().unwrap_or(""),
+            year: row.get::<_, i64>(11)? as u16,
+            disc_no: row.get::<_, i64>(12)? as u16,
+            track_no: row.get::<_, i64>(13)? as u16,
+            duration_ms: row.get::<_, i64>(14)? as u32,
+            codec: row.get_ref(15)?.as_str().unwrap_or(""),
+            bitrate_kbps: row.get::<_, i64>(16)? as u16,
+            sample_rate_hz: row.get::<_, i64>(17)? as u32,
+            bit_depth: row.get::<_, i64>(18)? as u8,
+            rating: row.get::<_, i64>(19)? as u8,
+            added: row.get::<_, i64>(20)?,
+            track_gain_db: row.get(21)?,
+            album_gain_db: row.get(22)?,
+            bpm: row.get(23)?,
+            bpm_source: crate::tempo::Source::from_code(row.get(24)?),
+            sub: row.get::<_, i64>(25)? as u16,
         });
     }
     Ok(())
+}
+
+/// The same columns [`scan_range`] streams, for a handful of ids picked out
+/// by name rather than a whole rowid range. This is what an incremental
+/// projection patch reads: a watch batch touched twenty files, so the rows to
+/// re-read are twenty point lookups on the primary key, not a scan of the
+/// table.
+///
+/// Each id goes through [`scan_range`] as a range of one, which looks like a
+/// trick and is a deliberate one: the column list and the per-column
+/// extraction stay written down in exactly one place, so a column added to
+/// the projection can't land in the full load and miss the patch. An id with
+/// no row is silently absent, which is how the caller learns a file it
+/// expected is gone.
+pub fn rows_for_ids(
+    conn: &Connection,
+    ids: &[i64],
+    mut sink: impl FnMut(ScanRow<'_>),
+) -> rusqlite::Result<()> {
+    for &id in ids {
+        scan_range(conn, id - 1, id, &mut sink)?;
+    }
+    Ok(())
+}
+
+/// The track ids sitting at exactly these paths, cue tracks included. A cue
+/// sheet is not a track path, so a sheet that changed is matched through the
+/// side table's `cue_path` as well: editing a .cue re-cuts the image beside
+/// it, and the rows that change are the image's, under a path the caller
+/// never saw an event for.
+pub fn ids_for_paths(conn: &Connection, paths: &[PathBuf]) -> rusqlite::Result<Vec<i64>> {
+    let mut out = Vec::new();
+    let mut by_path =
+        conn.prepare_cached("SELECT id FROM tracks WHERE source = 'local' AND path = ?1")?;
+    let mut by_sheet =
+        conn.prepare_cached("SELECT track_id FROM cue_tracks WHERE cue_path = ?1")?;
+    for path in paths {
+        let path = path.to_string_lossy();
+        for id in by_path.query_map([path.as_ref()], |r| r.get::<_, i64>(0))? {
+            out.push(id?);
+        }
+        for id in by_sheet.query_map([path.as_ref()], |r| r.get::<_, i64>(0))? {
+            out.push(id?);
+        }
+    }
+    Ok(out)
+}
+
+/// The track ids [`remove_subtree`] would delete for this path: the exact
+/// row and everything beneath it. Read before the delete, so the projection
+/// knows which rows to tombstone once the rows themselves are gone.
+pub fn ids_under(conn: &Connection, path: &Path) -> rusqlite::Result<Vec<i64>> {
+    let exact = path.to_string_lossy();
+    let (lo, hi) = path_range(path);
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM tracks
+         WHERE source = 'local' AND (path = ?1 OR (path >= ?2 AND path < ?3))",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![exact, lo, hi], |r| r.get::<_, i64>(0))?;
+    rows.collect()
+}
+
+/// The play count and cue span for a handful of ids, the two columns a
+/// freshly appended projection row can't read off its own `tracks` row.
+/// [`crate::listens::counts`] and [`cue_spans`] answer the same questions for
+/// the whole library at load; a patch only wants the rows it touched, and a
+/// full aggregate per watch batch would put the library's size back into work
+/// that is supposed to be proportional to what changed.
+pub fn plays_for_ids(conn: &Connection, ids: &[i64]) -> rusqlite::Result<HashMap<i64, u32>> {
+    let mut stmt = conn.prepare_cached("SELECT COUNT(*) FROM listens WHERE track_id = ?1")?;
+    let mut out = HashMap::new();
+    for &id in ids {
+        let n: i64 = stmt.query_row([id], |r| r.get(0))?;
+        if n > 0 {
+            out.insert(id, n as u32);
+        }
+    }
+    Ok(out)
+}
+
+/// The cue spans for a handful of ids, the sparse half of the same problem.
+pub fn cue_spans_for_ids(
+    conn: &Connection,
+    ids: &[i64],
+) -> rusqlite::Result<HashMap<i64, crate::cue::Span>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT start_ms, end_ms FROM cue_tracks WHERE track_id = ?1")?;
+    let mut out = HashMap::new();
+    for &id in ids {
+        let mut rows = stmt.query_map([id], |r| {
+            Ok(crate::cue::Span {
+                start_ms: r.get::<_, i64>(0)? as u32,
+                end_ms: r.get::<_, Option<i64>>(1)?.map(|end| end as u32),
+            })
+        })?;
+        if let Some(span) = rows.next().transpose()? {
+            out.insert(id, span);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1754,6 +2096,10 @@ mod tests {
 
     fn row(path: &str, album_artist: &str, album: &str, size: u64) -> TrackRow {
         TrackRow {
+            title_sort: String::new(),
+            artist_sort: String::new(),
+            album_artist_sort: String::new(),
+            album_sort: String::new(),
             sub: 0,
             cue: None,
             path: path.into(),
@@ -2109,6 +2455,7 @@ mod tests {
         assert_eq!(Source::Measured.code(), 1);
         assert_eq!(Source::Tags.code(), 0);
         assert_eq!(crate::tempo::Source::Measured.code(), 1);
+        assert_eq!(crate::tempo::Source::Refused.code(), 2);
         assert_eq!(crate::tempo::Source::Tags.code(), 0);
     }
 
@@ -2668,6 +3015,7 @@ mod tests {
             BpmCoverage {
                 tagged: 1,
                 measured: 1,
+                refused: 0,
                 missing: 0
             }
         );
@@ -2748,7 +3096,7 @@ mod tests {
         )
         .unwrap();
 
-        let work = bpm_missing(&conn).unwrap();
+        let work = bpm_missing(&conn, false).unwrap();
         assert_eq!(
             work.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
             ["/m/a/1.mp3", "/m/a/disc.flac"]
@@ -2768,12 +3116,12 @@ mod tests {
             &[("/m/a/1.mp3", 0, 128.0), ("/m/a/disc.flac", 1, 174.0)],
         )
         .unwrap();
-        assert!(bpm_missing(&conn).unwrap().is_empty());
+        assert!(bpm_missing(&conn, false).unwrap().is_empty());
 
         // Forgetting what rox measured puts exactly those two back on the
         // list; the tagged row's number is the file's and stays.
         assert_eq!(clear_measured_bpm(&conn).unwrap(), 2);
-        let again = bpm_missing(&conn).unwrap();
+        let again = bpm_missing(&conn, false).unwrap();
         assert_eq!(
             again.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
             ["/m/a/1.mp3", "/m/a/disc.flac"]
@@ -2785,6 +3133,140 @@ mod tests {
         );
         // Nothing measured left, so a second clear is a no-op.
         assert_eq!(clear_measured_bpm(&conn).unwrap(), 0);
+    }
+
+    /// A track the pass listened to and got nothing from is marked rather
+    /// than left looking untouched: off the ordinary list, on the retry
+    /// list, counted on its own in the split, kept through a rescan that
+    /// brings no tag, and cleared with the measurements so an improved
+    /// pass gets another go.
+    #[test]
+    fn a_refused_tempo_stays_off_the_list_until_asked_for() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let timed = |path: &str| {
+            let mut r = row(path, "X", "Album", 100);
+            r.duration_ms = 200_000;
+            r
+        };
+        insert_batch(&mut conn, &[timed("/m/a/1.mp3"), timed("/m/a/2.mp3")]).unwrap();
+        assert_eq!(set_refused_bpm(&mut conn, &[("/m/a/1.mp3", 0)]).unwrap(), 1);
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/1.mp3"),
+            (None, crate::tempo::Source::Refused)
+        );
+
+        let paths =
+            |work: Vec<BpmToMeasure>| -> Vec<String> { work.into_iter().map(|w| w.path).collect() };
+        assert_eq!(paths(bpm_missing(&conn, false).unwrap()), ["/m/a/2.mp3"]);
+        assert_eq!(
+            paths(bpm_missing(&conn, true).unwrap()),
+            ["/m/a/1.mp3", "/m/a/2.mp3"]
+        );
+        let split = bpm_breakdown(&conn).unwrap();
+        assert_eq!((split.refused, split.missing), (1, 1));
+
+        // A rescan that brings no tag keeps the refusal, the way it keeps a
+        // measurement; one that brings a tag replaces it.
+        insert_batch(&mut conn, &[timed("/m/a/1.mp3")]).unwrap();
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/1.mp3"),
+            (None, crate::tempo::Source::Refused)
+        );
+        let mut tagged = timed("/m/a/1.mp3");
+        tagged.bpm = Some(96.0);
+        insert_batch(&mut conn, &[tagged]).unwrap();
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/1.mp3"),
+            (Some(96.0), crate::tempo::Source::Tags)
+        );
+
+        // A refusal never lands on a row that has a number by now.
+        assert_eq!(set_refused_bpm(&mut conn, &[("/m/a/1.mp3", 0)]).unwrap(), 0);
+
+        // The clear takes refusals with the measurements.
+        set_refused_bpm(&mut conn, &[("/m/a/2.mp3", 0)]).unwrap();
+        assert_eq!(clear_measured_bpm(&conn).unwrap(), 1);
+        assert_eq!(paths(bpm_missing(&conn, false).unwrap()), ["/m/a/2.mp3"]);
+    }
+
+    /// The container split every path lands in exactly one bucket of, and
+    /// the two shapes that have no extension to speak of: a bare filename,
+    /// and a dot that belongs to a directory rather than the file.
+    #[test]
+    fn extension_breakdown_buckets_by_lowered_suffix() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        insert_batch(
+            &mut conn,
+            &[
+                row("/m/a/1.mp3", "X", "Album", 100),
+                row("/m/a/2.MP3", "X", "Album", 100),
+                row("/m/a/3.flac", "X", "Album", 100),
+                row("/m/a/4.wav", "X", "Album", 100),
+                row("/m/a/nameless", "X", "Album", 100),
+                row("/m/a.b/5", "X", "Album", 100),
+            ],
+        )
+        .unwrap();
+
+        let split: HashMap<String, u64> = extension_breakdown(&conn).unwrap().into_iter().collect();
+        assert_eq!(split.get("mp3"), Some(&2), "casing folds into one bucket");
+        assert_eq!(split.get("flac"), Some(&1));
+        assert_eq!(split.get("wav"), Some(&1));
+        assert_eq!(
+            split.get(""),
+            Some(&2),
+            "a bare name and a dotted folder both read as no extension"
+        );
+        assert_eq!(split.values().sum::<u64>(), 6, "every row counted once");
+
+        // The ids behind the tile's "rox can't retag these" number: the wav
+        // and the two extensionless rows, and nothing the writer has a path
+        // for.
+        let unwritable = unwritable_ids(&conn, 100).unwrap();
+        let mut paths = paths_for(&conn, &unwritable).unwrap();
+        paths.sort();
+        assert_eq!(paths, ["/m/a.b/5", "/m/a/4.wav", "/m/a/nameless"]);
+        assert_eq!(
+            unwritable_ids(&conn, 2).unwrap().len(),
+            2,
+            "the cap is honoured, since a pinned id list is matched row by row"
+        );
+    }
+
+    /// [`WRITABLE_EXTENSIONS`] is a mirror of the writer's format matrix, and
+    /// this is the mirror check: a real file of each claimed container, under
+    /// that extension, comes back supported. A format dropped from
+    /// [`crate::writer::file_type`] fails here rather than quietly turning a
+    /// health count into a lie.
+    #[test]
+    fn writable_extensions_match_the_writer() {
+        let dir = crate::writer::scratch("store-writable-extensions");
+        for ext in WRITABLE_EXTENSIONS {
+            let path = match *ext {
+                "mp3" => crate::writer::mp3_file(&dir, &format!("track.{ext}")),
+                "flac" => crate::writer::flac_file(&dir, &format!("track.{ext}")),
+                _ => crate::writer::m4a_file(&dir, &format!("track.{ext}")),
+            };
+            assert!(
+                crate::writer::supported(&path),
+                "the writer no longer takes {ext}, which this list still claims"
+            );
+            assert!(
+                extension_writable(ext),
+                "{ext} has to answer its own membership"
+            );
+        }
+        // The other side of the matrix: a container the writer has no path
+        // for stays off the list, whatever its extension says.
+        assert!(!extension_writable("wav"));
+        assert!(!extension_writable("ogg"));
+        assert!(!extension_writable(""));
+        assert!(
+            !extension_writable("MP3"),
+            "the breakdown lowers before it asks"
+        );
     }
 
     /// The scan timestamp stamps a row on its first insert and a rescan's
@@ -2821,7 +3303,6 @@ mod tests {
     /// found, leaves the ones it did, and never touches another root.
     #[test]
     fn prune_removes_only_missing_rows_under_root() {
-        use std::collections::HashSet;
         let mut conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         insert_batch(
@@ -2837,7 +3318,7 @@ mod tests {
 
         // The walk under /m found only a/1; a/2 and b/1 are gone. /n is a
         // different root and out of range, so it stays regardless.
-        let present: HashSet<String> = ["/m/a/1.mp3".to_string()].into_iter().collect();
+        let present = walk_list(["/m/a/1.mp3"]);
         let removed = prune_missing(&mut conn, Path::new("/m"), &present).unwrap();
         assert_eq!(removed, 2);
 
@@ -2846,13 +3327,72 @@ mod tests {
         assert_eq!(paths, ["/m/a/1.mp3", "/n/d/1.mp3"]);
 
         // A pass that found everything removes nothing.
-        let present: HashSet<String> = ["/m/a/1.mp3".to_string(), "/n/d/1.mp3".to_string()]
-            .into_iter()
-            .collect();
+        let present = walk_list(["/m/a/1.mp3", "/n/d/1.mp3"]);
         assert_eq!(
             prune_missing(&mut conn, Path::new("/m"), &present).unwrap(),
             0
         );
+    }
+
+    /// A walk's list as the scanner leaves it: paths sorted by the string
+    /// form a stored row is keyed with, which is the order the prune's
+    /// binary search reads it in.
+    fn walk_list<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        out.sort_unstable_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        out
+    }
+
+    /// Searching the walk's sorted list answers exactly what the owned set
+    /// of every path used to answer. The paths here are the ones where the
+    /// two orders disagree: PathBuf sorts component by component, so
+    /// "/m/a/b.mp3" lands before "/m/a.mp3" while the strings run the other
+    /// way, and a list sorted the wrong way would silently fail to find
+    /// files that are right there and prune them.
+    #[test]
+    fn prune_search_matches_the_old_set() {
+        let paths = [
+            "/m/a.mp3",
+            "/m/a/b.mp3",
+            "/m/a/c.mp3",
+            "/m/a b.mp3",
+            "/m/a-b.mp3",
+            "/m/b.mp3",
+            "/m/z/y/x.mp3",
+        ];
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let rows: Vec<crate::TrackRow> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| row(p, "X", "Album", 100 + i as u64))
+            .collect();
+        insert_batch(&mut conn, &rows).unwrap();
+        // Two files vanished; everything else is still on disk.
+        let found: Vec<&str> = paths
+            .iter()
+            .copied()
+            .filter(|p| *p != "/m/a/b.mp3" && *p != "/m/b.mp3")
+            .collect();
+
+        let present = walk_list(found.iter().copied());
+        let set: std::collections::HashSet<String> = found.iter().map(|p| p.to_string()).collect();
+        let stored: Vec<String> = local_files(&conn).unwrap().into_keys().collect();
+        for path in &stored {
+            assert_eq!(
+                walked(&present, path),
+                set.contains(path),
+                "the search and the set disagree about {path}"
+            );
+        }
+
+        let removed = prune_missing(&mut conn, Path::new("/m"), &present).unwrap();
+        assert_eq!(removed, 2);
+        let mut left: Vec<String> = local_files(&conn).unwrap().into_keys().collect();
+        left.sort();
+        let mut want: Vec<String> = found.iter().map(|p| p.to_string()).collect();
+        want.sort();
+        assert_eq!(left, want);
     }
 
     /// A deleted file drops just its row; a deleted folder drops the whole
@@ -3222,6 +3762,42 @@ mod tests {
             ("Someone", "Album"),
             "untouched columns hold"
         );
+    }
+
+    /// A cleared album artist falls back to the track artist, and the sort
+    /// name has to follow it: leaving the compilation's sort name behind
+    /// would file the row under a name it no longer carries.
+    #[test]
+    fn clearing_the_album_artist_takes_its_sort_name_too() {
+        use crate::writer::{Change, Field};
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut before = row("/m/a/1.mp3", "Various Artists", "Album", 100);
+        before.artist = "Kenshi Yonezu".into();
+        before.artist_sort = "Yonezu, Kenshi".into();
+        before.album_artist_sort = "Various Artists".into();
+        insert_batch(&mut conn, &[before]).unwrap();
+        let id = id_for_path(&conn, "/m/a/1.mp3").unwrap().unwrap();
+
+        apply_changes(
+            &conn,
+            id,
+            &[Change {
+                field: Field::AlbumArtist,
+                value: None,
+            }],
+        )
+        .unwrap();
+
+        let (album_artist, sort): (String, String) = conn
+            .query_row(
+                "SELECT album_artist, album_artist_sort FROM tracks WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(album_artist, "Kenshi Yonezu");
+        assert_eq!(sort, "Yonezu, Kenshi");
     }
 
     /// The storage page's numbers: every btree charged to the thing it

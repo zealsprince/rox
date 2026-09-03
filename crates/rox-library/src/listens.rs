@@ -55,8 +55,11 @@ pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
 /// relink to it: by the recorded path first, then by the tag snapshot
 /// when it names exactly one track. Events with a live track just keep
 /// their path current. The event itself (played_at, the tag snapshot)
-/// never changes. Returns how many events relinked.
-pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
+/// never changes.
+///
+/// Returns how many events relinked, or None when nothing was dangling and
+/// the matchers never ran at all.
+pub fn reattach(conn: &Connection) -> rusqlite::Result<Option<usize>> {
     // The snapshot key is the fragment form a TrackKey serializes to: the
     // bare path for a plain file, path#sub for a cue track. Matching on the
     // bare path would attach every listen of a rip to whichever of its rows
@@ -71,6 +74,14 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
              CASE WHEN t.sub = 0 THEN t.path ELSE t.path || '#' || t.sub END",
         [],
     )?;
+    // Nothing dangling, nothing to match. The two passes below are the
+    // expensive half (the tag one joins on the tag triple and counts the
+    // matches to refuse an ambiguous one), and a healthy library runs this
+    // after every scan and every reindex, so it pays one indexed probe
+    // instead.
+    if !has_dangling(conn)? {
+        return Ok(None);
+    }
     let by_path = conn.execute(
         "UPDATE listens SET track_id = t.id FROM tracks t
          WHERE listens.path <> ''
@@ -92,7 +103,20 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
                 AND c.album = listens.album) = 1",
         [],
     )?;
-    Ok(by_path + by_tags)
+    Ok(Some(by_path + by_tags))
+}
+
+/// Whether any event points at a track row that no longer exists. One
+/// indexed lookup per event and it stops at the first hit, so the answer
+/// costs nothing on a library where every play still has its file.
+fn has_dangling(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM listens
+            WHERE NOT EXISTS (SELECT 1 FROM tracks x WHERE x.id = listens.track_id))",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|found| found == 1)
 }
 
 /// One listen as it's recorded: the track's identity, when the play began
@@ -219,16 +243,21 @@ const SNAPSHOT_COLUMNS: &str = "COALESCE(t.title, l.title),
      COALESCE(t.sample_rate, 0), COALESCE(t.bit_depth, 0),
      COALESCE(t.rating, 0), COALESCE(t.path, l.path)";
 
-/// The newest events at or after `since` first, one row per event; 0
-/// reads them all.
-pub fn recent(conn: &Connection, since: i64, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
+/// The newest events at or after `since` and before `until` first, one
+/// row per event; 0 and i64::MAX read them all.
+pub fn recent(
+    conn: &Connection,
+    since: i64,
+    until: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<TrackPlays>> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT l.track_id, 1, l.played_at, {SNAPSHOT_COLUMNS}
          FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
-         WHERE l.played_at >= ?1
-         ORDER BY l.played_at DESC, l.id DESC LIMIT ?2"
+         WHERE l.played_at >= ?1 AND l.played_at < ?2
+         ORDER BY l.played_at DESC, l.id DESC LIMIT ?3"
     ))?;
-    let rows = stmt.query_map([since, limit as i64], track_plays_row)?;
+    let rows = stmt.query_map([since, until, limit as i64], track_plays_row)?;
     rows.collect()
 }
 
@@ -341,7 +370,8 @@ pub struct NamePlays {
 }
 
 /// Play counts grouped under one tag, most first, over the events at or
-/// after `since` (0 counts them all), the stats panel's range knob.
+/// after `since` and before `until` (0 and i64::MAX count them all), the
+/// stats panel's range knob.
 /// Grouping goes through the live catalog first, so fixing a tag
 /// re-buckets its history; untagged plays (empty name) stay out of the
 /// list.
@@ -349,6 +379,7 @@ pub fn rollup(
     conn: &Connection,
     by: Rollup,
     since: i64,
+    until: i64,
     limit: usize,
     fold: bool,
 ) -> rusqlite::Result<Vec<NamePlays>> {
@@ -379,11 +410,11 @@ pub fn rollup(
         "SELECT COALESCE(t.{column}, l.{column}) AS name, {sub}, COUNT(*) AS plays,
                 COALESCE(MAX(CASE WHEN t.source = 'local' THEN t.path END), MAX(l.path)) AS art
          FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
-         WHERE l.played_at >= ?1 AND name <> ''
+         WHERE l.played_at >= ?1 AND l.played_at < ?2 AND name <> ''
          GROUP BY name
-         ORDER BY plays DESC, name LIMIT ?2"
+         ORDER BY plays DESC, name LIMIT ?3"
     ))?;
-    let rows = stmt.query_map([since, clip], |row| {
+    let rows = stmt.query_map([since, until, clip], |row| {
         Ok(NamePlays {
             name: row.get(0)?,
             sub: row.get(1)?,
@@ -497,30 +528,33 @@ pub fn earliest(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 }
 
 /// Listens bucketed over time for the chart: one count per `bucket`
-/// seconds from `since` up to `now`, empty buckets included, so the
-/// bars show the quiet stretches too.
+/// seconds from `since` up through `end`, empty buckets included, so the
+/// bars show the quiet stretches too. `until` bounds the events (an
+/// exclusive upper edge, i64::MAX for none); a listen stamped past `end`
+/// but under it lands in the last bar.
 pub fn histogram(
     conn: &Connection,
     since: i64,
     bucket: i64,
-    now: i64,
+    end: i64,
+    until: i64,
 ) -> rusqlite::Result<Vec<u64>> {
     // A non-positive bucket has no bar width; bail before it divides.
     if bucket <= 0 {
         return Ok(Vec::new());
     }
-    let n = ((now - since) / bucket).max(0) as usize + 1;
+    let n = ((end - since) / bucket).max(0) as usize + 1;
     let mut counts = vec![0u64; n];
     let mut stmt = conn.prepare_cached(
         "SELECT (played_at - ?1) / ?2 AS bucket, COUNT(*) FROM listens
-         WHERE played_at >= ?1 GROUP BY bucket",
+         WHERE played_at >= ?1 AND played_at < ?3 GROUP BY bucket",
     )?;
-    let rows = stmt.query_map([since, bucket], |row| {
+    let rows = stmt.query_map([since, bucket, until], |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as u64))
     })?;
     for row in rows {
         let (index, count) = row?;
-        // A listen stamped past `now` (clock skew) goes in the last bar
+        // A listen stamped past `end` (clock skew) goes in the last bar
         // rather than out of bounds.
         let index = (index.max(0) as usize).min(n - 1);
         counts[index] += count;
@@ -577,16 +611,20 @@ pub fn ids_for_name(
         "SELECT id FROM tracks WHERE source = 'local' AND {column} = ?1
          ORDER BY album_artist, album, disc_no, track_no LIMIT ?2"
     ))?;
-    let rows = stmt.query_map(rusqlite::params![name, limit as i64], |row| row.get(0))?;
+    // A caller after the whole pool passes usize::MAX, which would cast to
+    // a negative LIMIT; saturate instead of leaning on SQLite reading that
+    // as "no limit".
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let rows = stmt.query_map(rusqlite::params![name, limit], |row| row.get(0))?;
     rows.collect()
 }
 
-/// How many listens landed at or after `since` (unix seconds); 0 counts
-/// them all.
-pub fn count_since(conn: &Connection, since: i64) -> rusqlite::Result<u64> {
+/// How many listens landed at or after `since` and before `until` (unix
+/// seconds); 0 and i64::MAX count them all.
+pub fn count_between(conn: &Connection, since: i64, until: i64) -> rusqlite::Result<u64> {
     conn.query_row(
-        "SELECT COUNT(*) FROM listens WHERE played_at >= ?1",
-        [since],
+        "SELECT COUNT(*) FROM listens WHERE played_at >= ?1 AND played_at < ?2",
+        [since, until],
         |row| row.get::<_, i64>(0),
     )
     .map(|n| n as u64)
@@ -599,6 +637,10 @@ mod tests {
 
     fn track(path: &str, title: &str, artist: &str, album: &str, genre: &str) -> TrackRow {
         TrackRow {
+            title_sort: String::new(),
+            artist_sort: String::new(),
+            album_artist_sort: String::new(),
+            album_sort: String::new(),
             sub: 0,
             cue: None,
             path: path.into(),
@@ -645,16 +687,21 @@ mod tests {
         listen(&conn, "/m/1.mp3", 300);
         listen(&conn, "/m/3.mp3", 200);
 
-        let all = recent(&conn, 0, 10).unwrap();
+        let all = recent(&conn, 0, i64::MAX, 10).unwrap();
         assert_eq!(
             all.iter().map(|r| r.last_played).collect::<Vec<_>>(),
             [300, 200, 100],
             "recent runs newest first"
         );
         assert_eq!(
-            recent(&conn, 200, 10).unwrap().len(),
+            recent(&conn, 200, i64::MAX, 10).unwrap().len(),
             2,
             "a range bound drops older events"
+        );
+        assert_eq!(
+            recent(&conn, 0, 300, 10).unwrap().len(),
+            2,
+            "and the upper edge is exclusive"
         );
 
         let most = most_played(&conn, 10).unwrap();
@@ -664,7 +711,7 @@ mod tests {
         assert_eq!(never.len(), 1);
         assert_eq!(never[0].title, "Two");
 
-        let genres = rollup(&conn, Rollup::Genre, 0, 10, false).unwrap();
+        let genres = rollup(&conn, Rollup::Genre, 0, i64::MAX, 10, false).unwrap();
         assert_eq!(
             genres
                 .iter()
@@ -672,7 +719,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("rock", 2), ("jazz", 1)]
         );
-        let albums = rollup(&conn, Rollup::Album, 0, 10, false).unwrap();
+        let albums = rollup(&conn, Rollup::Album, 0, i64::MAX, 10, false).unwrap();
         assert_eq!(
             (albums[0].name.as_str(), albums[0].sub.as_str()),
             ("First", "A"),
@@ -683,7 +730,7 @@ mod tests {
             "and a file under the name, for the row's cover"
         );
 
-        let recent_genres = rollup(&conn, Rollup::Genre, 200, 10, false).unwrap();
+        let recent_genres = rollup(&conn, Rollup::Genre, 200, i64::MAX, 10, false).unwrap();
         assert_eq!(
             recent_genres
                 .iter()
@@ -693,8 +740,18 @@ mod tests {
             "a range bound re-counts the rollup"
         );
 
-        assert_eq!(count_since(&conn, 0).unwrap(), 3);
-        assert_eq!(count_since(&conn, 200).unwrap(), 2);
+        assert_eq!(count_between(&conn, 0, i64::MAX).unwrap(), 3);
+        assert_eq!(count_between(&conn, 200, i64::MAX).unwrap(), 2);
+        assert_eq!(count_between(&conn, 100, 300).unwrap(), 2);
+        assert_eq!(
+            rollup(&conn, Rollup::Genre, 0, 300, 10, false)
+                .unwrap()
+                .iter()
+                .map(|g| (g.name.as_str(), g.plays))
+                .collect::<Vec<_>>(),
+            [("jazz", 1), ("rock", 1)],
+            "an upper bound re-counts the rollup too"
+        );
 
         assert_eq!(
             ids_for_name(&conn, Rollup::Artist, "A", 10, false)
@@ -712,14 +769,19 @@ mod tests {
 
         assert_eq!(earliest(&conn).unwrap(), Some(100));
         assert_eq!(
-            histogram(&conn, 100, 100, 400).unwrap(),
+            histogram(&conn, 100, 100, 400, i64::MAX).unwrap(),
             [1, 1, 1, 0],
             "one count per bucket, empty buckets included"
         );
         assert_eq!(
-            histogram(&conn, 0, 1000, 400).unwrap(),
+            histogram(&conn, 0, 1000, 400, i64::MAX).unwrap(),
             [3],
             "one bucket swallows everything"
+        );
+        assert_eq!(
+            histogram(&conn, 100, 100, 299, 300).unwrap(),
+            [1, 1],
+            "a bounded span stops at its edge instead of folding the rest in"
         );
     }
 
@@ -744,7 +806,7 @@ mod tests {
         listen(&conn, "/m/3.mp3", 300);
         listen(&conn, "/m/3.mp3", 400);
 
-        let genres = rollup(&conn, Rollup::Genre, 0, 10, false).unwrap();
+        let genres = rollup(&conn, Rollup::Genre, 0, i64::MAX, 10, false).unwrap();
         assert_eq!(
             genres
                 .iter()
@@ -754,7 +816,12 @@ mod tests {
             "the list track counts under both of its values"
         );
         // The limit clips the split values, not the raw list strings.
-        assert_eq!(rollup(&conn, Rollup::Genre, 0, 1, false).unwrap().len(), 1);
+        assert_eq!(
+            rollup(&conn, Rollup::Genre, 0, i64::MAX, 1, false)
+                .unwrap()
+                .len(),
+            1
+        );
 
         assert_eq!(
             ids_for_name(&conn, Rollup::Genre, "Shoegaze", 10, false)
@@ -789,10 +856,10 @@ mod tests {
         listen(&conn, "/m/1.mp3", 200);
         listen(&conn, "/m/2.mp3", 300);
 
-        let exact = rollup(&conn, Rollup::Artist, 0, 10, false).unwrap();
+        let exact = rollup(&conn, Rollup::Artist, 0, i64::MAX, 10, false).unwrap();
         assert_eq!(exact.len(), 2, "exact keeps casings apart");
 
-        let artists = rollup(&conn, Rollup::Artist, 0, 10, true).unwrap();
+        let artists = rollup(&conn, Rollup::Artist, 0, i64::MAX, 10, true).unwrap();
         assert_eq!(
             artists
                 .iter()
@@ -801,7 +868,7 @@ mod tests {
             [("Neu!", 3)],
             "one line, the most-played casing"
         );
-        let genres = rollup(&conn, Rollup::Genre, 0, 10, true).unwrap();
+        let genres = rollup(&conn, Rollup::Genre, 0, i64::MAX, 10, true).unwrap();
         assert_eq!(
             genres
                 .iter()
@@ -961,7 +1028,7 @@ mod tests {
             .unwrap();
         assert_ne!(new_id, 1, "the returned file lands under a fresh id");
 
-        assert_eq!(reattach(&conn).unwrap(), 2);
+        assert_eq!(reattach(&conn).unwrap(), Some(2));
         let most = most_played(&conn, 10).unwrap();
         assert_eq!((most[0].track_id, most[0].plays), (new_id, 2));
         assert!(
@@ -971,6 +1038,35 @@ mod tests {
                 .all(|t| t.track_id != new_id),
             "the returned file is not a stranger to its own history"
         );
+    }
+
+    /// A library where every play still has its file never reaches the
+    /// matchers: they join on the tag triple and count their own matches,
+    /// which is the pass that has to stay off the scan's critical path.
+    #[test]
+    fn reattach_gates_on_a_library_with_nothing_dangling() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", "First", "rock"),
+                track("/m/2.mp3", "Two", "A", "First", "rock"),
+            ],
+        )
+        .unwrap();
+        listen(&conn, "/m/1.mp3", 100);
+        listen(&conn, "/m/2.mp3", 200);
+        assert_eq!(reattach(&conn).unwrap(), None, "nothing to match");
+        // Repeated passes are what a scan actually does, and they stay free.
+        assert_eq!(reattach(&conn).unwrap(), None);
+
+        // One pruned file is enough to open the gate, and the pass behind it
+        // does what it always did.
+        conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        assert_eq!(reattach(&conn).unwrap(), Some(1));
+        assert_eq!(reattach(&conn).unwrap(), None, "and it closes again");
     }
 
     #[test]
@@ -1034,7 +1130,7 @@ mod tests {
             .unwrap();
         store::insert_batch(&mut conn, &[cue_track(1, 0), cue_track(2, 1000)]).unwrap();
 
-        assert_eq!(reattach(&conn).unwrap(), 2);
+        assert_eq!(reattach(&conn).unwrap(), Some(2));
         for sub in [1u16, 2] {
             let relinked: i64 = conn
                 .query_row(
@@ -1063,7 +1159,7 @@ mod tests {
         listen(&conn, "/m/1.mp3", 100);
         conn.execute("DELETE FROM tracks", []).unwrap();
 
-        let recent = recent(&conn, 0, 10).unwrap();
+        let recent = recent(&conn, 0, i64::MAX, 10).unwrap();
         assert_eq!(
             recent[0].title, "Gone",
             "the snapshot keeps the row readable"
@@ -1072,7 +1168,7 @@ mod tests {
             recent[0].path, "/m/1.mp3",
             "and the snapshot path keeps the cover column resolvable"
         );
-        let artists = rollup(&conn, Rollup::Artist, 0, 10, false).unwrap();
+        let artists = rollup(&conn, Rollup::Artist, 0, i64::MAX, 10, false).unwrap();
         assert_eq!(artists[0].name, "A");
     }
 }

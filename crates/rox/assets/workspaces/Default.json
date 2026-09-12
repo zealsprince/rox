@@ -344,7 +344,7 @@
                               "portrait": true,
                               "header_aspect": true,
                               "header_fill": true,
-                              "background": true,
+                              "background": false,
                               "stats": true,
                               "tags": true,
                               "similar": true

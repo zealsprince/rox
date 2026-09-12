@@ -419,7 +419,6 @@ fn main() {
         smart_playlist::init(cx);
         playlist_create::init(cx);
         bookmark_dialog::init(cx);
-        goto_dialog::init(cx);
         bake_dialog::init(cx);
         convert_dialog::init(cx);
         lyrics::edit::init(cx);
@@ -477,6 +476,7 @@ fn main() {
         startup::icon_packs::activate(settings.icon_pack.as_deref());
         providers::set_lyrics_online(settings.accounts.providers.lrclib);
         providers::set_metadata_online(settings.accounts.providers.musicbrainz);
+        providers::set_acoustid_online(settings.accounts.providers.acoustid);
         providers::set_itunes_online(settings.accounts.providers.itunes);
         providers::set_deezer_online(settings.accounts.providers.deezer);
         providers::set_lastfm_art_online(settings.accounts.providers.lastfm_art);

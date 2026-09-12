@@ -1192,6 +1192,23 @@ impl DockArea {
         false
     }
 
+    /// Rox addition: the first panel with the given name, in the order
+    /// [`focus_panel_named`](Self::focus_panel_named) walks, without
+    /// touching focus. What the control socket's debug scope downcasts to
+    /// reach a panel's own state (ADR 22).
+    pub fn panel_named(&self, name: &str, cx: &App) -> Option<Arc<dyn PanelView>> {
+        let mut roots = vec![self.items.view()];
+        for dock in [&self.left_dock, &self.bottom_dock, &self.right_dock]
+            .into_iter()
+            .flatten()
+        {
+            roots.push(dock.read(cx).panel.view());
+        }
+        roots
+            .iter()
+            .find_map(|root| Self::find_panel_named(root, name, cx).map(|(_, panel)| panel))
+    }
+
     /// The first panel with the given name under this view, in tree order,
     /// with the tab group holding it. Recurses splits and tiles; rox panels
     /// are leaves inside tabs, so a tab match is a direct hit.

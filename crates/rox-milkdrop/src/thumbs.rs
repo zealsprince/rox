@@ -550,27 +550,51 @@ fn render(
     Ok((frame, frames))
 }
 
-/// Encode a frame as PNG, written beside its final name and renamed in,
-/// so a browser reading the folder never sees half a file.
-fn write_png(path: &Path, frame: &crate::Frame) -> Result<(), String> {
+/// Encode a frame as PNG bytes. The readback's alpha is whatever projectM
+/// left in the framebuffer, and a transparent image is a blank one, so the
+/// pixels go out opaque. Shared by the thumbnail cache and the control
+/// socket's frame dump.
+pub fn encode_png(frame: &crate::Frame) -> Result<Vec<u8>, String> {
     let mut pixels = (*frame.rgba8).clone();
-    // The readback's alpha is whatever projectM left in the framebuffer,
-    // and a transparent thumbnail is a blank one.
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[3] = 0xff;
     }
     let image = image::RgbaImage::from_raw(frame.width, frame.height, pixels)
         .ok_or_else(|| "frame size doesn't match its buffer".to_string())?;
-    let tmp = path.with_extension("png.part");
+    let mut bytes = std::io::Cursor::new(Vec::new());
     image
-        .save_with_format(&tmp, image::ImageFormat::Png)
+        .write_to(&mut bytes, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
+    Ok(bytes.into_inner())
+}
+
+/// Write a frame as PNG beside its final name and rename it in, so a
+/// browser reading the folder never sees half a file.
+fn write_png(path: &Path, frame: &crate::Frame) -> Result<(), String> {
+    let bytes = encode_png(frame)?;
+    let tmp = path.with_extension("png.part");
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dump is a real PNG, and the alpha projectM left behind is gone.
+    #[test]
+    fn a_frame_encodes_as_an_opaque_png() {
+        let frame = crate::Frame {
+            width: 2,
+            height: 1,
+            rgba8: Arc::new(vec![1, 2, 3, 0, 4, 5, 6, 0]),
+            seq: 1,
+        };
+        let bytes = encode_png(&frame).unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(decoded.as_raw(), &[1, 2, 3, 255, 4, 5, 6, 255]);
+    }
 
     /// The cache key is a function of the path alone, the same on every
     /// run, and different for two presets that share a name.

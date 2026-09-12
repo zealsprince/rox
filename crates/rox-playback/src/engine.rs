@@ -21,6 +21,7 @@ use std::time::Duration as StdDuration;
 use std::time::Instant;
 
 use rox_library::cue::Span;
+use rox_library::peaks::{PeakBin, PeakLanes};
 use rtrb::Producer;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error;
@@ -2068,29 +2069,34 @@ pub fn count_frames(path: &PathBuf) -> Result<(u64, Option<u64>), String> {
 }
 
 /// Decode a whole file through the same path playback uses and reduce it to
-/// peak lanes of at most `bins` (min, max) sample pairs spanning the track,
-/// the data behind a waveform strip. Lane 0 is the mono mix; a source with
-/// more channels adds a left and a right lane after it (the decode path
-/// folds wider layouts to front left/right, so two is as many as come out).
-/// Pairs are normalized so the loudest bin hits 1 (the channel lanes
-/// against a shared loudest, so the balance between them stays honest)
-/// with a gentle perceptual curve so quiet passages stay visible. No audio
-/// device involved; run it on a background thread, a long track is a full
-/// decode.
-pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>, String> {
+/// peak lanes of at most `bins` [`PeakBin`]s spanning the track, the data
+/// behind a waveform strip: each bin holds the sample extremes over its
+/// frames and the RMS level across them. Lane 0 is the mono mix; a source
+/// with more channels adds a left and a right lane after it (the decode
+/// path folds wider layouts to front left/right, so two is as many as come
+/// out). Bins are normalized so the loudest extreme hits 1 (the channel
+/// lanes against a shared loudest, so the balance between them stays
+/// honest) with a gentle perceptual curve so quiet passages stay visible.
+/// The RMS runs through the same scale and curve, so it always sits inside
+/// the extremes. No audio device involved; run it on a background thread,
+/// a long track is a full decode.
+pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<PeakLanes, String> {
     // Probe once for the source rate, then open for real with the device
     // rate equal to it, so the resampler is a passthrough.
     let (probe, info) = Source::open(path, 48000, None)?;
     drop(probe);
     let (mut src, info) = Source::open(path, info.sample_rate, None)?;
 
-    // Coarse pass: one pair per lane per fixed block of frames, so memory
-    // stays a few thousand pairs whatever the track length, then fold down
+    // Coarse pass: one bin per lane per fixed block of frames, so memory
+    // stays a few thousand bins whatever the track length, then fold down
     // to `bins`. The lanes run through the loop in mono, left, right order.
+    // A block's RMS is the root of its mean square, and the last, short
+    // block averages over the frames it actually has.
     const BLOCK_FRAMES: usize = 2048;
-    let mut coarse: [Vec<(f32, f32)>; 3] = Default::default();
+    let mut coarse: [Vec<PeakBin>; 3] = Default::default();
     let mut lo = [f32::MAX; 3];
     let mut hi = [f32::MIN; 3];
+    let mut sq = [0.0f64; 3];
     let mut in_block = 0usize;
     let mut chunk = Vec::new();
     loop {
@@ -2103,14 +2109,20 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>,
             for lane in 0..3 {
                 lo[lane] = lo[lane].min(s[lane]);
                 hi[lane] = hi[lane].max(s[lane]);
+                sq[lane] += (s[lane] as f64) * (s[lane] as f64);
             }
             in_block += 1;
             if in_block == BLOCK_FRAMES {
                 for lane in 0..3 {
-                    coarse[lane].push((lo[lane], hi[lane]));
+                    coarse[lane].push(PeakBin {
+                        lo: lo[lane],
+                        hi: hi[lane],
+                        rms: (sq[lane] / BLOCK_FRAMES as f64).sqrt() as f32,
+                    });
                 }
                 lo = [f32::MAX; 3];
                 hi = [f32::MIN; 3];
+                sq = [0.0; 3];
                 in_block = 0;
             }
         }
@@ -2120,7 +2132,11 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>,
     }
     if in_block > 0 {
         for lane in 0..3 {
-            coarse[lane].push((lo[lane], hi[lane]));
+            coarse[lane].push(PeakBin {
+                lo: lo[lane],
+                hi: hi[lane],
+                rms: (sq[lane] / in_block as f64).sqrt() as f32,
+            });
         }
     }
     if coarse[0].is_empty() {
@@ -2130,7 +2146,7 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>,
     // A mono source's channel lanes would duplicate the mix; drop them at
     // the door so the strip has no lanes to split.
     let keep = if info.channels >= 2 { 3 } else { 1 };
-    let mut lanes: Vec<Vec<(f32, f32)>> = coarse
+    let mut lanes: PeakLanes = coarse
         .into_iter()
         .take(keep)
         .map(|lane| fold_bins(lane, bins))
@@ -2141,9 +2157,11 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>,
     Ok(lanes)
 }
 
-/// Fold coarse pairs into the requested resolution, keeping each bucket's
-/// extremes so transients come through the downsample.
-fn fold_bins(coarse: Vec<(f32, f32)>, bins: usize) -> Vec<(f32, f32)> {
+/// Fold coarse bins into the requested resolution, keeping each bucket's
+/// extremes so transients come through the downsample. The RMS folds as
+/// the root of the mean square, which the equal-sized coarse blocks make
+/// exact (the short tail block is one among thousands).
+fn fold_bins(coarse: Vec<PeakBin>, bins: usize) -> Vec<PeakBin> {
     if coarse.len() <= bins.max(1) {
         return coarse;
     }
@@ -2152,29 +2170,47 @@ fn fold_bins(coarse: Vec<(f32, f32)>, bins: usize) -> Vec<(f32, f32)> {
         .map(|i| {
             let from = (i as f64 * per) as usize;
             let to = (((i + 1) as f64 * per) as usize).clamp(from + 1, coarse.len());
-            coarse[from..to]
-                .iter()
-                .fold((f32::MAX, f32::MIN), |(lo, hi), &(bl, bh)| {
-                    (lo.min(bl), hi.max(bh))
-                })
+            fold_bucket(&coarse[from..to])
         })
         .collect()
 }
 
-/// Scale the lanes so the loudest bin among them hits 1, with the
-/// perceptual curve that keeps quiet passages visible. Lanes normalized
-/// together keep their relative loudness.
-fn normalize_peaks(lanes: &mut [Vec<(f32, f32)>]) {
+/// One bin spanning a run of bins: the extremes of the run and the RMS
+/// across it.
+fn fold_bucket(run: &[PeakBin]) -> PeakBin {
+    let (lo, hi, sq) = run
+        .iter()
+        .fold((f32::MAX, f32::MIN, 0.0f64), |(lo, hi, sq), b| {
+            (
+                lo.min(b.lo),
+                hi.max(b.hi),
+                sq + (b.rms as f64) * (b.rms as f64),
+            )
+        });
+    PeakBin {
+        lo,
+        hi,
+        rms: (sq / run.len().max(1) as f64).sqrt() as f32,
+    }
+}
+
+/// Scale the lanes so the loudest extreme among them hits 1, with the
+/// perceptual curve that keeps quiet passages visible. The RMS takes the
+/// same scale and curve, so a bin's band stays inside its envelope. Lanes
+/// normalized together keep their relative loudness.
+fn normalize_peaks(lanes: &mut [Vec<PeakBin>]) {
     let loudest = lanes
         .iter()
         .flatten()
-        .fold(0.0f32, |m, &(lo, hi)| m.max(lo.abs()).max(hi.abs()));
+        .fold(0.0f32, |m, b| m.max(b.lo.abs()).max(b.hi.abs()));
     if loudest <= 0.0 {
         return;
     }
-    for (lo, hi) in lanes.iter_mut().flatten() {
-        *lo = (lo.abs() / loudest).powf(0.7).copysign(*lo);
-        *hi = (hi.abs() / loudest).powf(0.7).copysign(*hi);
+    let curve = |v: f32| (v.abs() / loudest).powf(0.7).copysign(v);
+    for b in lanes.iter_mut().flatten() {
+        b.lo = curve(b.lo);
+        b.hi = curve(b.hi);
+        b.rms = curve(b.rms).min(b.lo.abs().max(b.hi.abs()));
     }
 }
 

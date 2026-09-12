@@ -131,14 +131,16 @@
         lib.makeOverridable (
           # Service identities build.rs bakes in (see .env.template). Already
           # public: the binary carries them, and the AUR PKGBUILD prints its
-          # own. The Last.fm pair is minted for the nix channel so it revokes
-          # independently of the release workflow's; the Discord app id is
-          # shared across channels and public by design. Forks swap in their
-          # own with rox.override { lastfmApiKey = "..."; }.
+          # own. The Last.fm pair and the AcoustID key are minted for the nix
+          # channel so they revoke independently of the release workflow's;
+          # the Discord app id is shared across channels and public by
+          # design. Forks swap in their own with
+          # rox.override { lastfmApiKey = "..."; }.
           {
             lastfmApiKey ? "88e26d5b524f6a7b61734350d32afc32",
             lastfmApiSecret ? "51ece542496dc6b5641eb3feb2735f3b",
             discordApplicationId ? "1531533372051030036",
+            acoustidClientKey ? "NM7UnN9N7Z",
           }:
           pkgs.rustPlatform.buildRustPackage {
             pname = "rox";
@@ -149,6 +151,7 @@
               LASTFM_API_KEY = lastfmApiKey;
               LASTFM_API_SECRET = lastfmApiSecret;
               DISCORD_APPLICATION_ID = discordApplicationId;
+              ACOUSTID_CLIENT_KEY = acoustidClientKey;
             };
 
             # gpui and gpui-component resolve as path deps in the lock, so no

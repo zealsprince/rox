@@ -12,6 +12,7 @@ pub mod codecs;
 pub mod continuation;
 pub mod engine;
 pub mod eq;
+pub mod fingerprint;
 pub mod gain;
 pub mod latency;
 pub mod opus;

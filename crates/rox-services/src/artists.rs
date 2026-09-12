@@ -1,8 +1,9 @@
 //! The artist store: the biography panel's data layer. What Last.fm
-//! has on an artist (wiki text, stats, tags, similar names), a
-//! deezer portrait, and the wide banner and fanart from theaudiodb,
-//! fetched once and kept as plain files under the data directory's
-//! artists folder, so a bio reads offline and a restart never refetches.
+//! has on an artist (wiki text, stats, tags, similar names, the top
+//! tracks), a deezer portrait, and theaudiodb's record (the banner and
+//! fanarts, the country, the years active), fetched once and kept as
+//! plain files under the data directory's artists folder, so a bio reads
+//! offline and a restart never refetches.
 //! One JSON per artist under a stable hash of the folded name (the lyrics
 //! store's naming move) with the image bytes beside it; an entry
 //! refreshes once it ages past [`TTL_SECS`], and a fetch that fails with
@@ -18,6 +19,7 @@ use gpui::{Image, ImageFormat};
 use serde::{Deserialize, Serialize};
 
 use rox_core::settings::artists_dir;
+use rox_net::providers::theaudiodb::ArtistProfile;
 use rox_net::providers::{self, lastfm::ArtistInfo};
 
 /// How long a cached entry serves before a fetch refreshes it. Bios and
@@ -26,6 +28,15 @@ use rox_net::providers::{self, lastfm::ArtistInfo};
 /// misspelled tag that gets fixed is a different name and a different
 /// entry anyway.
 const TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// How many top tracks to ask Last.fm for. The panel lists at most this
+/// many; the count is a per-view knob under it, so the fetch is once per
+/// artist however the views are set.
+pub const TOP_TRACKS: usize = 10;
+
+/// How many fanart slots follow the background: theaudiodb holds up to
+/// four fanarts per artist, the first of which is the background.
+const EXTRA_FANARTS: usize = 3;
 
 /// The longest side of a portrait thumbnail, the artist wall's tile
 /// source. The same 256 the cover thumbnails use: enough for a tile at
@@ -38,23 +49,71 @@ const THUMB_SIZE: u32 = 256;
 const THUMB_QUALITY: u8 = 85;
 
 /// A decoded image with its width-over-height ratio, so a panel can size
-/// a frame to it and letterbox instead of cropping.
-pub type SizedImage = (Arc<Image>, f32);
+/// a frame to it and letterbox instead of cropping, and a soft companion
+/// to fill the letterbox with.
+#[derive(Clone)]
+pub struct SizedImage {
+    pub image: Arc<Image>,
+    pub ratio: f32,
+    /// The same picture a few dozen pixels across and blurred, which the
+    /// renderer's upscale turns into a soft wash of its colours: what
+    /// shows behind a letterboxed header. gpui has no blur of its own,
+    /// so the softening is done once here and kept beside the slot.
+    pub soft: Option<Arc<Image>>,
+}
 
-/// One artist as the panel shows them: the info sheet and the three
-/// images, decoded and shareable. Any image can be absent: a service
-/// with nothing for the artist, or an offline first look. The
-/// header images keep their aspect ratio; the background fills and
-/// crops, so it needs none.
+/// The long side of a soft companion, in pixels. Small enough that the
+/// upscale is all blur, large enough that the picture's colour layout
+/// still reads.
+const SOFT_SIZE: u32 = 32;
+
+/// The gaussian sigma the soft companion is blurred with before it's
+/// kept, so the upscale smooths a wash rather than a mosaic.
+const SOFT_SIGMA: f32 = 1.5;
+
+/// One artist as the panel shows them: the info sheet, theaudiodb's
+/// record, and the images, decoded and shareable. Any image can be
+/// absent: a service with nothing for the artist, or an offline first
+/// look. The header images keep their aspect ratio; the background fills
+/// and crops, so it needs none.
 #[derive(Clone)]
 pub struct Artist {
     pub info: ArtistInfo,
+    /// The country and years, and the URLs the images came from. Empty
+    /// when theaudiodb had nothing or was never asked.
+    pub profile: ArtistProfile,
     /// The square deezer portrait, the header's fallback.
     pub portrait: Option<SizedImage>,
-    /// The wide theaudiodb banner, the header's first choice.
+    /// The wide theaudiodb banner, the logo strip.
     pub banner: Option<SizedImage>,
+    /// The theaudiodb fanarts in their numbering, the first of which is
+    /// also the background. A slot whose picture is the banner's (both
+    /// fell back to the wide thumb) is left out, so the header's cycle
+    /// never shows one picture twice.
+    pub fanarts: Vec<SizedImage>,
     /// The theaudiodb fanart, the dimmed background behind the text.
     pub background: Option<Arc<Image>>,
+}
+
+impl Artist {
+    /// Every decoded image the artist holds, once each, for the panel's
+    /// asset cache bookkeeping.
+    pub fn images(&self) -> Vec<Arc<Image>> {
+        let mut out: Vec<Arc<Image>> = Vec::new();
+        let candidates = self
+            .portrait
+            .iter()
+            .chain(self.banner.iter())
+            .chain(self.fanarts.iter())
+            .flat_map(|sized| std::iter::once(&sized.image).chain(sized.soft.iter()))
+            .chain(self.background.iter());
+        for image in candidates {
+            if !out.iter().any(|seen| seen.id() == image.id()) {
+                out.push(image.clone());
+            }
+        }
+        out
+    }
 }
 
 /// The cache file's shape: when the fetch happened and what it found.
@@ -71,6 +130,12 @@ struct Entry {
     #[serde(default)]
     lang: String,
     info: Option<ArtistInfo>,
+    /// theaudiodb's record, once asked: Some of an empty profile is the
+    /// service having no such name, None is not having asked yet, which
+    /// is what an entry written before the record was kept reads as, so
+    /// it fills in on the next look without waiting out the TTL.
+    #[serde(default)]
+    profile: Option<ArtistProfile>,
 }
 
 /// The Last.fm language code for the active locale: the primary subtag,
@@ -91,6 +156,8 @@ struct Files {
     portrait: PathBuf,
     banner: PathBuf,
     background: PathBuf,
+    /// The fanarts past the first, the header cycle's extra slots.
+    fanarts: Vec<PathBuf>,
     /// The portrait downscaled for a wall of tiles, generated from the
     /// full one and kept beside it.
     thumb: PathBuf,
@@ -121,6 +188,9 @@ fn files_for(name: &str) -> Files {
         portrait: slot("img"),
         banner: slot("banner"),
         background: slot("bg"),
+        fanarts: (2..2 + EXTRA_FANARTS)
+            .map(|n| slot(&format!("bg{n}")))
+            .collect(),
         thumb: slot("thumb"),
     }
 }
@@ -136,8 +206,12 @@ fn now() -> u64 {
 /// disk, a stale or missing one fetches and rewrites it, and with the
 /// artist provider off the cache is served at any age, so the panel still
 /// works offline. `force` refetches past the TTL, the panel's refresh.
-/// Ok(None) is a clean miss: Last.fm has no such name, or nothing
-/// is cached to serve offline. Blocking, background executor only.
+/// Whatever the entry lacks past the Last.fm info (the top list,
+/// theaudiodb's record, an image file) fills in on any online look, so
+/// a transient failure or an entry from before a part existed never
+/// pins the gap for the whole TTL. Ok(None) is a clean miss: Last.fm has
+/// no such name, or nothing is cached to serve offline. Blocking,
+/// background executor only.
 pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -149,51 +223,108 @@ pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
         .and_then(|text| serde_json::from_str(&text).ok());
     let lang = bio_lang();
     let fresh = cached.as_ref().is_some_and(|entry| {
-        now().saturating_sub(entry.fetched) < TTL_SECS
-            && entry.lang.as_str() == lang
-            // An entry written before bios recorded a language reads as
-            // English, so an English reader keeps theirs.
-            || (entry.lang.is_empty() && lang == "en")
-                && now().saturating_sub(entry.fetched) < TTL_SECS
+        let young = now().saturating_sub(entry.fetched) < TTL_SECS;
+        // An entry written before bios recorded a language reads as
+        // English, so an English reader keeps theirs.
+        let same_lang = entry.lang.as_str() == lang || (entry.lang.is_empty() && lang == "en");
+        // An entry written before the wiki's links were kept is stale
+        // however young: the text is the same, the links are missing.
+        let has_links = entry.info.as_ref().is_none_or(|info| info.links.is_some());
+        young && same_lang && has_links
     });
-    if !providers::artist_online() || (fresh && !force) {
-        let info = cached.and_then(|entry| entry.info);
-        // A fresh entry can still be missing images: one transient
-        // download failure shouldn't pin an empty slot for the whole TTL.
-        // fetch_images skips slots whose files already exist, so this only
-        // touches the network for what's absent, and never offline.
-        if providers::artist_online() {
-            if let Some(info) = &info {
-                fetch_images(&info.name, &files, false);
+    let online = providers::artist_online();
+    let mut entry = cached;
+    let mut dirty = false;
+    if online && (!fresh || force) {
+        match providers::lastfm::artist_info(name, &lang) {
+            Ok(info) => {
+                entry = Some(Entry {
+                    fetched: now(),
+                    lang: lang.clone(),
+                    info,
+                    profile: None,
+                });
+                dirty = true;
+            }
+            // The network failing with a copy on disk serves the copy; its
+            // age beats an empty panel.
+            Err(e) => {
+                if entry
+                    .as_ref()
+                    .and_then(|entry| entry.info.as_ref())
+                    .is_none()
+                {
+                    return Err(e);
+                }
             }
         }
-        return Ok(info.map(|info| assemble(info, &files)));
     }
-    match providers::lastfm::artist_info(name, &lang) {
-        Ok(info) => {
-            let entry = Entry {
-                fetched: now(),
-                lang: lang.clone(),
-                info,
-            };
-            let _ = fs::create_dir_all(artists_dir());
-            if let Ok(text) = serde_json::to_string(&entry) {
-                let _ = fs::write(&files.info, text);
-            }
-            if let Some(info) = &entry.info {
-                // The images search under Last.fm's spelling of the name,
-                // not the tag's, so both services resolve to the same artist.
-                fetch_images(&info.name, &files, force);
-            }
-            Ok(entry.info.map(|info| assemble(info, &files)))
+    let Some(mut entry) = entry else {
+        return Ok(None);
+    };
+    if online {
+        if let Some(info) = entry.info.as_mut() {
+            dirty |= complete(info, &mut entry.profile, &files, force);
         }
-        // The network failing with a copy on disk serves the copy; its
-        // age beats an empty panel.
-        Err(e) => match cached.and_then(|entry| entry.info) {
-            Some(info) => Ok(Some(assemble(info, &files))),
-            None => Err(e),
-        },
     }
+    if dirty {
+        let _ = fs::create_dir_all(artists_dir());
+        if let Ok(text) = serde_json::to_string(&entry) {
+            let _ = fs::write(&files.info, text);
+        }
+    }
+    let profile = entry.profile.unwrap_or_default();
+    Ok(entry.info.map(|info| assemble(info, profile, &files)))
+}
+
+/// Fill what the Last.fm info alone doesn't give: the top list,
+/// theaudiodb's record, and the image files. Each part runs only when
+/// it's missing, or on a forced refresh, and a part that fails is left
+/// for the next look, quietly: the bio is the panel's substance and none
+/// of this fails it. True when the entry changed and needs writing.
+fn complete(
+    info: &mut ArtistInfo,
+    profile: &mut Option<ArtistProfile>,
+    files: &Files,
+    force: bool,
+) -> bool {
+    let mut dirty = false;
+    // Everything past the info goes under Last.fm's spelling of the name,
+    // not the tag's, so the services resolve to the same artist.
+    let name = info.name.clone();
+    if force || info.top_tracks.is_none() {
+        match providers::lastfm::top_tracks(&name, TOP_TRACKS) {
+            Ok(tracks) => {
+                info.top_tracks = Some(tracks);
+                dirty = true;
+            }
+            Err(e) => log::debug!("artists: {name}: top tracks: {e}"),
+        }
+    }
+    if force || profile.is_none() {
+        match providers::theaudiodb::artist_profile(&name) {
+            // A miss settles as an empty record, so the next look doesn't
+            // ask again.
+            Ok(found) => {
+                *profile = Some(found.unwrap_or_default());
+                dirty = true;
+            }
+            Err(e) => log::debug!("artists: {name}: theaudiodb: {e}"),
+        }
+    }
+    download(files.portrait.as_path(), force, || {
+        providers::deezer::artist_picture(&name)
+    });
+    if let Some(profile) = profile {
+        download(files.banner.as_path(), force, || Ok(profile.banner.clone()));
+        download(files.background.as_path(), force, || {
+            Ok(profile.fanart.clone())
+        });
+        for (file, url) in files.fanarts.iter().zip(profile.fanarts.iter().skip(1)) {
+            download(file.as_path(), force, || Ok(Some(url.clone())));
+        }
+    }
+    dirty
 }
 
 /// The artist's face as a small square, the artist wall's tile: the
@@ -279,25 +410,6 @@ fn downscale(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Download the artist's images beside the info file, quietly: the bio is
-/// the panel's substance and a missing picture never fails it. The deezer
-/// portrait and the theaudiodb banner and fanart, each skipped when its
-/// file already exists unless the refresh is forced, so a service that
-/// answered once isn't asked again every TTL.
-fn fetch_images(name: &str, files: &Files, force: bool) {
-    download(files.portrait.as_path(), force, || {
-        providers::deezer::artist_picture(name)
-    });
-    // One theaudiodb call returns both wide images, so it runs only when a
-    // slot is missing, not once per slot.
-    if force || !files.banner.exists() || !files.background.exists() {
-        if let Ok(Some(art)) = providers::theaudiodb::artist_art(name) {
-            download(files.banner.as_path(), force, || Ok(art.banner));
-            download(files.background.as_path(), force, || Ok(art.fanart));
-        }
-    }
-}
-
 /// Fetch one image slot from a URL the resolver hands back, writing the
 /// bytes to `file`. Skips a slot that already stands unless forced, and a
 /// resolver that offers no URL leaves the slot as it is.
@@ -314,14 +426,40 @@ fn download(file: &Path, force: bool, resolve: impl FnOnce() -> Result<Option<St
 }
 
 /// The sheet with its images read off disk, decoded for the renderer.
-fn assemble(info: ArtistInfo, files: &Files) -> Artist {
+fn assemble(info: ArtistInfo, profile: ArtistProfile, files: &Files) -> Artist {
+    let banner = decode(&files.banner);
+    let background = decode(&files.background);
+    // The fanarts in slot order, each slot paired with the URL it was
+    // fetched from so a picture the banner already holds (both fell back
+    // to the wide thumb) stays out. An entry from before the record was
+    // kept has no URLs, and its slots go in as they are.
+    let mut slots: Vec<(Option<&str>, Option<SizedImage>)> =
+        vec![(profile.fanart.as_deref(), background.clone())];
+    for (file, url) in files.fanarts.iter().zip(profile.fanarts.iter().skip(1)) {
+        slots.push((Some(url.as_str()), decode(file)));
+    }
+    let mut fanarts = Vec::new();
+    let mut seen: Vec<&str> = profile.banner.as_deref().into_iter().collect();
+    for (url, image) in slots {
+        if let Some(url) = url {
+            if seen.contains(&url) {
+                continue;
+            }
+            seen.push(url);
+        }
+        if let Some(image) = image {
+            fanarts.push(image);
+        }
+    }
     Artist {
         info,
+        profile,
         portrait: decode(&files.portrait),
-        banner: decode(&files.banner),
+        banner,
+        fanarts,
         // The background fills and crops, so it drops the ratio the header
         // frames need.
-        background: decode(&files.background).map(|(image, _)| image),
+        background: background.map(|sized| sized.image),
     }
 }
 
@@ -335,7 +473,35 @@ fn decode(file: &Path) -> Option<SizedImage> {
         .ok()
         .and_then(|reader| reader.into_dimensions().ok())
         .map_or(1.0, |(w, h)| w as f32 / h.max(1) as f32);
-    Some((Arc::new(Image::from_bytes(sniff(&bytes), bytes)), ratio))
+    let soft = soft_for(file, &bytes);
+    Some(SizedImage {
+        image: Arc::new(Image::from_bytes(sniff(&bytes), bytes)),
+        ratio,
+        soft,
+    })
+}
+
+/// The soft companion for a slot: read from the `.soft` file beside it,
+/// or made once from the full bytes (a full decode, so it's done here on
+/// the background executor and never again) and written there. None
+/// when the bytes won't decode.
+fn soft_for(file: &Path, bytes: &[u8]) -> Option<Arc<Image>> {
+    let mut soft_file = file.as_os_str().to_owned();
+    soft_file.push(".soft");
+    let soft_file = PathBuf::from(soft_file);
+    if let Ok(png) = fs::read(&soft_file) {
+        if !png.is_empty() {
+            return Some(Arc::new(Image::from_bytes(ImageFormat::Png, png)));
+        }
+    }
+    let full = image::load_from_memory(bytes).ok()?;
+    let small = full.thumbnail(SOFT_SIZE, SOFT_SIZE).blur(SOFT_SIGMA);
+    let mut png = Vec::new();
+    small
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    let _ = fs::write(&soft_file, &png);
+    Some(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
 }
 
 /// The image format off the bytes themselves: the services serve jpeg and

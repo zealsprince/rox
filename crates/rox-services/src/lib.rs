@@ -24,5 +24,7 @@ pub mod lyrics;
 pub mod peaks;
 pub mod player;
 pub mod portraits;
+pub mod release_facts;
 pub mod selection;
 pub mod thumbs;
+pub mod track_stats;

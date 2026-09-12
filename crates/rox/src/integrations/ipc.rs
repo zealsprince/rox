@@ -14,19 +14,20 @@
 //! the MCP switch are on. `subscribe` turns on the push half: `event.*` frames for track
 //! turnover, play-state edges, and queue revision bumps, published off the
 //! player observer below so a front end never has to poll. The `debug.*`
-//! scope is the runtime test surface: the settings and panel dumps here,
-//! and the drive half (windows, actions, synthetic input) in the sibling
-//! `drive` module.
+//! scope is the runtime test surface: the settings and panel dumps and the
+//! Milkdrop panel's verbs here, and the drive half (windows, actions,
+//! synthetic input) in the sibling `drive` module.
 
 use std::path::PathBuf;
 
-use gpui::App;
+use gpui::{App, Entity};
 use serde_json::{json, Value};
 
 use rox_ipc::{Request, RpcError};
 use rox_library::cue::TrackKey;
 use rox_library::projection::Projection;
 use rox_panel_api::panel::AppState;
+use rox_panels::milkdrop::MilkdropPanel;
 use rox_services::catalog::Library;
 use rox_services::player::AbState;
 
@@ -222,7 +223,7 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
                 _ => {
                     return Err(RpcError::invalid_params(
                         "ab takes {\"action\": \"mark\"|\"clear\"} or {\"a\": secs, \"b\": secs}",
-                    ))
+                    ));
                 }
             }
             Ok(status(state, cx))
@@ -311,6 +312,13 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             crate::workspace::apply_workspace_to_front(name, cx);
             Ok(Value::Null)
         }
+        // The Milkdrop panel by verb rather than by pixel: put a preset up
+        // from any path, hold it, rescan, step, and read back what's on
+        // screen and what projectM refused. `frame` returns the worker's
+        // own readback as PNG, engine output rather than a window capture,
+        // so none of the panel's tint or grade is in it. Debug scope
+        // (ADR 22): the preset-authoring loop runs off this.
+        "debug.milkdrop" => milkdrop(params, cx),
         // Live gpui entity counts by type, largest first. Diagnostic surface
         // for leak hunting; rides the vendored entity-map accessor.
         "debug.entities" => {
@@ -616,15 +624,89 @@ fn tasks_stop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
 /// or an agent verify a layout against a live instance without eyes on the
 /// screen (ADR 22).
 fn panel_tree(cx: &mut App) -> Result<Value, RpcError> {
-    let workspace = cx
-        .default_global::<rox_panel_api::windows::WorkspaceWindows>()
-        .open
-        .iter()
-        .find_map(|open| open.workspace.upgrade())
-        .and_then(|any| any.downcast::<crate::workspace::Workspace>().ok())
-        .ok_or_else(|| RpcError::app("no workspace window open"))?;
+    let workspace = workspace_for(None, cx)?;
     let dump = workspace.read(cx).dock().read(cx).dump(cx);
     serde_json::to_value(dump).map_err(RpcError::app)
+}
+
+/// The front workspace's view, or the one in the window `id` names, for
+/// the debug verbs that read or drive a dock.
+fn workspace_for(
+    id: Option<u64>,
+    cx: &mut App,
+) -> Result<Entity<crate::workspace::Workspace>, RpcError> {
+    cx.default_global::<rox_panel_api::windows::WorkspaceWindows>()
+        .open
+        .iter()
+        .filter(|open| id.is_none_or(|id| open.handle.window_id().as_u64() == id))
+        .find_map(|open| open.workspace.upgrade())
+        .and_then(|any| any.downcast::<crate::workspace::Workspace>().ok())
+        .ok_or_else(|| RpcError::app("no workspace window open"))
+}
+
+/// `debug.milkdrop`: the first Milkdrop panel in the front workspace (or
+/// the window `window` names), driven by `op`. Every op but `frame`
+/// answers with the panel's snapshot, so a caller sees what its command
+/// did without a second round trip.
+fn milkdrop(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
+    let op = params.get("op").and_then(Value::as_str).unwrap_or("status");
+    let workspace = workspace_for(params.get("window").and_then(Value::as_u64), cx)?;
+    let panel = workspace
+        .read(cx)
+        .dock()
+        .read(cx)
+        .panel_named("milkdrop", cx)
+        .and_then(|panel| panel.view().downcast::<MilkdropPanel>().ok())
+        .ok_or_else(|| RpcError::app("no Milkdrop panel in the front workspace"))?;
+    match op {
+        "status" => {}
+        "load" => {
+            let path = params
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::invalid_params("load takes {\"path\": \"..\"}"))?;
+            let path = PathBuf::from(path);
+            if !path.is_file() {
+                return Err(RpcError::app(format!(
+                    "no preset file at {}",
+                    path.display()
+                )));
+            }
+            panel.update(cx, |panel, cx| panel.load_preset(path, cx));
+        }
+        "lock" => {
+            let on = params
+                .get("on")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| RpcError::invalid_params("lock takes {\"on\": true|false}"))?;
+            panel.update(cx, |panel, cx| panel.set_locked(on, cx));
+        }
+        "rescan" => panel.update(cx, |panel, cx| panel.rescan_presets(cx)),
+        "next" => panel.read(cx).next_preset(),
+        "prev" => panel.read(cx).previous_preset(),
+        "frame" => {
+            let frame = panel
+                .read(cx)
+                .latest_frame()
+                .ok_or_else(|| RpcError::app("no frame rendered yet"))?;
+            let png = rox_milkdrop::thumbs::encode_png(&frame).map_err(RpcError::app)?;
+            use base64::Engine as _;
+            return Ok(json!({
+                "width": frame.width,
+                "height": frame.height,
+                "seq": frame.seq,
+                "mime": "image/png",
+                "data_base64": base64::engine::general_purpose::STANDARD.encode(png),
+            }));
+        }
+        other => {
+            return Err(RpcError::invalid_params(format!(
+                "unknown op {other:?}: status, load, lock, rescan, next, prev, or frame"
+            )));
+        }
+    }
+    let snapshot = panel.update(cx, |panel, _| panel.snapshot());
+    serde_json::to_value(snapshot).map_err(RpcError::app)
 }
 
 /// The deck at a glance: what's playing, where its clock is, the A-B

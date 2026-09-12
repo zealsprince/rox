@@ -148,10 +148,12 @@ impl Worker {
             pm::projectm_create_with_opengl_load_proc(Some(load_proc), std::ptr::null_mut())
         };
         if instance.is_null() {
-            return Err(
-                "libprojectM refused to start on this OpenGL context; it needs 3.3 core"
-                    .to_string(),
-            );
+            // projectM's own reason went to the log through the callback
+            // above; this is the line for the panel, with the fact that
+            // decides most of these in it.
+            return Err(format!(
+                "libprojectM needs OpenGL 3.3 and this context is {gl_version} on {renderer}"
+            ));
         }
 
         let version = version_string();

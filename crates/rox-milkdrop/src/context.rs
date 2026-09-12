@@ -122,12 +122,7 @@ pub fn create() -> Result<HeadlessGl, String> {
     let _ = RESOLVER.set(display.clone());
     let config = find_config(&display)?;
 
-    let attributes = ContextAttributesBuilder::new()
-        .with_context_api(ContextApi::OpenGl(Some(GL_VERSION)))
-        .with_profile(GlProfile::Core)
-        .build(window_handle);
-    let context = unsafe { display.create_context(&config, &attributes) }
-        .map_err(|e| step_error("creating the OpenGL context", &e))?;
+    let (context, attributes) = create_context(&display, &config, window_handle)?;
 
     match make_current_surfaceless(context) {
         Ok(context) => Ok(HeadlessGl {
@@ -160,6 +155,69 @@ pub fn create() -> Result<HeadlessGl, String> {
                 #[cfg(windows)]
                 _window: window,
             })
+        }
+    }
+}
+
+/// A context at the profile projectM was built for, or failing that, whatever
+/// the driver will give.
+///
+/// The first ask is 3.3 core, which is libprojectM's floor. Some drivers turn
+/// that exact request down and still hand out a usable context when asked
+/// for nothing in particular: the Intel Windows drivers of the Haswell era
+/// answer a versioned core request with an error code that isn't in any
+/// header, and the report that led here was one of those, a black panel
+/// under `wglCreateContextAttribsARB` failing with `0xC007000D`. A second
+/// ask with no version and the compatibility profile gets the driver's
+/// default, which under the ARB rules is the highest version it has that
+/// is backward compatible. projectM accepts a compatibility context of 3.3
+/// or newer, and it probes the context itself, so a driver that can only
+/// do 3.1 is refused there with the version in the log rather than here
+/// with an error code nobody can look up.
+///
+/// Not on macOS: CGL's compatibility profile is stuck at 2.1 by design,
+/// so the retry would only trade one refusal for another.
+fn create_context(
+    display: &Display,
+    config: &Config,
+    window_handle: Option<RawWindowHandle>,
+) -> Result<(NotCurrentContext, glutin::context::ContextAttributes), String> {
+    let core = ContextAttributesBuilder::new()
+        .with_context_api(ContextApi::OpenGl(Some(GL_VERSION)))
+        .with_profile(GlProfile::Core)
+        .build(window_handle);
+    let core_error = match unsafe { display.create_context(config, &core) } {
+        Ok(context) => return Ok((context, core)),
+        Err(error) => error,
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        return Err(step_error("creating the OpenGL context", &core_error));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        log::warn!(
+            "milkdrop: {}; asking the driver for its default context instead",
+            step_error("creating the OpenGL context", &core_error)
+        );
+        let any = ContextAttributesBuilder::new()
+            .with_context_api(ContextApi::OpenGl(None))
+            .with_profile(GlProfile::Compatibility)
+            .build(window_handle);
+        match unsafe { display.create_context(config, &any) } {
+            Ok(context) => Ok((context, any)),
+            Err(error) => Err(format!(
+                "{}, and the driver's default context failed too: {error}",
+                step_error(
+                    &format!(
+                        "creating an OpenGL {}.{} core context",
+                        GL_VERSION.major, GL_VERSION.minor
+                    ),
+                    &core_error
+                )
+            )),
         }
     }
 }

@@ -2597,6 +2597,14 @@ pub struct Providers {
     /// Fetch artist biographies from Last.fm, a Deezer portrait and
     /// theaudiodb's banner and fanart along, when the biography panel asks.
     pub artist: bool,
+    /// Identify a track by its sound through AcoustID when the metadata
+    /// compare asks.
+    pub acoustid: bool,
+    /// A user's own AcoustID application key, registered at
+    /// acoustid.org/new-application. Empty means the build's own key, and
+    /// a build that shipped without one leaves the identify unavailable
+    /// until this is filled in.
+    pub acoustid_key: String,
 }
 
 impl Default for Providers {
@@ -2609,6 +2617,8 @@ impl Default for Providers {
             deezer: true,
             lastfm_art: true,
             artist: true,
+            acoustid: true,
+            acoustid_key: String::new(),
         }
     }
 }
@@ -5896,6 +5906,33 @@ mod tests {
             look.bundle.palette_dark.get("accent").map(String::as_str),
             Some("#336699")
         );
+    }
+
+    /// The AcoustID toggle and key survive a write and a read, and a
+    /// providers block written before either existed reads at the defaults
+    /// rather than failing the whole accounts shard.
+    #[test]
+    fn the_acoustid_provider_fields_round_trip_and_default() {
+        let providers = Providers {
+            acoustid: false,
+            acoustid_key: "a-registered-application-key".to_string(),
+            ..Providers::default()
+        };
+        let text = serde_json::to_string(&providers).unwrap();
+        let read: Providers = serde_json::from_str(&text).unwrap();
+        assert!(!read.acoustid);
+        assert_eq!(read.acoustid_key, "a-registered-application-key");
+        // The neighbours came through untouched.
+        assert!(read.musicbrainz);
+
+        let old: Providers = serde_json::from_value(serde_json::json!({
+            "lrclib": true,
+            "musicbrainz": false,
+        }))
+        .unwrap();
+        assert!(old.acoustid);
+        assert!(old.acoustid_key.is_empty());
+        assert!(!old.musicbrainz);
     }
 
     /// A window shape that no longer parses costs that window's remembered

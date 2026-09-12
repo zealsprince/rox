@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use rox_core::settings;
 
-pub use rox_library::peaks::identity;
+pub use rox_library::peaks::{identity, PeakBin, PeakLanes};
 
 /// Where the cache is stored, public so the storage page can size it.
 pub fn cache_dir() -> PathBuf {
@@ -21,11 +21,11 @@ pub fn clear() {
 }
 
 /// The cached peak lanes for a track, or None on any kind of miss.
-pub fn load(track: &Path) -> Option<Vec<Vec<(f32, f32)>>> {
+pub fn load(track: &Path) -> Option<PeakLanes> {
     rox_library::peaks::load(&cache_dir(), track)
 }
 
 /// Write a track's entry against the identity it had going into the decode.
-pub fn store(track: &Path, stamped: Option<(u64, u64)>, lanes: &[Vec<(f32, f32)>]) {
+pub fn store(track: &Path, stamped: Option<(u64, u64)>, lanes: &[Vec<PeakBin>]) {
     rox_library::peaks::store(&cache_dir(), track, stamped, lanes);
 }

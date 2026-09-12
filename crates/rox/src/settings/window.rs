@@ -465,6 +465,10 @@ struct SettingsWindow {
     rating_dots: bool,
     /// The Providers page's working copy of the enrichment config.
     providers: Providers,
+    /// The user's own AcoustID application key, written through per
+    /// keystroke like the ffmpeg path. A build with a baked key leaves
+    /// this empty and the row reads as optional.
+    acoustid_key: Entity<InputState>,
     /// One picker per palette role, in [`ROLES`] order.
     pickers: Vec<Entity<ColorPickerState>>,
     surface_scrub: ScrubState,
@@ -824,6 +828,7 @@ struct SettingsWindow {
     _lastfm_changes: Vec<Subscription>,
     _broadcast_changes: Vec<Subscription>,
     _ffmpeg_changed: Subscription,
+    _acoustid_key_changed: Subscription,
     /// The connect flow's phases arrive through here, so the page's status
     /// line updates with them.
     _scrobbler_changed: Subscription,
@@ -1162,6 +1167,23 @@ impl SettingsWindow {
                 cx.notify();
             }
         });
+        // The AcoustID key takes the same write-through, into the
+        // working copy as well as the file, so a toggle that saves the
+        // whole providers struct after doesn't put the old key back.
+        let acoustid_key = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rox_i18n::t!("settings-providers-acoustid-key-placeholder"))
+                .default_value(settings.accounts.providers.acoustid_key.clone())
+        });
+        let _acoustid_key_changed =
+            cx.subscribe(&acoustid_key, |this, input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let value = input.read(cx).value().trim().to_string();
+                    this.providers.acoustid_key = value.clone();
+                    Settings::update(move |s| s.accounts.providers.acoustid_key = value);
+                    cx.notify();
+                }
+            });
         // The search box up top: typing filters every page at once. The
         // first search measures storage so the Storage rows have numbers
         // without a page visit; after that the numbers stay as they are
@@ -1236,6 +1258,7 @@ impl SettingsWindow {
             rating_style: settings.look.bundle.appearance.rating_style,
             rating_dots: settings.look.bundle.appearance.rating_dots,
             providers: settings.accounts.providers.clone(),
+            acoustid_key,
             pickers,
             surface_scrub: ScrubState::default(),
             backdrop_scrub: ScrubState::default(),
@@ -1383,6 +1406,7 @@ impl SettingsWindow {
             _lastfm_changes,
             _broadcast_changes,
             _ffmpeg_changed,
+            _acoustid_key_changed,
             _scrobbler_changed,
             _listenbrainz_changed,
             _librefm_changed,
@@ -5943,6 +5967,17 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// The AcoustID toggle, MusicBrainz's twin: through the live static,
+    /// so the metadata compare's identify button appears and hides with
+    /// it, and into the file.
+    fn set_acoustid(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.providers.acoustid = on;
+        providers::set_acoustid_online(on);
+        let config = self.providers.clone();
+        Settings::update(move |s| s.accounts.providers = config);
+        cx.notify();
+    }
+
     /// The iTunes cover-art toggle: through the live static and into the
     /// file, so the cover editor's search follows it.
     fn set_itunes(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -6039,6 +6074,22 @@ impl SettingsWindow {
                         "settings-providers-musicbrainz",
                         &["lookup", "online"],
                         panel::toggle(self.providers.musicbrainz, Self::set_musicbrainz, cx),
+                    )
+                    .keyed(
+                        "settings-providers-acoustid",
+                        &["lookup", "online", "fingerprint", "identify"],
+                        panel::toggle(self.providers.acoustid, Self::set_acoustid, cx),
+                    )
+                    .row_dyn(
+                        &["lookup", "online", "fingerprint", "identify", "key"],
+                        rox_i18n::t!("settings-providers-acoustid-key"),
+                        // The hint only shows on a build that ships its
+                        // own key, where the row is genuinely optional.
+                        // Without one, nothing identifies until this is
+                        // filled and the bare row says enough.
+                        (!providers::acoustid::CLIENT_KEY.is_empty())
+                            .then(|| rox_i18n::t!("settings-providers-acoustid-key-hint")),
+                        Input::new(&self.acoustid_key).w(px(240.)),
                     )
                 },
             ))
@@ -8790,23 +8841,10 @@ fn seed_root_stats(library: &Entity<Library>, cx: &App) -> Vec<(PathBuf, Stats)>
         .collect()
 }
 
-/// Bytes as a short human size: whole numbers through KB, one decimal
-/// from MB up, decimal units like the file managers show.
+/// Bytes as a short human size, the shared formatter the metadata
+/// panel's size row reads too.
 fn human_size(bytes: u64) -> String {
-    let mut value = bytes as f64;
-    let mut unit = "B";
-    for next in ["KB", "MB", "GB", "TB"] {
-        if value < 1000. {
-            break;
-        }
-        value /= 1000.;
-        unit = next;
-    }
-    match unit {
-        "B" => rox_i18n::format::format_unit(bytes as f64, 0, "B"),
-        "KB" => rox_i18n::format::format_unit(value, 0, "KB"),
-        _ => rox_i18n::format::format_unit(value, 1, unit),
-    }
+    rox_core::fmt::fmt_bytes(bytes)
 }
 
 /// A SQLite database's weight on disk: the file plus its -wal and -shm

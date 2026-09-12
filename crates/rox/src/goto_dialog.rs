@@ -1,94 +1,84 @@
-//! The go-to modal: type a timestamp, land on it. Ctrl+G, or the Playback
-//! menu's own row.
+//! The go-to modal: Ctrl+G, or the Playback menu's own row, drops a
+//! timestamp field and a scrub strip over the workspace. Type a time you
+//! already know, off a tracklist or a cue sheet or a note you took, and
+//! Enter lands on it; drag the strip for the "somewhere around there"
+//! case. Escape or a click outside closes.
 //!
-//! The seek strip already covers "somewhere around there" and the step keys
-//! cover "a hair either way". This is the third case, the one neither of
-//! them does: a time you already know, off a tracklist or a cue sheet or a
-//! note you took, typed rather than aimed at.
-//!
-//! Modeled on the bookmark modal, down to the Enter binding and the footer.
+//! A view over the same player the panels use, hosted as an overlay the
+//! way quick-play is: the workspace owns one at most and drops it on
+//! dismiss.
+
+use std::sync::{Arc, LazyLock};
 
 use gpui::{
-    actions, div, prelude::*, px, size, App, Bounds, Context, Div, Entity, FocusHandle, Focusable,
-    KeyBinding, Subscription, Window,
+    canvas, div, prelude::*, px, App, Context, DismissEvent, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, FontFeatures, KeyDownEvent, MouseButton, MouseDownEvent, Subscription,
+    Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use rox_core::fmt::fmt_time;
-use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_panel_api::panel::AppState;
-use rox_panel_kit::ui::{kbd_line, section, small_button, Seg};
-use rox_services::backdrop::WindowBackdrop;
+use rox_panel_api::panel::{self, AppState, ScrubState};
+use rox_panel_kit::ui::{kbd_line, Seg};
+use rox_services::player::NowPlaying;
 
-actions!(goto_dialog, [Go]);
+/// The modal's width, narrower than quick-play's: one field and one strip.
+const WIDTH: f32 = 420.;
 
-/// The key context the window's own bindings scope to.
-const CONTEXT: &str = "GoToTime";
+/// The scrub strip's height, room for the slider knob and the hover pill.
+const STRIP_H: f32 = 24.;
 
-/// The modal's commit binding; call once at startup. Bound on the window
-/// root so Enter goes wherever focus is.
-pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("enter", Go, Some(CONTEXT))]);
-}
-
-/// Open the modal over the playing track. Nothing playing opens nothing:
-/// there's no track to move inside of, which is the same silence the
-/// bookmark and A-B keys answer with.
-pub fn open(state: AppState, cx: &mut App) {
-    if state.player.read(cx).now_playing().is_none() {
-        return;
-    }
-    let title = rox_i18n::t!("goto-window-title");
-    let bounds = Bounds::centered(None, size(px(400.), px(240.)), cx);
-    rox_panel_api::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
-        cx.new(|cx| GoToWindow::new(state, window, cx))
-    });
-}
-
-struct GoToWindow {
+pub struct GoTo {
     state: AppState,
     input: Entity<InputState>,
-    backdrop: WindowBackdrop,
+    scrub: ScrubState,
     _input_events: Subscription,
-    /// The position line reads the clock, so it needs the player's own
-    /// notify to stay live rather than freezing at the time the window
+    /// The strip and the clocks read the player, so it needs the player's
+    /// own notify to stay live rather than freezing at the time the modal
     /// opened. Same raw observe the seek strip runs on.
     _player: Subscription,
-    /// This window pumps its own frames, so the backdrop needs its own wake on
-    /// a new bake.
-    _backdrop_changed: Subscription,
 }
 
-impl GoToWindow {
-    fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl EventEmitter<DismissEvent> for GoTo {}
+
+impl Focusable for GoTo {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+}
+
+impl GoTo {
+    pub fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Empty rather than seeded with the current time: a seeded field
         // puts the caret after four characters you have to clear before you
-        // can type the one time you came here to type. The placeholder and
-        // the line under it say where you are instead.
+        // can type the one time you came here to type. The clocks beside
+        // the strip say where you are instead.
         let input =
             cx.new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("goto-placeholder")));
-        let _input_events = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
-            if let InputEvent::Change = event {
-                cx.notify();
-            }
-        });
+        let _input_events = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => cx.notify(),
+                InputEvent::PressEnter { .. } => this.commit(cx),
+                _ => {}
+            },
+        );
         let _player = cx.observe(&state.player, |_, _, cx| cx.notify());
-        let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         window.focus(&input.read(cx).focus_handle(cx));
-        GoToWindow {
+        GoTo {
             state,
             input,
-            backdrop: WindowBackdrop::default(),
+            scrub: ScrubState::default(),
             _input_events,
             _player,
-            _backdrop_changed,
         }
     }
 
     /// The time the field currently reads, clamped inside the track. None
     /// while the field is empty or holds something that isn't a time, which
-    /// is what leaves Enter and the Go button inert.
+    /// is what leaves Enter inert.
     fn target(&self, cx: &App) -> Option<f64> {
         let secs = parse_time(&self.input.read(cx).value())?;
         let duration = self
@@ -107,40 +97,76 @@ impl GoToWindow {
     }
 
     /// Seek and close.
-    fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn commit(&mut self, cx: &mut Context<Self>) {
         let Some(secs) = self.target(cx) else {
             return;
         };
         self.state.player.read(cx).seek_to(secs);
-        window.remove_window();
+        cx.emit(DismissEvent);
     }
 
-    /// Where the playhead is now, and how long the track runs. The pair the
-    /// typed time is aimed between.
-    fn position_line(&self, cx: &App) -> Div {
-        let line = match self.state.player.read(cx).now_playing() {
-            Some(now) => match now.duration_secs {
-                Some(duration) => rox_i18n::t!(
-                    "goto-now-of",
-                    time = fmt_time(now.position_secs),
-                    duration = fmt_time(duration)
-                ),
-                None => rox_i18n::t!("goto-now", time = fmt_time(now.position_secs)),
-            },
-            None => rox_i18n::t!("goto-nothing-playing"),
-        };
+    /// The scrub strip between the two clocks: the playhead as a slider, a
+    /// press or drag seeks, a hover previews the time under the pointer.
+    /// The same strip state and handlers the seek panel runs on.
+    fn strip(&self, now: &NowPlaying, cx: &mut Context<Self>) -> Div {
+        let duration = now.duration_secs.filter(|d| *d > 0.0);
+        let progress = duration
+            .map(|d| (now.position_secs / d) as f32)
+            .unwrap_or(0.0);
+        let scrub = self.scrub.clone();
+        let player = self.state.player.clone();
+        let track = div()
+            .flex_1()
+            .min_w_0()
+            .h(px(STRIP_H))
+            .relative()
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    this.scrub.begin();
+                    if let Some(fraction) = this.scrub.fraction(event.position.x) {
+                        panel::seek_fraction(&this.state.player, fraction, cx);
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(
+                canvas(
+                    {
+                        let scrub = scrub.clone();
+                        move |bounds, _, _| scrub.set_bounds(bounds)
+                    },
+                    move |bounds, _, window, _| {
+                        panel::paint_slider(progress, false, bounds, window);
+                        panel::scrub_on_paint(&scrub, window, {
+                            let player = player.clone();
+                            move |fraction, cx| panel::seek_fraction(&player, fraction, cx)
+                        });
+                    },
+                )
+                .size_full(),
+            )
+            // The preview shows once the duration resolves; before that a
+            // fraction maps to nothing.
+            .when_some(duration, |d, duration| {
+                d.child(panel::seek_hover(&self.scrub, duration, cx))
+            });
         div()
-            .text_sm()
-            .text_color(palette::text_muted())
-            .child(line)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(clock(fmt_time(now.position_secs)))
+            .child(track)
+            .children(duration.map(|d| clock(fmt_time(d))))
     }
 
-    /// What Enter would do, read back: the time the field resolves to, or
-    /// the complaint that it doesn't resolve to one. Blank while the field
-    /// is empty, since an untouched field isn't a mistake.
+    /// What Enter would do with the field as it stands: the time it
+    /// resolves to, a note that it doesn't, or nothing while it's empty.
     fn target_line(&self, cx: &App) -> Option<Div> {
-        let typed = self.input.read(cx).value();
-        if typed.trim().is_empty() {
+        let text = self.input.read(cx).value();
+        if text.trim().is_empty() {
             return None;
         }
         let (text, color) = match self.target(cx) {
@@ -153,88 +179,97 @@ impl GoToWindow {
         Some(div().text_sm().text_color(color).child(text))
     }
 
-    /// The window's own actions: the go, and the shortcut for it.
-    fn footer(&self, cx: &mut Context<Self>) -> Div {
-        let hint = kbd_line([
-            Seg::Text(rox_i18n::t!("goto-hint-before")),
-            Seg::Key(rox_i18n::t!("goto-hint-key")),
-            Seg::Text(rox_i18n::t!("goto-hint-after")),
-        ])
-        .text_xs();
+    /// The footer: the one shortcut, the way quick-play's footer names its
+    /// syntax.
+    fn hint_row(&self) -> Div {
         div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap(tokens::SPACE_SM)
-            .px(tokens::SPACE_MD)
-            .py(tokens::SPACE_SM)
+            .px(tokens::SPACE_SM)
+            .py(tokens::SPACE_XS)
             .border_t_1()
             .border_color(palette::border())
-            .bg(palette::bg_panel())
-            .child(hint)
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(tokens::SPACE_SM)
-                    .child(small_button(
-                        rox_i18n::t!("goto-go"),
-                        icons::MOVE_HORIZONTAL,
-                        false,
-                        cx.listener(|this, _, window, cx| this.commit(window, cx)),
-                    ))
-                    .child(small_button(
-                        rox_i18n::t!("settings-common-cancel"),
-                        icons::CLOSE,
-                        false,
-                        cx.listener(|_, _, window, _| window.remove_window()),
-                    )),
-            )
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child(kbd_line([
+                Seg::Text(rox_i18n::t!("goto-hint-before")),
+                Seg::Key(rox_i18n::t!("goto-hint-key")),
+                Seg::Text(rox_i18n::t!("goto-hint-after")),
+            ]))
     }
 }
 
-impl Focusable for GoToWindow {
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.input.read(cx).focus_handle(cx)
-    }
+/// Tabular digits for the clocks, built once: [`clock`] runs twice per
+/// pump tick while playing, so the feature list shouldn't reallocate
+/// every call. Same feature the seek strip's clocks use.
+static TNUM: LazyLock<FontFeatures> =
+    LazyLock::new(|| FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
+
+/// One clock beside the strip: muted, sized to its digits, and tabular so
+/// a tick never changes the text width and shifts the strip.
+fn clock(text: String) -> Div {
+    let mut clock = div()
+        .flex_none()
+        .text_sm()
+        .text_color(palette::text_muted());
+    clock
+        .text_style()
+        .get_or_insert_with(Default::default)
+        .font_features = Some(TNUM.clone());
+    clock.child(text)
 }
 
-impl Render for GoToWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Render for GoTo {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let now = self.state.player.read(cx).now_playing();
         div()
-            .size_full()
+            .w(px(WIDTH))
             .flex()
             .flex_col()
-            .key_context(CONTEXT)
-            .on_action(cx.listener(|this, _: &Go, window, cx| this.commit(window, cx)))
-            .bg(palette::bg_elevated())
-            .text_color(palette::text_bright())
-            .text_sm()
-            .children(self.backdrop.layer(&self.state.now_art, window, cx))
+            .bg(palette::bg_menu_opaque())
+            .rounded(tokens::RADIUS)
+            .border_1()
+            .border_color(palette::border_light())
+            .shadow_md()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
+            // Scopes the workspace's playback key bindings out while the
+            // modal is up, so space and arrows work the field instead.
+            .key_context("SearchInput")
+            // The field passes an idle escape through (it only keeps one
+            // that closes its IME or context menu), so it arrives here;
+            // stopped so the workspace's own escape ladder never fires
+            // over a handled one.
+            .on_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key != "escape" {
+                    return;
+                }
+                cx.stop_propagation();
+                cx.emit(DismissEvent);
+            }))
             .child(
                 div()
-                    .flex_1()
-                    .min_h_0()
-                    .p(tokens::SPACE_MD)
+                    .p(tokens::SPACE_SM)
+                    .border_b_1()
+                    .border_color(palette::border())
+                    .child(Input::new(&self.input).w_full()),
+            )
+            .child(
+                div()
+                    .p(tokens::SPACE_SM)
                     .flex()
                     .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .bg(palette::bg_elevated())
-                    .child(section(
-                        rox_i18n::t!("goto-time"),
-                        None,
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(tokens::SPACE_XS)
-                            .child(Input::new(&self.input).w_full())
-                            .child(self.position_line(cx))
-                            .children(self.target_line(cx)),
-                    )),
+                    .gap(tokens::SPACE_XS)
+                    .children(now.as_ref().map(|now| self.strip(now, cx)))
+                    .when(now.is_none(), |d| {
+                        d.child(
+                            div()
+                                .text_sm()
+                                .text_color(palette::text_muted())
+                                .child(rox_i18n::t!("goto-nothing-playing")),
+                        )
+                    })
+                    .children(self.target_line(cx)),
             )
-            .child(self.footer(cx))
+            .child(self.hint_row())
     }
 }
 

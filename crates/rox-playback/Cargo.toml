@@ -68,7 +68,17 @@ ebur128 = "0.1.10"
 # and browser plays, and this builds LAME from vendored source, so no
 # system library enters the build. LGPL beside our AGPL is fine.
 mp3lame-encoder = "0.2"
-# The icecast source handshake carries Basic auth; same 0.22 line the tree
+# AcoustID's fingerprint (ADR 14), for identifying a track by its sound when
+# the tags say nothing. A port of the reference chromaprint rather than a
+# binding to it, with no build script and no C, so ADR 2's line about the
+# decode path holds here too. What it costs is an FFT the workspace didn't
+# have (rustfft 6, with realfft over it) and a second rubato at 0.16 beside
+# the 5 the engine resamples with, because the fingerprinter resamples to
+# 11025 Hz itself. Two copies of rubato is build time and binary size rather
+# than a conflict, since neither crate's types cross into the other.
+rusty-chromaprint = "0.3"
+# The icecast source handshake carries Basic auth, and AcoustID's wire form is
+# the compressed fingerprint in URL-safe base64; same 0.22 line the tree
 # already ships.
 base64 = "0.22"
 

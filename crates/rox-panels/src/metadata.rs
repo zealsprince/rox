@@ -31,19 +31,25 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, img, prelude::*, px, AnyElement, App, ClipboardItem, Context, Div, Entity, EventEmitter,
-    FocusHandle, Focusable, Image, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent,
-    ObjectFit, SharedString, Stateful, Subscription, WeakEntity, Window,
+    div, img, prelude::*, px, svg, AnyElement, App, ClipboardItem, Context, Div, Entity,
+    EventEmitter, FocusHandle, Focusable, Image, ImageFormat, KeyDownEvent, MouseButton,
+    MouseDownEvent, ObjectFit, SharedString, Stateful, Subscription, WeakEntity, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
-use gpui_component::{Icon, Side, Sizable};
+use gpui_component::spinner::Spinner;
+use gpui_component::{Icon, Side, Sizable, Size};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
+use rox_library::listens::TrackSummary;
 use rox_library::projection::FilterField;
 use rox_library::writer::{self, Change, Field};
+use rox_net::providers::lastfm::TrackStats;
+use rox_net::providers::musicbrainz::ReleaseFacts;
+use rox_net::providers::TrackQuery;
 use rox_romanize::{Japanese, Reading};
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
@@ -53,7 +59,7 @@ use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::panel::{
     self, align_row, justify, justify_v, valign_row, Align, AppState, PanelChrome, PanelSettings,
-    VAlign,
+    ScrubState, VAlign,
 };
 use crate::panel_settings;
 use crate::player::fmt_time;
@@ -80,8 +86,15 @@ pub struct MetadataConfig {
     /// spare. The sheet has always centered, so that stays the default;
     /// the table face follows the knob too, and pins to the top with it.
     pub valign: VAlign,
-    /// The track's cover art behind the fields, dimmed under a scrim.
+    /// The track's cover art behind the fields, at `cover_opacity`.
     pub cover: bool,
+    /// How strongly the cover shows through, in percent.
+    pub cover_opacity: f32,
+    /// Leave out a shown field the track has nothing for, instead of
+    /// listing it as "n/a". On by default: the bare sheet reads cleaner,
+    /// and the "n/a" rows are there for whoever wants every field
+    /// accounted for.
+    pub hide_empty: bool,
     /// How the fields lay out; see [`MetadataDisplay`].
     pub display: MetadataDisplay,
     /// Tint every other row of the table face; the sheet never stripes.
@@ -103,6 +116,8 @@ impl Default for MetadataConfig {
             align: Align::default(),
             valign: VAlign::default(),
             cover: true,
+            cover_opacity: COVER_OPACITY_DEFAULT,
+            hide_empty: true,
             display: MetadataDisplay::default(),
             stripes: true,
             row_borders: false,
@@ -158,6 +173,48 @@ impl MetadataSource {
 /// `track_columns::checklist`/`columns_submenu` want a `'static` slice, so
 /// this rebuilds and leaks once per active locale rather than on every
 /// call, mirroring `rox_i18n::t_static`'s own per-locale cache.
+/// The cover opacity knob's default, in percent: what the fixed scrim
+/// it replaces left showing.
+const COVER_OPACITY_DEFAULT: f32 = 30.;
+
+/// How far apart two copies of a song may run and still count as one,
+/// the duplicates matcher's tolerance.
+const COPY_TOLERANCE_MS: u32 = 1500;
+
+/// The window the recent plays row counts over: thirty days.
+const RECENT_WINDOW_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// How many similar tracks the row names.
+const SIMILAR_SHOWN: usize = 3;
+
+/// How many neighbours to pull before folding same-song duplicates down
+/// to [`SIMILAR_SHOWN`] distinct songs.
+const SIMILAR_POOL: usize = 24;
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// What the file itself and the stores beside it say about a track,
+/// read off the UI thread since every part touches the disk: the size,
+/// the cover's origin and pixel size, whether lyrics are on file and
+/// timed, and the nearest songs by acoustic similarity.
+#[derive(Clone, Default)]
+struct Facts {
+    size: u64,
+    /// The cover: its folder file name (None for an embedded one) and its
+    /// pixel size. None when the track has no cover.
+    cover: Option<(Option<String>, (u32, u32))>,
+    /// Whether lyrics are on file, and if so whether they're synced.
+    lyrics: Option<bool>,
+    /// The nearest distinct songs as (artist, title), nearest first.
+    /// Empty without embeddings for the track.
+    similar: Vec<(String, String)>,
+}
+
 fn fields() -> Vec<Column> {
     vec![
         Column {
@@ -266,6 +323,116 @@ fn fields() -> Vec<Column> {
             default_on: false,
         },
         Column {
+            key: "last_played",
+            label: rox_i18n::t!("metadata-field-last-played"),
+            default_on: false,
+        },
+        Column {
+            key: "first_played",
+            label: rox_i18n::t!("metadata-field-first-played"),
+            default_on: false,
+        },
+        Column {
+            key: "recent_plays",
+            label: rox_i18n::t!("metadata-field-recent-plays"),
+            default_on: false,
+        },
+        Column {
+            key: "rank",
+            label: rox_i18n::t!("metadata-field-rank"),
+            default_on: false,
+        },
+        Column {
+            key: "bookmarks",
+            label: rox_i18n::t!("metadata-field-bookmarks"),
+            default_on: false,
+        },
+        Column {
+            key: "size",
+            label: rox_i18n::t!("metadata-field-size"),
+            default_on: false,
+        },
+        Column {
+            key: "folder",
+            label: rox_i18n::t!("metadata-field-folder"),
+            default_on: false,
+        },
+        Column {
+            key: "cover",
+            label: rox_i18n::t!("metadata-field-cover"),
+            default_on: false,
+        },
+        Column {
+            key: "lyrics",
+            label: rox_i18n::t!("metadata-field-lyrics"),
+            default_on: false,
+        },
+        Column {
+            key: "copies",
+            label: rox_i18n::t!("metadata-field-copies"),
+            default_on: false,
+        },
+        Column {
+            key: "similar",
+            label: rox_i18n::t!("metadata-field-similar"),
+            default_on: false,
+        },
+        Column {
+            key: "missing",
+            label: rox_i18n::t!("metadata-field-missing"),
+            default_on: false,
+        },
+        Column {
+            key: "mb_label",
+            label: rox_i18n::t!("metadata-field-mb-label"),
+            default_on: false,
+        },
+        Column {
+            key: "mb_country",
+            label: rox_i18n::t!("metadata-field-mb-country"),
+            default_on: false,
+        },
+        Column {
+            key: "mb_date",
+            label: rox_i18n::t!("metadata-field-mb-date"),
+            default_on: false,
+        },
+        Column {
+            key: "mb_first_release",
+            label: rox_i18n::t!("metadata-field-mb-first-release"),
+            default_on: false,
+        },
+        Column {
+            key: "mb_isrc",
+            label: rox_i18n::t!("metadata-field-mb-isrc"),
+            default_on: false,
+        },
+        Column {
+            key: "lastfm_listeners",
+            label: rox_i18n::t!("metadata-field-lastfm-listeners"),
+            default_on: false,
+        },
+        Column {
+            key: "lastfm_plays",
+            label: rox_i18n::t!("metadata-field-lastfm-plays"),
+            default_on: false,
+        },
+        Column {
+            key: "lastfm_user_plays",
+            label: rox_i18n::t!("metadata-field-lastfm-user-plays"),
+            default_on: false,
+        },
+        Column {
+            key: "lastfm_loved",
+            label: rox_i18n::t!("metadata-field-lastfm-loved"),
+            default_on: false,
+        },
+        Column {
+            key: "lastfm_tags",
+            label: rox_i18n::t!("metadata-field-lastfm-tags"),
+            default_on: false,
+        },
+        Column {
             key: "added",
             label: rox_i18n::t!("columns-scanned"),
             default_on: false,
@@ -371,6 +538,25 @@ struct Details {
     /// When the scanner took the track in, as unix seconds, 0 when the
     /// library predates the timestamp.
     added: i64,
+    /// The row's library id, what the listen and similarity lookups key
+    /// on.
+    track_id: i64,
+    /// How many tracks the album holds on this disc, for "4 of 12"; 0
+    /// when the row has no album.
+    album_tracks: u16,
+    /// Where the track's play count stands in the library, 1 the most
+    /// played; None for a track never played.
+    rank: Option<usize>,
+    /// The other copies of the same song the library holds, as codec and
+    /// bitrate: the duplicates matcher's identity (folded title and
+    /// artist within its duration tolerance), per track.
+    copies: Vec<(String, u16)>,
+    /// First and last play and the plays of the last thirty days; None
+    /// for a track never played.
+    listens: Option<TrackSummary>,
+    /// The track's bookmarks, earliest first, by name or by position for
+    /// an unnamed one.
+    bookmarks: Vec<String>,
 }
 
 /// The editable fields in sheet order, each with its input row's label:
@@ -557,6 +743,28 @@ pub struct MetadataPanel {
     /// The library scope's cached counts; cleared when the catalog or the
     /// listen record moves.
     totals: Option<LibraryTotals>,
+    /// Last.fm's counts for the shown track, the global rows, from the
+    /// track stats store; None inside is a clean miss. Keyed by the track
+    /// so a source flip never shows another track's numbers, and cleared
+    /// when the catalog changes, since a rescan can rewrite the tags the
+    /// lookup went under.
+    stats: Option<(TrackKey, Option<TrackStats>)>,
+    /// The track a stats fetch is running for, so a render can tell
+    /// "already fetching" from "needs a fetch".
+    stats_pending: Option<TrackKey>,
+    /// Discards a stale stats result when the track changes mid-flight.
+    stats_generation: u64,
+    /// The file facts for the shown track, keyed by the track; the same
+    /// pending marker and generation guard as the stats.
+    facts: Option<(TrackKey, Facts)>,
+    facts_pending: Option<TrackKey>,
+    facts_generation: u64,
+    /// MusicBrainz's release facts for the shown track, from the release
+    /// facts store; None inside is a clean miss. Same bookkeeping as the
+    /// stats.
+    release: Option<(TrackKey, Option<ReleaseFacts>)>,
+    release_pending: Option<TrackKey>,
+    release_generation: u64,
     /// The loaded background art keyed by the track it belongs to, with the
     /// pending marker, generation guard, and swap/drop retires the shared
     /// loader provides.
@@ -565,6 +773,9 @@ pub struct MetadataPanel {
     /// turn into selection lookups.
     resolved: ResolvedTrack,
     focus: FocusHandle,
+    /// The cover opacity slider's scrub and readout-edit state.
+    cover_scrub: ScrubState,
+    value_edit: panel::ValueEdit,
     /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
@@ -597,7 +808,10 @@ impl MetadataPanel {
                 // A rating click or a new listen moves two of the sheet's
                 // fields, and the listen moves the library scope's play
                 // total too; re-resolve those, nothing else changed.
-                if matches!(event, LibraryEvent::Rated | LibraryEvent::Played) {
+                if matches!(
+                    event,
+                    LibraryEvent::Rated | LibraryEvent::Played | LibraryEvent::BookmarksChanged
+                ) {
                     this.details = None;
                     this.totals = None;
                     cx.notify();
@@ -609,6 +823,9 @@ impl MetadataPanel {
                 this.resolved.invalidate();
                 this.details = None;
                 this.totals = None;
+                this.stats = None;
+                this.facts = None;
+                this.release = None;
                 this.art.refresh();
                 cx.notify();
             },
@@ -621,9 +838,20 @@ impl MetadataPanel {
             menu_field: None,
             details: None,
             totals: None,
+            stats: None,
+            stats_pending: None,
+            stats_generation: 0,
+            facts: None,
+            facts_pending: None,
+            facts_generation: 0,
+            release: None,
+            release_pending: None,
+            release_generation: 0,
             art: panel::TrackedImage::default(),
             resolved: ResolvedTrack::default(),
             focus: cx.focus_handle().tab_stop(true),
+            cover_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             tab_panel: None,
             _player_changed,
             _selection_changed,
@@ -655,7 +883,57 @@ impl MetadataPanel {
                     projection.db_id[row as usize] == id && !projection.is_dead(row)
                 })?;
                 let v = projection.resolve(row);
+                // The rows this one is measured against, one more pass:
+                // its album's disc for the position, the plays above it
+                // for the rank, and the same song elsewhere for the
+                // copies. Folded the way the duplicates matcher folds.
+                let same_song =
+                    |a: &str, b: &str| rox_library::fold::fold(a) == rox_library::fold::fold(b);
+                let mut album_tracks = 0u16;
+                let mut above = 0usize;
+                let mut copies = Vec::new();
+                for other in 0..projection.len() as u32 {
+                    if projection.is_dead(other) {
+                        continue;
+                    }
+                    let o = projection.resolve(other);
+                    if !v.album.is_empty()
+                        && o.album == v.album
+                        && o.album_artist == v.album_artist
+                        && o.disc_no == v.disc_no
+                    {
+                        album_tracks = album_tracks.saturating_add(1);
+                    }
+                    if o.plays > v.plays {
+                        above += 1;
+                    }
+                    if other != row
+                        && o.duration_ms.abs_diff(v.duration_ms) <= COPY_TOLERANCE_MS
+                        && same_song(o.title, v.title)
+                        && same_song(o.artist, v.artist)
+                    {
+                        copies.push((o.codec.to_owned(), o.bitrate_kbps));
+                    }
+                }
+                let listens = library.listen_summary(id, now_secs() - RECENT_WINDOW_SECS);
+                let bookmarks = library
+                    .bookmarks_for(key)
+                    .into_iter()
+                    .map(|mark| {
+                        if mark.name.is_empty() {
+                            fmt_time(f64::from(mark.position_ms) / 1000.0)
+                        } else {
+                            mark.name
+                        }
+                    })
+                    .collect();
                 Some(Details {
+                    track_id: id,
+                    album_tracks,
+                    rank: (v.plays > 0).then_some(above + 1),
+                    copies,
+                    listens,
+                    bookmarks,
                     title: v.title.to_owned(),
                     artist: v.artist.to_owned(),
                     album_artist: v.album_artist.to_owned(),
@@ -733,6 +1011,139 @@ impl MetadataPanel {
             });
         }
         self.totals.as_ref()
+    }
+
+    /// Make sure Last.fm's counts for the shown track are loaded or on
+    /// their way: run the store's cache-or-fetch off the UI thread and
+    /// swap the result in when it arrives. Only called while a global row
+    /// is shown, so a sheet without them never touches the network.
+    fn ensure_stats(&mut self, key: &TrackKey, d: &Details, cx: &mut Context<Self>) {
+        if self.stats.as_ref().is_some_and(|(k, _)| k == key)
+            || self.stats_pending.as_ref() == Some(key)
+        {
+            return;
+        }
+        self.stats_pending = Some(key.clone());
+        self.stats_generation += 1;
+        let generation = self.stats_generation;
+        let key = key.clone();
+        let (artist, title, album) = (d.artist.clone(), d.title.clone(), d.album.clone());
+        // The connected account, for its own counts; empty asks for the
+        // global numbers alone.
+        let username = self.state.scrobbler.read(cx).username().to_string();
+        cx.spawn(async move |this, cx| {
+            let result =
+                cx.background_executor()
+                    .spawn(async move {
+                        rox_services::track_stats::get(&artist, &title, &album, &username)
+                    })
+                    .await;
+            this.update(cx, |this, cx| {
+                if this.stats_generation != generation {
+                    return;
+                }
+                this.stats_pending = None;
+                match result {
+                    Ok(stats) => this.stats = Some((key, stats)),
+                    // A failed lookup leaves the rows absent rather than
+                    // erroring a sheet that is otherwise fine; the next
+                    // track change asks again.
+                    Err(e) => {
+                        log::debug!("metadata: track stats: {e}");
+                        this.stats = Some((key, None));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Make sure MusicBrainz's release facts for the shown track are
+    /// loaded or on their way: the store's cache-or-fetch off the UI
+    /// thread, two throttled calls on a miss. Only called while a
+    /// release row is shown.
+    fn ensure_release(&mut self, key: &TrackKey, d: &Details, cx: &mut Context<Self>) {
+        if self.release.as_ref().is_some_and(|(k, _)| k == key)
+            || self.release_pending.as_ref() == Some(key)
+        {
+            return;
+        }
+        self.release_pending = Some(key.clone());
+        self.release_generation += 1;
+        let generation = self.release_generation;
+        let key = key.clone();
+        let query = TrackQuery {
+            artist: d.artist.clone(),
+            title: d.title.clone(),
+            album: d.album.clone(),
+            duration_secs: (d.duration_ms > 0).then(|| f64::from(d.duration_ms) / 1000.0),
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { rox_services::release_facts::get(&query) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.release_generation != generation {
+                    return;
+                }
+                this.release_pending = None;
+                match result {
+                    Ok(facts) => this.release = Some((key, facts)),
+                    Err(e) => {
+                        log::debug!("metadata: release facts: {e}");
+                        this.release = Some((key, None));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Make sure the file facts for the shown track are loaded or on
+    /// their way: one background read of the file's size, cover, lyrics,
+    /// and, when the row is on, its acoustic neighbours. Only called
+    /// while a facts row is shown.
+    fn ensure_facts(
+        &mut self,
+        key: &TrackKey,
+        track_id: i64,
+        similar: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.facts.as_ref().is_some_and(|(k, _)| k == key)
+            || self.facts_pending.as_ref() == Some(key)
+        {
+            return;
+        }
+        self.facts_pending = Some(key.clone());
+        self.facts_generation += 1;
+        let generation = self.facts_generation;
+        let key = key.clone();
+        let path = key.path.clone();
+        let model = rox_services::acoustic::acoustic_source().id().to_string();
+        cx.spawn(async move |this, cx| {
+            let facts = cx
+                .background_executor()
+                .spawn(
+                    async move { read_facts(&path, track_id, similar.then_some(model.as_str())) },
+                )
+                .await;
+            this.update(cx, |this, cx| {
+                if this.facts_generation != generation {
+                    return;
+                }
+                this.facts_pending = None;
+                this.facts = Some((key, facts));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Make sure the background art for `path` is cached or on its way:
@@ -1148,19 +1559,129 @@ impl track_columns::ColumnHost for MetadataPanel {
         self.config.fields.iter().any(|k| k == key)
     }
 
+    /// Turning a field on appends it: the list's order is the sheet's
+    /// order, and the customize window's arrows move a row from there.
     fn set_column(&mut self, key: &'static str, on: bool, cx: &mut Context<Self>) {
         if on {
-            let shown: Vec<&str> = self.config.fields.iter().map(String::as_str).collect();
-            self.config.fields = fields()
-                .iter()
-                .filter(|c| c.key == key || shown.contains(&c.key))
-                .map(|c| c.key.to_string())
-                .collect();
+            if !self.config.fields.iter().any(|k| k == key) {
+                self.config.fields.push(key.to_string());
+            }
         } else {
             self.config.fields.retain(|k| k != key);
         }
         cx.notify();
     }
+}
+
+impl MetadataPanel {
+    /// Move a shown field one place up (`delta` -1) or down (+1) in the
+    /// sheet's order. A move off either end does nothing.
+    fn move_field(&mut self, key: &str, delta: isize, cx: &mut Context<Self>) {
+        let Some(from) = self.config.fields.iter().position(|k| k == key) else {
+            return;
+        };
+        let to = from as isize + delta;
+        if to < 0 || to as usize >= self.config.fields.len() {
+            return;
+        }
+        self.config.fields.swap(from, to as usize);
+        cx.notify();
+    }
+
+    /// The Fields block of the customize window: the shown fields first in
+    /// the sheet's order, each with arrows to move it, then the hidden
+    /// ones in registry order. A click on a row flips it, the shared
+    /// checklist's gesture; the arrows are their own targets.
+    fn field_list(&self, cx: &mut Context<Self>) -> Div {
+        let registry = offered();
+        let shown: Vec<&Column> = self
+            .config
+            .fields
+            .iter()
+            .filter_map(|k| registry.iter().find(|c| c.key == k.as_str()))
+            .collect();
+        let hidden: Vec<&Column> = registry
+            .iter()
+            .filter(|c| !self.config.fields.iter().any(|k| k == c.key))
+            .collect();
+        let count = shown.len();
+        let mut list = div().flex().flex_col().gap(tokens::SPACE_XS);
+        for (ix, col) in shown.iter().enumerate() {
+            list = list.child(field_row(col, Some((ix, count)), cx));
+        }
+        for col in hidden {
+            list = list.child(field_row(col, None, cx));
+        }
+        list
+    }
+}
+
+/// One row of the Fields block: the tick, the label, and for a shown
+/// field (`place` is its index and the shown count) the up and down
+/// arrows, each faint at the end it can't move past.
+fn field_row(col: &Column, place: Option<(usize, usize)>, cx: &mut Context<MetadataPanel>) -> Div {
+    let key = col.key;
+    let on = place.is_some();
+    let arrow = |path: &'static str, live: bool, delta: isize| {
+        svg()
+            .path(path)
+            .size(px(12.))
+            .text_color(if live {
+                palette::text_muted()
+            } else {
+                palette::text_faint()
+            })
+            .when(live, |a| {
+                a.cursor_pointer()
+                    .hover(|a| a.text_color(palette::accent()))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this: &mut MetadataPanel, _, _, cx| {
+                            cx.stop_propagation();
+                            this.move_field(key, delta, cx);
+                        }),
+                    )
+            })
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .py(px(1.))
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this: &mut MetadataPanel, _, _, cx| {
+                use track_columns::ColumnHost;
+                let on = this.column_shown(key);
+                this.set_column(key, !on, cx);
+            }),
+        )
+        .child(settings_ui::checkbox(on))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_color(if on {
+                    palette::text()
+                } else {
+                    palette::text_muted()
+                })
+                .child(col.label.clone()),
+        )
+        .when_some(place, |d, (ix, count)| {
+            d.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(arrow(icons::ARROW_UP, ix > 0, -1))
+                    .child(arrow(icons::ARROW_DOWN, ix + 1 < count, 1)),
+            )
+        })
 }
 
 impl PanelSettings for MetadataPanel {
@@ -1267,11 +1788,40 @@ impl PanelSettings for MetadataPanel {
                     cx,
                 ),
             ))
+            .when(self.config.cover, |d| {
+                d.child(panel::setting_row(
+                    rox_i18n::t!("metadata-cover-opacity"),
+                    Some(rox_i18n::t!("metadata-cover-opacity.description")),
+                    settings_ui::scalar(
+                        &self.cover_scrub,
+                        &self.value_edit,
+                        self.config.cover_opacity,
+                        settings_ui::span(0., 100., "%").hard(),
+                        |this: &mut Self, value, cx| {
+                            this.config.cover_opacity = value;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
+            .child(panel::setting_row(
+                rox_i18n::t!("metadata-hide-empty"),
+                Some(rox_i18n::t!("metadata-hide-empty.description")),
+                panel::toggle(
+                    self.config.hide_empty,
+                    |this: &mut Self, on, cx| {
+                        this.config.hide_empty = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
             .child(panel::setting_block(
                 rox_i18n::t!("metadata-fields"),
                 Some(rox_i18n::t!("metadata-fields.description")),
                 None,
-                track_columns::checklist(&offered(), self, cx),
+                self.field_list(cx),
             ))
             .into_any_element()
     }
@@ -1532,6 +2082,201 @@ impl Panel for MetadataPanel {
 ///
 /// The genre column is a "; " list, so it splits: a click picks the value
 /// it hit rather than filtering on the whole list at once.
+/// The file facts for a track, off the disk and the library database.
+/// Blocking, background executor only. `model` names the embedding
+/// model to ask for neighbours under, None to skip that part.
+fn read_facts(path: &Path, track_id: i64, model: Option<&str>) -> Facts {
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let cover = match rox_library::art::cover_art_source(path) {
+        rox_library::art::Cover::Found { bytes, source, .. } => {
+            image::ImageReader::new(std::io::Cursor::new(&bytes))
+                .with_guessed_format()
+                .ok()
+                .and_then(|reader| reader.into_dimensions().ok())
+                .map(|dims| {
+                    let file = match source {
+                        rox_library::art::ArtSource::Embedded => None,
+                        rox_library::art::ArtSource::Folder { file, .. } => Some(
+                            file.file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        ),
+                    };
+                    (file, dims)
+                })
+        }
+        _ => None,
+    };
+    let lyrics = rox_library::lyrics::load(path, Some(&rox_core::settings::lyrics_dir()))
+        .map(|lyrics| lyrics.synced);
+    let similar = match model {
+        Some(model) if track_id > 0 => similar_songs(track_id, model),
+        _ => Vec::new(),
+    };
+    Facts {
+        size,
+        cover,
+        lyrics,
+        similar,
+    }
+}
+
+/// The nearest distinct songs to a track by its acoustic embedding, as
+/// (artist, title): the neighbours folded so a library holding a song
+/// five times names it once, and the seed's own song left out.
+fn similar_songs(track_id: i64, model: &str) -> Vec<(String, String)> {
+    let db = rox_core::settings::data_dir().join("library.db");
+    let Ok(conn) = rox_library::store::open(&db) else {
+        return Vec::new();
+    };
+    let Ok(near) = rox_library::embeddings::nearest_ranked(&conn, track_id, model, SIMILAR_POOL)
+    else {
+        return Vec::new();
+    };
+    let own = rox_library::store::names_for(&conn, &[track_id])
+        .ok()
+        .and_then(|names| names.into_iter().next());
+    let ids: Vec<i64> = near.iter().map(|&(id, _)| id).collect();
+    let Ok(names) = rox_library::store::names_for(&conn, &ids) else {
+        return Vec::new();
+    };
+    let fold = |name: &(String, String)| {
+        (
+            rox_library::fold::fold(&name.0),
+            rox_library::fold::fold(&name.1),
+        )
+    };
+    let own = own.as_ref().map(fold);
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut out = Vec::new();
+    for name in names {
+        let key = fold(&name);
+        if own.as_ref() == Some(&key) || seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        out.push(name);
+        if out.len() == SIMILAR_SHOWN {
+            break;
+        }
+    }
+    out
+}
+
+/// One row of either face: the label, the value with its reading, and
+/// what a click on the value searches.
+struct FieldRow {
+    label: SharedString,
+    value: Value,
+    reading: String,
+    search: Option<Search>,
+}
+
+/// What a row's value cell holds. The tag fields only ever carry text,
+/// since an empty one skips its row; the global rows run through all
+/// three, so a switched-on row is on the sheet from the first frame.
+enum Value {
+    Text(String),
+    /// A row of chips, each a pick on the genre filter, with a faint note
+    /// after them (the tag fallback's scope).
+    Tags(Vec<String>, Option<SharedString>),
+    /// The lookup is still running: a spinner where the value goes.
+    Pending,
+    /// Settled with nothing: "n/a", faint.
+    Absent,
+}
+
+impl Value {
+    /// The text a copy takes: the text, the chips joined, empty for the
+    /// rest.
+    fn text(&self) -> String {
+        match self {
+            Value::Text(text) => text.clone(),
+            Value::Tags(tags, _) => tags.join(", "),
+            _ => String::new(),
+        }
+    }
+}
+
+impl FieldRow {
+    /// The value cell: the text, the spinner while it's on its way, or the
+    /// faint "n/a" once there is none.
+    fn cell(&self, query: Option<&Entity<SharedQuery>>, next_id: &mut usize) -> Div {
+        match &self.value {
+            Value::Text(value) => value_cell(value, &self.reading, self.search, query, next_id),
+            Value::Tags(tags, note) => {
+                let mut row = div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(tokens::SPACE_XS)
+                    .min_w_0();
+                for tag in tags {
+                    let id = *next_id;
+                    *next_id += 1;
+                    let chip = div()
+                        .px(tokens::SPACE_SM)
+                        .py(px(1.))
+                        .rounded_full()
+                        .bg(palette::bg_control())
+                        .text_xs()
+                        .text_color(palette::text_secondary())
+                        .child(SharedString::from(tag.clone()));
+                    row = match query {
+                        Some(query) => {
+                            let query = query.clone();
+                            let value = tag.clone();
+                            row.child(
+                                chip.id(("metadata-tag", id))
+                                    .cursor_pointer()
+                                    .hover(|d| d.text_color(palette::accent()))
+                                    .on_click(move |_, _, cx| {
+                                        shared_query::toggle_pick(
+                                            &query,
+                                            FilterField::Genre,
+                                            &value,
+                                            cx,
+                                        )
+                                    }),
+                            )
+                        }
+                        None => row.child(chip),
+                    };
+                }
+                row.when_some(note.clone(), |row, note| {
+                    row.child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_faint())
+                            .child(note),
+                    )
+                })
+            }
+            Value::Pending => div()
+                .flex()
+                .items_center()
+                .text_color(palette::text_faint())
+                .child(Spinner::new().with_size(Size::Small)),
+            Value::Absent => div()
+                .text_color(palette::text_faint())
+                .child(rox_i18n::t!("metadata-value-none")),
+        }
+    }
+}
+
+/// Where an online lookup stands, for the rows it feeds: Last.fm's
+/// counts, MusicBrainz's release facts.
+enum Stats<T> {
+    /// The answer landed.
+    Have(T),
+    /// The lookup is running.
+    Pending,
+    /// Nothing to show: a settled miss, no lookup asked, or a track
+    /// without the tags to ask under.
+    Miss,
+}
+
 fn value_cell(
     value: &str,
     reading: &str,
@@ -1832,20 +2577,15 @@ impl MetadataPanel {
             self.ensure_art(&path, cx);
         }
         let backdrop = self.config.cover.then(|| self.art.get(&path)).flatten();
+        let cover_opacity = (self.config.cover_opacity / 100.).clamp(0., 1.);
         let root = root.when_some(backdrop, |root, image| {
             root.child(
-                div().absolute().inset_0().child(
+                div().absolute().inset_0().opacity(cover_opacity).child(
                     img(image)
                         .overflow_hidden()
                         .object_fit(ObjectFit::Cover)
                         .size_full(),
                 ),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(palette::alpha(palette::bg_root(), 0xB8)),
             )
         });
 
@@ -1882,78 +2622,366 @@ impl MetadataPanel {
         // Every row arms itself for the copy menu on a right press.
         let weak = cx.entity().downgrade();
 
-        // The shown fields in registry order, each skipped when its value
-        // is empty: absence reads cleaner than a labeled blank. The key
-        // comes along for [`query_field`], which decides whether the value
-        // is clickable.
-        let mut fields: Vec<(gpui::SharedString, String, String, Option<Search>)> = Vec::new();
-        for col in self::fields() {
-            if !self.config.fields.iter().any(|k| k == col.key) {
-                continue;
+        // The Last.fm rows are asked for only while one of them is on and
+        // the track has the artist and title to ask under; the file facts
+        // likewise only while one of theirs is on.
+        // A copy of the on-set, so the checks below don't hold the config
+        // borrowed across the fetches.
+        let fields_on = self.config.fields.clone();
+        let shown = |k: &str| fields_on.iter().any(|f| f == k);
+        let global_rows = self.config.fields.iter().any(|k| k.starts_with("lastfm_"));
+        if global_rows {
+            if let Some(d) = details.as_ref() {
+                if !d.artist.is_empty() && !d.title.is_empty() {
+                    self.ensure_stats(&key, d, cx);
+                }
             }
-            let value = match col.key {
+        }
+        let release_rows = fields_on.iter().any(|k| k.starts_with("mb_"));
+        if release_rows {
+            if let Some(d) = details.as_ref() {
+                if !d.artist.is_empty() && !d.title.is_empty() {
+                    self.ensure_release(&key, d, cx);
+                }
+            }
+        }
+        // A release row: the fact once it landed, a spinner while the
+        // lookup runs, "n/a" after a settled miss or for a fact the
+        // release lacks.
+        let release = match self.release.as_ref().filter(|(k, _)| *k == key) {
+            Some((_, Some(facts))) => Stats::Have(facts.clone()),
+            Some((_, None)) => Stats::Miss,
+            None if self.release_pending.as_ref() == Some(&key) => Stats::Pending,
+            None => Stats::Miss,
+        };
+        let mb = |pick: &dyn Fn(&ReleaseFacts) -> String| match &release {
+            Stats::Have(facts) => {
+                let text = pick(facts);
+                Some(if text.is_empty() {
+                    Value::Absent
+                } else {
+                    Value::Text(text)
+                })
+            }
+            Stats::Pending => Some(Value::Pending),
+            Stats::Miss => Some(Value::Absent),
+        };
+        let facts_rows = ["size", "folder", "cover", "lyrics", "similar", "missing"]
+            .iter()
+            .any(|k| shown(k));
+        if facts_rows {
+            let track_id = details.as_ref().map_or(0, |d| d.track_id);
+            self.ensure_facts(&key, track_id, shown("similar"), cx);
+        }
+        let facts = self
+            .facts
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, facts)| facts.clone());
+        let facts_pending = facts.is_none() && self.facts_pending.as_ref() == Some(&key);
+        // A facts row: the spinner until the read lands, then the value or
+        // "n/a" for a settled nothing.
+        let fact = |pick: &dyn Fn(&Facts) -> Option<String>| match &facts {
+            Some(facts) => Some(pick(facts).map_or(Value::Absent, Value::Text)),
+            None if facts_pending => Some(Value::Pending),
+            None => Some(Value::Absent),
+        };
+        let username = self.state.scrobbler.read(cx).username().to_string();
+        let tempo = crate::settings::tempo_analysis();
+        // What the global rows have to show: the counts once they landed,
+        // a spinner while the lookup runs so a switched-on row is visible
+        // before its number is, nothing after a settled miss.
+        let stats = match self.stats.as_ref().filter(|(k, _)| *k == key) {
+            Some((_, Some(stats))) => Stats::Have(stats.clone()),
+            Some((_, None)) => Stats::Miss,
+            None if self.stats_pending.as_ref() == Some(&key) => Stats::Pending,
+            None => Stats::Miss,
+        };
+        // A global row stays on the sheet whatever the lookup found: the
+        // number, a spinner, or "n/a" once it's settled that there is
+        // none, so a switched-on row never silently vanishes.
+        let global = |pick: &dyn Fn(&TrackStats) -> Option<String>| match &stats {
+            Stats::Have(stats) => Some(pick(stats).map_or(Value::Absent, Value::Text)),
+            Stats::Pending => Some(Value::Pending),
+            Stats::Miss => Some(Value::Absent),
+        };
+        // The shown fields in the config's own order, which the customize
+        // window's arrows set, each skipped when its value is empty:
+        // absence reads cleaner than a labeled blank. The key comes along
+        // for [`query_field`], which decides whether the value is
+        // clickable. A global row is the exception, see above.
+        let registry = self::fields();
+        let mut fields: Vec<FieldRow> = Vec::new();
+        for shown in &self.config.fields {
+            let Some(col) = registry.iter().find(|c| c.key == shown.as_str()) else {
+                continue;
+            };
+            let value: Option<Value> = match col.key {
+                "lastfm_listeners" => global(&|s| {
+                    (s.listeners > 0).then(|| rox_i18n::format::format_int(s.listeners as i64))
+                }),
+                "lastfm_plays" => global(&|s| {
+                    (s.playcount > 0).then(|| rox_i18n::format::format_int(s.playcount as i64))
+                }),
+                // The tags as chips, each a pick on the genre filter, with
+                // the fallback's scope noted after them.
+                "lastfm_tags" => match &stats {
+                    Stats::Have(s) if !s.tags.is_empty() => {
+                        let scope = match s.tags_scope.as_str() {
+                            "album" => Some(rox_i18n::t!("metadata-tags-scope-album")),
+                            "artist" => Some(rox_i18n::t!("metadata-tags-scope-artist")),
+                            _ => None,
+                        };
+                        Some(Value::Tags(s.tags.clone(), scope))
+                    }
+                    Stats::Have(_) | Stats::Miss => Some(Value::Absent),
+                    Stats::Pending => Some(Value::Pending),
+                },
+                // The user's own rows only mean something with an account
+                // connected; without one they settle to "n/a".
+                "lastfm_user_plays" => global(&|s| {
+                    s.user_plays
+                        .filter(|_| !username.is_empty())
+                        .map(|n| rox_i18n::format::format_int(n as i64))
+                }),
+                "lastfm_loved" => global(&|s| {
+                    (!username.is_empty()).then(|| {
+                        if s.loved {
+                            rox_i18n::t!("metadata-loved-yes").to_string()
+                        } else {
+                            rox_i18n::t!("metadata-loved-no").to_string()
+                        }
+                    })
+                }),
+                "mb_label" => mb(
+                    &|r| match (r.label.is_empty(), r.catalog_number.is_empty()) {
+                        (false, false) => format!("{} ({})", r.label, r.catalog_number),
+                        (false, true) => r.label.clone(),
+                        (true, false) => r.catalog_number.clone(),
+                        (true, true) => String::new(),
+                    },
+                ),
+                "mb_country" => mb(&|r| r.country.clone()),
+                "mb_date" => mb(&|r| r.release_date.clone()),
+                "mb_first_release" => mb(&|r| r.first_release_date.clone()),
+                "mb_isrc" => mb(&|r| r.isrc.clone()),
+                "size" => fact(&|f| (f.size > 0).then(|| rox_core::fmt::fmt_bytes(f.size))),
+                "folder" => path
+                    .parent()
+                    .map(|dir| Value::Text(dir.display().to_string())),
+                "cover" => fact(&|f| {
+                    f.cover.as_ref().map(|(file, (w, h))| {
+                        let px = format!("{w}x{h}");
+                        match file {
+                            Some(file) => {
+                                rox_i18n::t!("metadata-cover-folder", file = file.clone(), px = px)
+                                    .to_string()
+                            }
+                            None => rox_i18n::t!("metadata-cover-embedded", px = px).to_string(),
+                        }
+                    })
+                }),
+                "lyrics" => fact(&|f| {
+                    f.lyrics.map(|synced| {
+                        if synced {
+                            rox_i18n::t!("metadata-lyrics-synced").to_string()
+                        } else {
+                            rox_i18n::t!("metadata-lyrics-plain").to_string()
+                        }
+                    })
+                }),
+                "similar" => fact(&|f| {
+                    (!f.similar.is_empty()).then(|| {
+                        f.similar
+                            .iter()
+                            .map(|(artist, title)| format!("{title} ({artist})"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                }),
+                // What a complete track would have and this one lacks: the
+                // tag gaps off the row, the cover and lyrics off the facts.
+                "missing" => details.as_ref().map(|d| {
+                    let Some(facts) = &facts else {
+                        return if facts_pending {
+                            Value::Pending
+                        } else {
+                            Value::Absent
+                        };
+                    };
+                    let mut gaps: Vec<SharedString> = Vec::new();
+                    if d.title.is_empty() {
+                        gaps.push(rox_i18n::t!("info-item-title"));
+                    }
+                    if d.artist.is_empty() {
+                        gaps.push(rox_i18n::t!("head-piece-artist"));
+                    }
+                    if d.album.is_empty() {
+                        gaps.push(rox_i18n::t!("head-piece-album"));
+                    }
+                    if d.genre.is_empty() {
+                        gaps.push(rox_i18n::t!("head-piece-genre"));
+                    }
+                    if d.year == 0 {
+                        gaps.push(rox_i18n::t!("head-piece-year"));
+                    }
+                    if facts.cover.is_none() {
+                        gaps.push(rox_i18n::t!("metadata-field-cover"));
+                    }
+                    if d.track_gain_db.is_none() {
+                        gaps.push(rox_i18n::t!("metadata-field-gain-track"));
+                    }
+                    if tempo && d.bpm.is_none() {
+                        gaps.push(rox_i18n::t!("columns-bpm"));
+                    }
+                    if facts.lyrics.is_none() {
+                        gaps.push(rox_i18n::t!("metadata-field-lyrics"));
+                    }
+                    if gaps.is_empty() {
+                        Value::Text(rox_i18n::t!("metadata-missing-none").to_string())
+                    } else {
+                        Value::Text(
+                            gaps.iter()
+                                .map(|g| g.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        )
+                    }
+                }),
                 // The file name comes off the path, so it shows even for
                 // a track the library doesn't know.
                 "file" => path
                     .file_name()
-                    .map(|name| name.to_string_lossy().into_owned()),
-                key => details.as_ref().and_then(|d| match key {
-                    "album" => (!d.album.is_empty()).then(|| d.album.clone()),
-                    // Absent on everything but a romanized library, and
-                    // an absent value skips its row, so a Latin-only
-                    // sheet looks exactly as it did.
-                    "title_sort" => (!d.title_sort.is_empty()).then(|| d.title_sort.clone()),
-                    "artist_sort" => (!d.artist_sort.is_empty()).then(|| d.artist_sort.clone()),
-                    "album_sort" => (!d.album_sort.is_empty()).then(|| d.album_sort.clone()),
-                    "album_artist_sort" => (!d.album_artist_sort.is_empty()
-                        && d.album_artist_sort != d.artist_sort)
-                        .then(|| d.album_artist_sort.clone()),
-                    "album_artist" => (!d.album_artist.is_empty() && d.album_artist != d.artist)
-                        .then(|| d.album_artist.clone()),
-                    "disc" => (d.disc_no > 0).then(|| d.disc_no.to_string()),
-                    "track" => (d.track_no > 0).then(|| format!("{:02}", d.track_no)),
-                    "genre" => (!d.genre.is_empty()).then(|| d.genre.clone()),
-                    "year" => (d.year > 0).then(|| d.year.to_string()),
-                    "duration" => {
-                        (d.duration_ms > 0).then(|| fmt_time(d.duration_ms as f64 / 1000.0))
-                    }
-                    "codec" => (!d.codec.is_empty()).then(|| d.codec.clone()),
-                    "bitrate" => (d.bitrate_kbps > 0).then(|| {
-                        format!(
-                            "{} kbps",
-                            rox_i18n::format::format_int(i64::from(d.bitrate_kbps))
-                        )
-                    }),
-                    "sample_rate" => (d.sample_rate_hz > 0)
-                        .then(|| format!("{} kHz", crate::group_head::khz(d.sample_rate_hz))),
-                    "bit_depth" => (d.bit_depth > 0).then(|| format!("{} bit", d.bit_depth)),
-                    // Whole beats, like the library column: the fraction
-                    // comes from the estimator, and an estimate says so.
-                    "bpm" => d.bpm.map(|bpm| {
-                        let beats = rox_i18n::format::format_int(bpm.round() as i64);
-                        if d.bpm_measured {
-                            rox_i18n::t!("metadata-field-bpm-measured", bpm = beats).to_string()
-                        } else {
-                            beats
+                    .map(|name| Value::Text(name.to_string_lossy().into_owned())),
+                key => details.as_ref().and_then(|d| {
+                    match key {
+                        "album" => (!d.album.is_empty()).then(|| d.album.clone()),
+                        // Absent on everything but a romanized library, and
+                        // an absent value skips its row, so a Latin-only
+                        // sheet looks exactly as it did.
+                        "title_sort" => (!d.title_sort.is_empty()).then(|| d.title_sort.clone()),
+                        "artist_sort" => (!d.artist_sort.is_empty()).then(|| d.artist_sort.clone()),
+                        "album_sort" => (!d.album_sort.is_empty()).then(|| d.album_sort.clone()),
+                        "album_artist_sort" => (!d.album_artist_sort.is_empty()
+                            && d.album_artist_sort != d.artist_sort)
+                            .then(|| d.album_artist_sort.clone()),
+                        "album_artist" => (!d.album_artist.is_empty()
+                            && d.album_artist != d.artist)
+                            .then(|| d.album_artist.clone()),
+                        "disc" => (d.disc_no > 0).then(|| d.disc_no.to_string()),
+                        // With the album's disc counted, the position reads
+                        // against it: "04 of 12".
+                        "track" => (d.track_no > 0).then(|| {
+                            let track = format!("{:02}", d.track_no);
+                            if d.album_tracks > 1 {
+                                rox_i18n::t!(
+                                    "metadata-track-of",
+                                    track = track,
+                                    total = d.album_tracks.to_string()
+                                )
+                                .to_string()
+                            } else {
+                                track
+                            }
+                        }),
+                        "last_played" => d.listens.map(|l| {
+                            format!(
+                                "{} ({})",
+                                rox_core::fmt::fmt_ago(now_secs() - l.last_played),
+                                rox_core::fmt::fmt_date(l.last_played)
+                            )
+                        }),
+                        "first_played" => {
+                            d.listens.map(|l| rox_core::fmt::fmt_date(l.first_played))
                         }
-                    }),
-                    "gain_track" => d.track_gain_db.map(fmt_gain),
-                    "gain_album" => d.album_gain_db.map(fmt_gain),
-                    "added" => (d.added > 0).then(|| rox_core::fmt::fmt_date(d.added)),
-                    "plays" => (d.plays > 0).then(|| track_columns::fmt_plays(d.plays)),
-                    "rating" => (d.rating > 0).then(|| crate::rating_ui::fmt(d.rating).to_string()),
-                    _ => None,
+                        "recent_plays" => d
+                            .listens
+                            .map(|l| rox_i18n::format::format_int(l.recent_plays as i64)),
+                        "rank" => d.rank.map(|rank| {
+                            rox_i18n::t!("metadata-rank-value", rank = rank.to_string()).to_string()
+                        }),
+                        "bookmarks" => (!d.bookmarks.is_empty()).then(|| d.bookmarks.join(", ")),
+                        "copies" => (!d.copies.is_empty()).then(|| {
+                            d.copies
+                                .iter()
+                                .map(|(codec, kbps)| {
+                                    if *kbps > 0 {
+                                        format!(
+                                            "{codec} {} kbps",
+                                            rox_i18n::format::format_int(i64::from(*kbps))
+                                        )
+                                    } else {
+                                        codec.clone()
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }),
+                        "genre" => (!d.genre.is_empty()).then(|| d.genre.clone()),
+                        "year" => (d.year > 0).then(|| d.year.to_string()),
+                        "duration" => {
+                            (d.duration_ms > 0).then(|| fmt_time(d.duration_ms as f64 / 1000.0))
+                        }
+                        "codec" => (!d.codec.is_empty()).then(|| d.codec.clone()),
+                        "bitrate" => (d.bitrate_kbps > 0).then(|| {
+                            format!(
+                                "{} kbps",
+                                rox_i18n::format::format_int(i64::from(d.bitrate_kbps))
+                            )
+                        }),
+                        "sample_rate" => (d.sample_rate_hz > 0)
+                            .then(|| format!("{} kHz", crate::group_head::khz(d.sample_rate_hz))),
+                        "bit_depth" => (d.bit_depth > 0).then(|| format!("{} bit", d.bit_depth)),
+                        // Whole beats, like the library column: the fraction
+                        // comes from the estimator, and an estimate says so.
+                        "bpm" => d.bpm.map(|bpm| {
+                            let beats = rox_i18n::format::format_int(bpm.round() as i64);
+                            if d.bpm_measured {
+                                rox_i18n::t!("metadata-field-bpm-measured", bpm = beats).to_string()
+                            } else {
+                                beats
+                            }
+                        }),
+                        "gain_track" => d.track_gain_db.map(fmt_gain),
+                        "gain_album" => d.album_gain_db.map(fmt_gain),
+                        "added" => (d.added > 0).then(|| rox_core::fmt::fmt_date(d.added)),
+                        "plays" => (d.plays > 0).then(|| track_columns::fmt_plays(d.plays)),
+                        "rating" => {
+                            (d.rating > 0).then(|| crate::rating_ui::fmt(d.rating).to_string())
+                        }
+                        _ => None,
+                    }
+                    .map(Value::Text)
+                    // A shown row stays on the sheet with "n/a" when the
+                    // track has nothing for it, so a switched-on field is
+                    // always accounted for. The sort names and the album
+                    // artist are the exception: they hide when they'd only
+                    // repeat the row above, which is most of the time.
+                    .or_else(|| {
+                        (!matches!(
+                            key,
+                            "title_sort"
+                                | "artist_sort"
+                                | "album_sort"
+                                | "album_artist_sort"
+                                | "album_artist"
+                        ))
+                        .then_some(Value::Absent)
+                    })
                 }),
             };
             if let Some(value) = value {
+                if self.config.hide_empty && matches!(value, Value::Absent) {
+                    continue;
+                }
                 // A field row's value is the tag itself, sort rows
                 // included, so none of them takes a reading.
-                fields.push((
-                    col.label.clone(),
+                fields.push(FieldRow {
+                    label: col.label.clone(),
                     value,
-                    String::new(),
-                    query_field(col.key),
-                ));
+                    reading: String::new(),
+                    search: query_field(col.key),
+                });
             }
         }
         let artist = details
@@ -1979,20 +3007,20 @@ impl MetadataPanel {
         // where the vertical knob puts it, and it scrolls when the panel
         // runs short.
         if self.config.display == MetadataDisplay::Table {
-            let mut rows: Vec<(gpui::SharedString, String, String, Option<Search>)> = Vec::new();
-            rows.push((
-                rox_i18n::t!("info-item-title"),
-                title,
-                title_reading,
-                title_field,
-            ));
+            let mut rows: Vec<FieldRow> = Vec::new();
+            rows.push(FieldRow {
+                label: rox_i18n::t!("info-item-title"),
+                value: Value::Text(title),
+                reading: title_reading,
+                search: title_field,
+            });
             if let Some(artist) = artist {
-                rows.push((
-                    rox_i18n::t!("head-piece-artist"),
-                    artist,
-                    artist_reading,
-                    query_field("artist"),
-                ));
+                rows.push(FieldRow {
+                    label: rox_i18n::t!("head-piece-artist"),
+                    value: Value::Text(artist),
+                    reading: artist_reading,
+                    search: query_field("artist"),
+                });
             }
             rows.extend(fields);
             let stripes = self.config.stripes;
@@ -2000,10 +3028,11 @@ impl MetadataPanel {
             let rows: Vec<Div> = rows
                 .into_iter()
                 .enumerate()
-                .map(|(ix, (label, value, reading, field))| {
-                    let cell = value_cell(&value, &reading, field, query.as_ref(), &mut hit_id);
-                    let row = table_row(ix, label.clone(), cell, stripes, borders);
-                    copy_target(row, label, value, &weak)
+                .map(|(ix, row)| {
+                    let cell = row.cell(query.as_ref(), &mut hit_id);
+                    let value = row.value.text();
+                    let element = table_row(ix, row.label.clone(), cell, stripes, borders);
+                    copy_target(element, row.label, value, &weak)
                 })
                 .collect();
             return root.child(
@@ -2057,12 +3086,11 @@ impl MetadataPanel {
         });
         let rows: Vec<Div> = fields
             .into_iter()
-            .map(|(label, value, reading, search)| {
-                let row = field(
-                    label.clone(),
-                    value_cell(&value, &reading, search, query.as_ref(), &mut hit_id),
-                );
-                copy_target(row, label, value, &weak)
+            .map(|row| {
+                let cell = row.cell(query.as_ref(), &mut hit_id);
+                let value = row.value.text();
+                let element = field(row.label.clone(), cell);
+                copy_target(element, row.label, value, &weak)
             })
             .collect();
         let sheet = div()

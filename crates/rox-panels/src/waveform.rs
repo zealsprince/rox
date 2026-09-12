@@ -1,8 +1,14 @@
 //! The waveform panel: the whole track's amplitude shape as mirrored bars
 //! around a center line, played bars in the accent, the rest as a dim ghost,
 //! with a playhead tracking the position clock. Click or drag the strip to
-//! seek. A split toggle stacks one row per channel instead of the mono
-//! mix, the way Foobar draws it. Peaks come from the disk cache
+//! seek. A loudness toggle adds a second layer inside the envelope, a
+//! flatter band at the bin's RMS, the pair that makes a quiet passage read
+//! as quiet rather than just narrow. A color source picks what the layers
+//! are tinted from: the
+//! accent, the theme ramp, the cover art, or a custom pair, the same ramp
+//! the spectrum and VU panels share. A split toggle stacks one row per
+//! channel instead of the mono mix, the way Foobar draws it. Peaks come
+//! from the disk cache
 //! ([`crate::peaks`]) when the track
 //! has played before, otherwise from a full decode on a background thread
 //! that then fills the cache; while a decode runs the strip shows a gray
@@ -18,13 +24,16 @@ use std::time::Instant;
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, size, AnyElement, App, BorderStyle, Bounds, Context,
-    Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Rgba, SharedString,
+    Div, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Rgba, SharedString,
     Subscription, WeakEntity, Window,
 };
+use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Sizable as _;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::bookmarks::Bookmark;
 use rox_library::cue::TrackKey;
+use rox_library::peaks::{PeakBin, PeakLanes};
 use serde::{Deserialize, Serialize};
 
 use rox_playback::engine;
@@ -33,10 +42,13 @@ use crate::assets::icons;
 use crate::bookmark_ui;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
-use crate::panel::{self, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState};
+use crate::panel::{
+    self, choices_shared, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState,
+};
 use crate::panel_settings;
 use crate::peaks;
 use crate::settings::ui as settings_ui;
+use crate::spectrum::{gradient_choices, ramp_color, Gradient};
 
 /// Resolution of the in-memory peaks. The paint resamples these down to
 /// however many bars fit the width.
@@ -66,6 +78,21 @@ pub struct WaveformConfig {
     /// Trace the bars as outlines instead of filling them; with the gap
     /// at zero the strip reads as one outlined shape.
     pub outline: bool,
+    /// Draw the bin's RMS as a flatter band inside the peak envelope, so a
+    /// passage that's quiet but spiky reads differently from a loud one.
+    /// Off by default, leaving the envelope alone the way the strip always
+    /// drew.
+    pub loudness: bool,
+    /// Where the envelope and the band take their colors: flat accent, the
+    /// theme ramp, the cover art's pair, or a custom one. The envelope
+    /// sits at the bottom of the ramp, the band at the top.
+    pub gradient: Gradient,
+    /// The custom ramp's low end as hex, the envelope's color when the
+    /// source is custom.
+    pub gradient_lo: String,
+    /// The custom ramp's high end as hex, the band's color when the source
+    /// is custom.
+    pub gradient_hi: String,
     /// Stack one row per channel instead of the mono mix, left above
     /// right. Mono tracks stay a single row either way.
     pub split_channels: bool,
@@ -85,6 +112,10 @@ impl Default for WaveformConfig {
             bar_width: tokens::BAR_W,
             bar_gap: tokens::BAR_GAP,
             outline: false,
+            loudness: false,
+            gradient: Gradient::default(),
+            gradient_lo: "#22aa44".into(),
+            gradient_hi: "#dd3322".into(),
             split_channels: false,
             scrobble_marker: false,
             bookmarks: true,
@@ -104,26 +135,32 @@ impl WaveformConfig {
                 .clamp(0.0, settings_ui::ceiling(0., BAR_GAP_MAX)),
         )
     }
+
+    /// The custom ramp's ends parsed, falling back to the theme ramp's when a
+    /// hand-edited hex doesn't parse, the same fallback the spectrum uses.
+    fn custom_ramp(&self) -> (Rgba, Rgba) {
+        (
+            palette::parse_hex(&self.gradient_lo)
+                .unwrap_or_else(|| palette::alpha(palette::text_faint(), 0x66)),
+            palette::parse_hex(&self.gradient_hi).unwrap_or_else(palette::accent),
+        )
+    }
 }
 
 /// The shortest a bar draws, so quiet passages stay visible.
 const MIN_BAR: f32 = 2.0;
 
-/// A track's decoded peak lanes: the mono mix at 0, then a left and a
-/// right lane when the source has more than one channel.
-type PeakSet = Vec<Vec<(f32, f32)>>;
-
 enum Peaks {
     /// No track has been seen yet.
     None,
     Decoding,
-    Ready(Arc<PeakSet>),
+    Ready(Arc<PeakLanes>),
     Failed,
 }
 
 /// The lanes a peak set draws: the per-channel lanes when the split is on
 /// and the set has them, the mono mix otherwise.
-fn display_lanes(set: &[Vec<(f32, f32)>], split: bool) -> &[Vec<(f32, f32)>] {
+fn display_lanes(set: &[Vec<PeakBin>], split: bool) -> &[Vec<PeakBin>] {
     if split && set.len() > 1 {
         &set[1..]
     } else {
@@ -142,7 +179,7 @@ enum Shape {
     /// A track's decoded lanes, whether they draw split, and the playhead
     /// position: live while the shape is the target, frozen where it last
     /// painted once retired.
-    Peaks(Arc<PeakSet>, bool, f32),
+    Peaks(Arc<PeakLanes>, bool, f32),
 }
 
 impl Shape {
@@ -185,6 +222,11 @@ pub struct WaveformPanel {
     /// never moves the other.
     bar_w_scrub: ScrubState,
     gap_scrub: ScrubState,
+    /// The custom ramp's two color pickers, built the first time the
+    /// settings page shows them, and the subscriptions writing their edits
+    /// back into the config.
+    ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
+    _ramp_changes: Vec<Subscription>,
     /// The one readout being typed into across the settings sliders.
     value_edit: panel::ValueEdit,
     /// Time zero for the generating animation's phase.
@@ -232,6 +274,8 @@ impl WaveformPanel {
             scrub: ScrubState::default(),
             bar_w_scrub: ScrubState::default(),
             gap_scrub: ScrubState::default(),
+            ramp_pickers: None,
+            _ramp_changes: Vec::new(),
             value_edit: panel::ValueEdit::default(),
             epoch: Instant::now(),
             focus: cx.focus_handle().tab_stop(true),
@@ -387,30 +431,104 @@ fn placeholder_bar(i: usize, lane: usize, count: usize, t: f32, max_bar: f32) ->
     ((0.2 + 0.8 * seed) * (0.25 + 0.75 * pulse) * max_bar).max(MIN_BAR / 2.0)
 }
 
-/// A lane's extremes over display bar `i` of `count`, so transients aren't
-/// lost in the downsample. None for a lane with no pairs to bucket.
-fn bucket(lane: &[(f32, f32)], i: usize, count: usize) -> Option<(f32, f32)> {
+/// A lane's bins folded over display bar `i` of `count`, so transients
+/// aren't lost in the downsample: the extremes reach as far as any bin in
+/// the bucket did, the RMS is the quadratic mean across them, which is what
+/// the bucket's frames would have given had they been measured in one go.
+/// None for a lane with no bins to bucket.
+fn bucket(lane: &[PeakBin], i: usize, count: usize) -> Option<PeakBin> {
     if lane.is_empty() {
         return None;
     }
     let per = lane.len() as f32 / count as f32;
     let from = (i as f32 * per) as usize;
     let to = (((i + 1) as f32 * per) as usize).clamp(from + 1, lane.len());
-    Some(
-        lane[from..to]
-            .iter()
-            .fold((0.0f32, 0.0f32), |(lo, hi), &(bl, bh)| {
-                (lo.min(bl), hi.max(bh))
-            }),
-    )
+    let bins = &lane[from..to];
+    let folded = bins.iter().fold(PeakBin::default(), |acc, bin| PeakBin {
+        lo: acc.lo.min(bin.lo),
+        hi: acc.hi.max(bin.hi),
+        rms: acc.rms + bin.rms * bin.rms,
+    });
+    Some(PeakBin {
+        rms: (folded.rms / bins.len() as f32).sqrt(),
+        ..folded
+    })
 }
 
-/// A shape's bar `i` of `count` in display lane `lane` of `lanes`: top and
-/// bottom in strip-local y, and the bar's color. `center` and `max_bar` are
-/// the display lane's geometry; a shape whose own lane layout differs maps
-/// into it: a single lane fills every row, a wider set folds together.
-/// `x_mid` and `w` place the bar against the shape's playhead for the
-/// played/ghost split.
+/// One display bar, both layers: the envelope's top and bottom in
+/// strip-local y, the loudness band's inside them, and the color each layer
+/// draws in. The morph blends two of these field by field.
+#[derive(Clone, Copy)]
+struct Bar {
+    top: f32,
+    bottom: f32,
+    band_top: f32,
+    band_bottom: f32,
+    envelope: Rgba,
+    band: Rgba,
+}
+
+impl Bar {
+    /// A bar `u` of the way from `self` to `other`, geometry and color both.
+    fn mix(&self, other: &Bar, u: f32) -> Bar {
+        let lerp = |a: f32, b: f32| a + (b - a) * u;
+        Bar {
+            top: lerp(self.top, other.top),
+            bottom: lerp(self.bottom, other.bottom),
+            band_top: lerp(self.band_top, other.band_top),
+            band_bottom: lerp(self.band_bottom, other.band_bottom),
+            envelope: palette::mix(self.envelope, other.envelope, u),
+            band: palette::mix(self.band, other.band, u),
+        }
+    }
+
+    /// Both layers collapsed to the center line in `color`: what a lane
+    /// with nothing to draw contributes, and what a morph fades in from.
+    fn flat(center: f32, color: Rgba) -> Bar {
+        Bar {
+            top: center,
+            bottom: center,
+            band_top: center,
+            band_bottom: center,
+            envelope: color,
+            band: color,
+        }
+    }
+}
+
+/// What the two layers are tinted with: the envelope at the bottom of the
+/// ramp, the band at the top. Flat mode keeps the strip's old look, a
+/// half-lit envelope under a full-strength band.
+fn layer_colors(config: &WaveformConfig) -> (Rgba, Rgba) {
+    match config.gradient {
+        Gradient::Off => (palette::alpha(palette::accent(), 0x80), palette::accent()),
+        gradient => {
+            let custom = config.custom_ramp();
+            (
+                ramp_color(gradient, 0.0, custom),
+                ramp_color(gradient, 1.0, custom),
+            )
+        }
+    }
+}
+
+/// A layer color's unplayed ghost. The old strip dimmed the accent from
+/// 0xff to 0x33, so this scales the alpha it already has by that ratio
+/// instead of setting one, which a ramp color's own alpha would lose.
+fn ghost(color: Rgba) -> Rgba {
+    Rgba {
+        a: color.a * 0.2,
+        ..color
+    }
+}
+
+/// A shape's bar `i` of `count` in display lane `lane` of `lanes`: both
+/// layers' extents in strip-local y and their colors. `center` and
+/// `max_bar` are the display lane's geometry; a shape whose own lane layout
+/// differs maps into it: a single lane fills every row, a wider set folds
+/// together. `x_mid` and `w` place the bar against the shape's playhead for
+/// the played/ghost split. `layers` is the pair [`layer_colors`] resolved
+/// for the config, already accounting for the band being off.
 #[allow(clippy::too_many_arguments)]
 fn sample(
     shape: &Shape,
@@ -423,12 +541,24 @@ fn sample(
     t: f32,
     center: f32,
     max_bar: f32,
-) -> (f32, f32, Rgba) {
+    layers: (Rgba, Rgba),
+) -> Bar {
     match shape {
-        Shape::Blank => (center, center, palette::alpha(palette::text_muted(), 0)),
+        Shape::Blank => Bar::flat(center, palette::alpha(palette::text_muted(), 0)),
         Shape::Placeholder => {
             let bar = placeholder_bar(i, lane, count, t, max_bar);
-            (center - bar, center + bar, placeholder_tint())
+            // The stand-in's band is a fixed share of its bar: enough to
+            // read as two layers without pretending to a loudness it has
+            // no track to take one from.
+            let band = bar * 0.45;
+            Bar {
+                top: center - bar,
+                bottom: center + bar,
+                band_top: center - band,
+                band_bottom: center + band,
+                envelope: placeholder_tint(),
+                band: placeholder_tint(),
+            }
         }
         Shape::Peaks(set, split, progress) => {
             let data = display_lanes(set, *split);
@@ -442,20 +572,36 @@ fn sample(
                 _ => data
                     .iter()
                     .filter_map(|lane| bucket(lane, i, count))
-                    .reduce(|(alo, ahi), (blo, bhi)| (alo.min(blo), ahi.max(bhi))),
+                    .reduce(|a, b| PeakBin {
+                        lo: a.lo.min(b.lo),
+                        hi: a.hi.max(b.hi),
+                        rms: a.rms.max(b.rms),
+                    }),
             };
-            let Some((lo, hi)) = extremes else {
-                return (center, center, palette::alpha(palette::accent(), 0));
+            let Some(bin) = extremes else {
+                return Bar::flat(center, palette::alpha(palette::accent(), 0));
             };
-            let top = center - (hi * max_bar).max(MIN_BAR / 2.0);
-            let bottom = center - (lo * max_bar).min(-MIN_BAR / 2.0);
+            let top = center - (bin.hi * max_bar).max(MIN_BAR / 2.0);
+            let bottom = center - (bin.lo * max_bar).min(-MIN_BAR / 2.0);
+            // The band gets no minimum of its own: silence leaves the
+            // envelope's stub alone rather than laying a second stub over
+            // it. Clamped into the envelope, which the normalization
+            // already guarantees but the bar floors can undercut.
+            let band = bin.rms * max_bar;
             let played = x_mid <= progress.clamp(0.0, 1.0) * w;
-            let color = if played {
-                palette::accent()
+            let (envelope, band_color) = if played {
+                layers
             } else {
-                palette::alpha(palette::accent(), 0x33)
+                (ghost(layers.0), ghost(layers.1))
             };
-            (top, bottom, color)
+            Bar {
+                top,
+                bottom,
+                band_top: (center - band).max(top),
+                band_bottom: (center + band).min(bottom),
+                envelope,
+                band: band_color,
+            }
         }
     }
 }
@@ -502,6 +648,16 @@ fn paint_morph(
     let u = u.clamp(0.0, 1.0);
     let u = u * u * (3.0 - 2.0 * u);
 
+    // With the band off the envelope is the only layer left, so it takes
+    // the band's full-strength color and the strip paints exactly what it
+    // did before the band existed.
+    let (envelope, band) = layer_colors(config);
+    let layers = if config.loudness {
+        (envelope, band)
+    } else {
+        (band, band)
+    };
+
     for lane in 0..lanes {
         let center = lane_h * lane as f32 + lane_h / 2.0;
         let max_bar = lane_h * 0.46;
@@ -510,19 +666,21 @@ fn paint_morph(
         for i in 0..count {
             let x = i as f32 * step;
             let x_mid = x + step * 0.5;
-            let (top, bottom, color) = {
-                let b = sample(to, lane, lanes, i, count, x_mid, w, t, center, max_bar);
+            let sampled = {
+                let b = sample(
+                    to, lane, lanes, i, count, x_mid, w, t, center, max_bar, layers,
+                );
                 if u < 1.0 {
-                    let a = sample(from, lane, lanes, i, count, x_mid, w, t, center, max_bar);
-                    (
-                        a.0 + (b.0 - a.0) * u,
-                        a.1 + (b.1 - a.1) * u,
-                        palette::mix(a.2, b.2, u),
-                    )
+                    let a = sample(
+                        from, lane, lanes, i, count, x_mid, w, t, center, max_bar, layers,
+                    );
+                    a.mix(&b, u)
                 } else {
                     b
                 }
             };
+            let (top, bottom) = (sampled.top, sampled.bottom);
+            let color = sampled.envelope;
             let x0 = bounds.origin.x + px(x);
             let bar = Bounds::new(
                 point(x0, bounds.origin.y + px(top)),
@@ -558,6 +716,21 @@ fn paint_morph(
                             color,
                         ));
                     }
+                }
+            }
+            // The band goes over the envelope, and stays a filled quad even
+            // in outline mode: an outlined band inside an outlined envelope
+            // reads as noise at these heights.
+            if config.loudness {
+                let band_h = sampled.band_bottom - sampled.band_top;
+                if band_h > 0.0 {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(x0, bounds.origin.y + px(sampled.band_top)),
+                            size(px(draw_w), px(band_h)),
+                        ),
+                        sampled.band,
+                    ));
                 }
             }
             prev = (top, bottom);
@@ -629,9 +802,33 @@ impl PanelSettings for WaveformPanel {
     fn page(
         &mut self,
         _page: &'static str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // The custom ramp's pickers on first need; each edit writes its hex
+        // back into the config, the format the layout dump stores.
+        if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
+            let (lo, hi) = self.config.custom_ramp();
+            let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
+                let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(seed));
+                let sub = cx.subscribe_in(
+                    &picker,
+                    window,
+                    move |this, _, event: &ColorPickerEvent, _, cx| {
+                        let ColorPickerEvent::Change(color) = event;
+                        if let Some(color) = color {
+                            write(this, Rgba::from(*color));
+                            cx.notify();
+                        }
+                    },
+                );
+                self._ramp_changes.push(sub);
+                picker
+            };
+            let lo = build(lo, |this, c| this.config.gradient_lo = palette::to_hex(c));
+            let hi = build(hi, |this, c| this.config.gradient_hi = palette::to_hex(c));
+            self.ramp_pickers = Some([lo, hi]);
+        }
         let (bar_w, gap) = self.config.bars();
         div()
             .flex()
@@ -673,6 +870,48 @@ impl PanelSettings for WaveformPanel {
                     cx,
                 ),
             ))
+            .child(setting_row(
+                rox_i18n::t!("waveform-loudness"),
+                Some(rox_i18n::t!("waveform-loudness.description")),
+                toggle(
+                    self.config.loudness,
+                    |this: &mut Self, on, cx| {
+                        this.config.loudness = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                rox_i18n::t!("waveform-gradient-mode"),
+                Some(rox_i18n::t!("waveform-gradient-mode.description")),
+                choices_shared(
+                    &gradient_choices(),
+                    self.config.gradient,
+                    |this: &mut Self, gradient, cx| {
+                        this.config.gradient = gradient;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .when_some(
+                (self.config.gradient == Gradient::Custom)
+                    .then(|| self.ramp_pickers.clone())
+                    .flatten(),
+                |d, [lo, hi]| {
+                    d.child(setting_row(
+                        rox_i18n::t!("spectrum-gradient-base-color"),
+                        Some(rox_i18n::t!("spectrum-gradient-base-color.description")),
+                        ColorPicker::new(&lo).small(),
+                    ))
+                    .child(setting_row(
+                        rox_i18n::t!("spectrum-gradient-tip-color"),
+                        Some(rox_i18n::t!("spectrum-gradient-tip-color.description")),
+                        ColorPicker::new(&hi).small(),
+                    ))
+                },
+            )
             .child(setting_row(
                 rox_i18n::t!("waveform-split-channels"),
                 Some(rox_i18n::t!("waveform-split-channels.description")),

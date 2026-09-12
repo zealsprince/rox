@@ -54,6 +54,25 @@ pub fn fmt_ago(secs: i64) -> String {
     rox_i18n::t!(key, count = value as u64).to_string()
 }
 
+/// Bytes as a short human size: whole numbers through KB, one decimal
+/// from MB up, decimal units like the file managers show.
+pub fn fmt_bytes(bytes: u64) -> String {
+    let mut value = bytes as f64;
+    let mut unit = "B";
+    for next in ["KB", "MB", "GB", "TB"] {
+        if value < 1000. {
+            break;
+        }
+        value /= 1000.;
+        unit = next;
+    }
+    match unit {
+        "B" => rox_i18n::format::format_unit(bytes as f64, 0, "B"),
+        "KB" => rox_i18n::format::format_unit(value, 0, "KB"),
+        _ => rox_i18n::format::format_unit(value, 1, unit),
+    }
+}
+
 /// A unix timestamp as the locale's calendar date, on the machine's own
 /// clock, for readouts that want the day a thing happened rather than
 /// how long ago that was.

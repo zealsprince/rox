@@ -1272,6 +1272,15 @@ impl Library {
         self.listen_query(|conn| listens::recent(conn, since, until, limit))
     }
 
+    /// One track's first and last play and its plays since `since`, the
+    /// metadata panel's listening rows. None for a track never played or
+    /// one the library doesn't hold.
+    pub fn listen_summary(&self, id: i64, since: i64) -> Option<listens::TrackSummary> {
+        self.conn
+            .as_ref()
+            .and_then(|conn| listens::track_summary(conn, id, since).ok().flatten())
+    }
+
     pub fn most_played(&self, limit: usize) -> Vec<listens::TrackPlays> {
         self.listen_query(|conn| listens::most_played(conn, limit))
     }

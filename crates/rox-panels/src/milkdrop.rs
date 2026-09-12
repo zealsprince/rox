@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    canvas, div, prelude::*, px, AnyElement, App, Context, Div, EntityId, EventEmitter,
+    canvas, deferred, div, prelude::*, px, AnyElement, App, Context, Div, EntityId, EventEmitter,
     FocusHandle, Focusable, MouseButton, PathPromptOptions, SharedString, Subscription,
     UserShaderChain, UserShaderId, UserShaderPass, UserTextureId, WeakEntity, Window,
 };
@@ -490,6 +490,31 @@ struct Draw {
     frames: u64,
 }
 
+/// What the control socket reads off the panel. See
+/// [`MilkdropPanel::snapshot`].
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Snapshot {
+    /// The preset on screen, as this machine's path.
+    pub preset: Option<PathBuf>,
+    pub locked: bool,
+    /// How many presets the last scan found.
+    pub presets: usize,
+    /// `all`, `favorites`, or the rotation folder's path.
+    pub rotation: String,
+    /// projectM's message for the last preset it refused, until another
+    /// one lands.
+    pub failed: Option<String>,
+    /// The worker's or the window's failure, when there's no frame coming.
+    pub error: Option<String>,
+    /// `idle` before the first paint spawns the worker, then `starting`,
+    /// `running`, or `failed`.
+    pub engine: &'static str,
+    pub renderer: Option<String>,
+    pub projectm_version: Option<String>,
+    /// Renders that have gone up as a texture.
+    pub frames: u64,
+}
+
 pub struct MilkdropPanel {
     state: AppState,
     config: MilkdropConfig,
@@ -524,6 +549,9 @@ pub struct MilkdropPanel {
     /// Whether the worker is parked. Set at the bottom of a fade-out or
     /// on the first frame of a hold, cleared on play.
     parked: bool,
+    /// Whether the pointer is over the panel. The control strip reads it
+    /// to fade in; see [`MilkdropPanel::controls`].
+    hovered: bool,
     /// When the panel last asked the worker for frames: the spawn, or the
     /// latest resume. The stall notices count from here, so a panel that
     /// sat parked for an hour isn't declared stuck the moment it wakes.
@@ -584,6 +612,7 @@ impl MilkdropPanel {
             banner: None,
             failed: None,
             parked: false,
+            hovered: false,
             since: None,
             held: false,
             // Settled and fully visible. The panel comes up drawing, and
@@ -1082,16 +1111,82 @@ impl MilkdropPanel {
         }
     }
 
-    fn load_preset(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    /// Put a preset up by path, scanned or not. The picker's pick and the
+    /// control socket's load both land here.
+    pub fn load_preset(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.note_preset(&path);
         self.send(Command::LoadPreset { path, smooth: true });
         cx.notify();
     }
 
-    fn set_locked(&mut self, locked: bool, cx: &mut Context<Self>) {
+    /// Hold the preset that's up: no timed switch, no cut on a beat.
+    pub fn set_locked(&mut self, locked: bool, cx: &mut Context<Self>) {
         self.config.locked = locked;
         self.send(Command::SetLocked(locked));
         cx.notify();
+    }
+
+    /// Scan the roots again and hand the worker what changed. The
+    /// settings page's Rescan button and the control socket come through
+    /// here.
+    pub fn rescan_presets(&mut self, cx: &mut Context<Self>) {
+        self.rescan();
+        cx.notify();
+    }
+
+    /// Step the rotation forward, a hard cut. The context menu's Random
+    /// and the control socket's next.
+    pub fn next_preset(&self) {
+        self.send(Command::NextPreset { smooth: false });
+    }
+
+    /// Back along the trail, a hard cut.
+    pub fn previous_preset(&self) {
+        self.send(Command::PreviousPreset { smooth: false });
+    }
+
+    /// The newest frame the worker rendered, as projectM drew it: before
+    /// the tint, the grade, and the flips the paint puts on top. `None`
+    /// until the worker has delivered once.
+    pub fn latest_frame(&self) -> Option<rox_milkdrop::Frame> {
+        self.engine.as_ref()?.frame_after(0)
+    }
+
+    /// The panel's state for the control socket's debug scope (ADR 22):
+    /// what's up, whether it's held, and what projectM last refused, so a
+    /// script can tell a preset landed without a screenshot. It reflects
+    /// the events the last paint drained, so a load reads back once the
+    /// panel has drawn a frame after it.
+    pub fn snapshot(&mut self) -> Snapshot {
+        let presets = self.library().presets().len();
+        let error = self.error();
+        let (engine, renderer, projectm_version) = match self.engine.as_ref().map(Engine::status) {
+            None => ("idle", None, None),
+            Some(Status::Starting) => ("starting", None, None),
+            Some(Status::Running {
+                renderer,
+                projectm_version,
+                ..
+            }) => ("running", Some(renderer), Some(projectm_version)),
+            Some(Status::Failed(_)) => ("failed", None, None),
+        };
+        let rotation = match self.rotation_choice() {
+            RotationChoice::All => "all".to_string(),
+            RotationChoice::Favorites => "favorites".to_string(),
+            RotationChoice::Folder(folder) => folder.to_string_lossy().into_owned(),
+        };
+        Snapshot {
+            preset: self.current.clone(),
+            locked: self.config.locked,
+            presets,
+            rotation,
+            failed: self.failed.clone(),
+            error,
+            engine,
+            renderer,
+            projectm_version,
+            frames: self.draw.lock().unwrap().frames,
+        }
     }
 
     /// Browse for another preset root. Directories only: a pack is a folder
@@ -1699,10 +1794,7 @@ impl MilkdropPanel {
             rox_i18n::t!("milkdrop-rescan"),
             icons::REFRESH_CW,
             false,
-            cx.listener(|this, _, _, cx| {
-                this.rescan();
-                cx.notify();
-            }),
+            cx.listener(|this, _, _, cx| this.rescan_presets(cx)),
         )
         .into_any_element();
 
@@ -2363,68 +2455,97 @@ impl MilkdropPanel {
             .size_full()
             .relative()
             .bg(palette::bg_root())
-            // The controls fade in on hover anywhere over the panel, not
-            // just over themselves, or nobody would find them.
-            .group("milkdrop-panel")
-            .when(show, |body| {
-                body.child(
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, _, window, cx| {
-                            paint(
-                                bounds,
-                                window,
-                                cx,
-                                scale,
-                                look,
-                                animate,
-                                engine.as_ref(),
-                                &draw,
-                                panel,
-                            );
-                        },
-                    )
-                    .size_full(),
-                )
-            })
-            .children(banner.map(|text| {
+            // The frame helper wants a plain div at the root, so the body
+            // that needs an id sits one level in.
+            .child(
                 div()
-                    .absolute()
-                    .left(tokens::SPACE_MD)
-                    .bottom(tokens::SPACE_MD)
-                    .px(tokens::SPACE_SM)
-                    .py(px(2.))
-                    .rounded(tokens::RADIUS)
-                    .bg(palette::bg_control())
-                    .text_xs()
-                    .text_color(palette::text())
-                    .child(text)
-            }))
-            .when(controls, |body| body.child(self.controls(starred, cx)))
-            .children(overlay.map(|(headline, detail)| {
-                div()
-                    .absolute()
-                    .inset_0()
-                    .p(tokens::SPACE_MD)
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_SM)
-                    .items_center()
-                    .justify_center()
-                    .text_center()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(headline)
-                    .child(detail)
-            }))
+                    .id("milkdrop-body")
+                    .size_full()
+                    .relative()
+                    // The controls fade in on hover anywhere over the panel, not
+                    // just over themselves, or nobody would find them. Tracked here
+                    // rather than through a group: the strip is deferred, and a
+                    // group's hitbox is only registered while its own subtree
+                    // paints, so a deferred child never sees it.
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if this.hovered != *hovered {
+                            this.hovered = *hovered;
+                            cx.notify();
+                        }
+                    }))
+                    .when(show, |body| {
+                        body.child(
+                            canvas(
+                                |_, _, _| {},
+                                move |bounds, _, window, cx| {
+                                    paint(
+                                        bounds,
+                                        window,
+                                        cx,
+                                        scale,
+                                        look,
+                                        animate,
+                                        engine.as_ref(),
+                                        &draw,
+                                        panel,
+                                    );
+                                },
+                            )
+                            .size_full(),
+                        )
+                    })
+                    // Everything over the visual is deferred. The frame is a shader
+                    // region, and the DirectX renderer runs regions once, at the
+                    // deferred-draw boundary, after every ordinary primitive: a
+                    // banner or an error painted in tree order sat under the
+                    // opaque frame there, which is how a Windows user with no
+                    // usable OpenGL got a black panel and no word about it. Blade
+                    // runs regions in paint order and doesn't care either way.
+                    .children(banner.map(|text| {
+                        deferred(
+                            div()
+                                .absolute()
+                                .left(tokens::SPACE_MD)
+                                .bottom(tokens::SPACE_MD)
+                                .px(tokens::SPACE_SM)
+                                .py(px(2.))
+                                .rounded(tokens::RADIUS)
+                                .bg(palette::bg_control())
+                                .text_xs()
+                                .text_color(palette::text())
+                                .child(text),
+                        )
+                    }))
+                    .when(controls, |body| {
+                        body.child(deferred(self.controls(starred, cx)))
+                    })
+                    .children(overlay.map(|(headline, detail)| {
+                        deferred(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .p(tokens::SPACE_MD)
+                                .flex()
+                                .flex_col()
+                                .gap(tokens::SPACE_SM)
+                                .items_center()
+                                .justify_center()
+                                .text_center()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(headline)
+                                .child(detail),
+                        )
+                    })),
+            )
     }
 }
 
 impl MilkdropPanel {
     /// The transport strip over the visual: back, forward, random, and
     /// the star. Invisible until the pointer is over the panel, so the
-    /// visual stays the visual; the buttons are still there to click
-    /// through the zero opacity, which is what brings them up.
+    /// visual stays the visual; the buttons are still there under the
+    /// zero opacity, and moving onto the panel is what brings them up.
     fn controls(&self, starred: bool, cx: &mut Context<Self>) -> Div {
         use crate::settings::ui::icon_button;
         div()
@@ -2438,8 +2559,7 @@ impl MilkdropPanel {
             .p(px(2.))
             .rounded(tokens::RADIUS)
             .bg(palette::bg_control())
-            .opacity(0.)
-            .group_hover("milkdrop-panel", |strip| strip.opacity(1.))
+            .opacity(if self.hovered { 1. } else { 0. })
             .child(icon_button(
                 icons::SKIP_BACK,
                 false,

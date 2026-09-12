@@ -369,6 +369,45 @@ pub struct NamePlays {
     pub art: String,
 }
 
+/// One track's listening in three numbers: when it first and last
+/// played, and how many plays landed at or after `since`. None for a
+/// track with no events at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrackSummary {
+    pub first_played: i64,
+    pub last_played: i64,
+    pub recent_plays: u64,
+}
+
+/// The metadata panel's listening rows for one track: one indexed pass
+/// over its events.
+pub fn track_summary(
+    conn: &Connection,
+    track_id: i64,
+    since: i64,
+) -> rusqlite::Result<Option<TrackSummary>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT MIN(played_at), MAX(played_at),
+                SUM(CASE WHEN played_at >= ?2 THEN 1 ELSE 0 END)
+         FROM listens WHERE track_id = ?1",
+    )?;
+    let row = stmt.query_row(rusqlite::params![track_id, since], |r| {
+        Ok((
+            r.get::<_, Option<i64>>(0)?,
+            r.get::<_, Option<i64>>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
+    Ok(match row {
+        (Some(first_played), Some(last_played), recent) => Some(TrackSummary {
+            first_played,
+            last_played,
+            recent_plays: recent.unwrap_or(0).max(0) as u64,
+        }),
+        _ => None,
+    })
+}
+
 /// Play counts grouped under one tag, most first, over the events at or
 /// after `since` and before `until` (0 and i64::MAX count them all), the
 /// stats panel's range knob.

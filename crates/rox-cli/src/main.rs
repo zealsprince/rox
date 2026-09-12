@@ -59,6 +59,9 @@ drive commands (the debug scope: work the UI without OS input tools):
   hover <x> <y>              move the mouse to a point
   scroll <x> <y> <dy> [dx]   scroll at a point, wheel lines, signed
   panels                     the frontmost workspace's dock tree
+  milkdrop [op] [arg]        the Milkdrop panel by verb: status (default),
+                             load <file>, lock on|off, rescan, next, prev,
+                             frame <out.png> (the engine's own frame)
 ";
 
 fn main() -> ExitCode {
@@ -313,6 +316,35 @@ fn run(
             }
             ("debug.scroll".into(), params)
         }
+        "milkdrop" => {
+            let op = args.first().map(String::as_str).unwrap_or("status");
+            let mut params = json!({ "op": op });
+            match op {
+                "load" => {
+                    let file = args.get(1).ok_or("load takes a preset file")?;
+                    params["path"] = json!(absolute(file));
+                }
+                "lock" => {
+                    params["on"] = json!(match args.get(1).map(String::as_str) {
+                        Some("on") => true,
+                        Some("off") => false,
+                        _ => return Err("lock takes on or off".into()),
+                    });
+                }
+                "frame" => {
+                    let out = args.get(1).ok_or("frame takes an out file")?;
+                    if let Some(id) = window {
+                        params["window"] = json!(id);
+                    }
+                    let result = client
+                        .call("debug.milkdrop", params)
+                        .map_err(|err| err.to_string())?;
+                    return save_frame(&result, out);
+                }
+                _ => {}
+            }
+            ("debug.milkdrop".into(), params)
+        }
         "watch" => return watch(client, as_json),
         "art" => {
             let path = args
@@ -370,6 +402,7 @@ fn run(
         "task-stop" => println!("stopping at the next file"),
         "windows" => print_windows(&result),
         "actions" => print_actions(&result),
+        "milkdrop" => print_milkdrop(&result),
         _ => println!(
             "{}",
             serde_json::to_string_pretty(&result).unwrap_or_default()
@@ -667,6 +700,65 @@ fn save_art(result: &Value, out: &str) -> Result<(), String> {
         "{out}: {} bytes, {}",
         bytes.len(),
         result["mime"].as_str().unwrap_or("unknown type"),
+    );
+    Ok(())
+}
+
+/// The Milkdrop panel's snapshot, one fact per line.
+fn print_milkdrop(snapshot: &Value) {
+    println!(
+        "preset   {}",
+        snapshot["preset"].as_str().unwrap_or("(none)")
+    );
+    println!(
+        "locked   {}",
+        if snapshot["locked"].as_bool().unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "presets  {}",
+        snapshot["presets"].as_u64().unwrap_or_default()
+    );
+    println!(
+        "rotation {}",
+        snapshot["rotation"].as_str().unwrap_or_default()
+    );
+    let engine = snapshot["engine"].as_str().unwrap_or_default();
+    match snapshot["renderer"].as_str() {
+        Some(renderer) => println!(
+            "engine   {engine}, {renderer}, projectM {}",
+            snapshot["projectm_version"].as_str().unwrap_or("?")
+        ),
+        None => println!("engine   {engine}"),
+    }
+    println!(
+        "frames   {}",
+        snapshot["frames"].as_u64().unwrap_or_default()
+    );
+    if let Some(failed) = snapshot["failed"].as_str() {
+        println!("failed   {failed}");
+    }
+    if let Some(error) = snapshot["error"].as_str() {
+        println!("error    {error}");
+    }
+}
+
+/// Write the frame dump's PNG where asked.
+fn save_frame(result: &Value, out: &str) -> Result<(), String> {
+    let data = result["data_base64"]
+        .as_str()
+        .ok_or("no frame in the answer")?;
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|_| "frame arrived garbled")?;
+    std::fs::write(out, &bytes).map_err(|err| format!("can't write {out}: {err}"))?;
+    println!(
+        "{out}: {}x{} png, seq {}",
+        result["width"], result["height"], result["seq"]
     );
     Ok(())
 }

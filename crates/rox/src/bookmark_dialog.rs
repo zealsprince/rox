@@ -20,15 +20,20 @@ use rox_panel_api::panel::AppState;
 use rox_panel_kit::ui::{kbd_line, section, small_button, Seg};
 use rox_services::backdrop::WindowBackdrop;
 
-actions!(bookmark_dialog, [Save]);
+actions!(bookmark_dialog, [Save, Cancel]);
 
 /// The key context the window's own bindings scope to.
 const CONTEXT: &str = "BookmarkName";
 
-/// The modal's save binding; call once at startup. Bound on the window
-/// root so Enter commits wherever focus is.
+/// The modal's save and dismiss bindings; call once at startup. Bound on
+/// the window root so Enter commits and Escape closes wherever focus is.
+/// The name field and the color picker each pass an idle Escape through,
+/// so the binding only sees the press once neither had a use for it.
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("enter", Save, Some(CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new("enter", Save, Some(CONTEXT)),
+        KeyBinding::new("escape", Cancel, Some(CONTEXT)),
+    ]);
 }
 
 /// What the modal commits on Enter.
@@ -305,6 +310,7 @@ impl Render for BookmarkWindow {
             .flex_col()
             .key_context(CONTEXT)
             .on_action(cx.listener(|this, _: &Save, window, cx| this.commit(window, cx)))
+            .on_action(cx.listener(|_, _: &Cancel, window, _| window.remove_window()))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()

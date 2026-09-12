@@ -7,10 +7,11 @@ use std::path::Path;
 
 /// The identities [`option_env!`] reads, the same set the release workflow
 /// passes as repository secrets and `.env.template` documents.
-pub const IDENTITY_KEYS: [&str; 3] = [
+pub const IDENTITY_KEYS: [&str; 4] = [
     "LASTFM_API_KEY",
     "LASTFM_API_SECRET",
     "DISCORD_APPLICATION_ID",
+    "ACOUSTID_CLIENT_KEY",
 ];
 
 /// The identities the crate should compile with, read out of `env_file`.

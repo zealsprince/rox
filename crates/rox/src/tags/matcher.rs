@@ -179,6 +179,12 @@ struct TagMatch {
     /// of their own.
     album: String,
     duration_secs: Option<f64>,
+    /// Whether the identify button draws: AcoustID on with a key from
+    /// either source, and a track with a file of its own. Read once here
+    /// because the availability check may load the settings file, which
+    /// has no place in a paint; a toggle flipped while this window is open
+    /// shows on the next one.
+    can_identify: bool,
     /// The pending debounced search; replacing it cancels the last timer
     /// and any in-flight request, the workspace's save-debounce idiom.
     search_task: Option<Task<()>>,
@@ -264,6 +270,7 @@ impl TagMatch {
             title_input,
             album,
             duration_secs,
+            can_identify: providers::acoustid_available() && key.sub == 0,
             search_task: None,
             current: vec![String::new(); FIELDS.len()],
             phase: Phase::Searching,
@@ -335,6 +342,44 @@ impl TagMatch {
             let result = cx
                 .background_executor()
                 .spawn(async move { providers::search_metadata(&query) })
+                .await;
+            this.update(cx, |this, cx| this.apply_results(result, cx))
+                .ok();
+        }));
+    }
+
+    /// Identify the track by its sound rather than its tags: fingerprint
+    /// the file, ask AcoustID which recording that fingerprint is, and
+    /// land the answer in the same list a text search fills. Stored in
+    /// `search_task` like a search, so starting one cancels a pending
+    /// debounce instead of racing it to the list.
+    ///
+    /// AcoustID scores against a length, so a container that reports none
+    /// falls back to the duration the library already holds. With neither
+    /// there's nothing to send and the window says so.
+    fn identify(&mut self, cx: &mut Context<Self>) {
+        let query = self.query(cx);
+        let path = self.key.path.clone();
+        let fallback = self
+            .duration_secs
+            .map(|secs| secs.round().max(0.0) as u32)
+            .filter(|&secs| secs > 0);
+        let no_duration = rox_i18n::t!("tags-matcher-identify-no-duration").to_string();
+        self.phase = Phase::Searching;
+        cx.notify();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let fingerprint = rox_playback::fingerprint::compute(&path, || true)?;
+                    let Some(duration_secs) = fingerprint.duration_secs.or(fallback) else {
+                        return Err(no_duration);
+                    };
+                    // The length only; a fingerprint in a log file is
+                    // noise nobody can read back.
+                    log::debug!("acoustid identify: {duration_secs}s");
+                    providers::identify(&fingerprint.encoded, duration_secs, &query)
+                })
                 .await;
             this.update(cx, |this, cx| this.apply_results(result, cx))
                 .ok();
@@ -746,7 +791,7 @@ impl Render for TagMatch {
                     .child(section(
                         rox_i18n::t!("query-search"),
                         None,
-                        self.search_fields(),
+                        self.search_fields(cx),
                     ))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
@@ -836,8 +881,10 @@ impl TagMatch {
 
     /// The search area: the track being tagged for context, then the
     /// editable artist and title that drive the lookup. Editing either
-    /// re-searches after a beat; Enter searches at once.
-    fn search_fields(&self) -> Div {
+    /// re-searches after a beat; Enter searches at once. Beside them, on
+    /// a build and a setting that have AcoustID, the button that skips
+    /// the tags and asks what the audio is.
+    fn search_fields(&self, cx: &mut Context<Self>) -> Div {
         let field = |label: SharedString, input: &Entity<InputState>| {
             div()
                 .flex_1()
@@ -853,6 +900,13 @@ impl TagMatch {
                 )
                 .child(Input::new(input).small())
         };
+        // A fingerprint covers the file, so on a cue image it would
+        // identify the disc rather than the one subsong this window is
+        // tagging. The rename tool refuses cue tracks for the same
+        // reason: there's no file of their own behind them. That and the
+        // key check are settled at open, in `can_identify`.
+        let can_identify = self.can_identify;
+        let busy = self.saving || matches!(self.phase, Phase::Searching);
         div()
             .flex()
             .flex_col()
@@ -871,9 +925,21 @@ impl TagMatch {
                 div()
                     .flex()
                     .flex_row()
+                    // The boxes carry a label above them and the button
+                    // doesn't, so bottom alignment puts it on the same
+                    // line as the inputs.
+                    .items_end()
                     .gap(tokens::SPACE_SM)
                     .child(field(rox_i18n::t!("head-piece-artist"), &self.artist_input))
-                    .child(field(rox_i18n::t!("info-item-title"), &self.title_input)),
+                    .child(field(rox_i18n::t!("info-item-title"), &self.title_input))
+                    .when(can_identify, |d| {
+                        d.child(settings_ui::small_button(
+                            rox_i18n::t!("tags-matcher-identify"),
+                            icons::AUDIO_WAVEFORM,
+                            busy,
+                            cx.listener(|this, _, _, cx| this.identify(cx)),
+                        ))
+                    }),
             )
     }
 }

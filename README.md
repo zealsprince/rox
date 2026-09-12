@@ -210,10 +210,10 @@ refuses to run without `vendor/projectm`.
 
 Copy `.env.template` to `.env` to bake service identities into the binary at
 compile time: `LASTFM_API_KEY` and `LASTFM_API_SECRET` for one-click scrobbler
-connect, `DISCORD_APPLICATION_ID` for rich presence. Exported environment variables
-win over the file. A build without any of them works the same minus those
-integrations, and the Last.fm settings page takes your own key pair at runtime
-either way.
+connect, `DISCORD_APPLICATION_ID` for rich presence, `ACOUSTID_CLIENT_KEY` for
+identifying tracks by sound. Exported environment variables win over the file. A
+build without any of them works the same minus those integrations, and the
+settings pages take your own Last.fm pair and AcoustID key at runtime either way.
 
 Debug builds accept a `--fresh` flag that runs rox against a wiped scratch data
 directory in the OS temp folder, so `cargo run -- --fresh` goes through the first-run

@@ -31,6 +31,7 @@ use gpui_component::menu::PopupMenu;
 use gpui_component::Icon;
 
 use crate::composite;
+use crate::goto_dialog::GoTo;
 use crate::integrations::media_controls::MediaSession;
 use crate::integrations::tray;
 use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSection};
@@ -1782,6 +1783,9 @@ pub(crate) enum MenuAction {
     /// Open the power search window: one library view in a window of its
     /// own, searching over its own query instead of the app-wide one.
     OpenPowerSearch,
+    /// Open the quick-play modal over this window, the Ctrl+P jump with a
+    /// menu row in front of it.
+    OpenQuickPlay,
     OpenConsole,
     OpenTasks,
     OpenEqualizer,
@@ -1881,6 +1885,7 @@ impl MenuAction {
             MenuAction::Previous => "previous".into(),
             MenuAction::OpenHealth => "health".into(),
             MenuAction::OpenPowerSearch => "power-search".into(),
+            MenuAction::OpenQuickPlay => "quick-play".into(),
             MenuAction::OpenConsole => "console".into(),
             MenuAction::OpenTasks => "tasks".into(),
             MenuAction::OpenEqualizer => "equalizer".into(),
@@ -1937,6 +1942,7 @@ impl MenuAction {
             "previous" => MenuAction::Previous,
             "health" => MenuAction::OpenHealth,
             "power-search" => MenuAction::OpenPowerSearch,
+            "quick-play" => MenuAction::OpenQuickPlay,
             "console" => MenuAction::OpenConsole,
             "tasks" => MenuAction::OpenTasks,
             "equalizer" => MenuAction::OpenEqualizer,
@@ -2244,6 +2250,13 @@ pub(crate) const MENUS: &[Menu] = &[
                 label: "menu-power-search",
                 icon: icons::SEARCH,
                 action: MenuAction::OpenPowerSearch,
+            }),
+            // The lighter search beside the heavier one: the modal that
+            // jumps to a track rather than a window to work in.
+            MenuEntry::Item(MenuItem {
+                label: "menu-quick-play",
+                icon: icons::KEYBOARD,
+                action: MenuAction::OpenQuickPlay,
             }),
             MenuEntry::Item(MenuItem {
                 label: "menu-rescan-library",
@@ -2608,6 +2621,7 @@ fn keymap_command(action: MenuAction) -> Option<&'static str> {
         MenuAction::OpenStats => "open_stats",
         MenuAction::OpenHealth => "open_health",
         MenuAction::OpenPowerSearch => "open_power_search",
+        MenuAction::OpenQuickPlay => "open_quick_play",
         MenuAction::OpenTasks => "open_tasks",
         MenuAction::OpenEqualizer => "open_equalizer",
         MenuAction::RescanLibrary => "rescan_library",
@@ -2816,6 +2830,10 @@ pub struct Workspace {
     drop_reveal: Option<DropReveal>,
     /// Clears `quick_play` and hands focus back when the modal dismisses.
     _quick_play_dismissed: Option<Subscription>,
+    /// The go-to modal while it's up; dropped on dismiss.
+    goto: Option<Entity<GoTo>>,
+    /// Clears `goto` and hands focus back when the modal dismisses.
+    _goto_dismissed: Option<Subscription>,
     /// The queue modal the queue widget opens when no queue panel is docked;
     /// a throwaway queue panel floated over the workspace, dropped on close.
     queue_modal: Option<Entity<QueuePanel>>,
@@ -3358,6 +3376,8 @@ impl Workspace {
             quick_play: None,
             drop_reveal: None,
             _quick_play_dismissed: None,
+            goto: None,
+            _goto_dismissed: None,
             queue_modal: None,
             backdrop: WindowBackdrop::default(),
             titled_track: None,
@@ -4482,6 +4502,35 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Open the go-to modal, or close it when it's already up. Nothing
+    /// playing opens nothing: there's no track to move inside of, which is
+    /// the same silence the bookmark and A-B keys answer with. Focus and
+    /// dismissal work the way quick-play's do.
+    fn toggle_goto(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.goto.take().is_some() {
+            self._goto_dismissed = None;
+            window.focus(&self.focus);
+            cx.notify();
+            return;
+        }
+        if self.state.player.read(cx).now_playing().is_none() {
+            return;
+        }
+        let modal = cx.new(|cx| GoTo::new(self.state.clone(), window, cx));
+        self._goto_dismissed =
+            Some(
+                cx.subscribe_in(&modal, window, |this, _, _: &DismissEvent, window, cx| {
+                    this.goto = None;
+                    this._goto_dismissed = None;
+                    window.focus(&this.focus);
+                    cx.notify();
+                }),
+            );
+        window.focus(&modal.read(cx).focus_handle(cx));
+        self.goto = Some(modal);
+        cx.notify();
+    }
+
     /// Open the queue modal, or close it when it's already up. The queue
     /// widget calls this when no queue panel is docked, so a click always
     /// does something. A fresh queue panel each open, dropped on close; its
@@ -5464,6 +5513,21 @@ impl Workspace {
     }
 }
 
+/// The occluding layer a modal floats on: the whole workspace, with the
+/// modal near the top, so a click outside it dismisses without also
+/// landing on whatever is underneath.
+fn float_modal(modal: impl IntoElement) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .flex_col()
+        .items_center()
+        .pt(px(96.))
+        .child(modal)
+}
+
 /// Snap every float in a serialized dock dump to the shortest decimal that
 /// round-trips through f32. The dump's sizes and panel configs are all f32,
 /// but [`serde_json::to_value`] widens them to f64 and bakes in the expansion
@@ -5764,8 +5828,8 @@ impl Render for Workspace {
                 .on_action(cx.listener(|this, _: &StepForward, _, cx| {
                     this.state.player.read(cx).step_by(false);
                 }))
-                .on_action(cx.listener(|this, _: &OpenGoTo, _, cx| {
-                    crate::goto_dialog::open(this.state.clone(), cx);
+                .on_action(cx.listener(|this, _: &OpenGoTo, window, cx| {
+                    this.toggle_goto(window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                     crate::settings::window::open(
@@ -6002,17 +6066,11 @@ impl Render for Workspace {
                 // the end of the frame and would swallow it, so it has to
                 // record in the same draw-order range menus and tooltips do.
                 .when_some(self.quick_play.clone(), |d, modal| {
-                    d.child(overlay_phase(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .occlude()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .pt(px(96.))
-                            .child(modal),
-                    ))
+                    d.child(overlay_phase(float_modal(modal)))
+                })
+                // The go-to modal floats the same way, in the same spot.
+                .when_some(self.goto.clone(), |d, modal| {
+                    d.child(overlay_phase(float_modal(modal)))
                 })
                 // The layout save/apply dialog floats over everything, same as
                 // quick-play and for the same reasons: last child, not deferred.
@@ -6083,7 +6141,7 @@ mod tests {
             );
             rows += 1;
         }
-        assert_eq!(rows, 10, "the menu grew or shrank without this test");
+        assert_eq!(rows, 11, "the menu grew or shrank without this test");
     }
 
     /// Every Library row survives the native bar's round trip through a

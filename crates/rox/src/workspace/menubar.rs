@@ -67,7 +67,7 @@ impl Workspace {
                     .player
                     .update(cx, |player, cx| player.ab_mark(cx));
             }
-            MenuAction::GoToTime => crate::goto_dialog::open(self.state.clone(), cx),
+            MenuAction::GoToTime => self.toggle_goto(window, cx),
             MenuAction::Sleep(pick) => {
                 let after = pick.minutes().map(|m| Duration::from_secs(m * 60));
                 self.state
@@ -98,6 +98,7 @@ impl Workspace {
             MenuAction::OpenStats => crate::stats_window::open(self.state.clone(), cx),
             MenuAction::OpenHealth => crate::health_window::open(self.state.clone(), cx),
             MenuAction::OpenPowerSearch => crate::search_window::open(self.state.clone(), cx),
+            MenuAction::OpenQuickPlay => self.toggle_quick_play(window, cx),
             MenuAction::OpenConsole => crate::console_window::open(cx),
             MenuAction::OpenTasks => crate::tasks_window::open(cx),
             MenuAction::OpenEqualizer => crate::eq_window::open(cx),

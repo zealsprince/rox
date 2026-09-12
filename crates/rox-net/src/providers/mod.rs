@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+pub mod acoustid;
 pub mod deezer;
 pub mod itunes;
 pub mod lastfm;
@@ -88,6 +89,32 @@ pub fn metadata_online() -> bool {
 
 pub fn set_metadata_online(on: bool) {
     METADATA_ONLINE.store(on, Ordering::Relaxed);
+}
+
+/// Whether the fingerprint identify is enabled, the metadata static's
+/// companion for the lookup that goes by sound instead of by tags. Seeded
+/// at startup, flipped by the Providers page.
+static ACOUSTID_ONLINE: AtomicBool = AtomicBool::new(true);
+
+pub fn acoustid_online() -> bool {
+    ACOUSTID_ONLINE.load(Ordering::Relaxed)
+}
+
+pub fn set_acoustid_online(on: bool) {
+    ACOUSTID_ONLINE.store(on, Ordering::Relaxed);
+}
+
+/// Whether the identify can actually be offered: the toggle is on and some
+/// application key exists, the build's own or one the user typed. AcoustID
+/// is the one provider here that refuses an anonymous caller, so a build
+/// that shipped without a key hides the button rather than offering one
+/// that always fails.
+///
+/// The settings read this needs is the reason it isn't a bare static, so
+/// it belongs on a click or an open, not in a paint. A build carrying a key
+/// answers off the baked const and never touches the file.
+pub fn acoustid_available() -> bool {
+    acoustid_online() && (!acoustid::CLIENT_KEY.is_empty() || !acoustid::client_key().is_empty())
 }
 
 /// Whether each cover-art service is enabled. Three providers rather than
@@ -363,6 +390,60 @@ pub fn search_metadata(query: &TrackQuery) -> Result<Vec<MetadataCandidate>, Str
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(found)
+    })
+}
+
+/// How many of AcoustID's hits get their tags fetched. MusicBrainz takes
+/// one request a second and the throttle serialises them, so every hit past
+/// this one is another second the user waits at the button. Five is deep
+/// enough to hold the right recording when a track is on several releases
+/// and shallow enough to answer while someone is still looking.
+const IDENTIFY_HITS: usize = 5;
+
+/// Identify a track by its sound rather than by its tags: AcoustID matches
+/// the fingerprint to MusicBrainz recording ids, then each id is fetched
+/// for the tags a compare needs. An empty vec is a clean no-match, the
+/// search's shape, and Err is the wire or an API failing.
+///
+/// Confidence is AcoustID's score, not the text scorer's. The fingerprint
+/// already matched the audio, so how well the candidate's title happens to
+/// resemble whatever the file was tagged with says nothing about whether
+/// this is the right recording, and ranking on it would push the right
+/// answer under a wrong one that shares a misspelling.
+///
+/// `query` still matters: it picks which of a recording's releases the
+/// numbers come from, so a track that names its album gets that release's
+/// track and disc rather than a compilation's.
+pub fn identify(
+    fingerprint: &str,
+    duration_secs: u32,
+    query: &TrackQuery,
+) -> Result<Vec<MetadataCandidate>, String> {
+    if !acoustid_available() {
+        return Ok(Vec::new());
+    }
+    static CACHE: OnceLock<SessionCache<Vec<MetadataCandidate>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    // Keyed on what was sent rather than on the track's tags: the
+    // fingerprint is the question here, and two files with the same audio
+    // deserve the one answer however they happen to be tagged. The cost is
+    // that a re-ask with an edited query keeps the first run's release
+    // pick, which is the only thing the query decides.
+    let key = format!("{fingerprint}\u{1f}{duration_secs}");
+    cache.get_or_compute(key, || {
+        let hits = acoustid::lookup(fingerprint, duration_secs)?;
+        collect_candidates(hits.iter().take(IDENTIFY_HITS).map(|hit| {
+            musicbrainz::recording_by_id(&hit.recording_id, query).map(|found| {
+                found
+                    .into_iter()
+                    .map(|mut candidate| {
+                        candidate.provider = "acoustid";
+                        candidate.confidence = hit.score;
+                        candidate
+                    })
+                    .collect::<Vec<_>>()
+            })
+        }))
     })
 }
 

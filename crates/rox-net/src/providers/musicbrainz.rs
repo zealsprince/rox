@@ -7,6 +7,10 @@
 //! `ARTISTSORT` from; there is no title or album sort in the model, so
 //! those two stay hand-typed in the editor.
 //!
+//! The same recordings are also reachable one id at a time, which is what
+//! the fingerprint identify wants: AcoustID hands back recording MBIDs, and
+//! the tags behind them come from here.
+//!
 //! The service caps clients at one request a second and rejects anything
 //! without a contactable User-Agent (ADR 14: the shared agent sends
 //! it). The throttle is here so callers never see it, the rate limit
@@ -25,6 +29,10 @@ const API: &str = "https://musicbrainz.org/ws/2/recording";
 /// name alone, which is all the sort-name pass has: it's working from
 /// library values rather than from a track.
 const ARTIST_API: &str = "https://musicbrainz.org/ws/2/artist";
+
+/// The release lookup, for the label and the ISRCs a recording search
+/// leaves out.
+const RELEASE_API: &str = "https://musicbrainz.org/ws/2/release";
 
 /// MusicBrainz's rate limit: one request a second, sustained. A single
 /// lookup never hits it, but a batch would, so the gate is here rather
@@ -70,6 +78,10 @@ pub enum LookupError {
     /// the server's Retry-After. Nothing went wrong; the run is stopping
     /// and this name goes back in the pile.
     Cancelled,
+    /// The server has no such entity. Only the by-id lookups ever see it:
+    /// a search answers 200 with an empty list, so nothing the sort-name
+    /// pass asks can produce this.
+    NotFound,
     /// Anything else, already folded through [`net_reason`].
     Other(String),
 }
@@ -79,6 +91,7 @@ impl std::fmt::Display for LookupError {
         match self {
             LookupError::Busy => write!(f, "service busy after {BUSY_RETRIES} retries"),
             LookupError::Cancelled => f.write_str("cancelled"),
+            LookupError::NotFound => f.write_str("no such entry"),
             LookupError::Other(reason) => f.write_str(reason),
         }
     }
@@ -133,6 +146,74 @@ impl MetadataProvider for MusicBrainz {
     }
 }
 
+/// One recording by its MBID, with the credits and releases a compare
+/// needs, scored against `query` the way a searched candidate is.
+/// Ok(None) is an id MusicBrainz has no entry for, which is what an
+/// AcoustID hit pointing at a merged or deleted recording looks like.
+///
+/// The other way into the same data: the fingerprint identify already
+/// knows which recording it wants, so there is nothing to search on and
+/// nothing to rank. It goes through the same throttled fetch as the rest
+/// of the module, so a run of ids queues behind the one-a-second limit
+/// rather than tripping it.
+///
+/// Blocking, background executor only.
+pub fn recording_by_id(
+    mbid: &str,
+    query: &TrackQuery,
+) -> Result<Option<MetadataCandidate>, String> {
+    let mbid = mbid.trim();
+    // The id lands in the path, so anything that isn't the shape of an
+    // MBID is refused here instead of being sent as a URL of its own
+    // making. A hit that carries a malformed id is a miss, not an error.
+    if mbid.is_empty() || !mbid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Ok(None);
+    }
+    let text = match fetch(
+        agent()
+            .get(&format!("{API}/{mbid}"))
+            // artist-credits for the recording's and the release's names
+            // and sort names, releases and media for the album, the year,
+            // and the two numbers off the medium the recording sits on.
+            // The same fields `candidate` reads out of a search result.
+            .query("inc", "artist-credits+releases+media")
+            .query("fmt", "json"),
+        None,
+    ) {
+        Ok(text) => text,
+        Err(LookupError::NotFound) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let recording: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(recording_candidate(query, &recording))
+}
+
+/// The by-id body into a scored candidate, its own function so the fixtures
+/// below run the real response shape without the wire.
+///
+/// A body with no title is not a recording, whatever else it is: the
+/// candidate off it would be a row of empty fields, which reads in the
+/// compare as a service that answered and knew nothing. That's None, the
+/// same answer an unknown id gets, rather than an error, since neither one
+/// is anything the caller can act on differently.
+fn recording_candidate(
+    query: &TrackQuery,
+    recording: &serde_json::Value,
+) -> Option<MetadataCandidate> {
+    if string(recording.get("title")).is_empty() {
+        return None;
+    }
+    let mut candidate = candidate("musicbrainz", query, recording);
+    candidate.confidence = super::score_fields(
+        query,
+        &candidate.title,
+        &candidate.artist,
+        &candidate.album,
+        candidate.duration_secs,
+    );
+    Some(candidate)
+}
+
 /// One recording into a candidate: its title and artist, plus the release
 /// among its releases that best matches the query album, so a track
 /// tagged with a specific album surfaces that release's numbers rather
@@ -178,8 +259,13 @@ fn candidate(
                 .filter(|&n| n > 0)
                 .map(|n| n.to_string())
                 .unwrap_or_default();
+            // Two spellings for one field: the search endpoint names the
+            // array "track" and the by-id lookup names it "tracks". Both
+            // hold only the tracks that are this recording, so reading
+            // either and taking the first is the same answer. Verified
+            // against live responses from both endpoints.
             let track_no = medium
-                .and_then(|m| m.get("track"))
+                .and_then(|m| m.get("tracks").or_else(|| m.get("track")))
                 .and_then(|v| v.as_array())
                 .and_then(|tracks| tracks.first())
                 .map(|t| string(t.get("number")))
@@ -219,6 +305,225 @@ fn candidate(
     }
 }
 
+/// What MusicBrainz records about a track's release, the metadata panel's
+/// release rows: the label and catalog number, where and when the release
+/// came out, when the recording first did, and the ISRC. Any field can be
+/// empty. Serialized as the release facts store's cache file; missing
+/// fields default, so an old entry still loads after the shape drifts.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ReleaseFacts {
+    pub recording_mbid: String,
+    pub release_mbid: String,
+    /// The release's title, which may differ from the tag's album.
+    pub release_title: String,
+    /// The recording's earliest release date, "YYYY", "YYYY-MM", or full.
+    pub first_release_date: String,
+    /// The chosen release's date, the same shapes.
+    pub release_date: String,
+    /// The release's ISO 3166 country code, "XW" for worldwide.
+    pub country: String,
+    pub label: String,
+    pub catalog_number: String,
+    pub barcode: String,
+    /// The recording's first ISRC.
+    pub isrc: String,
+}
+
+/// How many recordings the release lookup searches through for the best
+/// match; the top hit is usually right, the rest cover a cover version
+/// outscoring the original on a partial title.
+const FACTS_CANDIDATES: usize = 5;
+
+/// How sure the compare must be before a recording's facts are shown:
+/// below this the search matched a different song, and the wrong label
+/// under a track is worse than none.
+const FACTS_MIN_CONFIDENCE: f32 = 0.6;
+
+/// The release facts for a track: two throttled calls, the recording
+/// search that picks the recording and its release, then the release
+/// lookup for the label and the ISRC. Ok(None) is MusicBrainz having no
+/// recording that reads as the track. Blocking, background executor only.
+pub fn release_facts(query: &TrackQuery) -> Result<Option<ReleaseFacts>, String> {
+    let mut parts = Vec::new();
+    if !query.title.is_empty() {
+        parts.push(format!("recording:\"{}\"", escape(&query.title)));
+    }
+    if !query.artist.is_empty() {
+        parts.push(format!("artist:\"{}\"", escape(&query.artist)));
+    }
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    let text = fetch(
+        agent()
+            .get(API)
+            .query("query", &parts.join(" AND "))
+            .query("fmt", "json")
+            .query("limit", &FACTS_CANDIDATES.to_string()),
+        None,
+    )?;
+    let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let Some(recordings) = body.get("recordings").and_then(|v| v.as_array()) else {
+        return Ok(None);
+    };
+    // The recording the compare is surest of, the same score the tag
+    // lookup ranks its candidates by.
+    let best = recordings
+        .iter()
+        .map(|recording| {
+            let candidate = candidate("musicbrainz", query, recording);
+            let confidence = super::score_fields(
+                query,
+                &candidate.title,
+                &candidate.artist,
+                &candidate.album,
+                candidate.duration_secs,
+            );
+            (confidence, recording)
+        })
+        .filter(|(confidence, _)| *confidence >= FACTS_MIN_CONFIDENCE)
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let Some((_, recording)) = best else {
+        return Ok(None);
+    };
+    let mut facts = ReleaseFacts {
+        recording_mbid: string(recording.get("id")),
+        first_release_date: string(recording.get("first-release-date")),
+        ..ReleaseFacts::default()
+    };
+    let releases = recording
+        .get("releases")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let Some(release) = facts_release(query, releases) else {
+        return Ok(Some(facts));
+    };
+    facts.release_mbid = string(release.get("id"));
+    facts.release_title = string(release.get("title"));
+    facts.release_date = string(release.get("date"));
+    facts.country = string(release.get("country"));
+    if facts.release_mbid.is_empty() {
+        return Ok(Some(facts));
+    }
+    // The label and the ISRC only come off the release itself. A failure
+    // here keeps what the search gave, since half the facts beat none.
+    let text = match fetch(
+        agent()
+            .get(&format!("{RELEASE_API}/{}", facts.release_mbid))
+            .query("inc", "labels+recordings+isrcs")
+            .query("fmt", "json"),
+        None,
+    ) {
+        Ok(text) => text,
+        Err(_) => return Ok(Some(facts)),
+    };
+    let Ok(release) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(Some(facts));
+    };
+    read_release(&mut facts, &release);
+    Ok(Some(facts))
+}
+
+/// The release lookup's body into the facts: the first label with a real
+/// catalog number (MusicBrainz writes "[none]" for a known absence), the
+/// barcode, and the ISRC off the track that is this recording.
+fn read_release(facts: &mut ReleaseFacts, release: &serde_json::Value) {
+    let labels = release
+        .get("label-info")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let catalog = |info: &serde_json::Value| {
+        let number = string(info.get("catalog-number"));
+        if number == "[none]" {
+            String::new()
+        } else {
+            number
+        }
+    };
+    let pick = labels
+        .iter()
+        .find(|info| !catalog(info).is_empty())
+        .or_else(|| labels.first());
+    if let Some(info) = pick {
+        facts.label = string(info.get("label").and_then(|l| l.get("name")));
+        facts.catalog_number = catalog(info);
+    }
+    facts.barcode = string(release.get("barcode"));
+    if facts.release_date.is_empty() {
+        facts.release_date = string(release.get("date"));
+    }
+    if facts.country.is_empty() {
+        facts.country = string(release.get("country"));
+    }
+    let media = release
+        .get("media")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for medium in media {
+        let tracks = medium
+            .get("tracks")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for track in tracks {
+            let Some(recording) = track.get("recording") else {
+                continue;
+            };
+            if string(recording.get("id")) != facts.recording_mbid {
+                continue;
+            }
+            facts.isrc = recording
+                .get("isrcs")
+                .and_then(|v| v.as_array())
+                .and_then(|list| list.first())
+                .map(|v| string(Some(v)))
+                .unwrap_or_default();
+            return;
+        }
+    }
+}
+
+/// The release to read the facts off: an official one over a bootleg or
+/// promo, the one titled like the tag's album over the rest, and the
+/// earliest of what's left, so a track on a classic album gets that
+/// album's label rather than a later compilation's.
+fn facts_release<'a>(
+    query: &TrackQuery,
+    releases: &'a [serde_json::Value],
+) -> Option<&'a serde_json::Value> {
+    releases.iter().max_by(|a, b| {
+        let rank = |r: &serde_json::Value| {
+            let official = string(r.get("status")).eq_ignore_ascii_case("official");
+            let album = if query.album.is_empty() {
+                0.0
+            } else {
+                super::similarity(&query.album, &string(r.get("title")))
+            };
+            // Earlier dates rank higher; an empty date ranks last.
+            let date = string(r.get("date"));
+            let earliness = if date.is_empty() {
+                0.0
+            } else {
+                1.0 - date
+                    .split('-')
+                    .next()
+                    .and_then(|y| y.parse::<f32>().ok())
+                    .map_or(1.0, |y| (y / 3000.0).clamp(0.0, 1.0))
+            };
+            (official, album, earliness)
+        };
+        let (ao, aa, ae) = rank(a);
+        let (bo, ba, be) = rank(b);
+        ao.cmp(&bo)
+            .then(aa.partial_cmp(&ba).unwrap_or(std::cmp::Ordering::Equal))
+            .then(ae.partial_cmp(&be).unwrap_or(std::cmp::Ordering::Equal))
+    })
+}
+
 /// The release whose title best matches the query album, so the candidate
 /// has the numbers for the album the track claims. Falls back to the
 /// first release when the query has no album to match on.
@@ -241,7 +546,11 @@ fn best_release<'a>(
 /// An artist-credit array folded to one display string, joining each name
 /// with its own join phrase ("Artist feat. Guest"), the shape a tag
 /// stores.
-fn artist_credit(credit: Option<&serde_json::Value>) -> String {
+///
+/// Shared with the AcoustID module, which serves the same credit out of its
+/// own MusicBrainz mirror in the same order with the same two keys, so the
+/// two providers' artist strings read alike in a compare.
+pub(super) fn artist_credit(credit: Option<&serde_json::Value>) -> String {
     let Some(array) = credit.and_then(|v| v.as_array()) else {
         return String::new();
     };
@@ -352,6 +661,10 @@ fn fetch(request: ureq::Request, cancel: Cancel<'_>) -> Result<String, LookupErr
                     .clamp(BUSY_BACKOFF, BUSY_CEILING);
                 wait_out(wait, cancel)?;
             }
+            // Told apart from the rest because a by-id lookup treats it as
+            // a clean miss, and "service returned 404" is not a string
+            // worth matching on to find that out.
+            Err(ureq::Error::Status(404, _)) => return Err(LookupError::NotFound),
             Err(e) => return Err(LookupError::Other(net_reason(&e))),
         }
     }
@@ -443,6 +756,52 @@ fn throttle() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn facts_prefer_the_official_release_titled_like_the_album() {
+        let query = TrackQuery {
+            artist: "The Beatles".into(),
+            title: "Here Comes the Sun".into(),
+            album: "Abbey Road".into(),
+            duration_secs: None,
+        };
+        let releases = vec![
+            serde_json::json!({"id": "boot", "title": "The Last Lost Album", "status": "Bootleg", "date": "1969-09"}),
+            serde_json::json!({"id": "comp", "title": "1967-1970", "status": "Official", "date": "1973-04-02"}),
+            serde_json::json!({"id": "abbey", "title": "Abbey Road", "status": "Official", "date": "1969-09-26"}),
+            serde_json::json!({"id": "remaster", "title": "Abbey Road", "status": "Official", "date": "2019-09-27"}),
+        ];
+        let pick = facts_release(&query, &releases).unwrap();
+        assert_eq!(string(pick.get("id")), "abbey");
+    }
+
+    #[test]
+    fn release_body_fills_label_catalog_barcode_and_isrc() {
+        let mut facts = ReleaseFacts {
+            recording_mbid: "rec-1".into(),
+            ..ReleaseFacts::default()
+        };
+        let release = serde_json::json!({
+            "date": "1969-09-26",
+            "country": "GB",
+            "barcode": "0094638246817",
+            "label-info": [
+                {"catalog-number": "[none]", "label": {"name": "Parlophone"}},
+                {"catalog-number": "PCS 7088", "label": {"name": "Apple Records"}}
+            ],
+            "media": [{"tracks": [
+                {"number": "6", "recording": {"id": "rec-0", "isrcs": ["GBAYE0601690"]}},
+                {"number": "7", "recording": {"id": "rec-1", "isrcs": ["GBAYE0601696"]}}
+            ]}]
+        });
+        read_release(&mut facts, &release);
+        assert_eq!(facts.label, "Apple Records");
+        assert_eq!(facts.catalog_number, "PCS 7088");
+        assert_eq!(facts.barcode, "0094638246817");
+        assert_eq!(facts.isrc, "GBAYE0601696");
+        assert_eq!(facts.release_date, "1969-09-26");
+        assert_eq!(facts.country, "GB");
+    }
 
     /// A trimmed capture of the real response for the query rox builds,
     /// cut to the keys `candidate` reads. The sort names ride on the
@@ -643,6 +1002,76 @@ mod tests {
         // No predicate is no cancel, and a zero wait is over before it
         // starts either way.
         assert_eq!(wait_out(Duration::from_millis(0), None), Ok(()));
+    }
+
+    /// A trimmed capture of the real by-id response for
+    /// aed95205-f79f-4181-b2f7-2c2cb226f5bc with
+    /// `inc=artist-credits+releases+media`, cut to the keys `candidate`
+    /// reads. The one shape that differs from the search endpoint is the
+    /// medium's track array: "tracks" here, "track" there.
+    const BY_ID: &str = r#"{
+        "id": "aed95205-f79f-4181-b2f7-2c2cb226f5bc",
+        "title": "One More Time",
+        "length": 320000,
+        "artist-credit": [
+            { "name": "Daft Punk", "joinphrase": "", "artist": { "name": "Daft Punk", "sort-name": "Daft Punk" } }
+        ],
+        "releases": [
+            {
+                "title": "Ultimate Collection",
+                "date": "2001",
+                "artist-credit": [
+                    { "name": "Daft Punk", "joinphrase": "", "artist": { "name": "Daft Punk", "sort-name": "Daft Punk" } }
+                ],
+                "media": [
+                    {
+                        "position": 1,
+                        "format": "CD",
+                        "track-count": 17,
+                        "track-offset": 3,
+                        "tracks": [{ "number": "4", "title": "One More Time", "length": 320000 }]
+                    }
+                ]
+            }
+        ]
+    }"#;
+
+    /// The by-id lookup fills the same fields the search does, the plural
+    /// "tracks" spelling included, so an identify's candidates sit in the
+    /// compare table next to a searched one without a gap.
+    #[test]
+    fn the_by_id_shape_fills_the_release_numbers() {
+        let query = TrackQuery {
+            artist: "Daft Punk".to_string(),
+            title: "One More Time".to_string(),
+            album: "Ultimate Collection".to_string(),
+            duration_secs: Some(320.0),
+        };
+        let recording: serde_json::Value = serde_json::from_str(BY_ID).expect("fixture parses");
+        let candidate = recording_candidate(&query, &recording).expect("a recording");
+        assert_eq!(candidate.title, "One More Time");
+        assert_eq!(candidate.artist, "Daft Punk");
+        assert_eq!(candidate.artist_sort, "Daft Punk");
+        assert_eq!(candidate.album, "Ultimate Collection");
+        assert_eq!(candidate.album_artist, "Daft Punk");
+        assert_eq!(candidate.year, "2001");
+        assert_eq!(candidate.track_no, "4");
+        assert_eq!(candidate.disc_no, "1");
+        assert_eq!(candidate.duration_secs, Some(320.0));
+        // Scored like a searched candidate, which the identify then
+        // replaces with the fingerprint's own score.
+        assert!(candidate.confidence > 0.9);
+    }
+
+    /// A body that came back 200 and isn't a recording reads as no answer,
+    /// the same as an id MusicBrainz has no entry for.
+    #[test]
+    fn a_body_that_is_not_a_recording_is_no_answer() {
+        let query = query();
+        for body in [r#"{ "error": "Not Found" }"#, r#"{ "title": "" }"#, "{}"] {
+            let value: serde_json::Value = serde_json::from_str(body).expect("fixture parses");
+            assert!(recording_candidate(&query, &value).is_none());
+        }
     }
 
     #[test]

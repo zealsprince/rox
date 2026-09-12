@@ -91,6 +91,7 @@ jobs:
       LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
       LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
       DISCORD_APPLICATION_ID: ${{ secrets.DISCORD_APPLICATION_ID }}
+      ACOUSTID_CLIENT_KEY: ${{ secrets.ACOUSTID_CLIENT_KEY }}
     steps:
       - uses: actions/checkout@v7
         with:

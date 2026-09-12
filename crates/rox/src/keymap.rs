@@ -87,9 +87,9 @@ pub enum Group {
     Playback,
     /// The library's own operations: the scan, the five analysis passes,
     /// the duplicate finder, the genre tagger, and the health report and
-    /// power search they feed. Everything the Library menu holds, with the
-    /// report and the search last here rather than leading. Tasks and Stats
-    /// stay in Windows, since neither is only about the library.
+    /// the two searches they feed. Everything the Library menu holds, with
+    /// the report and the searches last here rather than leading. Tasks and
+    /// Stats stay in Windows, since neither is only about the library.
     Library,
     Windows,
     Browsing,
@@ -742,7 +742,7 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         command!(
             "open_quick_play",
             rox_i18n::t_static("keymap-open-quick-play"),
-            Group::Windows,
+            Group::Library,
             WORKSPACE,
             defaults::QUICK_PLAY,
             OpenQuickPlay,

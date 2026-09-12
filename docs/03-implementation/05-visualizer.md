@@ -126,17 +126,21 @@ interleaved stereo) and pushes it into the feed so the frozen frame is real.
 
 ## Waveform peaks cache
 
-The waveform seekbar draws from a min/max peak reduction of the whole track, cached to
-disk so the strip comes back instantly after the first play instead of re-decoding.
+The waveform seekbar draws from a peak reduction of the whole track, cached to disk so
+the strip comes back instantly after the first play instead of re-decoding. Each bin is a
+`PeakBin` (`rox-library/src/peaks.rs`): the sample extremes over its frames, which draw
+the outer envelope, and the RMS across them, which draws the flatter loudness band
+inside it.
 
 `engine::decode_peaks(path, bins)` (`rox-playback/src/engine.rs`) is the reducer. It
 decodes the whole file through the same path playback uses, no audio device, and folds
-it to at most `bins` (min, max) mono pairs: a coarse pass of one pair per `BLOCK_FRAMES`
-= 2048 frames keeps memory flat whatever the track length, then folds down to `bins`
-keeping each bucket's extremes so transients aren't averaged away. Pairs are normalized
-so the loudest hits 1, with a `pow(0.7)` perceptual curve so quiet passages stay
-visible. The waveform panel asks for `PEAK_BINS` = 2048 pairs and resamples that down
-to the drawn bar count at paint time.
+it to at most `bins` bins per lane: a coarse pass of one bin per `BLOCK_FRAMES` = 2048
+frames keeps memory flat whatever the track length, then folds down to `bins` keeping
+each bucket's extremes so transients aren't averaged away and taking the root mean
+square of the bucket's RMS values. Bins are normalized so the loudest extreme hits 1,
+with a `pow(0.7)` perceptual curve so quiet passages stay visible. The RMS goes through
+the same scale and curve so it never leaves the envelope. The waveform panel asks for
+`PEAK_BINS` = 2048 bins and resamples that down to the drawn bar count at paint time.
 
 The cache is one small binary file per track under `waveforms/` in the app's data dir
 (`crates/rox-library/src/peaks.rs`). The entry name is `{fnv1a(path):016x}.peaks`, an FNV-1a
@@ -145,13 +149,13 @@ little-endian throughout:
 
 ```
 offset  bytes  field
-0       8      magic  b"roxwave2"
+0       8      magic  b"roxwave3"
 8       8      source size   (u64)
 16      8      source mtime  (u64, unix seconds)
 24      4      path length N (u32)
 28      N      path bytes
-28+N    4      pair count C  (u32)
-32+N    C*8    C pairs of (min, max) f32
+28+N    4      bin count C   (u32)
+32+N    C*12   C triples of (min, max, rms) f32
 ```
 
 The magic is the format version, bumped when the layout changes so old entries read as
@@ -233,6 +237,20 @@ and watching a preset name land is how a reader tells a live worker from a dead 
 Until this, both states were a black panel with no word, which on the machine it
 happens on looks exactly like the feature working with the lights off.
 
+The context ask is 3.3 core first, then, off macOS, the driver's default (no version,
+compatibility profile). The retry exists because of one Windows report: an Intel
+driver refused the versioned core request with `0xC007000D`, a code no header names,
+and the same code shows up in id Tech game logs on Haswell-era Intel parts right after
+they hand out 3.1. projectM accepts a 3.3+ compatibility context and probes the version
+itself, so a driver that can only do 3.1 is refused there, with the version in the log.
+
+Everything the panel paints over the frame (the preset banner, the transport strip, the
+failure and stall overlays) is a deferred draw. The frame is a shader region, and the
+DirectX renderer runs regions once at the deferred-draw boundary, after every ordinary
+primitive, so text painted in tree order sat under the opaque frame. That is why the
+same Windows report showed a black panel and not the failure message the panel had
+been drawing all along. Blade runs regions in paint order and is indifferent.
+
 The GL the crate calls for itself (framebuffer, texture storage, the PBOs, `glGetString`
 for the log) is twenty-eight `extern "system"` pointers in `gl.rs`, resolved by name off
 the same load proc. No `gl` or `glow` crate for twenty-eight functions.
@@ -313,6 +331,18 @@ images inside the pack. The directory layout is the one structure it keeps, sinc
 packs organise themselves by category folder, and a `Rotation` narrows what Next,
 Previous and the timed switch walk to one folder or to the favourites list. With no
 presets found projectM's built-in idle preset renders, so the panel is never blank.
+
+**Driving it from the socket.** `debug.milkdrop` (ADR 22's debug scope, `roxctl
+milkdrop` from a shell) reaches the first Milkdrop panel in the front workspace by verb
+rather than by pixel: `status` reads back the preset that's up, the lock, the scan
+count, the rotation, the engine state, and projectM's message for the last preset it
+refused; `load <file>` puts a preset up from any path, scanned or not, and re-reads the
+file on a repeat call; `lock`, `rescan`, `next`, and `prev` do what the context menu
+does. `frame <out.png>` hands back the worker's newest readback as PNG. That's engine
+output, the frame before the panel's tint, grade, and flips, not a capture of the
+window, which is what keeps it on the data side of the ADR's "pixels stay a screenshot
+job" line. Together they make the preset-authoring loop a script: write the file, load
+it, read the snapshot for a compile failure, dump a frame.
 
 **What it costs.** `cargo run -p rox-milkdrop --release --example headless -- <presets>`
 runs the engine for ten seconds with no UI and prints the baseline the zero-copy

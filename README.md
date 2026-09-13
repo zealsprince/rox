@@ -104,6 +104,19 @@ very much love the vision of going back native. I've been loving working with it
 prototypes and I realized I had most of the foundation written and all I had to do
 is start mapping it over. So that's what I did. And now we have a new native player.
 
+Even as a rewrite on an existing foundation, a project this size by one person invites
+the question, so to be clear:
+
+**rox is written with AI tools.**
+
+I'm building it as the music player I want to use myself, and I can only deliberately
+work on so many projects at once. That's what lets one person keep the release pace and
+turn feedback around quickly. The product and UX are mine and everything that lands runs
+on my own library first.
+
+If that's a dealbreaker, that's alright. If you'd rather contribute handwritten code,
+PRs are welcome.
+
 ## Screenshots & Additional Workspaces
 
 A workspace is a whole look in one shareable file: layout, palette, appearance.
@@ -238,9 +251,3 @@ idea around before it's an issue all fit there. No client handy? The [web chat](
 works from the browser and opens straight into the channel.
 
 Yes, IRC. You're looking at a Foobar2000 successor, what did you expect.
-
-## AI
-
-rox is written with AI tools because I'm building it for myself and I can only deliberately work on so
-many projects at the same time. If you want to contribute high quality hand written code and take
-over the development of rox instead of me using AI tools; be my guest.

@@ -41,9 +41,9 @@ panel UI, with first-class visualizers, and stays fast on a huge library.
 ## Who it's for
 
 **The Foobar refugee who moved off Windows.** Spent years building a CaTRoX or NekoRoX
-setup, now lives on Linux or Mac, and has found nothing that feels like home. Andrew is
-exactly this person: a library in the thousands of albums, a NekoRoX layout he still
-misses, and Tauon on the Linux box that "just doesn't cut it."
+setup, now lives on Linux or Mac, and has found nothing that feels like home. I'm
+exactly this person: a library in the thousands of albums, a NekoRoX layout I still
+miss, and Tauon on the Linux box that "just doesn't cut it."
 
 **The library obsessive.** Tens of thousands of tracks, tags they actually care about,
 who wants to browse an album-art grid, filter and query fast, and fix metadata in bulk
@@ -55,16 +55,15 @@ green NekoRoX-style build, a live visualizer on a second monitor, a layout tuned
 they actually listen. For this person the look and the composability are the product,
 not decoration on top of it.
 
-These overlap heavily. The same person often is all three. Andrew is the first and most
-concrete of them, and building the thing he'd switch to is the sharpest test of whether
+These overlap heavily. The same person often is all three. I'm the first and most
+concrete of them, and building the thing I'd switch to is the sharpest test of whether
 it works.
 
 ## What success looks like
 
-rox is the player Andrew switches to and stops missing NekoRoX. A large library loads
-fast and browses without lag, the tagging is good enough to trust with a real collection,
-and the window looks like something worth keeping open. If it clears that bar for him,
-it's ready to share. Building it in that order keeps the scope honest.
+rox is the player I switch to and stop missing NekoRoX. A large library loads fast and
+browses without lag, the tagging is good enough to trust with a real collection, and the
+window looks like something worth keeping open.
 
 Past that bar is a longer life: sources as extensions. The same panels, visualizers,
 and playback surface working against a Spotify, YouTube Music, or Tidal library view,

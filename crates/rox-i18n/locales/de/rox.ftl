@@ -881,6 +881,9 @@ settings-integrations-lastfm-hearts = { $n ->
    *[other] { $n } Herzen
 }
 settings-integrations-lastfm-import-loved = Geliebte Titel importieren
+settings-integrations-lastfm-import-plays = Wiedergabezahlen importieren
+    .description = Wiedergabezahlen und Hörverlauf aus Last.fm-Scrobbles nacherfassen
+settings-integrations-lastfm-import-plays-button = Wiedergaben importieren
 settings-integrations-lastfm-intro-builtin = Verbinde dein Last.fm-Konto: autorisiere rox im Browser, und gespielte Titel scrobbeln dorthin
 settings-integrations-lastfm-intro-custom = Dieser Build bringt keine API-Identität mit, also braucht Scrobbeln dein eigenes API-Konto (Last.fm/api/account/create); füge Schlüssel und Shared Secret ein, dann verbinde
 settings-integrations-lastfm-key-placeholder = API-Schlüssel
@@ -1369,6 +1372,7 @@ tasks-importing = Importiere { $progress }
 tasks-job-acoustic = Akustische Analyse
 tasks-job-convert = Audio umwandeln
 tasks-job-loved-import = Geliebte Titel auf Last.fm
+tasks-job-plays-import = Wiedergabezahlen auf Last.fm
 tasks-job-replaygain = ReplayGain
 tasks-job-scan = Bibliotheksscan
 tasks-job-tempo = Tempoanalyse
@@ -1971,6 +1975,19 @@ lastfm-import-stopped = { $count ->
 }
 lastfm-import-matched = , { $count } zugeordnet
 lastfm-import-added = , { $count } zu den Favoriten hinzugefügt
+lastfm-import-plays-read = { $count ->
+    [one] { $count } Titel mit Wiedergaben gelesen
+   *[other] { $count } Titel mit Wiedergaben gelesen
+}
+lastfm-import-plays-stopped = { $count ->
+    [one] Nach { $count } Titel gestoppt
+   *[other] Nach { $count } Titeln gestoppt
+}
+lastfm-import-plays-matched = , { $count } zugeordnet
+lastfm-import-plays-updated = { $count ->
+    [one] , { $count } Wiedergabe hinzugefügt
+   *[other] , { $count } Wiedergaben hinzugefügt
+}
 
 ## Tag tools
 tags-editor-add-tag = Hinzufügen

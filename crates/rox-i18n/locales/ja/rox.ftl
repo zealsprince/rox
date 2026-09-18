@@ -875,6 +875,9 @@ settings-integrations-lastfm-hearts = { $n ->
    *[other] { $n } 件のハート
 }
 settings-integrations-lastfm-import-loved = お気に入り登録した曲をインポート
+settings-integrations-lastfm-import-plays = 再生回数をインポート
+    .description = Last.fm のスクロブルから再生回数と視聴履歴を取り込みます
+settings-integrations-lastfm-import-plays-button = 再生回数をインポート
 settings-integrations-lastfm-intro-builtin = Last.fm アカウントに接続します。ブラウザーで rox を承認すると、再生した曲がスクロブルされます
 settings-integrations-lastfm-intro-custom = このビルドには api の識別情報が入っていないので、スクロブルには自分の api アカウントが要ります (Last.fm/api/account/create)。そのキーと共有シークレットを貼り付けてから接続してください
 settings-integrations-lastfm-key-placeholder = API キー
@@ -1357,6 +1360,7 @@ tasks-importing = インポート中 { $progress }
 tasks-job-acoustic = 音響解析
 tasks-job-convert = 音声の変換
 tasks-job-loved-import = Last.fm のお気に入り
+tasks-job-plays-import = Last.fm の再生回数
 tasks-job-replaygain = ReplayGain
 tasks-job-scan = ライブラリのスキャン
 tasks-job-tempo = テンポ解析
@@ -1934,6 +1938,10 @@ lastfm-import-read = お気に入りの曲を { $count } 件読み込みまし�
 lastfm-import-stopped = お気に入りの曲 { $count } 件で止まりました
 lastfm-import-matched = 、{ $count } 件が一致
 lastfm-import-added = 、{ $count } 件をお気に入りに追加
+lastfm-import-plays-read = 再生回数のある曲を { $count } 件読み込みました
+lastfm-import-plays-stopped = { $count } 件の曲で停止しました
+lastfm-import-plays-matched = 、{ $count } 件が一致
+lastfm-import-plays-updated = 、{ $count } 件の再生を追加
 
 ## Tag tools
 tags-editor-add-tag = 追加

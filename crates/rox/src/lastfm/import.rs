@@ -189,7 +189,7 @@ pub fn stop(cx: &mut App) {
 /// to be connected: the loved list is read per user, and there's no user
 /// without one.
 pub fn blocked_reason(cx: &App) -> Option<&'static str> {
-    if progress(cx).is_some() {
+    if progress(cx).is_some() || super::plays_import::progress(cx).is_some() {
         return Some("An import is already running");
     }
     if api_key().is_empty() {
@@ -204,7 +204,7 @@ pub fn blocked_reason(cx: &App) -> Option<&'static str> {
 /// Whose loved tracks to read. Sessions are filed by the api key that
 /// minted them, so this is the account connected under the identity the
 /// read calls sign with, not whatever connected last.
-fn username() -> String {
+pub(crate) fn username() -> String {
     Settings::load()
         .accounts
         .lastfm
@@ -215,7 +215,7 @@ fn username() -> String {
 /// The key the read calls with, the scrobbler's fallback order: the
 /// settings override where the user entered one, the build's identity
 /// otherwise.
-fn api_key() -> String {
+pub(crate) fn api_key() -> String {
     let key = Settings::load().accounts.lastfm.api_key;
     if key.is_empty() {
         rox_net::lastfm::keys::API_KEY.to_string()
@@ -486,10 +486,10 @@ struct Entry {
 
 /// The library folded to what a loved track can be looked up by: normalized
 /// artist to every track filed under it.
-struct Index(HashMap<String, Vec<Entry>>);
+pub(crate) struct Index(HashMap<String, Vec<Entry>>);
 
 impl Index {
-    fn build(rows: Vec<(i64, String, String)>) -> Index {
+    pub(crate) fn build(rows: Vec<(i64, String, String)>) -> Index {
         let mut index: HashMap<String, Vec<Entry>> = HashMap::new();
         for (id, artist, title) in rows {
             let artist = normalize(&artist);
@@ -518,7 +518,7 @@ impl Index {
     /// settles when what's left names a single title. A studio take and a
     /// live one that differ by nothing else are exactly the guess this
     /// shouldn't make.
-    fn resolve(&self, artist: &str, title: &str) -> Vec<i64> {
+    pub(crate) fn resolve(&self, artist: &str, title: &str) -> Vec<i64> {
         let Some(entries) = self.0.get(&normalize(artist)) else {
             return Vec::new();
         };
@@ -549,14 +549,14 @@ impl Index {
 /// A title with its bracketed tails dropped, then folded: what "Roygbiv"
 /// and "Roygbiv (Remastered 2013)" have in common, which is the difference
 /// a local tag and Last.fm most often disagree by.
-fn bare(title: &str) -> String {
+pub(crate) fn bare(title: &str) -> String {
     normalize(&strip_brackets(title))
 }
 
 /// Drop every parenthesized or bracketed group, nesting and all. An
 /// unclosed group takes the rest of the line with it: a title that opens a
 /// bracket and never shuts it has nothing trustworthy after it.
-fn strip_brackets(s: &str) -> String {
+pub(crate) fn strip_brackets(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut depth = 0usize;
     for ch in s.chars() {

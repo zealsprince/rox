@@ -39,7 +39,7 @@ use gpui::{
 use gpui_component::Root;
 use gpui_component::scroll::Scrollbar;
 
-use crate::lastfm::import;
+use crate::lastfm::{import, plays_import};
 use crate::{
     bake, convert, embeddings, pass_prompt, replaygain_job, romanize_job, sortnames_job, tempo_job,
 };
@@ -92,6 +92,7 @@ pub fn repaint_while_running(cx: &mut App) {
                     || sortnames_job::progress(cx).is_some()
                     || romanize_job::progress(cx).is_some()
                     || import::progress(cx).is_some()
+                    || plays_import::progress(cx).is_some()
                     || convert::progress(cx).is_some()
                     || bake::progress(cx).is_some()
             });
@@ -164,6 +165,12 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
     if let Some(job) = import::progress(cx) {
         live.push((
             Job::LovedImport.icon(),
+            rox_i18n::t!("tasks-importing", progress = share(job.done(), job.total())).to_string(),
+        ));
+    }
+    if let Some(job) = plays_import::progress(cx) {
+        live.push((
+            Job::PlaysImport.icon(),
             rox_i18n::t!("tasks-importing", progress = share(job.done(), job.total())).to_string(),
         ));
     }
@@ -331,6 +338,9 @@ enum Job {
     /// The first dynamic one: Last.fm's loved tracks pulled in as hearts,
     /// started from the settings window rather than from here.
     LovedImport,
+    /// Another dynamic one: Last.fm's play counts backfilled into history,
+    /// started from the settings window.
+    PlaysImport,
     /// Another dynamic one: a selection through ffmpeg into another
     /// format, started from the convert dialog. Selection-scoped, so it has
     /// nothing to say before someone picks tracks and a folder.
@@ -365,6 +375,7 @@ impl Job {
             Job::SortNames => rox_i18n::t!("tasks-job-sortnames"),
             Job::Romanize => rox_i18n::t!("tasks-job-romanize"),
             Job::LovedImport => rox_i18n::t!("tasks-job-loved-import"),
+            Job::PlaysImport => rox_i18n::t!("tasks-job-plays-import"),
             Job::Convert => rox_i18n::t!("tasks-job-convert"),
             Job::Bake => "Embed Stored Metadata".into(),
         }
@@ -388,6 +399,7 @@ impl Job {
             // in rather than about the audio or the ordering.
             Job::Romanize => icons::GLOBE,
             Job::LovedImport => icons::HEART,
+            Job::PlaysImport => icons::PLAY,
             Job::Convert => icons::AUDIO_LINES,
             Job::Bake => icons::UPLOAD,
         }
@@ -407,7 +419,7 @@ impl Job {
             // The import belongs to an account, not to a library, and it
             // reads its user off the settings it's started from. Offering
             // it here would be a second door into a room with one chair.
-            Job::LovedImport => None,
+            Job::LovedImport | Job::PlaysImport => None,
             // A conversion is a selection, a format and a folder. None of
             // those exist here, so this row only ever watches.
             Job::Convert => None,
@@ -433,6 +445,7 @@ impl Job {
             Job::SortNames => sortnames_job::stop(cx),
             Job::Romanize => romanize_job::stop(cx),
             Job::LovedImport => import::stop(cx),
+            Job::PlaysImport => plays_import::stop(cx),
             Job::Convert => convert::stop(cx),
             Job::Bake => bake::stop(cx),
         }
@@ -472,6 +485,18 @@ impl Snapshot {
     /// are its failed count: nothing went wrong with them, this library
     /// just has no home for them.
     fn import(job: &import::Progress) -> Snapshot {
+        Snapshot {
+            done: job.done(),
+            total: job.total(),
+            failed: job.unmatched(),
+            current: job.current(),
+            current_is_path: false,
+            eta: job.eta_secs(),
+            stopping: job.stopping(),
+        }
+    }
+
+    fn plays_import(job: &plays_import::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
             total: job.total(),
@@ -1032,6 +1057,9 @@ impl TasksWindow {
             // long, so a sample taken a frame ago is a sample of a
             // different job.
             Job::LovedImport => import::progress(cx).as_deref().map(Snapshot::import),
+            Job::PlaysImport => plays_import::progress(cx)
+                .as_deref()
+                .map(Snapshot::plays_import),
             // Read live for the import's reason: a conversion is minutes
             // at most, so a sample from a frame ago is a sample of a
             // different job.
@@ -1049,11 +1077,13 @@ impl TasksWindow {
     /// pass.
     fn dynamic(&self, cx: &App) -> Vec<Job> {
         let import = import::progress(cx).is_some() || import::last(cx).is_some();
+        let plays_import = plays_import::progress(cx).is_some() || plays_import::last(cx).is_some();
         let convert = convert::progress(cx).is_some() || convert::last(cx).is_some();
         let bake = bake::progress(cx).is_some() || bake::last(cx).is_some();
         import
             .then_some(Job::LovedImport)
             .into_iter()
+            .chain(plays_import.then_some(Job::PlaysImport))
             .chain(convert.then_some(Job::Convert))
             .chain(bake.then_some(Job::Bake))
             .collect()
@@ -1299,6 +1329,23 @@ impl TasksWindow {
                 // the first progress arriving.
                 None => lines.push(rox_i18n::t!("tasks-import-reading").to_string()),
             },
+            Job::PlaysImport => match plays_import::last(cx) {
+                Some(Ok(summary)) => {
+                    lines.push(summary.line());
+                    if summary.unmatched > 0 {
+                        lines.push(
+                            rox_i18n::t!(
+                                "tasks-import-unmatched",
+                                count = summary.unmatched as u64
+                            )
+                            .to_string(),
+                        );
+                    }
+                }
+                Some(Err(e)) => lines
+                    .push(rox_i18n::t!("tasks-import-failed", error = e.to_string()).to_string()),
+                None => lines.push(rox_i18n::t!("tasks-import-reading").to_string()),
+            },
             Job::Convert => {
                 match convert::last(cx) {
                     Some(summary) => lines.push(summary.line()),
@@ -1386,7 +1433,7 @@ impl TasksWindow {
             // refuse over.
             Job::Romanize => (self.facts.romanize_missing == 0).then_some(Blocked(None)),
             // Returned above; a watched job never reaches here.
-            Job::LovedImport | Job::Convert | Job::Bake => None,
+            Job::LovedImport | Job::PlaysImport | Job::Convert | Job::Bake => None,
         }
     }
 
@@ -1521,6 +1568,7 @@ impl TasksWindow {
                 // that reaches here.
                 cx.listener(move |_, _, _, cx| match job {
                     Job::LovedImport => import::dismiss(cx),
+                    Job::PlaysImport => plays_import::dismiss(cx),
                     Job::Convert => convert::dismiss(cx),
                     Job::Bake => bake::dismiss(cx),
                     // The standing rows have no X to reach this.
@@ -1564,7 +1612,7 @@ impl TasksWindow {
             Job::Romanize => pass_prompt::raise(self, pass_prompt::Pass::Romanize, library, cx),
             // Watched, not started: none of these has a button here to reach
             // this.
-            Job::LovedImport | Job::Convert | Job::Bake => {}
+            Job::LovedImport | Job::PlaysImport | Job::Convert | Job::Bake => {}
         }
     }
 

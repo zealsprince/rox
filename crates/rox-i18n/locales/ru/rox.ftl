@@ -895,6 +895,9 @@ settings-integrations-lastfm-hearts = { $n ->
    *[other] { $n } сердечка
 }
 settings-integrations-lastfm-import-loved = Импортировать любимые треки
+settings-integrations-lastfm-import-plays = Импорт количества прослушиваний
+    .description = Заполнить историю и количество прослушиваний из скробблов Last.fm
+settings-integrations-lastfm-import-plays-button = Импортировать прослушивания
 settings-integrations-lastfm-intro-builtin = Подключите свой аккаунт Last.fm: разрешите доступ rox в браузере, и прослушанные треки пойдут в скробблинг
 settings-integrations-lastfm-intro-custom = В этой сборке нет api-идентичности, поэтому для скробблинга нужен свой api-аккаунт (Last.fm/api/account/create); вставьте его ключ и общий секрет, затем подключитесь
 settings-integrations-lastfm-key-placeholder = API-ключ
@@ -1380,6 +1383,7 @@ tasks-importing = Импорт { $progress }
 tasks-job-acoustic = Акустический анализ
 tasks-job-convert = Преобразование звука
 tasks-job-loved-import = Любимые треки Last.fm
+tasks-job-plays-import = Счетчики прослушиваний Last.fm
 tasks-job-replaygain = ReplayGain
 tasks-job-scan = Сканирование медиатеки
 tasks-job-tempo = Анализ темпа
@@ -1978,6 +1982,10 @@ lastfm-import-read = Прочитано любимых треков: { $count }
 lastfm-import-stopped = Остановлено, прочитано любимых треков: { $count }
 lastfm-import-matched = , совпадений: { $count }
 lastfm-import-added = , добавлено в избранное: { $count }
+lastfm-import-plays-read = Прочитано треков с прослушиваниями: { $count }
+lastfm-import-plays-stopped = Остановлено после { $count } треков
+lastfm-import-plays-matched = , совпадений: { $count }
+lastfm-import-plays-updated = , добавлено прослушиваний: { $count }
 
 ## Tag tools
 tags-editor-add-tag = Добавить

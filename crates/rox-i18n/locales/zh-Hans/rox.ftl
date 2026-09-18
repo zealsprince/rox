@@ -875,6 +875,9 @@ settings-integrations-lastfm-hearts = { $n ->
    *[other] { $n } 个红心
 }
 settings-integrations-lastfm-import-loved = 导入喜爱的曲目
+settings-integrations-lastfm-import-plays = 导入播放次数
+    .description = 从 Last.fm 记录中回填播放次数与收听历史
+settings-integrations-lastfm-import-plays-button = 导入播放
 settings-integrations-lastfm-intro-builtin = 连接你的 Last.fm 账号：在浏览器里给 rox 授权，播过的曲目就会 scrobble 过去
 settings-integrations-lastfm-intro-custom = 这个构建没有内置 api 身份，所以 scrobble 需要你自己的 api 账号（Last.fm/api/account/create）；把密钥和共享密钥贴进来，然后连接
 settings-integrations-lastfm-key-placeholder = API 密钥
@@ -1357,6 +1360,7 @@ tasks-importing = 正在导入 { $progress }
 tasks-job-acoustic = 声学分析
 tasks-job-convert = 转换音频
 tasks-job-loved-import = Last.fm 喜爱的曲目
+tasks-job-plays-import = Last.fm 播放次数
 tasks-job-replaygain = ReplayGain
 tasks-job-scan = 媒体库扫描
 tasks-job-tempo = 速度分析
@@ -1934,6 +1938,10 @@ lastfm-import-read = 已读取 { $count } 首喜爱的曲目
 lastfm-import-stopped = 在 { $count } 首喜爱的曲目之后停下
 lastfm-import-matched = ，匹配 { $count } 首
 lastfm-import-added = ，加入收藏 { $count } 首
+lastfm-import-plays-read = 已读取 { $count } 首含播放记录的曲目
+lastfm-import-plays-stopped = 在 { $count } 首曲目后停止
+lastfm-import-plays-matched = ，匹配 { $count } 首
+lastfm-import-plays-updated = ，已添加 { $count } 次播放
 
 ## Tag tools
 tags-editor-add-tag = 添加

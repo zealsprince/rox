@@ -36,7 +36,7 @@ use crate::backdrop_visual::BackdropRotation;
 use crate::convert;
 use crate::embeddings;
 use crate::integrations::tray;
-use crate::lastfm::import;
+use crate::lastfm::{import, plays_import};
 use crate::panel_settings;
 use crate::pass_prompt;
 use crate::replaygain_job;
@@ -4188,6 +4188,34 @@ impl SettingsWindow {
         .into_any_element()
     }
 
+    /// The Play Counts row's control: start the Last.fm play-count backfill,
+    /// or stop the one that's running.
+    fn plays_import_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(job) = plays_import::progress(cx) {
+            let stopping = job.stopping();
+            return small_button(
+                if stopping {
+                    rox_i18n::t!("settings-common-stopping")
+                } else {
+                    rox_i18n::t!("settings-common-stop")
+                },
+                icons::STOP,
+                stopping,
+                cx.listener(|_, _, _, cx| plays_import::stop(cx)),
+            )
+            .into_any_element();
+        }
+        small_button(
+            rox_i18n::t!("settings-integrations-lastfm-import-plays-button"),
+            icons::DOWNLOAD,
+            plays_import::blocked_reason(cx).is_some(),
+            cx.listener(|this, _, _, cx| {
+                plays_import::start(this.library.clone(), cx);
+            }),
+        )
+        .into_any_element()
+    }
+
     /// Copy the running pass into the section, the scan badge's cadence.
     /// Stops itself once the pass clears the global.
     fn poll_measuring(cx: &mut Context<Self>) {
@@ -5529,13 +5557,22 @@ impl SettingsWindow {
             cx,
         );
         let trailing = Some(self.import_control(cx));
+        let plays_control = self.plays_import_control(cx);
 
         self.destination_section(
             q,
             Destination {
                 name,
                 icon: icons::RADIO,
-                keywords: &["lastfm", "api key", "love", "loved", "heart"],
+                keywords: &[
+                    "lastfm",
+                    "api key",
+                    "love",
+                    "loved",
+                    "heart",
+                    "plays",
+                    "playcount",
+                ],
                 intro: if builtin {
                     rox_i18n::t!("settings-integrations-lastfm-intro-builtin")
                 } else {
@@ -5561,6 +5598,18 @@ impl SettingsWindow {
                             .into_any_element()
                     })
                 })
+                .keyed(
+                    "settings-integrations-lastfm-import-plays",
+                    &[
+                        "Last.fm",
+                        "plays",
+                        "playcount",
+                        "scrobbles",
+                        "import",
+                        "history",
+                    ],
+                    plays_control,
+                )
             },
         )
     }

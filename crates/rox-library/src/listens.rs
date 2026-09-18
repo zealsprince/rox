@@ -180,6 +180,75 @@ pub fn append(conn: &Connection, listen: &Listen) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Backfill play history for multiple tracks up to their target play counts.
+/// For each `(track_id, target_plays)`, if the track currently has fewer listens
+/// than `target_plays`, inserts the missing listens anchored before the earliest
+/// existing listen (or before `now` if never played).
+/// Returns the number of listens inserted.
+pub fn backfill_plays_batch(
+    conn: &mut Connection,
+    targets: &[(i64, u32)],
+    now: i64,
+) -> rusqlite::Result<usize> {
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    let mut count_stmt =
+        tx.prepare_cached("SELECT COUNT(*), MIN(played_at) FROM listens WHERE track_id = ?1")?;
+    let mut track_stmt = tx.prepare_cached(
+        "SELECT title, artist, album, genre,
+                CASE WHEN sub = 0 THEN path ELSE path || '#' || sub END
+         FROM tracks WHERE id = ?1",
+    )?;
+    let mut insert_stmt = tx.prepare_cached(
+        "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+
+    let mut total_added = 0usize;
+    for &(track_id, target_plays) in targets {
+        if target_plays == 0 {
+            continue;
+        }
+        let (current_count, min_played): (u32, Option<i64>) = count_stmt
+            .query_row([track_id], |row| {
+                Ok((row.get::<_, i64>(0)? as u32, row.get::<_, Option<i64>>(1)?))
+            })?;
+        if current_count >= target_plays {
+            continue;
+        }
+        let needed = (target_plays - current_count) as usize;
+        let track_info = track_stmt.query_row([track_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        });
+        let Ok((title, artist, album, genre, path)) = track_info else {
+            continue;
+        };
+
+        let anchor = min_played.unwrap_or(now);
+        for i in 0..needed {
+            let played_at = anchor.saturating_sub((i as i64 + 1) * 3600);
+            insert_stmt.execute(rusqlite::params![
+                track_id, played_at, title, artist, album, genre, path,
+            ])?;
+        }
+        total_added += needed;
+    }
+
+    drop(count_stmt);
+    drop(track_stmt);
+    drop(insert_stmt);
+    tx.commit()?;
+    Ok(total_added)
+}
+
 /// One track's line in a history view. Recent rows hold one event each
 /// (plays 1, last_played that event's time); rollup rows aggregate a
 /// track's whole history; never-played rows have neither (both 0).
@@ -1209,5 +1278,77 @@ mod tests {
         );
         let artists = rollup(&conn, Rollup::Artist, 0, i64::MAX, 10, false).unwrap();
         assert_eq!(artists[0].name, "A");
+    }
+
+    #[test]
+    fn backfill_plays_fills_counts_and_is_idempotent() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", "First", "rock"),
+                track("/m/2.mp3", "Two", "A", "First", "rock"),
+            ],
+        )
+        .unwrap();
+
+        let track1: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", ["/m/1.mp3"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let track2: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", ["/m/2.mp3"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let now = 1_700_000_000i64;
+
+        // Backfill 1000 plays for track 1 and 42 plays for track 2.
+        let added = backfill_plays_batch(&mut conn, &[(track1, 1000), (track2, 42)], now).unwrap();
+        assert_eq!(added, 1042);
+
+        let count_map = counts(&conn).unwrap();
+        assert_eq!(count_map.get(&track1).copied(), Some(1000));
+        assert_eq!(count_map.get(&track2).copied(), Some(42));
+
+        // Re-running with same targets does nothing (idempotent).
+        let added_again =
+            backfill_plays_batch(&mut conn, &[(track1, 1000), (track2, 42)], now).unwrap();
+        assert_eq!(added_again, 0);
+
+        // Updating with a higher count adds only the difference.
+        let added_diff = backfill_plays_batch(&mut conn, &[(track1, 1005)], now).unwrap();
+        assert_eq!(added_diff, 5);
+        let count_map_after = counts(&conn).unwrap();
+        assert_eq!(count_map_after.get(&track1).copied(), Some(1005));
+    }
+
+    #[test]
+    fn backfill_plays_preserves_existing_recent_timestamps() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        let track_id: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", ["/m/1.mp3"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        // Track already played at 1_700_000_000.
+        listen(&conn, "/m/1.mp3", 1_700_000_000);
+
+        // Backfill up to 10 plays at anchor 1_700_050_000.
+        let added = backfill_plays_batch(&mut conn, &[(track_id, 10)], 1_700_050_000).unwrap();
+        assert_eq!(added, 9);
+
+        // Play count is 10.
+        let count_map = counts(&conn).unwrap();
+        assert_eq!(count_map.get(&track_id).copied(), Some(10));
+
+        // Last played is still the real listen timestamp 1_700_000_000.
+        let lp_map = last_played(&conn).unwrap();
+        assert_eq!(lp_map.get(&track_id).copied(), Some(1_700_000_000));
     }
 }

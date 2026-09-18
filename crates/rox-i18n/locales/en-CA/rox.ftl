@@ -924,6 +924,9 @@ settings-integrations-lastfm-hearts = { $n ->
    *[other] { $n } hearts
 }
 settings-integrations-lastfm-import-loved = Import Loved Tracks
+settings-integrations-lastfm-import-plays = Import Play Counts
+    .description = Backfill play counts and listen history from your Last.fm scrobbles
+settings-integrations-lastfm-import-plays-button = Import Plays
 settings-integrations-lastfm-intro-builtin = Connect your Last.fm account: authorize rox in the browser and played tracks scrobble to it
 settings-integrations-lastfm-intro-custom = This build ships no api identity, so scrobbling needs your own api account (Last.fm/api/account/create); paste its key and shared secret, then connect
 settings-integrations-lastfm-key-placeholder = API key
@@ -1445,6 +1448,7 @@ tasks-importing = Importing { $progress }
 tasks-job-acoustic = Acoustic Analysis
 tasks-job-convert = Convert Audio
 tasks-job-loved-import = Last.fm Loved Tracks
+tasks-job-plays-import = Last.fm Play Counts
 tasks-job-replaygain = ReplayGain
 tasks-job-scan = Library Scan
 tasks-job-tempo = Tempo Analysis
@@ -2054,6 +2058,10 @@ lastfm-import-read = Read { $count } loved tracks
 lastfm-import-stopped = Stopped after { $count } loved tracks
 lastfm-import-matched = , matched { $count }
 lastfm-import-added = , added { $count } to favourites
+lastfm-import-plays-read = Read { $count } tracks with plays
+lastfm-import-plays-stopped = Stopped after { $count } tracks
+lastfm-import-plays-matched = , matched { $count }
+lastfm-import-plays-updated = , added { $count } plays
 
 ## Tag tools
 

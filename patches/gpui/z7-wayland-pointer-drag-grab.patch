@@ -1,0 +1,121 @@
+--- a/src/platform/linux/wayland/client.rs	2026-09-19 08:39:24.752094758 -0500
++++ b/src/platform/linux/wayland/client.rs	2026-09-19 08:35:23.525730465 -0500
+@@ -226,6 +226,7 @@
+     scroll_event_received: bool,
+     enter_token: Option<()>,
+     button_pressed: Option<MouseButton>,
++    pointer_in_surface: bool,
+     mouse_focused_window: Option<WaylandWindowStatePtr>,
+     keyboard_focused_window: Option<WaylandWindowStatePtr>,
+     loop_handle: LoopHandle<'static, WaylandClientStatePtr>,
+@@ -606,6 +607,7 @@
+             vertical_modifier: -1.0,
+             horizontal_modifier: -1.0,
+             button_pressed: None,
++            pointer_in_surface: false,
+             mouse_focused_window: None,
+             keyboard_focused_window: None,
+             loop_handle: handle.clone(),
+@@ -1533,7 +1535,31 @@
+             } => {
+                 state.serial_tracker.update(SerialKind::MouseEnter, serial);
+                 state.mouse_location = Some(point(px(surface_x as f32), px(surface_y as f32)));
+-                state.button_pressed = None;
++                state.pointer_in_surface = true;
++
++                // rox patch: recovery path for broken compositor grabs. If a compositor broke
++                // an implicit grab (e.g. workspace switch, overlay, or Alt-Tab) without delivering
++                // a button release, clean up the orphaned button press and window state so drag
++                // handlers do not remain stuck.
++                if let Some(button) = state.button_pressed.take() {
++                    if let Some(prev_window) = state.mouse_focused_window.take() {
++                        let position = state.mouse_location.unwrap_or_default();
++                        drop(state);
++                        prev_window.handle_input(PlatformInput::MouseUp(MouseUpEvent {
++                            button,
++                            position,
++                            modifiers: Modifiers::default(),
++                            click_count: 1,
++                        }));
++                        prev_window.handle_input(PlatformInput::MouseExited(MouseExitEvent {
++                            position,
++                            pressed_button: None,
++                            modifiers: Modifiers::default(),
++                        }));
++                        prev_window.set_hovered(false);
++                        state = client.borrow_mut();
++                    }
++                }
+ 
+                 if let Some(window) = get_window(&mut state, &surface.id()) {
+                     state.mouse_focused_window = Some(window.clone());
+@@ -1562,15 +1588,22 @@
+                 }
+             }
+             wl_pointer::Event::Leave { .. } => {
++                state.pointer_in_surface = false;
++                // rox patch: Wayland implicit grab. When a mouse button is pressed, the surface
++                // holds an implicit grab until button release. Do not drop focus or clear button
++                // state while a button is held!
++                if state.button_pressed.is_some() {
++                    return;
++                }
++
+                 if let Some(focused_window) = state.mouse_focused_window.clone() {
+                     let input = PlatformInput::MouseExited(MouseExitEvent {
+-                        position: state.mouse_location.unwrap(),
+-                        pressed_button: state.button_pressed,
++                        position: state.mouse_location.unwrap_or_default(),
++                        pressed_button: None,
+                         modifiers: state.modifiers,
+                     });
+                     state.mouse_focused_window = None;
+                     state.mouse_location = None;
+-                    state.button_pressed = None;
+ 
+                     drop(state);
+                     focused_window.handle_input(input);
+@@ -1582,10 +1615,10 @@
+                 surface_y,
+                 ..
+             } => {
++                state.mouse_location = Some(point(px(surface_x as f32), px(surface_y as f32)));
+                 if state.mouse_focused_window.is_none() {
+                     return;
+                 }
+-                state.mouse_location = Some(point(px(surface_x as f32), px(surface_y as f32)));
+ 
+                 if let Some(window) = state.mouse_focused_window.clone() {
+                     if state
+@@ -1674,14 +1707,30 @@
+                         state.button_pressed = None;
+ 
+                         if let Some(window) = state.mouse_focused_window.clone() {
++                            let position = state.mouse_location.unwrap_or_default();
+                             let input = PlatformInput::MouseUp(MouseUpEvent {
+                                 button,
+-                                position: state.mouse_location.unwrap(),
++                                position,
+                                 modifiers: state.modifiers,
+                                 click_count: state.click.current_count,
+                             });
++                            let pointer_in_surface = state.pointer_in_surface;
++                            // rox patch: if pointer left the surface during an active drag, clean up window focus
++                            // only after dispatching the MouseUp event so that drops and drag-ends complete cleanly.
++                            if !pointer_in_surface {
++                                state.mouse_focused_window = None;
++                                state.mouse_location = None;
++                            }
+                             drop(state);
+                             window.handle_input(input);
++                            if !pointer_in_surface {
++                                window.handle_input(PlatformInput::MouseExited(MouseExitEvent {
++                                    position,
++                                    pressed_button: None,
++                                    modifiers: Modifiers::default(),
++                                }));
++                                window.set_hovered(false);
++                            }
+                         }
+                     }
+                     _ => {}

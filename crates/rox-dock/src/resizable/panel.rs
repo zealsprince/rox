@@ -392,20 +392,23 @@ impl Element for ResizePanelGroupElement {
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) {
         window.on_mouse_event({
             let state = self.state.clone();
             let axis = self.axis;
-            let current_ix = state.read(cx).resizing_panel_ix;
             move |e: &MouseMoveEvent, phase, window, cx| {
                 if !phase.bubble() {
                     return;
                 }
-                let Some(ix) = current_ix else { return };
+                let Some(ix) = state.read(cx).resizing_panel_ix else {
+                    return;
+                };
 
                 state.update(cx, |state, cx| {
-                    let panel = state.panels.get(ix).expect("BUG: invalid panel index");
+                    let Some(panel) = state.panels.get(ix) else {
+                        return;
+                    };
 
                     match axis {
                         Axis::Horizontal => {
@@ -423,16 +426,16 @@ impl Element for ResizePanelGroupElement {
         // When any mouse up, stop dragging
         window.on_mouse_event({
             let state = self.state.clone();
-            let current_ix = state.read(cx).resizing_panel_ix;
             let on_resize = self.on_resize.clone();
             move |_: &MouseUpEvent, phase, window, cx| {
-                if current_ix.is_none() {
+                if !phase.bubble() {
                     return;
                 }
-                if phase.bubble() {
-                    state.update(cx, |state, cx| state.done_resizing(cx));
-                    on_resize(&state, window, cx);
+                if state.read(cx).resizing_panel_ix.is_none() {
+                    return;
                 }
+                state.update(cx, |state, cx| state.done_resizing(cx));
+                on_resize(&state, window, cx);
             }
         })
     }

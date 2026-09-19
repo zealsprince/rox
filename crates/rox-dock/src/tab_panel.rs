@@ -972,6 +972,17 @@ impl TabPanel {
                                 },
                             )
                         })
+                        .when(state.droppable, |this| {
+                            this.drag_over::<DragPanel>(|this, _, _, cx| {
+                                this.bg(cx.theme().drop_target)
+                            })
+                            .on_drop(cx.listener(
+                                move |this, drag: &DragPanel, window, cx| {
+                                    this.will_split_placement = None;
+                                    this.on_drop(drag, None, true, window, cx)
+                                },
+                            ))
+                        })
                         .on_mouse_down(
                             MouseButton::Right,
                             cx.listener({
@@ -1091,24 +1102,35 @@ impl TabPanel {
                         // built-in drag below isn't using the left button
                         // (a collapsed dock's tabs, or a tab that can't
                         // drag); two drags off one press would fight.
-                        .when(self.collapsed || !state.draggable, |this| {
-                            this.on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener({
-                                    let panel = panel.clone();
-                                    move |this, event: &MouseDownEvent, _, _| {
-                                        if !event.modifiers.alt {
-                                            return;
-                                        }
-                                        this.pending_middle_drag = Some((
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener({
+                                let panel = panel.clone();
+                                let is_collapsed = self.collapsed;
+                                let is_draggable = state.draggable;
+                                let dock_area = self.dock_area.clone();
+                                move |view, event: &MouseDownEvent, window, cx| {
+                                    if event.modifiers.alt && (is_collapsed || !is_draggable) {
+                                        view.pending_middle_drag = Some((
                                             event.position,
                                             panel.clone(),
                                             MouseButton::Left,
                                         ));
+                                        return;
                                     }
-                                }),
-                            )
-                        })
+                                    view.set_active_ix(ix, window, cx);
+                                    if is_bottom_dock && is_collapsed {
+                                        _ = dock_area.update(cx, |dock_area, cx| {
+                                            dock_area.toggle_dock(
+                                                DockPlacement::Bottom,
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }
+                            }),
+                        )
                         .on_mouse_up(
                             MouseButton::Middle,
                             cx.listener({
@@ -1144,20 +1166,6 @@ impl TabPanel {
                                 }
                             }),
                         )
-                        .on_click(cx.listener({
-                            let is_collapsed = self.collapsed;
-                            let dock_area = self.dock_area.clone();
-                            move |view, _, window, cx| {
-                                view.set_active_ix(ix, window, cx);
-
-                                // Open dock if clicked on the collapsed bottom dock
-                                if is_bottom_dock && is_collapsed {
-                                    _ = dock_area.update(cx, |dock_area, cx| {
-                                        dock_area.toggle_dock(DockPlacement::Bottom, window, cx);
-                                    });
-                                }
-                            }
-                        }))
                         .when(!droppable, |this| {
                             this.when(state.draggable, |this| {
                                 this.on_drag(
@@ -1349,6 +1357,9 @@ impl TabPanel {
                     // lands the drag here.
                     .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_move_release))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_move_release))
+                    .on_drop(cx.listener(|this, drag: &DragPanel, window, cx| {
+                        this.on_drop(drag, None, true, window, cx)
+                    }))
                     .child(
                         div()
                             .invisible()
@@ -1371,10 +1382,7 @@ impl TabPanel {
                                 None => this.top_0().left_0().size_full(),
                             })
                             .group_drag_over::<DragPanel>("", |this| this.visible())
-                            .when(middle_target.is_some(), |this| this.visible())
-                            .on_drop(cx.listener(|this, drag: &DragPanel, window, cx| {
-                                this.on_drop(drag, None, true, window, cx)
-                            })),
+                            .when(middle_target.is_some(), |this| this.visible()),
                     )
             })
             .into_any_element()
@@ -1391,6 +1399,9 @@ impl TabPanel {
     /// whole panel.
     fn placement_for(position: Point<Pixels>, bounds: Bounds<Pixels>) -> Option<Placement> {
         if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+            return None;
+        }
+        if !bounds.contains(&position) {
             return None;
         }
         let x = position.x - bounds.left();
@@ -1424,8 +1435,11 @@ impl TabPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.will_split_placement = Self::placement_for(drag.event.position, drag.bounds);
-        cx.notify()
+        let new_placement = Self::placement_for(drag.event.position, drag.bounds);
+        if self.will_split_placement != new_placement {
+            self.will_split_placement = new_placement;
+            cx.notify();
+        }
     }
 
     /// A release over the panel body: if a hand-rolled drag is using the

@@ -455,16 +455,15 @@ impl Element for DockElement {
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut gpui::Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) {
         window.on_mouse_event({
             let view = self.view.clone();
-            let resizing = view.read(cx).resizing;
             move |e: &MouseMoveEvent, phase, window, cx| {
-                if !resizing {
+                if !phase.bubble() {
                     return;
                 }
-                if !phase.bubble() {
+                if !view.read(cx).resizing {
                     return;
                 }
 

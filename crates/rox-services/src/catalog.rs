@@ -1395,6 +1395,14 @@ impl Library {
             .and_then(|conn| listens::track_summary(conn, id, since).ok().flatten())
     }
 
+    /// The latest listen timestamp for every track that has been played.
+    pub fn last_played(&self) -> HashMap<i64, i64> {
+        self.conn
+            .as_ref()
+            .and_then(|conn| listens::last_played(conn).ok())
+            .unwrap_or_default()
+    }
+
     pub fn most_played(&self, limit: usize) -> Vec<listens::TrackPlays> {
         self.listen_query(|conn| listens::most_played(conn, limit))
     }

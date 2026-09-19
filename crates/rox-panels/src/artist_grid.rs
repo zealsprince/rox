@@ -1354,6 +1354,7 @@ impl ArtistGridPanel {
             playing_ix: self.playing_ix,
             playing: self.playing,
             fallback_lanes: FALLBACK_COLS,
+            label_h: None,
         }
     }
 

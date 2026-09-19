@@ -70,6 +70,9 @@ pub struct WallLayout {
     /// How many lanes the wall falls back to before its first paint has
     /// measured a cross extent.
     pub fallback_lanes: usize,
+    /// Explicit caption height in px when labels are on; None falls back to
+    /// [`TILE_LABEL_H`].
+    pub label_h: Option<f32>,
 }
 
 impl WallLayout {
@@ -93,7 +96,11 @@ impl WallLayout {
 
     /// The caption's height when labels are on, else zero.
     pub fn label_height(&self) -> f32 {
-        if self.labels { TILE_LABEL_H } else { 0. }
+        if self.labels {
+            self.label_h.unwrap_or(TILE_LABEL_H)
+        } else {
+            0.
+        }
     }
 
     /// The caption's share of the cross extent: a horizontal wall has to
@@ -233,6 +240,7 @@ mod tests {
             playing_ix: None,
             playing: false,
             fallback_lanes: 5,
+            label_h: None,
         }
     }
 

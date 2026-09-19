@@ -12,13 +12,12 @@
 //! the library's table: per the workspace rule, browsing surfaces are
 //! panels of their own, never library view modes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-
-use std::rc::Rc;
 
 use gpui::{
     Along, AnyElement, App, Axis, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
@@ -36,7 +35,7 @@ use rox_library::projection::{Projection, QUERY_FIELDS, QueryField};
 use rox_library::sort::natural_cmp;
 use rox_panel_api::actions::{TypeAheadNext, TypeAheadPrev};
 use rox_panel_kit::config::{default_true, is_zero};
-use rox_panel_kit::wall::{TILE_DIM_MAX, TILE_LABEL_H, WallLayout, default_dim};
+use rox_panel_kit::wall::{TILE_DIM_MAX, WallLayout, default_dim};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
@@ -70,6 +69,26 @@ const TILE_GAP_MAX: f32 = 24.;
 
 fn default_tile() -> f32 {
     192.
+}
+
+/// Height of the album title header box under the tile art.
+/// Fits `tokens::SPACE_XS` (4px) top padding plus `CAPTION_ALBUM_H` (18px).
+const CAPTION_HEADER_H: f32 = 24.;
+
+/// Height of the album title text line.
+const CAPTION_ALBUM_H: f32 = 18.;
+
+/// Height of each active metadata row below the album title.
+const CAPTION_ROW_H: f32 = 16.;
+
+/// Helper to build a uniform 16px metadata row under the album caption.
+fn caption_row(child: impl IntoElement) -> Div {
+    div()
+        .h(px(CAPTION_ROW_H))
+        .truncate()
+        .text_xs()
+        .text_color(palette::text_secondary())
+        .child(child)
 }
 
 /// How the always-on caption lines up under its cover.
@@ -197,6 +216,27 @@ pub struct GridConfig {
     /// How those captions line up under their covers. Left by default.
     #[serde(default)]
     pub label_align: TitleAlign,
+    /// Show the artist under the cover. On by default.
+    #[serde(default = "default_true")]
+    pub label_artist: bool,
+    /// Show the genre under the cover.
+    #[serde(default)]
+    pub label_genre: bool,
+    /// Show the release year under the cover.
+    #[serde(default)]
+    pub label_year: bool,
+    /// Show the date added under the cover.
+    #[serde(default)]
+    pub label_added: bool,
+    /// Show the last played timestamp under the cover.
+    #[serde(default)]
+    pub label_last_played: bool,
+    /// Show the album duration under the cover.
+    #[serde(default)]
+    pub label_duration: bool,
+    /// Show the track count under the cover.
+    #[serde(default)]
+    pub label_tracks: bool,
     /// The top-left album shown when the layout was saved, so a relaunch
     /// reopens the wall where it was left. A cell index, not pixels or a
     /// row: it persists across a tile-size or width change, coming back to
@@ -229,10 +269,81 @@ impl Default for GridConfig {
             gap: 0.,
             labels: false,
             label_align: TitleAlign::default(),
+            label_artist: true,
+            label_genre: false,
+            label_year: false,
+            label_added: false,
+            label_last_played: false,
+            label_duration: false,
+            label_tracks: false,
             scroll: 0,
         }
     }
 }
+
+impl GridConfig {
+    /// Height of the caption area under a tile cover.
+    pub fn caption_height(&self) -> f32 {
+        if !self.labels {
+            return 0.;
+        }
+        let active = METADATA_FIELDS.iter().filter(|f| (f.get)(self)).count();
+        CAPTION_HEADER_H + (active as f32 * CAPTION_ROW_H)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MetadataField {
+    key: &'static str,
+    get: fn(&GridConfig) -> bool,
+    set: fn(&mut GridConfig, bool),
+    is_last_played: bool,
+}
+
+const METADATA_FIELDS: &[MetadataField] = &[
+    MetadataField {
+        key: "head-piece-artist",
+        get: |c| c.label_artist,
+        set: |c, v| c.label_artist = v,
+        is_last_played: false,
+    },
+    MetadataField {
+        key: "head-piece-genre",
+        get: |c| c.label_genre,
+        set: |c, v| c.label_genre = v,
+        is_last_played: false,
+    },
+    MetadataField {
+        key: "head-piece-year",
+        get: |c| c.label_year,
+        set: |c, v| c.label_year = v,
+        is_last_played: false,
+    },
+    MetadataField {
+        key: "smart-playlist-sort-added",
+        get: |c| c.label_added,
+        set: |c, v| c.label_added = v,
+        is_last_played: false,
+    },
+    MetadataField {
+        key: "metadata-field-last-played",
+        get: |c| c.label_last_played,
+        set: |c, v| c.label_last_played = v,
+        is_last_played: true,
+    },
+    MetadataField {
+        key: "head-piece-time",
+        get: |c| c.label_duration,
+        set: |c, v| c.label_duration = v,
+        is_last_played: false,
+    },
+    MetadataField {
+        key: "head-piece-tracks",
+        get: |c| c.label_tracks,
+        set: |c, v| c.label_tracks = v,
+        is_last_played: false,
+    },
+];
 
 /// One album's run in the current view: where it starts, how many
 /// tracks it spans, and the first track's path once a paint resolved it
@@ -249,15 +360,20 @@ struct Cell {
 }
 
 /// What a tile writes under its cover: the album and the artist, each
-/// with the sort name that draws after it as a reading. Both the hover
-/// overlay and the always-on caption read this, so they can't disagree
-/// about which artist field stood in.
+/// with the sort name that draws after it as a reading, plus optional
+/// metadata rows (genre, year, date added, last played, duration, tracks).
 #[derive(Default)]
 struct TileLabels {
     album: SharedString,
     album_reading: SharedString,
     artist: SharedString,
     artist_reading: SharedString,
+    genre: SharedString,
+    year: u16,
+    added: i64,
+    last_played: Option<i64>,
+    duration_ms: u64,
+    tracks: u32,
 }
 
 /// How many columns the grid falls back to before its first paint has
@@ -365,6 +481,10 @@ pub struct GridPanel {
     focus: FocusHandle,
     /// The tab panel this panel is currently in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
+    /// Cached latest listen timestamp per track id; loaded on demand
+    /// outside the paint path when `config.label_last_played` is on and refreshed
+    /// when playback events arrive.
+    last_played: Option<HashMap<i64, i64>>,
     _library_changed: Subscription,
     _thumbs_changed: Subscription,
     _search_events: Subscription,
@@ -388,15 +508,26 @@ impl GridPanel {
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
-                if !matches!(event, LibraryEvent::Updated) {
-                    return;
-                }
-                this.rebuild(cx);
-                // The catalog loads after a restored track starts, so the
-                // launch's follow waits for this first rebuild; rescans
-                // re-center on the playing album the same way.
-                if this.config.follow_playing {
-                    this.follow_playing(cx);
+                match event {
+                    LibraryEvent::Updated => {
+                        if this.config.labels && this.config.label_last_played {
+                            this.warm_last_played(cx);
+                        } else {
+                            this.last_played = None;
+                        }
+                        this.rebuild(cx);
+                        // The catalog loads after a restored track starts, so the
+                        // launch's follow waits for this first rebuild; rescans
+                        // re-center on the playing album the same way.
+                        if this.config.follow_playing {
+                            this.follow_playing(cx);
+                        }
+                    }
+                    LibraryEvent::Played if this.config.labels && this.config.label_last_played => {
+                        this.warm_last_played(cx);
+                        cx.notify();
+                    }
+                    _ => {}
                 }
             },
         );
@@ -481,6 +612,7 @@ impl GridPanel {
             type_ahead_at: None,
             focus,
             tab_panel: None,
+            last_played: None,
             _library_changed,
             _thumbs_changed,
             _search_events,
@@ -489,6 +621,9 @@ impl GridPanel {
             _player_changed,
             _type_ahead_blur,
         };
+        if this.config.labels && this.config.label_last_played {
+            this.warm_last_played(cx);
+        }
         this.rebuild(cx);
         // A duplicate opens with a track already playing; pick it up now
         // instead of waiting for the next track change.
@@ -1310,6 +1445,16 @@ impl GridPanel {
         }
     }
 
+    /// Height of the caption block under a tile, based on the enabled metadata rows.
+    fn caption_height(&self) -> f32 {
+        self.config.caption_height()
+    }
+
+    /// Refresh the cached last-played map from the library outside of layout and paint.
+    fn warm_last_played(&mut self, cx: &App) {
+        self.last_played = Some(self.state.library.read(cx).last_played());
+    }
+
     /// The wall geometry and focus state this panel draws under, the packing
     /// math shared with the other tile walls.
     fn wall(&self) -> WallLayout {
@@ -1327,6 +1472,7 @@ impl GridPanel {
             playing_ix: self.playing_ix,
             playing: self.playing,
             fallback_lanes: FALLBACK_COLS,
+            label_h: Some(self.caption_height()),
         }
     }
 
@@ -1478,32 +1624,89 @@ impl GridPanel {
             .into_any_element()
     }
 
-    /// A tile's album and artist strings: the first track's, with the
-    /// album artist standing in when the row has one. Empty off the
+    /// A tile's album and artist strings plus optional metadata: the first track's,
+    /// with the album artist standing in when the row has one. Empty off the
     /// end of the cells or before a projection loads.
     fn cell_labels(&self, ix: usize, cx: &App) -> TileLabels {
         let library = self.state.library.read(cx);
         match (self.cells.get(ix), library.projection()) {
-            (Some(cell), Some(projection)) => self
-                .view
-                .get(cell.start)
-                .map(|&row| {
-                    let v = projection.resolve(row);
-                    // Rows from before the album artist column have an
-                    // empty one; the first track's artist stands in.
-                    let (artist, artist_reading) = if v.album_artist.is_empty() {
-                        (v.artist, v.artist_sort)
-                    } else {
-                        (v.album_artist, v.album_artist_sort)
-                    };
-                    TileLabels {
-                        album: SharedString::from(v.album.to_string()),
-                        album_reading: SharedString::from(v.album_sort.to_string()),
-                        artist: SharedString::from(artist.to_string()),
-                        artist_reading: SharedString::from(artist_reading.to_string()),
-                    }
-                })
-                .unwrap_or_default(),
+            (Some(cell), Some(projection)) => {
+                let rows = &self.view[cell.start..cell.start + cell.len as usize];
+                if rows.is_empty() {
+                    return TileLabels::default();
+                }
+                let first_row = rows[0];
+                let v = projection.resolve(first_row);
+                // Rows from before the album artist column have an
+                // empty one; the first track's artist stands in.
+                let (artist, artist_reading) = if v.album_artist.is_empty() {
+                    (v.artist, v.artist_sort)
+                } else {
+                    (v.album_artist, v.album_artist_sort)
+                };
+
+                let genre = if self.config.label_genre {
+                    rows.iter()
+                        .map(|&r| &projection.genres.strings[projection.genre[r as usize] as usize])
+                        .find(|g| !g.is_empty())
+                        .map(|g| SharedString::from(g.to_string()))
+                        .unwrap_or_default()
+                } else {
+                    SharedString::default()
+                };
+
+                let year = if self.config.label_year {
+                    rows.iter()
+                        .map(|&r| projection.year[r as usize])
+                        .find(|&y| y > 0)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                let added = if self.config.label_added {
+                    rows.iter()
+                        .map(|&r| projection.added[r as usize])
+                        .max()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                let duration_ms = if self.config.label_duration {
+                    rows.iter()
+                        .map(|&r| projection.duration_ms[r as usize] as u64)
+                        .sum()
+                } else {
+                    0
+                };
+
+                let last_played = if self.config.label_last_played {
+                    self.last_played.as_ref().and_then(|lp| {
+                        rows.iter()
+                            .filter_map(|&r| {
+                                let id = projection.db_id.get(r as usize).copied()?;
+                                lp.get(&id).copied()
+                            })
+                            .max()
+                    })
+                } else {
+                    None
+                };
+
+                TileLabels {
+                    album: SharedString::from(v.album.to_string()),
+                    album_reading: SharedString::from(v.album_sort.to_string()),
+                    artist: SharedString::from(artist.to_string()),
+                    artist_reading: SharedString::from(artist_reading.to_string()),
+                    genre,
+                    year,
+                    added,
+                    last_played,
+                    duration_ms,
+                    tracks: cell.len,
+                }
+            }
             _ => TileLabels::default(),
         }
     }
@@ -1516,6 +1719,7 @@ impl GridPanel {
             album_reading,
             artist,
             artist_reading,
+            ..
         } = self.cell_labels(ix, cx);
         let readings = crate::settings::show_readings();
         div()
@@ -1547,7 +1751,7 @@ impl GridPanel {
             })
     }
 
-    /// The always-on caption under a cover: album over artist in a fixed
+    /// The always-on caption under a cover: album over artist and metadata in a fixed
     /// block, so the tile's total height stays predictable for the virtual
     /// list. Widths match the cover so long titles truncate at its edge.
     fn caption(&self, ix: usize, side: Pixels, cx: &App) -> Div {
@@ -1556,38 +1760,81 @@ impl GridPanel {
             album_reading,
             artist,
             artist_reading,
+            genre,
+            year,
+            added,
+            last_played,
+            duration_ms,
+            tracks,
         } = self.cell_labels(ix, cx);
         let readings = crate::settings::show_readings();
-        let base = div()
+        let mut base = div()
             .w(side)
-            .h(px(TILE_LABEL_H))
+            .h(px(self.caption_height()))
             .pt(tokens::SPACE_XS)
             .flex()
             .flex_col()
             .overflow_hidden();
         // The text alignment cascades to both lines; each line truncates at
         // the cover's edge, so a centered or right title stays under its art.
-        match self.config.label_align {
+        base = match self.config.label_align {
             TitleAlign::Left => base.text_left(),
             TitleAlign::Center => base.text_center(),
             TitleAlign::Right => base.text_right(),
-        }
-        .child(
+        };
+        base = base.child(
             div()
+                .h(px(CAPTION_ALBUM_H))
                 .truncate()
                 .text_sm()
                 .text_color(palette::text_bright())
                 .child(panel::named(&album, &album_reading, readings)),
-        )
-        .when(!artist.is_empty(), |d| {
-            d.child(
+        );
+        if self.config.label_artist {
+            base = base.child(
                 div()
+                    .h(px(CAPTION_ROW_H))
                     .truncate()
                     .text_xs()
                     .text_color(palette::text_secondary())
-                    .child(panel::named(&artist, &artist_reading, readings)),
-            )
-        })
+                    .when(!artist.is_empty(), |d| {
+                        d.child(panel::named(&artist, &artist_reading, readings))
+                    }),
+            );
+        }
+        if self.config.label_genre {
+            base = base.child(caption_row(genre));
+        }
+        if self.config.label_year {
+            base = base.child(caption_row(if year > 0 {
+                year.to_string()
+            } else {
+                String::new()
+            }));
+        }
+        if self.config.label_added {
+            base = base.child(caption_row(rox_core::fmt::fmt_datetime(added)));
+        }
+        if self.config.label_last_played {
+            base = base.child(caption_row(
+                last_played
+                    .map(rox_core::fmt::fmt_datetime)
+                    .unwrap_or_default(),
+            ));
+        }
+        if self.config.label_duration {
+            base = base.child(caption_row(if duration_ms > 0 {
+                rox_core::fmt::fmt_total(duration_ms)
+            } else {
+                String::new()
+            }));
+        }
+        if self.config.label_tracks {
+            base = base.child(caption_row(
+                rox_i18n::t!("status-count-tracks", count = tracks as u64).to_string(),
+            ));
+        }
+        base
     }
 
     /// Solo or popped out there is no title bar to host the search, so it
@@ -1847,6 +2094,11 @@ impl PanelSettings for GridPanel {
                             self.config.labels,
                             |this: &mut Self, on, cx| {
                                 this.config.labels = on;
+                                if this.config.labels && this.config.label_last_played {
+                                    this.warm_last_played(cx);
+                                } else {
+                                    this.last_played = None;
+                                }
                                 cx.notify();
                             },
                             cx,
@@ -1904,7 +2156,7 @@ impl PanelSettings for GridPanel {
                         ))
                     })
                     .when(self.config.labels, |d| {
-                        d.child(setting_row(
+                        let mut group = d.child(setting_row(
                             rox_i18n::t!("grid-title-alignment"),
                             Some(rox_i18n::t!("grid-title-alignment.description")),
                             panel::icon_choices(
@@ -1920,7 +2172,31 @@ impl PanelSettings for GridPanel {
                                 },
                                 cx,
                             ),
-                        ))
+                        ));
+                        for field in METADATA_FIELDS {
+                            let field = *field;
+                            let on = (field.get)(&self.config);
+                            group = group.child(setting_row(
+                                rox_i18n::t!(field.key),
+                                None,
+                                toggle(
+                                    on,
+                                    move |this: &mut Self, on, cx| {
+                                        (field.set)(&mut this.config, on);
+                                        if field.is_last_played {
+                                            if this.config.labels && on {
+                                                this.warm_last_played(cx);
+                                            } else {
+                                                this.last_played = None;
+                                            }
+                                        }
+                                        cx.notify();
+                                    },
+                                    cx,
+                                ),
+                            ));
+                        }
+                        group
                     })
                     .child(setting_row(
                         rox_i18n::t!("grid-tile-size"),
@@ -2225,6 +2501,56 @@ impl Panel for GridPanel {
             },
             &cx.entity(),
         ));
+        let menu = menu.item(panel::check_row(
+            rox_i18n::t!("grid-show-titles"),
+            Some(icons::ALIGN_LEFT),
+            |this: &Self| this.config.labels,
+            |this, cx| {
+                this.config.labels = !this.config.labels;
+                if this.config.labels && this.config.label_last_played {
+                    this.warm_last_played(cx);
+                } else {
+                    this.last_played = None;
+                }
+                cx.notify();
+            },
+            &cx.entity(),
+        ));
+        let menu = if self.config.labels {
+            let panel = cx.entity();
+            let meta_submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+                panel::follow_panel(&panel, cx);
+                submenu = submenu.check_side(Side::Right);
+                for field in METADATA_FIELDS {
+                    let field = *field;
+                    submenu = submenu.item(panel::check_row(
+                        rox_i18n::t!(field.key),
+                        None,
+                        move |this: &Self| (field.get)(&this.config),
+                        move |this, cx| {
+                            let new_val = !(field.get)(&this.config);
+                            (field.set)(&mut this.config, new_val);
+                            if field.is_last_played {
+                                if this.config.labels && new_val {
+                                    this.warm_last_played(cx);
+                                } else {
+                                    this.last_played = None;
+                                }
+                            }
+                            cx.notify();
+                        },
+                        &panel,
+                    ));
+                }
+                submenu
+            });
+            menu.item(
+                PopupMenuItem::submenu(rox_i18n::t!("panel-catalog-metadata"), meta_submenu)
+                    .icon(Icon::default().path(icons::TAG)),
+            )
+        } else {
+            menu
+        };
         // Follow the shared search query, or filter by this wall's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
@@ -2686,5 +3012,53 @@ impl GridPanel {
                         .child(error),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caption_header_fits_album_line_and_padding() {
+        assert!(
+            f32::from(tokens::SPACE_XS) + CAPTION_ALBUM_H <= CAPTION_HEADER_H,
+            "album line plus top padding must fit within CAPTION_HEADER_H"
+        );
+    }
+
+    #[test]
+    fn caption_height_disabled_when_labels_off() {
+        let mut config = GridConfig::default();
+        config.labels = false;
+        config.label_artist = true;
+        config.label_genre = true;
+        assert_eq!(config.caption_height(), 0.);
+    }
+
+    #[test]
+    fn caption_height_default_matches_legacy_tile_label_h() {
+        let mut config = GridConfig::default();
+        config.labels = true;
+        // Default has only label_artist on: 24. + 16. = 40.
+        assert_eq!(config.caption_height(), 40.);
+        assert_eq!(config.caption_height(), rox_panel_kit::wall::TILE_LABEL_H);
+    }
+
+    #[test]
+    fn caption_height_scales_with_active_fields() {
+        let mut config = GridConfig::default();
+        config.labels = true;
+        config.label_artist = false;
+        assert_eq!(config.caption_height(), CAPTION_HEADER_H);
+
+        for (i, field) in METADATA_FIELDS.iter().enumerate() {
+            (field.set)(&mut config, true);
+            let expected = CAPTION_HEADER_H + ((i + 1) as f32 * CAPTION_ROW_H);
+            assert_eq!(config.caption_height(), expected);
+        }
+
+        // All 7 fields enabled: 24 + 7 * 16 = 136
+        assert_eq!(config.caption_height(), 136.);
     }
 }

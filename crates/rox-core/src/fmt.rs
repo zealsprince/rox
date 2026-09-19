@@ -85,6 +85,29 @@ pub fn fmt_date(unix_secs: i64) -> String {
     rox_i18n::format::format_date(local.year(), local.month() as u8, local.day() as u8)
 }
 
+/// A unix timestamp formatted as YYYY-MM-DD HH:MM:SS in the machine's local time.
+pub fn fmt_datetime(unix_secs: i64) -> String {
+    if unix_secs <= 0 {
+        return String::new();
+    }
+    let Some(utc) = chrono::DateTime::from_timestamp(unix_secs, 0) else {
+        return String::new();
+    };
+    let local = utc.with_timezone(&chrono::Local);
+    local.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// A total running time: minutes and seconds, growing an hours place once
+/// it earns one.
+pub fn fmt_total(ms: u64) -> String {
+    let secs = ms / 1000;
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
 /// A long running time in words: the largest unit that fits and the one
 /// under it, "3 weeks, 2 days". The clock readouts stop meaning much past
 /// a day, so the library totals show this beside them.

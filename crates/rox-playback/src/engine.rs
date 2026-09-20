@@ -208,6 +208,19 @@ pub enum Cmd {
     /// The command channel rather than an atomic because the engine reads
     /// it when a source opens, not per sample.
     SetGainRule(gain::GainRule),
+    /// Take the producer end of a fresh sample ring: the output device
+    /// faulted and the player opened another one under the same
+    /// [`Shared`](crate::shared::Shared), at the same rate.
+    ///
+    /// The point of it is everything it doesn't touch. A device dropping out
+    /// used to cost the whole session, which on a station meant a re-dial, a
+    /// thrown-away tape, and a capture cut in the middle; here the decoder,
+    /// the socket, the tape and the idle clock all carry on and only the ring
+    /// changes hands. The rate is the one thing that can't change this way,
+    /// since the resampler, the segments and every frame count in here are
+    /// denominated in it, so the player checks it before sending and rebuilds
+    /// the session instead when the device came back at another rate.
+    SwapOutput(Producer<f32>),
     Quit,
 }
 
@@ -879,6 +892,9 @@ impl Engine {
                         if let Some(fade) = self.fade.as_mut() {
                             fade.src.relevel(&rule);
                         }
+                    }
+                    Cmd::SwapOutput(producer) => {
+                        source = self.swap_output(producer, source.take());
                     }
                     Cmd::Quit => return,
                 }
@@ -2401,6 +2417,68 @@ impl Engine {
         }
         self.pushed_playable = self.shared.frames_consumed.load(Ordering::Relaxed);
         self.pushed_playable
+    }
+
+    /// Move the session onto a fresh output ring, for a device that faulted
+    /// under it. Everything upstream of the ring stays exactly as it was:
+    /// the decoder, a station's socket, its tape, and the pause clock the
+    /// idle hangup counts on.
+    ///
+    /// What the dead stream took with it is the half second the ring still
+    /// held. Those samples were pushed and never heard, so the decoder now
+    /// stands that far ahead of the speakers and has to come back before it
+    /// carries on, or the swap would cost the listener the gap twice over:
+    /// once in silence and once in music nobody heard. The two ways back are
+    /// the two already here. A station re-syncs over its own tape, which
+    /// costs a decoder and nothing over the wire, and lands the listener on
+    /// the exact spot they were standing, behind live if that's where they
+    /// were. Everything else seeks to where the position clock stopped,
+    /// through the path that also answers a decode cursor sitting a track
+    /// ahead of the speakers.
+    ///
+    /// Nothing here opens anything. A hung-up station and a played-out queue
+    /// both arrive with no source at all, and dialling one back up because
+    /// the speakers changed would be a connection nobody asked for. They take
+    /// the clock resync on its own.
+    fn swap_output(&mut self, producer: Producer<f32>, source: Option<Source>) -> Option<Source> {
+        // Read while the dead ring is still in hand: how far back the
+        // listener stands is measured off what it held.
+        let behind = source
+            .as_ref()
+            .and_then(|src| src.tape.as_ref())
+            .filter(|_| self.pos == self.audible_pos())
+            .map(|tape| {
+                let ringed = self.producer.buffer().capacity() - self.producer.slots();
+                let pending = self.pending.len() - self.pending_pos;
+                tape.note_queued((ringed + pending) as f64 / 2.0 / self.device_rate as f64);
+
+                tape.shift().behind_secs
+            });
+
+        log::info!("output stream replaced under the running session");
+        self.producer = producer;
+
+        if let Some(behind) = behind {
+            return self.seek_live_to(source, behind);
+        }
+
+        // Not a station that couldn't take the tape path, though: the seek
+        // would reopen it from scratch, and a swap has no business dialling
+        // anything. It keeps the source it has and takes the resync alone.
+        // Only a decode cursor a track off the speakers gets here, and that
+        // lasts until the boundary.
+        let at = self
+            .shared
+            .position(self.device_rate)
+            .map(|(_, secs)| secs)
+            .filter(|_| source.is_some() && !self.live_at(self.audible_pos()));
+        let Some(secs) = at else {
+            self.flush_ring();
+
+            return source;
+        };
+
+        self.seek_to(source, secs)
     }
 
     /// Publish the fade window for the transport, in output-clock frames.
@@ -5452,6 +5530,203 @@ mod tests {
             assert!(source.as_mut().unwrap().next_chunk(48_000, &mut chunk));
             assert!(!chunk.is_empty(), "audio carries on");
         });
+    }
+
+    /// The output device faulting under a station. The stream is dead and the
+    /// ring with it, but nothing above the ring has anything wrong with it:
+    /// the swap hands the engine a new producer and the connection, the tape
+    /// and the decoder all carry on. Tearing the session down for this is
+    /// what used to re-dial the station and throw its timeshift away.
+    #[test]
+    fn a_device_swap_keeps_the_station_on_its_own_tape() {
+        const METAINT: usize = 4096;
+        let fx = Fixtures::new("live-swap");
+        let path = fx.wav("stream.wav", 2.0);
+        let wav = std::fs::read(&path).expect("the fixture is readable");
+        let fake = live_fake(&wav, METAINT, &["Boards of Canada - Roygbiv"]);
+
+        let (mut e, _ring) = engine_with_ring(vec![station("http://example.invalid/live")], 64);
+        e.shared.flush_ack.store(u64::MAX, Ordering::Release);
+
+        crate::http::testing::with_transport(fake.clone(), || {
+            let mut source = e.open_at(0);
+            let mut chunk = Vec::new();
+            decode_until_titled(&e, source.as_mut().unwrap(), &mut chunk);
+            for _ in 0..40 {
+                chunk.clear();
+                if !source.as_mut().unwrap().next_chunk(48_000, &mut chunk) {
+                    break;
+                }
+            }
+
+            let tape = source
+                .as_ref()
+                .and_then(|src| src.tape.clone())
+                .expect("a station tapes");
+            let window = tape.shift().window_secs;
+
+            // The fault: a fresh ring arrives and the old one is gone,
+            // everything else untouched.
+            let (producer, mut fresh) = rtrb::RingBuffer::<f32>::new(64 * 2);
+            source = e.swap_output(producer, source);
+
+            assert!(source.is_some(), "the station is still playing");
+            assert_eq!(fake.ask_count(), 1, "nothing dialled the station again");
+            assert_eq!(fake.closed_count(), 0, "and the socket never closed");
+            assert!(
+                Arc::ptr_eq(
+                    &tape,
+                    source.as_ref().and_then(|src| src.tape.as_ref()).unwrap()
+                ),
+                "the same tape, not a new one"
+            );
+
+            // The ring really did change hands: a push lands in the new one.
+            e.producer.push(0.5).expect("the new ring has room");
+            assert_eq!(fresh.pop().ok(), Some(0.5));
+
+            // And the tape is still being filled by the same feed thread,
+            // which is the half a re-dial would have restarted.
+            wait_for("the tape to keep filling", || {
+                tape.shift().window_secs > window
+            });
+
+            chunk.clear();
+            assert!(source.as_mut().unwrap().next_chunk(48_000, &mut chunk));
+            assert!(!chunk.is_empty(), "audio carries on out of the new cursor");
+        });
+    }
+
+    /// The same fault taken while paused. The clock behind the idle hangup
+    /// counts how long nobody has been listening, and a device dropping out
+    /// is not somebody coming back: restarting it would hold a socket open
+    /// for another half hour every time an output glitched.
+    #[test]
+    fn a_device_swap_leaves_the_idle_hangup_clock_alone() {
+        const METAINT: usize = 4096;
+        let fx = Fixtures::new("live-swap-paused");
+        let path = fx.wav("stream.wav", 1.0);
+        let wav = std::fs::read(&path).expect("the fixture is readable");
+        let fake = live_fake(&wav, METAINT, &["Boards of Canada - Roygbiv"]);
+
+        let mut e = engine_over(vec![station("http://example.invalid/live")]);
+        e.shared.flush_ack.store(u64::MAX, Ordering::Release);
+
+        let shared = Arc::clone(&e.shared);
+        crate::http::testing::with_transport(fake.clone(), || {
+            let mut source = e.open_at(0);
+            let mut chunk = Vec::new();
+            decode_until_titled(&e, source.as_mut().unwrap(), &mut chunk);
+
+            // Paused, and the pause dated most of the way to the cap.
+            shared.playing.store(false, Ordering::Relaxed);
+            source = e.idle_hangup(source);
+            let since = Instant::now() - StdDuration::from_secs(LIVE_IDLE_HANGUP_SECS - 5);
+            e.paused_since = Some(since);
+
+            let (producer, _fresh) = rtrb::RingBuffer::<f32>::new(64 * 2);
+            source = e.swap_output(producer, source);
+
+            assert!(source.is_some(), "the pause still holds the connection");
+            assert_eq!(e.paused_since, Some(since), "the pause clock didn't move");
+            assert_eq!(fake.ask_count(), 1, "and nothing was dialled");
+
+            // Which is to say the cap still lands where it would have.
+            e.paused_since = Some(Instant::now() - StdDuration::from_secs(LIVE_IDLE_HANGUP_SECS));
+            source = e.idle_hangup(source);
+            assert!(source.is_none(), "the cap still hangs up");
+        });
+    }
+
+    /// A fault arriving on a station a pause already hung up on. There's no
+    /// source, no socket and no tape; the one thing the swap must not do is
+    /// decide that a new output device is a reason to dial the station back
+    /// up under a pause nobody has lifted.
+    #[test]
+    fn a_device_swap_while_hung_up_dials_nothing() {
+        const METAINT: usize = 4096;
+        let fx = Fixtures::new("live-swap-hung-up");
+        let path = fx.wav("stream.wav", 1.0);
+        let wav = std::fs::read(&path).expect("the fixture is readable");
+        let fake = live_fake(&wav, METAINT, &["Boards of Canada - Roygbiv"]);
+
+        let mut e = engine_over(vec![station("http://example.invalid/live")]);
+        e.shared.flush_ack.store(u64::MAX, Ordering::Release);
+
+        let shared = Arc::clone(&e.shared);
+        crate::http::testing::with_transport(fake.clone(), || {
+            let mut source = e.open_at(0);
+            let mut chunk = Vec::new();
+            decode_until_titled(&e, source.as_mut().unwrap(), &mut chunk);
+
+            shared.frames_consumed.store(48_000, Ordering::Relaxed);
+            shared.playing.store(false, Ordering::Relaxed);
+            e.paused_since =
+                Some(Instant::now() - StdDuration::from_secs(LIVE_IDLE_HANGUP_SECS + 1));
+            source = e.idle_hangup(source);
+            assert!(source.is_none(), "the cap hung up");
+            assert_eq!(e.hung_up, Some(48_000));
+
+            let asked = fake.ask_count();
+            let (producer, _fresh) = rtrb::RingBuffer::<f32>::new(64 * 2);
+            source = e.swap_output(producer, source);
+
+            assert!(source.is_none(), "still nothing open");
+            assert_eq!(e.hung_up, Some(48_000), "and still waiting on a Play");
+            assert_eq!(fake.ask_count(), asked, "nothing was dialled");
+        });
+    }
+
+    /// The same fault on a local file. There's no tape to re-sync over, so
+    /// the swap seeks to the spot the position clock stopped at: the half
+    /// second the dead ring still held was pushed and never heard, and
+    /// carrying on from the decode cursor would skip it.
+    #[test]
+    fn a_device_swap_on_a_file_resumes_where_the_clock_stopped() {
+        let fx = Fixtures::new("file-swap");
+        let path = fx.wav("track.wav", 4.0);
+
+        let (mut e, _ring) = engine_with_ring(vec![local(path)], 64);
+        e.shared.flush_ack.store(u64::MAX, Ordering::Release);
+
+        let mut source = e.open_at(0);
+        assert!(source.is_some(), "the file opens");
+
+        // A second heard, and the decoder a way past it, which is where a
+        // device faults in practice: the ring full of audio nobody got.
+        let mut chunk = Vec::new();
+        for _ in 0..40 {
+            chunk.clear();
+            if !source.as_mut().unwrap().next_chunk(48_000, &mut chunk) {
+                break;
+            }
+        }
+        e.pushed_playable = 96_000;
+        e.shared.frames_consumed.store(48_000, Ordering::Relaxed);
+        let (_, was) = e.shared.position(48_000).expect("the clock reads");
+        assert!((was - 1.0).abs() < 0.01, "a second in: {was}");
+
+        let (producer, _fresh) = rtrb::RingBuffer::<f32>::new(64 * 2);
+        source = e.swap_output(producer, source);
+
+        assert!(source.is_some(), "the file is still playing");
+        // Within a packet either way: the seek lands where the container's
+        // granularity lets it, and the clock follows it there rather than
+        // claiming the spot that was asked for.
+        let (_, now) = e.shared.position(48_000).expect("the clock still reads");
+        assert!(
+            (now - was).abs() < 0.05,
+            "the position carried over: {now} from {was}"
+        );
+        assert!(
+            source.as_ref().unwrap().pos_frames.abs_diff(48_000) < 2_400,
+            "and the decoder went back to it: {}",
+            source.as_ref().unwrap().pos_frames
+        );
+
+        chunk.clear();
+        assert!(source.as_mut().unwrap().next_chunk(48_000, &mut chunk));
+        assert!(!chunk.is_empty(), "audio carries on");
     }
 
     /// Play rejoins at the live edge: one fresh open, the same one a first

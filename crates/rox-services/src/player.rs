@@ -431,7 +431,12 @@ struct Session {
     shared: Arc<Shared>,
     tx: mpsc::Sender<Cmd>,
     tap: Consumer<f32>,
-    _stream: Box<dyn output::OutputStream>,
+    /// The live output stream, held so it keeps playing and dropped to give
+    /// the device back. An Option because a device that faulted is handed
+    /// back before its replacement is opened: a backend asked for the same
+    /// card with the dead handle still on it answers busy, which is the one
+    /// answer the recovery can't use.
+    stream: Option<Box<dyn output::OutputStream>>,
     device_rate: u32,
     /// What the output layer actually got, as opposed to what was asked
     /// for. The Audio page reads this, and the rate follow compares against
@@ -545,7 +550,7 @@ impl Session {
             shared,
             tx,
             tap: out.tap,
-            _stream: out.stream,
+            stream: Some(out.stream),
             device_rate,
             negotiated: out.negotiated,
             queue: keys,
@@ -2162,17 +2167,17 @@ impl Player {
                         return false;
                     }
                     // The output stream died (device unplugged, backend fault).
-                    // Rebuild it at the current spot and stop this pump: the
-                    // rebuild starts its own, and running two would double-drain
-                    // the tap. If the rebuild couldn't get a device it clears the
-                    // session, so either way this pump is done.
+                    // Reopen it at the current spot. A swap leaves this pump
+                    // running over the same engine; a rebuild starts its own
+                    // and a failure clears the session, and both of those end
+                    // this one. Two pumps on a session would double-drain the
+                    // tap.
                     if this
                         .session
                         .as_ref()
                         .is_some_and(|s| s.shared.device_lost())
                     {
-                        this.reopen_device(cx);
-                        return false;
+                        return this.reopen_device(cx);
                     }
                     // Exclusive follows the file's rate, which means the same
                     // stop: the rebuild brings its own pump up.
@@ -2803,19 +2808,102 @@ impl Player {
         true
     }
 
-    /// Rebuild the output after the device dropped out. The old stream is
-    /// already dead, so this is the only way back to audio short of the user
-    /// restarting; start_session opens against the current default device,
-    /// which is the reconnected (or newly default) one. Nothing left to
-    /// restore surfaces as an error with the session gone, so the UI stops
-    /// showing a frozen "playing".
-    fn reopen_device(&mut self, cx: &mut Context<Self>) {
-        if self.session.is_none() || self.rebuild_session(cx) {
-            return;
+    /// Get back to audio after the device dropped out (unplugged, an ALSA
+    /// I/O error, a Bluetooth sink reconnecting, a backend fault). The old
+    /// stream is dead either way, so this is the only way back short of the
+    /// user restarting.
+    ///
+    /// Three outcomes, in the order they're worth having. The swap reopens
+    /// the output under the running engine, which costs the listener the
+    /// gap and nothing else. A rate the swap can't take falls to the session
+    /// rebuild, the old behaviour: same music, new engine, and a station
+    /// re-dialled. Nothing left to restore surfaces as an error with the
+    /// session gone, so the UI stops showing a frozen "playing".
+    ///
+    /// Returns whether the pump that called this should carry on. Only the
+    /// swap keeps it: a rebuild brings its own pump up and a stop leaves
+    /// nothing to pump, and two pumps on one session would double-drain
+    /// the tap.
+    fn reopen_device(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.session.is_none() {
+            return false;
         }
+        if self.swap_output(cx) {
+            return true;
+        }
+        if self.rebuild_session(cx) {
+            return false;
+        }
+
         self.stop(cx);
         self.error = Some("audio output: device lost".into());
         cx.notify();
+
+        false
+    }
+
+    /// Reopen the output device and hand the running engine the new ring,
+    /// leaving everything upstream of it alone.
+    ///
+    /// This is what a device fault costs now. The engine keeps decoding, a
+    /// station keeps its connection, its tape and the capture being cut out
+    /// of it, and the pause clock behind the idle hangup never restarts. The
+    /// old path tore the session down for the same event, which on a station
+    /// meant re-dialling it, throwing the timeshift buffer away, and filing
+    /// whatever the capture had as if the song had ended there.
+    ///
+    /// False where the swap can't stand in for the rebuild: no session, no
+    /// device to open, or a device that came back at another rate. That last
+    /// one is a real change rather than a fault to paper over, and everything
+    /// in the engine is denominated in the rate it opened at, so it goes down
+    /// the same path [`follow_source_rate`](Self::follow_source_rate) takes.
+    fn swap_output(&mut self, cx: &mut Context<Self>) -> bool {
+        let request = self.output_request();
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+
+        // Down before the open, not after it: a device that faults again
+        // while this one is opening should set the flag again and get its
+        // own pass, rather than have this pass clear a loss it never saw.
+        session.shared.device_lost.store(false, Ordering::Release);
+        // And the dead stream goes before its replacement is asked for, so
+        // the backend has the device back by the time the open reaches it.
+        drop(session.stream.take());
+
+        let out = match output::open(&request, &session.shared) {
+            Ok(out) => out,
+            Err(e) => {
+                log::warn!("audio output: reopen after device loss failed: {e}");
+
+                return false;
+            }
+        };
+        if out.sample_rate != session.device_rate {
+            log::info!(
+                "audio output came back at {} Hz, was {}; rebuilding the session",
+                out.sample_rate,
+                session.device_rate
+            );
+
+            return false;
+        }
+
+        log::info!(
+            "audio output reopened on {}, keeping the engine",
+            out.negotiated.device
+        );
+        session.negotiated = out.negotiated;
+        session.tap = out.tap;
+        session.stream = Some(out.stream);
+        // The engine takes the producer end and re-anchors itself on it. Sent
+        // after the fields above so nothing reads a session that is half
+        // moved over.
+        let _ = session.tx.send(Cmd::SwapOutput(out.producer));
+        self.error = None;
+        cx.notify();
+
+        true
     }
 
     /// Exclusive mode follows the file's rate (ADR 19): when the playing
@@ -2909,6 +2997,24 @@ impl Player {
             source_rate: self.source_rate(),
             leveling_db: self.leveling_db(),
         })
+    }
+
+    /// Raise the device-lost flag by hand: the same fault the output
+    /// backend's error callback raises when a device drops out from under a
+    /// running stream. The pump picks it up on its next tick and reopens.
+    ///
+    /// A test surface, and the only one there is for this path (ADR 22).
+    /// A real fault needs a card to be unplugged or a sink to reconnect
+    /// mid-song, which is not something a script can ask for, so the
+    /// recovery would otherwise only ever be exercised by accident on
+    /// somebody else's machine. False means no session, so nothing to fault.
+    pub fn fault_output(&self) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        session.shared.device_lost.store(true, Ordering::Release);
+
+        true
     }
 
     /// How far the playing file is being moved by ReplayGain, in dB. Run

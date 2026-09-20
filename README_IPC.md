@@ -68,6 +68,7 @@ did without a second round trip.
 | `debug.thumbs`                                             |                                               | the artwork service's counters: requests, starts, lands, refused, pending, entries |
 | `debug.workspace`                                          | `{"name": ".."}`                              | null; applies that workspace to the front window                         |
 | `debug.entities`                                           |                                               | `{"total": n, "by_type": [[name, count], ..]}`, live gpui entity counts  |
+| `debug.device_lost`                                        |                                               | `{"faulted": true}`; raises the output's device-lost flag, as an unplug does |
 | `debug.windows`                                            |                                               | every open window: id, title, logical size, scale, and which is active   |
 | `debug.actions`                                            | `{"filter": ".."}`, optional                  | `{"actions": [..]}`, the dispatchable action names                       |
 | `debug.action`                                             | `{"name": "..", "data": any?, "window": id?}` | null; dispatched down that window's focus chain                          |

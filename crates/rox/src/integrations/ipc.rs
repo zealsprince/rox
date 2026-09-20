@@ -370,6 +370,20 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
                     .collect::<Vec<_>>(),
             }))
         }
+        // Fault the output stream the way a device dropping out faults it:
+        // unplugged card, ALSA I/O error, Bluetooth sink reconnecting. The
+        // player reopens the device under the running engine, and a station
+        // keeps its connection, its tape and the capture in flight through
+        // it. Debug scope (ADR 22): a real fault can't be asked for from a
+        // script, so without this the recovery is only ever exercised by
+        // accident.
+        "debug.device_lost" => {
+            let faulted = state.player.read(cx).fault_output();
+            if !faulted {
+                return Err(RpcError::app("nothing is playing"));
+            }
+            Ok(json!({ "faulted": true }))
+        }
         // Re-read every play count off the listens table into the shared
         // projection and raise `PlaysReloaded`, exactly what a finished
         // Last.fm backfill does. Debug scope (ADR 22): without it the bulk

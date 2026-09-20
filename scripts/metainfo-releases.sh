@@ -33,6 +33,15 @@ if ! awk -v marker="$marker" 'index($0, marker) { found = 1 } END { exit !found 
     exit 0
 fi
 
+# The release job's Linux leg runs in a container that checks the tree out
+# as one uid and runs this as another, and git refuses to read a tree it
+# doesn't own. The workflow steps that call git themselves mark the
+# workspace safe first; this script runs git on its own, so it does too.
+# Only under Actions, so a local run never edits anyone's global config.
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    git config --global --add safe.directory "$PWD"
+fi
+
 git fetch --tags --quiet origin
 
 # Stable tags only. Candidates carry a hyphen (v1.25.0-rc.1) and never get

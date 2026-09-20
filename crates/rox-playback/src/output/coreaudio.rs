@@ -229,7 +229,7 @@ const CFSTRING_ENCODING_UTF8: u32 = 0x0800_0100;
 // --- CoreAudio and CoreFoundation entry points ----------------------------
 
 #[link(name = "CoreAudio", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn AudioObjectGetPropertyDataSize(
         object: AudioObjectID,
         address: *const AudioObjectPropertyAddress,
@@ -285,7 +285,7 @@ extern "C" {
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CFStringGetLength(string: *const c_void) -> c_long;
     fn CFStringGetCString(
         string: *const c_void,
@@ -296,7 +296,7 @@ extern "C" {
     fn CFRelease(object: *const c_void);
 }
 
-extern "C" {
+unsafe extern "C" {
     /// From libSystem, which every macOS binary links anyway. One extern
     /// declaration is cheaper than taking a `libc` dependency for a single
     /// call that has been in the same place since System V.

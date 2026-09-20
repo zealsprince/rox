@@ -632,7 +632,9 @@ library-genre-face = Cara del género
 
 stations-title = Emisoras
 stations-play = Reproducir
+stations-play-count = Reproducir { $count } emisoras
 stations-remove = Quitar
+stations-remove-count = Quitar { $count } emisoras
 stations-find = Buscar emisoras...
 stations-manage = Gestionar emisoras...
 stations-import = Importar emisoras...

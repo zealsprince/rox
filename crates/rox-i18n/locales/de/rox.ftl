@@ -618,7 +618,9 @@ library-genre-face = Genre-Bild
 
 stations-title = Sender
 stations-play = Abspielen
+stations-play-count = { $count } Sender abspielen
 stations-remove = Entfernen
+stations-remove-count = { $count } Sender entfernen
 stations-find = Sender finden...
 stations-manage = Sender verwalten...
 stations-import = Sender importieren...

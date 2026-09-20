@@ -633,7 +633,9 @@ library-genre-face = Image du genre
 
 stations-title = Stations
 stations-play = Lire
+stations-play-count = Lire { $count } stations
 stations-remove = Supprimer
+stations-remove-count = Supprimer { $count } stations
 stations-find = Trouver des stations...
 stations-manage = Gérer les stations...
 stations-import = Importer des stations...

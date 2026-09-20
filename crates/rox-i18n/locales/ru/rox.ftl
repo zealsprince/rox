@@ -630,7 +630,9 @@ library-genre-face = Оформление жанра
 
 stations-title = Радиостанции
 stations-play = Воспроизвести
+stations-play-count = Воспроизвести станции: { $count }
 stations-remove = Удалить
+stations-remove-count = Удалить станции: { $count }
 stations-find = Найти станции...
 stations-manage = Управление станциями...
 stations-import = Импортировать станции...

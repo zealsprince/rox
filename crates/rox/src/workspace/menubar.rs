@@ -1025,11 +1025,19 @@ impl Workspace {
         // frame.
         let selection = idle.then_some(self.selection_status).flatten();
         let status = match selection {
-            Some((tracks, total_ms)) => SharedString::from(format!(
+            // A pick of stations has no time to show, so the count stands
+            // alone rather than trailing a 0:00 nobody can act on.
+            Some((picked, None)) => SharedString::from(format!(
+                "{status} ({})",
+                rox_i18n::t!("status-count-selected", count = picked as u64)
+            )),
+
+            Some((picked, Some(total_ms))) => SharedString::from(format!(
                 "{status} ({} / {})",
-                rox_i18n::t!("status-count-selected", count = tracks as u64),
+                rox_i18n::t!("status-count-selected", count = picked as u64),
                 rox_panel_api::group_head::fmt_total(total_ms)
             )),
+
             None => status,
         };
         // Status text leftmost so its width changes grow into the empty

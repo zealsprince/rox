@@ -649,7 +649,9 @@ library-genre-face = Genre Face
 
 stations-title = Stations
 stations-play = Play
+stations-play-count = Play { $count } Stations
 stations-remove = Remove
+stations-remove-count = Remove { $count } Stations
 stations-find = Find Stations...
 stations-manage = Manage Stations...
 stations-import = Import Stations...

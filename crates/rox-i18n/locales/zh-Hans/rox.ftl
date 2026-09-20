@@ -613,7 +613,9 @@ library-genre-face = 流派图面
 
 stations-title = 电台
 stations-play = 播放
+stations-play-count = 播放 { $count } 个电台
 stations-remove = 删除
+stations-remove-count = 删除 { $count } 个电台
 stations-find = 查找电台...
 stations-manage = 管理电台...
 stations-import = 导入电台...

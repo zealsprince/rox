@@ -12,6 +12,15 @@
 //! settings keeps the list. What's left here is the list, a double click
 //! to play, and two ways over to the surfaces that own the rest.
 //!
+//! The rows pick the way the library's do: a click takes one, shift and
+//! ctrl build a set, and the set publishes on the app-wide selection. That
+//! last part is what makes the panel stop lying. Before it, a pick made in
+//! the library went on standing in the status bar while you worked in here,
+//! so the strip read somebody else's tracks over a list of stations. Play
+//! and Remove act on the whole set; Remove is the Sources page's delete,
+//! run once per row, and it asks nothing first because that one doesn't
+//! either.
+//!
 //! A row shows everything known about a station, which for a long time was
 //! a name and a URL and read as a bookmarks file. The logo comes out of
 //! the thumbnail pool under the row's path, the genre, codec and bitrate
@@ -25,12 +34,13 @@
 //! there, and trading the facts away for the song is what keeps that from
 //! costing the list a line of height it only ever needs once.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use gpui::{
-    AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, ObjectFit, Pixels, SharedString, Stateful, Subscription, WeakEntity, Window,
-    div, img, prelude::*, px, svg,
+    AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Modifiers,
+    MouseButton, MouseDownEvent, ObjectFit, Pixels, ScrollHandle, SharedString, Stateful,
+    Subscription, WeakEntity, Window, div, img, prelude::*, px, svg,
 };
 use gpui_component::Icon;
 use gpui_component::button::Button;
@@ -47,6 +57,7 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::player::fmt_time;
+use crate::selection::SelectionEvent;
 use crate::thumbs::Thumb;
 
 /// The settings page the list is kept on, named by the key the settings
@@ -94,12 +105,30 @@ pub struct StationsPanel {
     /// builds for. None means the press missed the rows, and the menu is
     /// the panel's own.
     menu_row: Option<usize>,
+    /// The picked rows, by stream URL. The list is re-read whole on every
+    /// catalog change, so an index would name a different station after
+    /// one; the URL is a station's identity and survives that.
+    selected: HashSet<String>,
+    /// Where a shift-click measures its range from.
+    anchor: Option<String>,
+    /// The row the arrows step from, which a shift-click moves and the
+    /// anchor doesn't: without the pair, shift plus down would re-pick the
+    /// same two rows forever.
+    cursor: Option<String>,
+    /// Each station's library id, resolved when the list is read. The
+    /// shared selection speaks in ids, and a click can't afford a query
+    /// per row to find them.
+    ids: HashMap<String, i64>,
+    /// The list's scroll box, so an arrow step that leaves the visible
+    /// rows brings its row along.
+    scroll: ScrollHandle,
     focus: FocusHandle,
     /// The tab panel that currently hosts this panel, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _player_changed: Subscription,
     _thumbs_changed: Subscription,
+    _selection_changed: Subscription,
 }
 
 impl StationsPanel {
@@ -147,6 +176,25 @@ impl StationsPanel {
         // same subscription every other art-drawing panel keeps.
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
 
+        // A pick made anywhere else takes the scope, and the marks here
+        // come down with it. Rows left lit under a count that no longer
+        // describes them is the confusion this panel was fixed for, read
+        // the other way around. The clear is local: republishing would
+        // fight whoever just published.
+        let _selection_changed = cx.subscribe(
+            &state.selection,
+            |this: &mut Self, _, event: &SelectionEvent, cx| {
+                if event.source == cx.entity().entity_id() || this.selected.is_empty() {
+                    return;
+                }
+
+                this.selected.clear();
+                this.anchor = None;
+                this.cursor = None;
+                cx.notify();
+            },
+        );
+
         let mut panel = StationsPanel {
             playing: state.player.read(cx).now_playing().map(|now| now.key),
             clock_secs: 0,
@@ -156,11 +204,17 @@ impl StationsPanel {
             stations: Vec::new(),
             notice: None,
             menu_row: None,
+            selected: HashSet::new(),
+            anchor: None,
+            cursor: None,
+            ids: HashMap::new(),
+            scroll: ScrollHandle::default(),
             focus: cx.focus_handle().tab_stop(true),
             tab_panel: None,
             _library_changed,
             _player_changed,
             _thumbs_changed,
+            _selection_changed,
         };
         panel.refresh(cx);
         panel
@@ -174,7 +228,197 @@ impl StationsPanel {
             .and_then(|conn| stations::detailed(&conn).ok())
             .unwrap_or_default();
 
+        // The shared selection speaks in library ids, so they're resolved
+        // here, at the list's own cadence, rather than once per click.
+        let library = self.state.library.read(cx);
+        self.ids = self
+            .stations
+            .iter()
+            .filter_map(|(station, _)| {
+                library
+                    .id_for_key(&key_for(&station.url))
+                    .map(|id| (station.url.clone(), id))
+            })
+            .collect();
+
+        // A station removed here or on the Sources page takes its mark
+        // with it, so the set never names a row that isn't in the list.
+        self.selected.retain(|url| self.ids.contains_key(url));
+        self.anchor = self.anchor.take().filter(|url| self.ids.contains_key(url));
+        self.cursor = self.cursor.take().filter(|url| self.ids.contains_key(url));
+
         cx.notify();
+    }
+
+    /// The stream URL of a row, the name everything here picks by.
+    fn url_at(&self, ix: usize) -> Option<String> {
+        self.stations
+            .get(ix)
+            .map(|(station, _)| station.url.clone())
+    }
+
+    /// Where a station sits in the list now, for the shift range and the
+    /// arrow steps.
+    fn index_of(&self, url: &str) -> Option<usize> {
+        self.stations
+            .iter()
+            .position(|(station, _)| station.url == url)
+    }
+
+    /// The picked stations in list order, which is the order they play and
+    /// the order the selection publishes them in.
+    fn selected_urls(&self) -> Vec<String> {
+        self.stations
+            .iter()
+            .filter(|(station, _)| self.selected.contains(&station.url))
+            .map(|(station, _)| station.url.clone())
+            .collect()
+    }
+
+    /// Put a click on a station row: plain picks just it, shift extends
+    /// from the anchor over the rows between, ctrl (cmd on macOS)
+    /// toggles. The library's and the queue's rules, keyed on the URL so
+    /// a re-read of the list keeps the marks.
+    fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
+        let Some(url) = self.url_at(ix) else {
+            return;
+        };
+
+        if modifiers.shift {
+            let anchor_ix = self
+                .anchor
+                .as_deref()
+                .and_then(|anchor| self.index_of(anchor))
+                .unwrap_or(ix);
+            let (lo, hi) = (anchor_ix.min(ix), anchor_ix.max(ix));
+            let range = self.stations[lo..=hi]
+                .iter()
+                .map(|(station, _)| station.url.clone());
+            // Ctrl+shift stacks the range onto the set, the queue's move,
+            // so a second run can be picked without losing the first.
+            if modifiers.secondary() {
+                self.selected.extend(range);
+            } else {
+                self.selected = range.collect();
+            }
+            if self.anchor.is_none() {
+                self.anchor = Some(url.clone());
+            }
+        } else if modifiers.secondary() {
+            if !self.selected.insert(url.clone()) {
+                self.selected.remove(&url);
+            }
+            self.anchor = Some(url.clone());
+        } else {
+            self.selected = HashSet::from([url.clone()]);
+            self.anchor = Some(url.clone());
+        }
+
+        self.cursor = Some(url);
+        self.publish_selection(cx);
+        cx.notify();
+    }
+
+    /// Take the whole list, which is what Remove on the set is usually
+    /// after.
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        if self.stations.is_empty() {
+            return;
+        }
+
+        self.selected = self
+            .stations
+            .iter()
+            .map(|(station, _)| station.url.clone())
+            .collect();
+        self.anchor = self.url_at(0);
+        self.cursor = self.anchor.clone();
+        self.publish_selection(cx);
+        cx.notify();
+    }
+
+    /// Drop the pick, handing the shared scope back to the whole catalog.
+    fn deselect(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+
+        self.selected.clear();
+        self.anchor = None;
+        self.cursor = None;
+        self.publish_selection(cx);
+        cx.notify();
+    }
+
+    /// Publish the pick on the shared selection, which is what the status
+    /// strip and every selection-following panel read. Every call goes
+    /// through, an empty set included: that's how a pick made here
+    /// replaces one made in the library, and how Escape hands the scope
+    /// back. A station the catalog has no row for drops out.
+    fn publish_selection(&self, cx: &mut Context<Self>) {
+        let ids: Vec<i64> = self
+            .selected_urls()
+            .iter()
+            .filter_map(|url| self.ids.get(url).copied())
+            .collect();
+        let source = cx.entity_id();
+
+        self.state
+            .selection
+            .update(cx, |selection, cx| selection.set(ids, source, cx));
+    }
+
+    /// Step the pick by one row, extending from the anchor while shift is
+    /// held. From a cold panel the first step lands on the first row, so
+    /// the arrows work without a click first.
+    fn step(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
+        if self.stations.is_empty() {
+            return;
+        }
+
+        let last = self.stations.len() - 1;
+        let target = match self.cursor.as_deref().and_then(|url| self.index_of(url)) {
+            Some(ix) => ix.saturating_add_signed(delta).min(last),
+            None => 0,
+        };
+
+        self.select(
+            target,
+            Modifiers {
+                shift: extend,
+                ..Modifiers::default()
+            },
+            cx,
+        );
+        self.scroll.scroll_to_item(target);
+    }
+
+    /// Arrows move the pick and shift extends it, Enter plays it, Escape
+    /// drops it, and ctrl/cmd+A takes the list. The library panel's keys,
+    /// as far as a flat list of stations has use for them.
+    fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let modifiers = &event.keystroke.modifiers;
+        let key = event.keystroke.key.as_str();
+
+        if modifiers.secondary() && key == "a" {
+            self.select_all(cx);
+            return;
+        }
+
+        match key {
+            "up" => self.step(-1, modifiers.shift, cx),
+
+            "down" => self.step(1, modifiers.shift, cx),
+
+            "enter" => {
+                let urls = self.selected_urls();
+                self.play_urls(&urls, cx);
+            }
+
+            "escape" => self.deselect(cx),
+
+            _ => {}
+        }
     }
 
     /// The panel's own connection to the library database, the idiom the
@@ -245,28 +489,47 @@ impl StationsPanel {
         true
     }
 
-    fn remove(&mut self, url: &str, cx: &mut Context<Self>) {
+    /// Drop stations, then rebuild the projection the way a write does:
+    /// the rows have to leave the library everywhere, not only this list.
+    /// The same delete the Sources page makes, which asks nothing first,
+    /// so neither does this.
+    fn remove(&mut self, urls: &[String], cx: &mut Context<Self>) {
+        if urls.is_empty() {
+            return;
+        }
+
         let Some(mut conn) = self.open_db(cx) else {
             return;
         };
-        if let Err(e) = stations::remove(&mut conn, url) {
-            log::warn!("stations: removing a station failed: {e}");
-            return;
+        // One failed row doesn't hold up the rest: the set was picked as
+        // a set, and stopping halfway leaves the list looking arbitrary.
+        for url in urls {
+            if let Err(e) = stations::remove(&mut conn, url) {
+                log::warn!("stations: removing a station failed: {e}");
+            }
         }
 
         self.state
             .library
             .update(cx, |library, cx| library.reload_projection(cx));
+        // The refresh drops the marks the removed rows held, so the
+        // publish that follows narrows the shared scope to what's left.
         self.refresh(cx);
+        self.publish_selection(cx);
     }
 
-    /// Play a station, which goes through the same path any track does:
-    /// the key resolves to a locator and the player opens it.
-    fn play(&self, url: &str, cx: &mut Context<Self>) {
-        let key = key_for(url);
+    /// Play stations, which goes through the same path any track does:
+    /// each key resolves to a locator and the player opens it. A set
+    /// replaces the queue with itself, the way playing one already does.
+    fn play_urls(&self, urls: &[String], cx: &mut Context<Self>) {
+        if urls.is_empty() {
+            return;
+        }
+
+        let keys: Vec<TrackKey> = urls.iter().map(|url| key_for(url)).collect();
         self.state
             .player
-            .update(cx, |player, cx| player.play_now(vec![key], cx));
+            .update(cx, |player, cx| player.play_now(keys, cx));
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -276,6 +539,7 @@ impl StationsPanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)))
             .children(self.notice.clone().map(|notice| {
                 div()
                     .flex_none()
@@ -321,6 +585,7 @@ impl StationsPanel {
                     .id("stations-list")
                     .size_full()
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .flex()
                     .flex_col()
                     .children(rows),
@@ -377,51 +642,74 @@ impl StationsPanel {
             )
     }
 
-    /// The right-click menu: play and remove for the row under the press,
-    /// then the panel's own items; the panel menu alone when the press
-    /// missed the rows.
+    /// The right-click menu: play, add to a playlist and remove, each
+    /// acting on every picked station; then the panel's own items. The
+    /// panel menu alone when the press missed the rows. The press itself
+    /// already put the row under it in the pick, so what the menu builds
+    /// for is always what's lit.
     fn row_menu(
         &mut self,
         menu: PopupMenu,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let Some(station) = self
-            .menu_row
-            .and_then(|ix| self.stations.get(ix))
-            .map(|(station, _)| station)
-        else {
+        let Some(url) = self.menu_row.and_then(|ix| self.url_at(ix)) else {
             return self.dropdown_menu(menu, window, cx);
         };
 
-        let play_url = station.url.clone();
-        let remove_url = station.url.clone();
-        let homepage = self.homepage(&station.url, cx);
-        let player = self.state.player.clone();
-        let panel = cx.entity().downgrade();
+        let urls = match self.selected_urls() {
+            picked if picked.is_empty() => vec![url.clone()],
 
-        let menu = menu
-            .item(
-                PopupMenuItem::new(rox_i18n::t!("stations-play"))
-                    .icon(Icon::default().path(icons::PLAY))
-                    .on_click(move |_, _, cx| {
-                        let key = key_for(&play_url);
-                        player.update(cx, |player, cx| player.play_now(vec![key], cx));
-                    }),
-            )
-            .item(
-                PopupMenuItem::new(rox_i18n::t!("stations-remove"))
-                    .icon(Icon::default().path(icons::TRASH))
-                    .on_click(move |_, _, cx| {
-                        panel
-                            .update(cx, |this, cx| this.remove(&remove_url, cx))
-                            .ok();
-                    }),
-            );
+            picked => picked,
+        };
+        let count = urls.len() as u64;
+        let ids: Vec<i64> = urls
+            .iter()
+            .filter_map(|url| self.ids.get(url).copied())
+            .collect();
+        // A homepage only exists for the playing station: the header is
+        // read at the connect and nothing stores it. It's a single row's
+        // action either way, so a multi-row pick doesn't offer it.
+        let homepage = (urls.len() == 1).then(|| self.homepage(&url, cx)).flatten();
+        let play_urls = urls.clone();
+        let remove_urls = urls;
+        let play_panel = cx.entity().downgrade();
+        let remove_panel = cx.entity().downgrade();
 
-        // Only the playing station has one to open. The homepage comes off
-        // the stream's own headers and `tracks` has no column to keep it
-        // in, so for every other row there's nothing to offer.
+        let play_label = match count {
+            0 | 1 => rox_i18n::t!("stations-play"),
+
+            n => rox_i18n::t!("stations-play-count", count = n),
+        };
+        let remove_label = match count {
+            0 | 1 => rox_i18n::t!("stations-remove"),
+
+            n => rox_i18n::t!("stations-remove-count", count = n),
+        };
+
+        let menu = menu.item(
+            PopupMenuItem::new(play_label)
+                .icon(Icon::default().path(icons::PLAY))
+                .on_click(move |_, _, cx| {
+                    play_panel
+                        .update(cx, |this, cx| this.play_urls(&play_urls, cx))
+                        .ok();
+                }),
+        );
+        // A station has a row in the library like anything else, so it
+        // can join a static list. The rest of the shared track menu (tags,
+        // renames, conversions) has nothing to act on here.
+        let menu = panel::playlist_item(menu, self.state.clone(), ids, window, cx);
+        let menu = menu.item(
+            PopupMenuItem::new(remove_label)
+                .icon(Icon::default().path(icons::TRASH))
+                .on_click(move |_, _, cx| {
+                    remove_panel
+                        .update(cx, |this, cx| this.remove(&remove_urls, cx))
+                        .ok();
+                }),
+        );
+
         let menu = match homepage {
             Some(homepage) => menu.item(
                 PopupMenuItem::new(rox_i18n::t!("stations-homepage"))
@@ -438,8 +726,9 @@ impl StationsPanel {
     /// One station: its logo, its name, and a line of whatever is known
     /// about the stream, with the URL moved to the tooltip. The playing
     /// row trades that second line for the song on air and pins the clocks
-    /// beside the name. A double click plays, the library's move; the
-    /// right-click menu holds the same play and the remove.
+    /// beside the name. A click picks the row, shift and ctrl build a set
+    /// out of it, a double click plays, and the right-click menu acts on
+    /// whatever is picked.
     fn row(
         &self,
         ix: usize,
@@ -454,6 +743,7 @@ impl StationsPanel {
 
         let url = station.url.clone();
         let play_url = station.url.clone();
+        let selected = self.selected.contains(&station.url);
         let facts = facts(heard);
 
         div()
@@ -467,10 +757,15 @@ impl StationsPanel {
             .w_full()
             .min_w_0()
             .cursor_pointer()
+            // The same accent wash the library and the queue mark a picked
+            // row with, so a set reads the same everywhere.
+            .when(selected, |row| {
+                row.bg(palette::alpha(palette::accent(), 0x26))
+            })
             // The playing row takes the highlight role, the same faint cut
             // the library and the bookmarks list pick a playing track out
-            // with.
-            .when(on_air, |row| {
+            // with. The pick outranks it, the library's order too.
+            .when(on_air && !selected, |row| {
                 row.bg(palette::alpha(palette::highlight(), 0x12))
             })
             .hover(|row| row.bg(palette::bg_control_hover()))
@@ -521,16 +816,41 @@ impl StationsPanel {
             // The URL is the station's identity, not something anyone
             // reads off a list, so it's here rather than on the row.
             .tooltip(move |window, cx| Tooltip::new(url.clone()).build(window, cx))
+            // The press picks, not the click: that's what the library and
+            // the queue do, and it means the highlight is already right
+            // when a right press opens the menu on top of it.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    // Take focus so the arrows and Enter reach the panel's
+                    // key handler.
+                    window.focus(&this.focus);
+                    if event.click_count == 1 {
+                        this.select(ix, event.modifiers, cx);
+                    }
+                }),
+            )
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 if event.click_count() >= 2 {
-                    this.play(&play_url, cx);
+                    this.play_urls(std::slice::from_ref(&play_url), cx);
                 }
             }))
             // Mark the row for the list's menu; the press itself keeps
-            // going so the list's own handler sees it too.
+            // going so the list's own handler sees it too. A press outside
+            // the set picks just that row first, so the menu never acts on
+            // rows the user can't see are picked.
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, _: &MouseDownEvent, _, _| this.menu_row = Some(ix)),
+                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    this.menu_row = Some(ix);
+                    let outside = this
+                        .url_at(ix)
+                        .is_none_or(|url| !this.selected.contains(&url));
+                    if outside {
+                        window.focus(&this.focus);
+                        this.select(ix, Modifiers::default(), cx);
+                    }
+                }),
             )
             .into_any_element()
     }

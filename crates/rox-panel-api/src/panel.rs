@@ -727,6 +727,62 @@ pub fn queue_tracks(state: &AppState, ids: &[i64], next: bool, cx: &mut App) {
     });
 }
 
+/// Add to Playlist as one flyout: Create New at the top, then every static
+/// list. Built at open time, so it reflects playlists made this session.
+/// Split out of [`track_actions`] because a surface can want this one entry
+/// without the rest of the track menu: a station has a row in the library
+/// and can join a list, but nothing to tag, rename or convert.
+pub fn playlist_item(
+    menu: PopupMenu,
+    state: AppState,
+    ids: Vec<i64>,
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    let submenu = PopupMenu::build(window, cx, move |mut submenu, _window, cx| {
+        let new_state = state.clone();
+        let new_ids = ids.clone();
+        submenu = submenu.item(
+            PopupMenuItem::new(rox_i18n::t!("panel-new-playlist"))
+                .icon(Icon::default().path(icons::PLUS))
+                .on_click(move |_, _, cx| {
+                    crate::openers::playlist_create(new_state.clone(), new_ids.clone(), cx);
+                }),
+        );
+        // Static lists only: a smart playlist holds what its query returns,
+        // so there's nothing here for a track to be added to.
+        let playlists: Vec<_> = state
+            .library
+            .read(cx)
+            .playlists()
+            .into_iter()
+            .filter(|playlist| playlist.kind == rox_library::playlists::PlaylistKind::Static)
+            .collect();
+        if !playlists.is_empty() {
+            submenu = submenu.separator();
+        }
+        for playlist in playlists {
+            let add_state = state.clone();
+            let add_ids = ids.clone();
+            let id = playlist.id;
+            submenu = submenu.item(
+                PopupMenuItem::new(SharedString::from(playlist.name)).on_click(move |_, _, cx| {
+                    let add_ids = add_ids.clone();
+                    add_state.library.update(cx, |library, cx| {
+                        library.add_to_playlist(id, &add_ids, cx);
+                    });
+                }),
+            );
+        }
+        submenu
+    });
+
+    menu.item(
+        PopupMenuItem::submenu(rox_i18n::t!("panel-add-to-playlist"), submenu)
+            .icon(Icon::default().path(icons::LIST_MUSIC)),
+    )
+}
+
 /// The track actions every song surface's right-click shares: Play under
 /// the caller's label, the selection into the tag and cover editors, the
 /// Copy submenu, and Reveal in File Browser. What playing queues differs per panel (the
@@ -806,49 +862,7 @@ pub fn track_actions(
                     .update(cx, |library, cx| library.set_favourites(&ids, !all_fav, cx));
             }),
     );
-    // Add to Playlist flies out the existing playlists with Create New at the
-    // top. Built at open time, so it reflects playlists made this session.
-    let submenu = PopupMenu::build(window, cx, move |mut submenu, _window, cx| {
-        let new_state = playlist_state.clone();
-        let new_ids = playlist_ids.clone();
-        submenu = submenu.item(
-            PopupMenuItem::new(rox_i18n::t!("panel-new-playlist"))
-                .icon(Icon::default().path(icons::PLUS))
-                .on_click(move |_, _, cx| {
-                    crate::openers::playlist_create(new_state.clone(), new_ids.clone(), cx);
-                }),
-        );
-        // Static lists only: a smart playlist holds what its query returns,
-        // so there's nothing here for a track to be added to.
-        let playlists: Vec<_> = playlist_state
-            .library
-            .read(cx)
-            .playlists()
-            .into_iter()
-            .filter(|playlist| playlist.kind == rox_library::playlists::PlaylistKind::Static)
-            .collect();
-        if !playlists.is_empty() {
-            submenu = submenu.separator();
-        }
-        for playlist in playlists {
-            let add_state = playlist_state.clone();
-            let add_ids = playlist_ids.clone();
-            let id = playlist.id;
-            submenu = submenu.item(
-                PopupMenuItem::new(SharedString::from(playlist.name)).on_click(move |_, _, cx| {
-                    let add_ids = add_ids.clone();
-                    add_state.library.update(cx, |library, cx| {
-                        library.add_to_playlist(id, &add_ids, cx);
-                    });
-                }),
-            );
-        }
-        submenu
-    });
-    let menu = menu.item(
-        PopupMenuItem::submenu(rox_i18n::t!("panel-add-to-playlist"), submenu)
-            .icon(Icon::default().path(icons::LIST_MUSIC)),
-    );
+    let menu = playlist_item(menu, playlist_state, playlist_ids, window, cx);
     // Clearing bookmarks only offers itself where there are some to clear:
     // a row for every track would be noise on a library where most have
     // none.

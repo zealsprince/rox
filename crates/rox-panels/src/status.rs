@@ -155,6 +155,10 @@ struct Totals {
     /// the hover matches the metadata panel's library sheet.
     genres: usize,
     plays: u64,
+    /// Rows in scope that aren't library tracks: stations. They have no
+    /// duration and no album, so they count for the selection readout and
+    /// for nothing else.
+    live: usize,
     selection: bool,
     /// What a standing selection resolves to by name: the track's title
     /// when one row is picked, "artist - album" when the selection holds
@@ -281,6 +285,7 @@ impl StatusPanel {
         let mut artists: HashSet<u32> = HashSet::new();
         let mut genre_syms: HashSet<u32> = HashSet::new();
         let mut plays = 0u64;
+        let mut live = 0usize;
         let mut first_ix: Option<u32> = None;
         for (ix, id) in projection.db_id.iter().enumerate() {
             if projection.is_dead(ix as u32) {
@@ -292,6 +297,7 @@ impl StatusPanel {
             // A station's plays are songs heard, so they count; the row
             // itself is not a track, an album or an artist of the library.
             if !projection.is_browsable(ix as u32) {
+                live += 1;
                 plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
                 continue;
             }
@@ -312,7 +318,7 @@ impl StatusPanel {
         // or one album. The album only takes the label when the selection
         // holds all of it: a partial pick reads "N selected" instead of
         // showing the full album's name.
-        let selection_label = first_ix.filter(|_| selection).and_then(|ix| {
+        let selection_label = first_ix.filter(|_| selection && live == 0).and_then(|ix| {
             let row = projection.resolve(ix);
             if tracks == 1 {
                 return (!row.title.is_empty()).then(|| row.title.to_string());
@@ -351,6 +357,7 @@ impl StatusPanel {
             artists: artists.len(),
             genres,
             plays,
+            live,
             selection,
             selection_label,
         });
@@ -431,19 +438,21 @@ fn genre_count(syms: HashSet<u32>, strings: &[String]) -> usize {
 
 /// One pass over the projection for a scope, filtered to the given ids
 /// while the set holds any and covering the whole catalog when it's
-/// empty. Hands back the track count and the summed time alongside the
-/// hover card's rows, since the menubar's status line reads those two off
-/// the same walk. The panel keeps its own richer scan; this one is what
-/// the surfaces with nowhere to cache share.
+/// empty. Hands back the track count, the count of live rows (stations,
+/// which are in the scope but are not tracks of it) and the summed time
+/// alongside the hover card's rows, since the menubar's status line reads
+/// those off the same walk. The panel keeps its own richer scan; this one
+/// is what the surfaces with nowhere to cache share.
 fn scope_totals(
     library: &Entity<Library>,
     selected: &HashSet<i64>,
     cx: &App,
-) -> (usize, u64, Vec<(SharedString, SharedString)>) {
+) -> (usize, usize, u64, Vec<(SharedString, SharedString)>) {
     let Some(projection) = library.read(cx).projection() else {
-        return (0, 0, Vec::new());
+        return (0, 0, 0, Vec::new());
     };
     let mut tracks = 0usize;
+    let mut live = 0usize;
     let mut total_ms = 0u64;
     let mut plays = 0u64;
     let mut albums: HashSet<(u32, u32)> = HashSet::new();
@@ -459,6 +468,7 @@ fn scope_totals(
         // Same split as the status bar: a station's plays are real listens,
         // the row is not a library track.
         if !projection.is_browsable(ix as u32) {
+            live += 1;
             plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
             continue;
         }
@@ -477,7 +487,7 @@ fn scope_totals(
         total_ms,
         plays,
     );
-    (tracks, total_ms, rows)
+    (tracks, live, total_ms, rows)
 }
 
 /// The selected ids as a set, for scoping a scan.
@@ -489,7 +499,7 @@ fn selected_ids(selection: &Entity<Selection>, cx: &App) -> HashSet<i64> {
 /// menubar's track count uses this one: no panel stands behind it, so
 /// there's nowhere to cache and one projection scan per hover is fine.
 pub fn library_tooltip(library: &Entity<Library>, cx: &mut App) -> AnyView {
-    let (_, _, rows) = scope_totals(library, &HashSet::new(), cx);
+    let (_, _, _, rows) = scope_totals(library, &HashSet::new(), cx);
     cx.new(|_| TotalsTooltip {
         scope: rox_i18n::t!("panel-title-library"),
         rows,
@@ -504,7 +514,7 @@ pub fn selection_tooltip(
     selection: &Entity<Selection>,
     cx: &mut App,
 ) -> AnyView {
-    let (_, _, rows) = scope_totals(library, &selected_ids(selection, cx), cx);
+    let (_, _, _, rows) = scope_totals(library, &selected_ids(selection, cx), cx);
     cx.new(|_| TotalsTooltip {
         scope: rox_i18n::t!("status-scope-selection"),
         rows,
@@ -512,21 +522,27 @@ pub fn selection_tooltip(
     .into()
 }
 
-/// The selection's track count and summed time, or None while nothing is
+/// The selection's row count and summed time, or None while nothing is
 /// picked or the catalog has none of what is. The menubar's status line
 /// runs this when the selection or the catalog moves and shows the cached
 /// pair in between, the way the strip caches its own readouts.
+///
+/// Stations count towards the number and carry no time: a pick of them
+/// alone hands back None for the duration, so the line reads "2 selected"
+/// rather than "2 selected / 0:00".
 pub fn selection_summary(
     library: &Entity<Library>,
     selection: &Entity<Selection>,
     cx: &App,
-) -> Option<(usize, u64)> {
+) -> Option<(usize, Option<u64>)> {
     let selected = selected_ids(selection, cx);
     if selected.is_empty() {
         return None;
     }
-    let (tracks, total_ms, _) = scope_totals(library, &selected, cx);
-    (tracks > 0).then_some((tracks, total_ms))
+    let (tracks, live, total_ms, _) = scope_totals(library, &selected, cx);
+    let picked = tracks + live;
+
+    (picked > 0).then_some((picked, (tracks > 0).then_some(total_ms)))
 }
 
 /// The count's hover card: the scope's full readout set, the stats
@@ -651,10 +667,18 @@ impl StatusPanel {
             .gap(tokens::SPACE_SM)
             .px(tokens::SPACE_MD);
         // An empty catalog with nothing picked stays quiet, like the
-        // track info panel at idle.
-        let Some(totals) = self.totals.as_ref().filter(|t| t.tracks > 0) else {
+        // track info panel at idle. A pick of stations alone counts no
+        // tracks and still has something to say, so it keeps the strip up.
+        let Some(totals) = self
+            .totals
+            .as_ref()
+            .filter(|t| t.tracks > 0 || (t.selection && t.live > 0))
+        else {
             return root;
         };
+        // A station has no duration, so a pick that holds nothing else
+        // would read "2 selected / 0:00". Drop the clock instead.
+        let live_only = totals.selection && totals.tracks == 0;
         // The count leads in the text color; every other readout is
         // muted behind it, the classic status bar weighting.
         let stat = |text: SharedString| {
@@ -672,6 +696,7 @@ impl StatusPanel {
             .config
             .items
             .iter()
+            .filter(|item| !(live_only && matches!(item, StatusItem::Time)))
             .map(|item| match item {
                 StatusItem::Count => {
                     // A selection that resolves to one name shows the name:
@@ -680,7 +705,8 @@ impl StatusPanel {
                     // long, so this one truncates instead of pinning.
                     let label = match (totals.selection, totals.tracks) {
                         (true, n) => totals.selection_label.clone().unwrap_or_else(|| {
-                            rox_i18n::t!("status-count-selected", count = n as u64).to_string()
+                            let picked = (n + totals.live) as u64;
+                            rox_i18n::t!("status-count-selected", count = picked).to_string()
                         }),
                         (false, n) => {
                             rox_i18n::t!("status-count-tracks", count = n as u64).to_string()

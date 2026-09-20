@@ -69,7 +69,12 @@ mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps" \
     "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp "$ASSETS/rox-music.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 png="$APPDIR/usr/share/icons/hicolor/256x256/apps/$APP_ID.png"
-if command -v convert >/dev/null 2>&1; then
+# ImageMagick 7 ships the tool as `magick` and 6 as `convert`, so both
+# names are tried; the first release build checked only `convert` and
+# shipped the 2048px source into the 256px slot.
+if command -v magick >/dev/null 2>&1; then
+    magick "$ASSETS/rox.png" -resize 256x256 "$png"
+elif command -v convert >/dev/null 2>&1; then
     convert "$ASSETS/rox.png" -resize 256x256 "$png"
 else
     echo "ImageMagick not found, shipping the 2048px icon as is"

@@ -635,7 +635,9 @@ library-genre-face = Обличчя жанру
 
 stations-title = Радіостанції
 stations-play = Відтворити
+stations-play-count = Відтворити станції: { $count }
 stations-remove = Вилучити
+stations-remove-count = Вилучити станції: { $count }
 stations-find = Знайти станції...
 stations-manage = Керування станціями...
 stations-import = Імпортувати станції...

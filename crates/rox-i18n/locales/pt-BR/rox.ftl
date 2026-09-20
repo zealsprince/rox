@@ -624,7 +624,9 @@ library-genre-face = Face do gênero
 
 stations-title = Estações
 stations-play = Reproduzir
+stations-play-count = Reproduzir { $count } estações
 stations-remove = Remover
+stations-remove-count = Remover { $count } estações
 stations-find = Buscar estações...
 stations-manage = Gerenciar estações...
 stations-import = Importar estações...

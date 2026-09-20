@@ -3205,12 +3205,13 @@ pub struct Workspace {
     /// The menubar's right side shows the catalog status, so library
     /// updates must repaint the workspace.
     _library_changed: Subscription,
-    /// What the menubar's status line shows while a selection stands: the
-    /// picked track count and their summed time. None with nothing picked,
-    /// where the line stays the catalog's own status. Computed when the
-    /// selection or the catalog moves, so the bar never scans the
-    /// projection per frame.
-    selection_status: Option<(usize, u64)>,
+    /// What the menubar's status line shows while a selection stands: how
+    /// many rows are picked and their summed time. None with nothing
+    /// picked, where the line stays the catalog's own status; the time is
+    /// None for a pick of stations, which have no duration to sum.
+    /// Computed when the selection or the catalog moves, so the bar never
+    /// scans the projection per frame.
+    selection_status: Option<(usize, Option<u64>)>,
     /// A new pick rescopes that line.
     _selection_changed: Subscription,
     /// A recorded listen bumps its track's play count in the shared

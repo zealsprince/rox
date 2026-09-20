@@ -613,7 +613,9 @@ library-genre-face = ジャンルの表示
 
 stations-title = ラジオ局
 stations-play = 再生
+stations-play-count = { $count } 局を再生
 stations-remove = 削除
+stations-remove-count = { $count } 局を削除
 stations-find = ラジオ局を探す...
 stations-manage = ラジオ局を管理...
 stations-import = ラジオ局をインポート...

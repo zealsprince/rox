@@ -7,11 +7,11 @@
 //! job is to talk each platform's context API into handing over a context
 //! with nothing attached to it.
 //!
-//! Every platform has an answer and they're all slightly different. EGL says
-//! surfaceless out loud, and glutin's EGL backend takes an X11 display handle
-//! with a null display pointer as "give me `EGL_DEFAULT_DISPLAY`", which is
-//! what a machine with no X server still resolves through Mesa. CGL treats
-//! surfaceless as normal. WGL is the awkward one: it can't produce a context
+//! Every platform has an answer and they're all slightly different. On Linux
+//! it takes two: the X11 display handle with a null display pointer that every
+//! desktop has always used, and an EGL device display opened straight on a
+//! render node for the machines with no X server to answer the first one. CGL
+//! treats surfaceless as normal. WGL is the awkward one: it can't produce a context
 //! without a device context, and a device context comes from a window, so the
 //! worker makes a 1x1 window nobody ever shows and throws it away afterwards.
 //!
@@ -226,34 +226,146 @@ fn create_display(window_handle: Option<RawWindowHandle>) -> Result<Display, Str
     let _ = window_handle;
 
     #[cfg(target_os = "macos")]
-    let (handle, preference) = (
-        raw_window_handle::RawDisplayHandle::AppKit(raw_window_handle::AppKitDisplayHandle::new()),
-        DisplayApiPreference::Cgl,
-    );
+    {
+        let handle = raw_window_handle::RawDisplayHandle::AppKit(
+            raw_window_handle::AppKitDisplayHandle::new(),
+        );
+        return unsafe { Display::new(handle, DisplayApiPreference::Cgl) }
+            .map_err(|e| step_error("opening the graphics display", &e));
+    }
 
     // WGL wants the window's device context, which it takes from the handle
     // passed here rather than from the one on the context attributes.
     #[cfg(windows)]
-    let (handle, preference) = (
-        raw_window_handle::RawDisplayHandle::Windows(raw_window_handle::WindowsDisplayHandle::new()),
-        DisplayApiPreference::Wgl(window_handle),
-    );
+    {
+        let handle = raw_window_handle::RawDisplayHandle::Windows(
+            raw_window_handle::WindowsDisplayHandle::new(),
+        );
+        return unsafe { Display::new(handle, DisplayApiPreference::Wgl(window_handle)) }
+            .map_err(|e| step_error("opening the graphics display", &e));
+    }
 
-    // A null Xlib display is glutin's spelling of `EGL_DEFAULT_DISPLAY`: its
-    // EGL backend maps `display: None` straight onto it, both on the
-    // platform-display path and on the legacy `eglGetDisplay` fallback. So
-    // this works with an X server, under Wayland, and on a machine with
-    // neither, where Mesa answers with llvmpipe.
     #[cfg(not(any(target_os = "macos", windows)))]
-    let (handle, preference) = (
-        raw_window_handle::RawDisplayHandle::Xlib(raw_window_handle::XlibDisplayHandle::new(
-            None, 0,
-        )),
-        DisplayApiPreference::Egl,
-    );
+    {
+        create_egl_display()
+    }
+}
 
-    unsafe { Display::new(handle, preference) }
-        .map_err(|e| step_error("opening the graphics display", &e))
+/// The two ways this module knows to reach EGL.
+///
+/// They are tried in whichever order the machine makes likelier, and the first
+/// one that opens wins.
+#[cfg(not(any(target_os = "macos", windows)))]
+#[derive(Clone, Copy)]
+enum EglPlatform {
+    /// A null Xlib display handle, which glutin's EGL backend maps onto
+    /// `EGL_DEFAULT_DISPLAY`. The name promises more than it delivers: Mesa
+    /// resolves it through the X11 platform, so it wants a reachable X server
+    /// and fails with `EGL_NOT_INITIALIZED` when there isn't one.
+    X11,
+    /// An `EGL_PLATFORM_DEVICE_EXT` display, opened on a render node with
+    /// nothing windowing-related in the way. This is the one that works in a
+    /// Flatpak sandbox, over a bare SSH session, and on a headless CI runner.
+    Device,
+}
+
+/// Open an EGL display, preferring whichever platform this machine is set up
+/// for.
+///
+/// The X11 handle goes first when `DISPLAY` names a server, because that is
+/// the path every working desktop has been taking and there is no reason to
+/// move them off it. With no X server the device platform goes first instead,
+/// and X11 still runs behind it so a driver that offers no device extensions
+/// keeps whatever it had.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn create_egl_display() -> Result<Display, String> {
+    let has_x11 = std::env::var_os("DISPLAY").is_some_and(|display| !display.is_empty());
+    let order = if has_x11 {
+        [EglPlatform::X11, EglPlatform::Device]
+    } else {
+        [EglPlatform::Device, EglPlatform::X11]
+    };
+
+    let mut failures = Vec::new();
+    for platform in order {
+        match open_egl_display(platform) {
+            Ok(display) => {
+                announce(platform);
+                return Ok(display);
+            }
+            Err(error) => failures.push(error),
+        }
+    }
+
+    // The first failure is the one the machine was expected to succeed at, so
+    // its wording leads and keeps the shape the single-attempt path had.
+    Err(failures.join(", and "))
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn open_egl_display(platform: EglPlatform) -> Result<Display, String> {
+    match platform {
+        EglPlatform::X11 => {
+            let handle = raw_window_handle::RawDisplayHandle::Xlib(
+                raw_window_handle::XlibDisplayHandle::new(None, 0),
+            );
+            unsafe { Display::new(handle, DisplayApiPreference::Egl) }
+                .map_err(|e| step_error("opening the graphics display", &e))
+        }
+        EglPlatform::Device => open_device_display(),
+    }
+}
+
+/// Open a display on the first EGL device that will have us.
+///
+/// `query_devices` lists every renderer the driver stack knows about, hardware
+/// and software together and in no promised order, so they get sorted before
+/// anything is opened: a machine with a GPU should use it, and Mesa's llvmpipe
+/// marks itself with `EGL_MESA_device_software` and makes a fine last resort.
+///
+/// glutin 0.32 reaches the device platform but not `EGL_PLATFORM_SURFACELESS_MESA`,
+/// which has no `RawDisplayHandle` variant and no constructor of its own. The
+/// two behave the same for our purposes: both open without a window system,
+/// both hand back pbuffer-capable configs and `EGL_KHR_surfaceless_context`.
+/// Device has the edge that it says which GPU it picked.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn open_device_display() -> Result<Display, String> {
+    use glutin::api::egl::device::Device;
+    use glutin::api::egl::display::Display as EglDisplay;
+
+    let mut devices: Vec<Device> = Device::query_devices()
+        .map_err(|e| step_error("asking EGL which devices it can render on", &e))?
+        .collect();
+    devices.sort_by_key(|device| device.extensions().contains("EGL_MESA_device_software"));
+
+    let mut failure = format!("{PLATFORM} found no offscreen device to render on");
+    for device in &devices {
+        match unsafe { EglDisplay::with_device(device, None) } {
+            Ok(display) => return Ok(Display::Egl(display)),
+            Err(error) => failure = step_error("opening an offscreen EGL device display", &error),
+        }
+    }
+
+    Err(failure)
+}
+
+/// Name the path that worked, once per process.
+///
+/// Which platform answered decides whether this machine can run Milkdrop at
+/// all, and it is the first thing worth knowing when a bug report says the
+/// panel is black. Once, because opening and closing the panel builds a fresh
+/// context every time and the answer never changes inside a run.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn announce(platform: EglPlatform) {
+    static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+
+    ANNOUNCED.call_once(|| {
+        let path = match platform {
+            EglPlatform::X11 => "the X11 display",
+            EglPlatform::Device => "an offscreen EGL device",
+        };
+        log::info!("milkdrop: opened {PLATFORM} through {path}");
+    });
 }
 
 fn find_config(display: &Display) -> Result<Config, String> {

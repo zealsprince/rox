@@ -105,7 +105,8 @@ jobs:
       # clone. We're root in the container, so no sudo. git and curl serve
       # checkout, the toolchain installer and install-action; dpkg-dev is
       # dpkg-shlibdeps for cargo-deb's $auto; file is for appimagetool;
-      # cmake is for rox-milkdrop-sys, which builds libprojectM from source.
+      # cmake is for rox-milkdrop-sys, which builds libprojectM from source;
+      # imagemagick downscales the AppImage's icon to the 256px slot.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -114,7 +115,7 @@ jobs:
             build-essential git curl ca-certificates dpkg-dev file \
             pkg-config libasound2-dev libfontconfig1-dev libwayland-dev \
             libxkbcommon-x11-dev libx11-dev libxcb1-dev libvulkan-dev \
-            libssl-dev cmake
+            libssl-dev cmake imagemagick
 
       - uses: actions/checkout@v7
         with:

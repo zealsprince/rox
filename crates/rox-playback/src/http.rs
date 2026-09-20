@@ -321,6 +321,67 @@ fn range_total(value: &str) -> Option<u64> {
     value.rsplit_once('/')?.1.trim().parse().ok()
 }
 
+/// How much of a refusing server's body is read to find its reason. An API
+/// error is a few hundred bytes; anything past this isn't one, and the cap
+/// is what keeps a mislabelled stream from being pulled into memory whole.
+const REFUSAL_PEEK: u64 = 4096;
+
+/// The server's own reason for answering something other than audio, or
+/// None when what came back is a stream.
+///
+/// Only a JSON or XML content type counts. Stations serve plenty of vague
+/// types, `application/octet-stream` most of all, and the probe sniffs
+/// those perfectly well; a structured document is the one shape that is
+/// never music.
+fn refused(resp: &mut Resp) -> Option<String> {
+    let mime = resp
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    let structured = mime.ends_with("/json")
+        || mime.ends_with("+json")
+        || mime.ends_with("/xml")
+        || mime.ends_with("+xml");
+    if !structured {
+        return None;
+    }
+
+    let mut head = Vec::new();
+    let _ = resp.body.by_ref().take(REFUSAL_PEEK).read_to_end(&mut head);
+    let body = String::from_utf8_lossy(&head);
+
+    Some(match api_message(&body) {
+        Some(reason) => format!("the server refused the stream: {reason}"),
+
+        // Something structured that isn't a shape we read. Naming the type
+        // is still worth more than letting the probe call it a bad codec.
+        None => format!("the server answered {mime} rather than audio"),
+    })
+}
+
+/// The message out of a Subsonic error body, in either form a server
+/// answers in. A stream URL carries no `f=json`, so which one arrives is
+/// the server's choice: Navidrome and gonic both pick XML.
+fn api_message(body: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        return value
+            .pointer("/subsonic-response/error/message")
+            .and_then(|m| m.as_str())
+            .map(str::to_string);
+    }
+
+    let (_, rest) = body.split_once("message=\"")?;
+    let (message, _) = rest.split_once('"')?;
+
+    Some(message.to_string())
+}
+
 /// The container extension a `Content-Type` implies, for hinting the probe
 /// when the locator didn't say. None means let symphonia sniff the bytes,
 /// which it's good at; a wrong hint is worse than no hint.
@@ -436,6 +497,17 @@ fn open_with(
 
     if resp.status >= 300 {
         return Err(format!("server returned {}", resp.status));
+    }
+
+    // A server that won't serve this track can still answer 200, with its
+    // own error document where the audio should be. Subsonic does exactly
+    // that for a bad token, a share that expired and a song id it no longer
+    // has. Caught here because the probe downstream can only say it found
+    // no container, which sends the reader hunting a codec bug over what is
+    // really a refused request.
+    let mut resp = resp;
+    if let Some(refusal) = refused(&mut resp) {
+        return Err(refusal);
     }
 
     let station = resp.station.clone();
@@ -1432,6 +1504,85 @@ mod tests {
         assert_eq!(info.content_type, "audio/flac");
         assert!(info.is_empty(), "a file server describes no station");
         assert_eq!(fake.asks.lock().unwrap().len(), 1);
+    }
+
+    /// A refused stream reads as a refusal rather than as a broken file.
+    /// Subsonic answers 200 with its error document where the audio should
+    /// be, and before this the probe got a few hundred bytes of XML and
+    /// reported "no suitable format reader found", which is a true sentence
+    /// about entirely the wrong thing.
+    #[test]
+    fn a_server_that_answers_an_error_document_says_so() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<subsonic-response status="failed" version="1.16.1">
+  <error code="40" message="Wrong username or password"/>
+</subsonic-response>"#;
+        let fake = Fake::serving(xml.to_vec(), "application/xml");
+
+        let err = open_with(
+            fake,
+            &remote(false),
+            no_titles(),
+            no_stream(),
+            uninterrupted(),
+            600,
+        )
+        .map(|_| ())
+        .expect_err("a refused stream is not an open");
+
+        assert_eq!(
+            err,
+            "the server refused the stream: Wrong username or password"
+        );
+    }
+
+    /// The same for a server that answers JSON, which is what a `f=json`
+    /// request gets, and for one whose document rox has no shape for.
+    #[test]
+    fn a_json_refusal_reads_the_same_and_an_unknown_one_names_the_type() {
+        let json = br#"{"subsonic-response":{"status":"failed","version":"1.16.1",
+            "error":{"code":70,"message":"The requested data was not found"}}}"#;
+        let open = |bytes: Vec<u8>, content_type: &str| {
+            open_with(
+                Fake::serving(bytes, content_type),
+                &remote(false),
+                no_titles(),
+                no_stream(),
+                uninterrupted(),
+                600,
+            )
+            .map(|_| ())
+            .expect_err("a refused stream is not an open")
+        };
+
+        assert_eq!(
+            open(json.to_vec(), "application/json; charset=utf-8"),
+            "the server refused the stream: The requested data was not found"
+        );
+        assert_eq!(
+            open(br#"{"detail":"nope"}"#.to_vec(), "application/json"),
+            "the server answered application/json rather than audio"
+        );
+    }
+
+    /// And a vague content type is still opened. Stations serve
+    /// `application/octet-stream` constantly and the probe reads those; a
+    /// refusal check that ate them would break every one of them.
+    #[test]
+    fn an_unlabelled_stream_is_left_to_the_probe() {
+        let fake = Fake::serving(bytes(4096), "application/octet-stream");
+
+        let (opened, _) = open_with(
+            fake,
+            &remote(false),
+            no_titles(),
+            no_stream(),
+            uninterrupted(),
+            600,
+        )
+        .expect("a stream with a vague type still opens");
+
+        assert_eq!(opened.source.byte_len(), Some(4096));
     }
 
     #[test]

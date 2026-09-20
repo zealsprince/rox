@@ -781,6 +781,12 @@ mod tests {
         assert!(signed.contains("&t="));
         assert!(signed.contains("&s="));
 
+        // The token is what goes on the wire, never the password. The legacy
+        // `p=` parameter would work against most servers, which is exactly
+        // why it wants pinning shut.
+        assert!(!signed.contains("p="));
+        assert!(!signed.contains("sesame"));
+
         // Two signings of one URL differ, which is the point of the salt.
         assert_ne!(signed, server.sign(&url));
     }

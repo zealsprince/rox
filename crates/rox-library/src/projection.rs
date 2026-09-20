@@ -887,6 +887,15 @@ pub fn shard_for_ids(
     Ok(shard)
 }
 
+/// Whether rows filed under this source string belong in the browse views.
+/// The single definition behind [`Projection::is_browsable`]: radio is out,
+/// everything else is in. Subsonic stays in because a server is a catalog,
+/// with albums and artists and durations like any other; a station is a
+/// live stream with a name and nothing else.
+fn source_browsable(source: &str) -> bool {
+    crate::cue::Origin::of(source) != crate::cue::Origin::Radio
+}
+
 pub struct Projection {
     /// Whether the name symbols interned case-folded, the library's
     /// case-insensitive setting at load time. Matching against symbol
@@ -1012,6 +1021,19 @@ pub struct Projection {
     /// the dead weight has earned a rebuild.
     dead: Vec<bool>,
     dead_rows: usize,
+    /// Whether each row belongs in the views that browse the library: the
+    /// track list, the grids, the folder tree, the carousel, the filter
+    /// counts and the search. False for a radio station.
+    ///
+    /// A station is an ordinary track row on purpose, which is what gets it
+    /// the queue, playlists, history and the resolve path for free. What it
+    /// isn't is something to browse a music collection by: no album, no
+    /// artist, no year and no duration, so every grid files it under
+    /// Unknown and every list sorts it into the middle of the real tracks.
+    /// One byte a row, read off the source column once at build time rather
+    /// than per row per paint, and the one answer every browse surface
+    /// shares so none of them has to know what a station is.
+    browsable: Vec<bool>,
     /// Value to symbol per table, built the first time the projection is
     /// patched and kept warm after: the finalized tables are vectors, so
     /// without this an append would scan a hundred thousand strings to ask
@@ -1147,6 +1169,21 @@ pub struct AlbumHit {
     pub album_artist: u32,
     pub album: u32,
     pub row: u32,
+}
+
+/// Which rows a query is allowed to reach.
+///
+/// The browse surfaces and the general search boxes run the same matcher
+/// over the same columns and want different answers out of it: a list, a
+/// grid or a tree has nowhere to put a station, and a search box that
+/// can't find one makes the station you added invisible everywhere but
+/// its own panel. One knob on the scan, picked at the entry point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchScope {
+    /// Browsable rows only: tombstones and stations are out.
+    Browse,
+    /// Every live row, stations included.
+    All,
 }
 
 /// A field a query term can be pinned to with `field:value` syntax.
@@ -1819,9 +1856,18 @@ impl Projection {
         self.db_id.is_empty()
     }
 
-    /// How many rows a browse actually sees.
+    /// How many rows are alive, stations included. The store's own count.
     pub fn live_len(&self) -> usize {
         self.db_id.len() - self.dead_rows
+    }
+
+    /// How many rows a browse actually sees: alive and not a station. The
+    /// number every "N tracks" readout wants, since a station is played
+    /// from its own panel and isn't a track of the collection.
+    pub fn browse_len(&self) -> usize {
+        (0..self.len() as u32)
+            .filter(|&row| self.is_browsable(row))
+            .count()
     }
 
     /// Whether a row has been tombstoned by a patch. Nothing that goes
@@ -1829,6 +1875,17 @@ impl Projection {
     /// out; this is for callers holding a row index from before a patch.
     pub fn is_dead(&self, row: u32) -> bool {
         self.dead.get(row as usize).copied().unwrap_or(true)
+    }
+
+    /// Whether a row belongs on a browse surface: alive, and not a radio
+    /// station. Every pass that feeds a list, a grid, a tree or a count
+    /// asks this instead of [`Projection::is_dead`], so a panel never has
+    /// to know a station exists. The row still resolves, still plays and
+    /// still answers to its key; it just isn't something to browse by.
+    pub fn is_browsable(&self, row: u32) -> bool {
+        let i = row as usize;
+        !self.dead.get(i).copied().unwrap_or(true)
+            && self.browsable.get(i).copied().unwrap_or(false)
     }
 
     pub fn dead_rows(&self) -> usize {
@@ -1846,14 +1903,22 @@ impl Projection {
         self.dead_rows as f64 / self.db_id.len() as f64
     }
 
-    /// Every live row in row order, the starting point for the passes that
-    /// would otherwise be a bare range over the columns.
-    fn live_rows(&self) -> Vec<u32> {
-        if self.dead_rows == 0 {
-            return (0..self.len() as u32).collect();
-        }
+    /// Every browsable row in row order, the starting point for the passes
+    /// that would otherwise be a bare range over the columns. The canonical
+    /// order and the unqueried search both start here, so a station is out
+    /// of both without either of them naming it.
+    fn browse_rows(&self) -> Vec<u32> {
         (0..self.len() as u32)
-            .filter(|&row| !self.dead[row as usize])
+            .filter(|&row| self.is_browsable(row))
+            .collect()
+    }
+
+    /// Every row a tombstone hasn't taken, in row order. What a search
+    /// widened to [`SearchScope::All`] falls back to when nothing is
+    /// typed, where the browse passes take [`Projection::browse_rows`].
+    fn live_rows(&self) -> Vec<u32> {
+        (0..self.len() as u32)
+            .filter(|&row| !self.is_dead(row))
             .collect()
     }
 
@@ -2143,6 +2208,20 @@ impl Projection {
         } else {
             Some((out.title_sort, out.title_sort_lower))
         };
+        // The browse mask, resolved per source symbol and then read onto
+        // the rows. A library holds a handful of sources and a million
+        // rows, so the string check runs a handful of times.
+        let sources = SymTable::from(sources);
+        let browsable_source: Vec<bool> = sources
+            .strings
+            .iter()
+            .map(|s| source_browsable(s))
+            .collect();
+        let browsable: Vec<bool> = out
+            .source
+            .iter()
+            .map(|&sym| browsable_source[sym as usize])
+            .collect();
         Projection {
             fold,
             db_id: out.db_id,
@@ -2180,7 +2259,7 @@ impl Projection {
             genres: SymTable::from(genres),
             codecs: SymTable::from(codecs),
             folders: SymTable::from(folders),
-            sources: SymTable::from(sources),
+            sources,
             artist_ranks: OnceLock::new(),
             album_artist_ranks: OnceLock::new(),
             album_ranks: OnceLock::new(),
@@ -2194,6 +2273,7 @@ impl Projection {
             // it is exactly what the database holds.
             dead: vec![false; rows],
             dead_rows: 0,
+            browsable,
             sym_index: None,
         }
     }
@@ -2284,6 +2364,30 @@ impl Projection {
         self.search_at(query, now_secs())
     }
 
+    /// [`Projection::search`] widened to every live row, stations
+    /// included. The general query boxes take this one: a station is
+    /// something you can play, so it's something you can look for, and
+    /// the browse surfaces keep the narrow entry point above.
+    ///
+    /// The station rows come out after the track hits, since a general
+    /// search is a list of music with a station or two at the end of it
+    /// rather than a station sitting in among the songs.
+    pub fn search_all(&self, query: &str) -> Vec<u32> {
+        self.search_all_at(query, now_secs())
+    }
+
+    /// [`Projection::search_all`] with the now-timestamp handed in, the
+    /// way [`Projection::search_at`] takes one.
+    pub fn search_all_at(&self, query: &str, now: i64) -> Vec<u32> {
+        let rows = self.search_scoped_at(query, now, SearchScope::All);
+        // One pass, browsable first: `scan_rows_in` hands back row order,
+        // and row order puts a station wherever it happened to load.
+        let (mut tracks, stations): (Vec<u32>, Vec<u32>) =
+            rows.into_iter().partition(|&row| self.is_browsable(row));
+        tracks.extend(stations);
+        tracks
+    }
+
     /// The first local row whose artist and title are exactly each of
     /// these, folded the way search folds, answered in the order asked.
     /// For the surfaces that hold a song's two names and want the file of
@@ -2365,9 +2469,20 @@ impl Projection {
     /// [`Projection::search`] with the now-timestamp handed in: unix
     /// seconds, what an `added:<90d` term measures its age against.
     pub fn search_at(&self, query: &str, now: i64) -> Vec<u32> {
+        self.search_scoped_at(query, now, SearchScope::Browse)
+    }
+
+    /// The matcher both search entry points run, told which rows it may
+    /// reach. Everything below here is scope-blind: the scope only picks
+    /// the liveness check `scan_rows_in` puts in front of the predicate,
+    /// and the row set an empty query falls back to.
+    fn search_scoped_at(&self, query: &str, now: i64, scope: SearchScope) -> Vec<u32> {
         let terms = parse_query(query);
         if terms.is_empty() {
-            return self.live_rows();
+            return match scope {
+                SearchScope::Browse => self.browse_rows(),
+                SearchScope::All => self.live_rows(),
+            };
         }
 
         /// What one term's row check needs, precomputed off the row scan.
@@ -2527,9 +2642,10 @@ impl Projection {
             })
             .collect();
 
-        self.scan_rows(|i| {
-            // Tombstones are already out (scan_rows drops them before the
-            // predicate), so a negated term flips only live rows.
+        self.scan_rows_in(scope, |i| {
+            // The scope's liveness check already ran (`scan_rows_in`
+            // drops those rows before the predicate), so a negated term
+            // flips only rows the caller would have been shown anyway.
             hits.iter().all(|(negated, h)| {
                 let hit = match h {
                     Hits::Any {
@@ -2707,7 +2823,7 @@ impl Projection {
             .year
             .iter()
             .enumerate()
-            .filter(|&(row, &y)| y != 0 && !self.dead[row])
+            .filter(|&(row, &y)| y != 0 && self.is_browsable(row as u32))
             .map(|(_, &y)| y)
             .collect();
         years.sort_unstable_by(|a, b| b.cmp(a));
@@ -2800,10 +2916,11 @@ impl Projection {
             (0..self.len())
                 .into_par_iter()
                 .map(|i| {
-                    // A tombstoned row passes nothing: masks are indexed by
-                    // row, so a caller intersecting one against a view built
-                    // before a patch still can't reach a dead row through it.
-                    if self.dead[i] {
+                    // A row no browse would show passes nothing: masks are
+                    // indexed by row, so a caller intersecting one against a
+                    // view built before a patch still can't reach a dead row
+                    // or a station through it.
+                    if !self.is_browsable(i as u32) {
                         return false;
                     }
                     if let Some(pinned) = pinned
@@ -2840,13 +2957,24 @@ impl Projection {
     }
 
     /// Parallel predicate scan in fixed chunks; chunk order keeps results in
-    /// row order without a sort.
+    /// row order without a sort. Browse scope, the answer every filter and
+    /// every list wants.
     fn scan_rows(&self, pred: impl Fn(usize) -> bool + Sync) -> Vec<u32> {
+        self.scan_rows_in(SearchScope::Browse, pred)
+    }
+
+    /// [`Projection::scan_rows`] with the row set spelled out: browsing
+    /// drops stations along with the tombstones, a general search keeps
+    /// them.
+    fn scan_rows_in(&self, scope: SearchScope, pred: impl Fn(usize) -> bool + Sync) -> Vec<u32> {
         let n = self.len();
-        // One branch on a byte the loop already has in cache, against a
-        // whole-projection rebuild per changed file. Tombstones are the
-        // only thing standing between a scan and a row.
-        let live = |i: usize| !self.dead[i];
+        // Two branches on bytes the loop already has in cache, against a
+        // whole-projection rebuild per changed file. Tombstones and radio
+        // stations are the only things standing between a scan and a row.
+        let live = |i: usize| match scope {
+            SearchScope::Browse => self.is_browsable(i as u32),
+            SearchScope::All => !self.is_dead(i as u32),
+        };
         let chunks = n.div_ceil(CHUNK);
         let per: Vec<Vec<u32>> = (0..chunks)
             .into_par_iter()
@@ -2961,7 +3089,7 @@ impl Projection {
             let mut seen: HashSet<u32> = HashSet::new();
             let mut out: Vec<ArtistHit> = Vec::new();
             for row in 0..self.len() as u32 {
-                if self.dead[row as usize] {
+                if !self.is_browsable(row) {
                     continue;
                 }
                 let sym = self.album_artist[row as usize];
@@ -2984,10 +3112,24 @@ impl Projection {
     /// different lists still need their own pass.
     pub fn genre_terms(&self) -> &SymTable {
         self.genre_terms.get_or_init(|| {
+            // How many browsable rows stand behind each symbol. The folded
+            // branch weighs casings by it; both branches use it to drop a
+            // symbol nothing a person can browse to still carries, which
+            // is how a station's announced genre stays out of the
+            // suggestions its row is already out of.
+            let mut rows = vec![0u32; self.genres.strings.len()];
+            for (row, &sym) in self.genre.iter().enumerate() {
+                if self.is_browsable(row as u32) {
+                    rows[sym as usize] += 1;
+                }
+            }
             if !self.fold {
                 let mut seen: HashSet<String> = HashSet::new();
                 let mut strings: Vec<String> = Vec::new();
-                for s in &self.genres.strings {
+                for (sym, s) in self.genres.strings.iter().enumerate() {
+                    if rows[sym] == 0 {
+                        continue;
+                    }
                     for part in crate::genre::split(s) {
                         let part = crate::genre::resolve(part);
                         if seen.insert(part.clone()) {
@@ -3003,16 +3145,13 @@ impl Projection {
                     sort_lower: Vec::new(),
                 });
             }
-            let mut rows = vec![0u32; self.genres.strings.len()];
-            for (row, &sym) in self.genre.iter().enumerate() {
-                if !self.dead[row] {
-                    rows[sym as usize] += 1;
-                }
-            }
             // Folded part -> (first-seen order, casing -> row count).
             let mut order: Vec<String> = Vec::new();
             let mut casings: HashMap<String, HashMap<String, u32>> = HashMap::new();
             for (sym, s) in self.genres.strings.iter().enumerate() {
+                if rows[sym] == 0 {
+                    continue;
+                }
                 for part in crate::genre::split(s) {
                     let part = crate::genre::resolve(part);
                     let key = part.to_lowercase();
@@ -3053,7 +3192,7 @@ impl Projection {
             let mut seen: HashSet<u64> = HashSet::new();
             let mut out: Vec<AlbumHit> = Vec::new();
             for row in 0..self.len() as u32 {
-                if self.dead[row as usize] {
+                if !self.is_browsable(row) {
                     continue;
                 }
                 let i = row as usize;
@@ -3080,7 +3219,7 @@ impl Projection {
     pub fn sort_canonical(&self) -> Vec<u32> {
         let a_rank = self.album_artist_ranks();
         let b_rank = self.album_ranks();
-        let mut idx = self.live_rows();
+        let mut idx = self.browse_rows();
         idx.par_sort_unstable_by_key(|&i| {
             let i = i as usize;
             (
@@ -3094,7 +3233,7 @@ impl Projection {
     }
 
     pub fn sort_title(&self) -> Vec<u32> {
-        let mut idx = self.live_rows();
+        let mut idx = self.browse_rows();
         idx.par_sort_unstable_by(|&a, &b| {
             self.title_sort_key(a as usize)
                 .cmp(self.title_sort_key(b as usize))
@@ -3103,7 +3242,7 @@ impl Projection {
     }
 
     pub fn sort_year(&self) -> Vec<u32> {
-        let mut idx = self.live_rows();
+        let mut idx = self.browse_rows();
         idx.par_sort_unstable_by_key(|&i| self.year[i as usize]);
         idx
     }
@@ -3387,8 +3526,14 @@ impl Projection {
             self.bpm_source.push(shard.bpm_source[i]);
             self.sub.push(shard.sub[i]);
             self.folder.push(map_f[shard.folder[i] as usize]);
-            self.source.push(map_s[shard.source[i] as usize]);
+            let source = map_s[shard.source[i] as usize];
+            self.source.push(source);
             self.dead.push(false);
+            // Read off the source string rather than carried in the shard:
+            // a patch is a handful of rows, so the check costs nothing
+            // here and there is one place that decides what browses.
+            self.browsable
+                .push(source_browsable(&self.sources.strings[source as usize]));
             if let Some(&span) = spans.get(&id) {
                 self.spans.insert(row, span);
             }
@@ -3480,7 +3625,16 @@ impl Projection {
             order.iter().position(|&other| other == row)
         };
 
-        let mut fresh = patch.added.clone();
+        // Only the rows the order holds. A station never entered it, so
+        // an added one has no place to go in and a dropped one has
+        // nothing to take out, and `position_of` would scan the whole
+        // order to find that out.
+        let mut fresh: Vec<u32> = patch
+            .added
+            .iter()
+            .copied()
+            .filter(|&row| self.browsable[row as usize])
+            .collect();
         fresh.sort_unstable_by_key(|&row| key(row));
         let mut events: Vec<(usize, Option<u32>)> =
             Vec::with_capacity(fresh.len() + patch.dropped.len());
@@ -3489,6 +3643,9 @@ impl Projection {
             events.push((order.partition_point(|&other| key(other) < here), Some(row)));
         }
         for &row in &patch.dropped {
+            if !self.browsable[row as usize] {
+                continue;
+            }
             if let Some(at) = position_of(row) {
                 events.push((at, None));
             }
@@ -3573,6 +3730,7 @@ impl Projection {
             + self.folders.heap_bytes()
             + self.sources.heap_bytes()
             + self.dead.capacity()
+            + self.browsable.capacity()
             + self.sym_index.as_ref().map_or(0, |i| i.heap_bytes())
     }
 }
@@ -6020,6 +6178,195 @@ mod tests {
 
     fn id_of(conn: &rusqlite::Connection, path: &str) -> i64 {
         store::ids_for_paths(conn, &[std::path::PathBuf::from(path)]).unwrap()[0]
+    }
+
+    /// One local track and one radio station, the shape Andrew's library
+    /// has the moment he adds a stream on the sources page.
+    fn library_and_station() -> Projection {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let mut local = track("/m/1.mp3", "Sunset Drive", "Aviary", 2001);
+        local.album_artist = "Aviary".into();
+        local.album = "First".into();
+        local.genre = "Shoegaze".into();
+        store::insert_batch(&mut conn, &[local]).unwrap();
+        crate::stations::put(
+            &mut conn,
+            &[crate::stations::Station {
+                url: "http://127.0.0.1:8768/stream".into(),
+                name: "Noise FM - EDM Radio".into(),
+                genre: "EDM".into(),
+            }],
+        )
+        .unwrap();
+        Projection::load_serial(&conn, false).unwrap()
+    }
+
+    /// Which row carries which source, so the assertions below don't
+    /// depend on the order the loader happened to read them in.
+    fn rows_by_origin(p: &Projection) -> (u32, u32) {
+        let origin =
+            |row: u32| crate::cue::Origin::of(&p.sources.strings[p.source[row as usize] as usize]);
+        let radio = (0..p.len() as u32)
+            .find(|&row| origin(row) == crate::cue::Origin::Radio)
+            .expect("the station row");
+        let local = (0..p.len() as u32)
+            .find(|&row| origin(row) == crate::cue::Origin::Local)
+            .expect("the local row");
+        (local, radio)
+    }
+
+    /// The station is in the projection like any other row, and the
+    /// browsable mask is the one byte that says it doesn't browse.
+    #[test]
+    fn a_station_row_loads_but_does_not_browse() {
+        let p = library_and_station();
+        let (local, radio) = rows_by_origin(&p);
+
+        // Both rows are here and both resolve: the queue, the history and
+        // the key lookup all read them through this.
+        assert_eq!(p.len(), 2);
+        assert!(!p.is_dead(radio));
+        assert_eq!(p.resolve(radio).title, "Noise FM - EDM Radio");
+
+        assert!(p.is_browsable(local));
+        assert!(!p.is_browsable(radio));
+    }
+
+    /// The three seams every browse view reaches the projection through:
+    /// the canonical order behind `library.order()`, the search behind
+    /// every query box, and the mask behind every facet pick.
+    #[test]
+    fn the_browse_seams_leave_a_station_out() {
+        let p = library_and_station();
+        let (local, radio) = rows_by_origin(&p);
+
+        assert_eq!(p.sort_canonical(), [local], "the canonical order");
+        assert_eq!(p.sort_title(), [local], "a title sort");
+        assert_eq!(p.sort_year(), [local], "a year sort");
+
+        // An empty query is the unqueried view; a query naming the station
+        // finds nothing here, because this is the browse entry point.
+        // The general search boxes take `search_all` instead, tested in
+        // `a_general_search_finds_a_station_after_the_tracks`.
+        assert_eq!(p.search(""), [local]);
+        assert!(p.search("noise fm").is_empty());
+        assert!(p.search("edm").is_empty(), "not through its genre either");
+        assert_eq!(titles_for(&p, "sunset"), ["Sunset Drive"]);
+
+        // The filter mask is indexed by row, so it answers false at the
+        // station the way it answers false at a tombstone.
+        let mask = p
+            .filter_mask(&FilterSet::with_ids(p.db_id.clone()))
+            .expect("an id pin is not an empty filter");
+        assert!(mask[local as usize]);
+        assert!(!mask[radio as usize]);
+
+        // And the two value lists a panel builds its facets from.
+        assert!(!p.genre_terms().strings.iter().any(|g| g == "EDM"));
+    }
+
+    /// The widened entry point: the same matcher, the station allowed
+    /// through, and the station rows behind the track hits so a general
+    /// search reads as music with a station at the end of it.
+    #[test]
+    fn a_general_search_finds_a_station_after_the_tracks() {
+        let p = library_and_station();
+        let (local, radio) = rows_by_origin(&p);
+
+        // By name, and by the genre the stream announced.
+        assert_eq!(p.search_all("noise fm"), [radio]);
+        assert_eq!(p.search_all("edm"), [radio]);
+
+        // A local track still answers its own query, and a term both rows
+        // carry puts the track first whatever order they loaded in.
+        assert_eq!(p.search_all("sunset"), [local]);
+        assert_eq!(
+            p.search_all("http://127.0.0.1:8768/stream"),
+            Vec::<u32>::new(),
+            "the URL is a path, not a matched field"
+        );
+
+        // An empty query widens to every live row, browsable first.
+        assert_eq!(p.search_all(""), [local, radio]);
+
+        // And the browse entry point is untouched by any of it.
+        assert!(p.search("noise fm").is_empty());
+        assert_eq!(p.sort_canonical(), [local]);
+    }
+
+    /// Stations sort behind tracks even when the station loaded first,
+    /// which is what the row-order scan would otherwise hand back.
+    #[test]
+    fn a_general_search_puts_the_station_last() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        // The station goes in first, so it takes the lower row index.
+        crate::stations::put(
+            &mut conn,
+            &[crate::stations::Station {
+                url: "http://127.0.0.1:8768/stream".into(),
+                name: "Sunset Radio".into(),
+                genre: "EDM".into(),
+            }],
+        )
+        .unwrap();
+        let mut local = track("/m/1.mp3", "Sunset Drive", "Aviary", 2001);
+        local.album_artist = "Aviary".into();
+        local.album = "First".into();
+        store::insert_batch(&mut conn, &[local]).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
+        let (local, radio) = rows_by_origin(&p);
+        assert!(radio < local, "the station really is the earlier row");
+
+        assert_eq!(p.search_all("sunset"), [local, radio]);
+    }
+
+    /// A patch that appends a station keeps it out of the order the
+    /// catalog carries beside the projection, the same as a full load.
+    #[test]
+    fn a_patched_in_station_stays_out_of_the_order() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let mut local = track("/m/1.mp3", "Sunset Drive", "Aviary", 2001);
+        local.album_artist = "Aviary".into();
+        local.album = "First".into();
+        store::insert_batch(&mut conn, &[local]).unwrap();
+        let mut p = Projection::load_serial(&conn, false).unwrap();
+        let order = p.sort_canonical();
+        assert_eq!(order.len(), 1);
+
+        crate::stations::put(
+            &mut conn,
+            &[crate::stations::Station {
+                url: "http://127.0.0.1:8768/stream".into(),
+                name: "Noise FM - EDM Radio".into(),
+                genre: "EDM".into(),
+            }],
+        )
+        .unwrap();
+        let index: HashMap<i64, u32> = p
+            .db_id
+            .iter()
+            .enumerate()
+            .map(|(row, id)| (*id, row as u32))
+            .collect();
+        let added = store::id_for_path(
+            &conn,
+            crate::stations::SOURCE,
+            "http://127.0.0.1:8768/stream",
+        )
+        .unwrap()
+        .expect("the station's id");
+        let shard = shard_for_ids(&conn, &[added], false).unwrap();
+        let patch = p
+            .apply_upserts(shard, &index, &HashMap::new(), &HashMap::new())
+            .expect("the shard fits");
+
+        assert_eq!(patch.added.len(), 1, "the row did land in the columns");
+        let patched = p.patch_order(&order, &patch);
+        assert_eq!(patched, order, "and nowhere near the browse order");
+        assert_eq!(p.sort_canonical(), order);
     }
 
     #[test]

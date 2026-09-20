@@ -2724,6 +2724,15 @@ impl Default for Providers {
     }
 }
 
+/// The equalizer's preset folder inside [`data_dir`]: one text file per
+/// saved curve, named after the preset. Not created here, the lyrics
+/// store's rule; the first save makes it. Its own folder under `eq/`
+/// because a preset is a file the user is meant to find, copy and hand to
+/// someone else, the way the milkdrop presets sit in one.
+pub fn eq_presets_dir() -> PathBuf {
+    data_dir().join("eq").join("presets")
+}
+
 /// The graphic equalizer's saved curve (ADR 19): whether it shapes the
 /// output at all, and the per-band gains in dB in
 /// [`rox_playback::eq::BAND_HZ`] order. The live values are atomics the

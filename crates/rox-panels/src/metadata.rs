@@ -812,10 +812,15 @@ impl MetadataPanel {
             |this: &mut Self, _, event: &LibraryEvent, cx| {
                 // A rating click or a new listen moves two of the sheet's
                 // fields, and the listen moves the library scope's play
-                // total too; re-resolve those, nothing else changed.
+                // total too; re-resolve those, nothing else changed. A
+                // play-count import moves the same two fields for a set of
+                // tracks it doesn't name, which is the same re-resolve.
                 if matches!(
                     event,
-                    LibraryEvent::Rated | LibraryEvent::Played | LibraryEvent::BookmarksChanged
+                    LibraryEvent::Rated
+                        | LibraryEvent::Played
+                        | LibraryEvent::BookmarksChanged
+                        | LibraryEvent::PlaysReloaded
                 ) {
                     this.details = None;
                     this.totals = None;
@@ -1008,7 +1013,7 @@ impl MetadataPanel {
             }
             genres.remove("");
             self.totals = Some(LibraryTotals {
-                tracks: projection.live_len(),
+                tracks: projection.browse_len(),
                 albums: albums.len(),
                 artists: artists.len(),
                 genres: genres.len(),

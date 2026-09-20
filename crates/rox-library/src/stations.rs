@@ -156,6 +156,56 @@ pub fn fill_empty(conn: &Connection, url: &str, heard: &Heard) -> rusqlite::Resu
     Ok(changed > 0)
 }
 
+/// Why a URL can't be a station. One reason per thing a person actually
+/// pastes into the add box, because "that isn't a stream URL" for all
+/// three tells someone holding a perfectly good `.pls` nothing about what
+/// to do with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Not http or https. A local path, a `file://`, an `mms://`: rox
+    /// opens stations over HTTP and nothing else.
+    Scheme,
+
+    /// An `.m3u8`, which is HLS. The URL is a manifest of segment files
+    /// that a client is meant to fetch in turn, and the transport reads
+    /// one byte stream from one socket, so this would import as a row
+    /// that connects and then plays a few kilobytes of text. The station
+    /// directory drops HLS hits for the same reason.
+    Hls,
+
+    /// An `.m3u` or a `.pls`, which is a list of stations rather than one
+    /// of them. There's a reader for exactly this file two functions
+    /// down, so the answer is Import, not a refusal on its own.
+    Playlist,
+}
+
+/// Why `url` can't be a station, or None when nothing about the URL
+/// itself rules it out. Pure and about the string alone: whether the
+/// other end serves audio or a web page is a question only a request can
+/// answer, and that lives in `rox-net`.
+///
+/// The suffix is read off the path and not off the whole URL, so a token
+/// in the query string can't make a stream look like a playlist, and
+/// `?format=.m3u8` on a real mount can't get it turned away.
+pub fn refusal(url: &str) -> Option<Refusal> {
+    let lower = url.trim().to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Some(Refusal::Scheme);
+    }
+
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+
+    if path.ends_with(".m3u8") {
+        return Some(Refusal::Hls);
+    }
+
+    if path.ends_with(".m3u") || path.ends_with(".pls") {
+        return Some(Refusal::Playlist);
+    }
+
+    None
+}
+
 /// Read stations out of a playlist file, which is how everyone already has
 /// their stations: a `.pls` or an `.m3u` of stream URLs, handed around or
 /// downloaded from a station's own site. Typing them in one at a time is
@@ -164,9 +214,10 @@ pub fn fill_empty(conn: &Connection, url: &str, heard: &Heard) -> rusqlite::Resu
 /// The shared readers in [`crate::playlist_file`] answer with URLs alone,
 /// and a station without its name is half an import, so the walk here is
 /// its own: an `#EXTINF` title or a `Title<n>` key names the entry that
-/// follows it. Anything that isn't an http URL is dropped rather than
+/// follows it. Anything [`refusal`] turns down is dropped rather than
 /// turned into a station, so a normal playlist of local files imports as
-/// nothing instead of as a list of streams that can't play.
+/// nothing instead of as a list of streams that can't play, and a list
+/// that points at other lists doesn't import them as rows either.
 pub fn import(text: &str) -> Vec<Station> {
     // Windows tools save UTF-8 with a BOM, and left on it clings to the
     // first line, which is the same trap the m3u and pls readers strip for.
@@ -272,13 +323,13 @@ fn numbered(key: &str, prefix: &str) -> Option<u32> {
     key[prefix.len()..].trim().parse().ok()
 }
 
-/// One import entry as a station, or None for a line that isn't a stream.
-/// A local path, a `file://` URL and an `mms://` one all come back None:
-/// rox opens stations over HTTP, so anything else would import as a row
-/// that can never play.
+/// One import entry as a station, or None for a line [`refusal`] turns
+/// down. The reason is dropped here on purpose: a file holding forty
+/// lines has no room to explain each one, and the count that did import
+/// is what the import notice reports. The add box, where one URL is one
+/// deliberate act, keeps the reason.
 fn station(url: &str, name: &str) -> Option<Station> {
-    let lower = url.to_ascii_lowercase();
-    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+    if refusal(url).is_some() {
         return None;
     }
 
@@ -578,6 +629,72 @@ mod tests {
 
         let pls_local = "[playlist]\nFile1=C:\\Music\\one.mp3\nTitle1=One\n";
         assert!(import(pls_local).is_empty());
+    }
+
+    /// A stream URL with nothing wrong with it is waved through, query
+    /// string and all. The query is the case worth pinning: plenty of
+    /// mounts carry a listener token, and reading the suffix off the
+    /// whole URL instead of off the path would turn those away.
+    #[test]
+    fn an_ordinary_stream_url_is_not_refused() {
+        assert_eq!(refusal("https://host/jazz"), None);
+        assert_eq!(refusal("http://host:8000/live"), None);
+        assert_eq!(refusal("https://host/live?session=.m3u"), None);
+    }
+
+    /// Nothing but http and https. Said as its own reason because the
+    /// three refusals want three different messages.
+    #[test]
+    fn a_url_that_is_not_http_is_refused_for_its_scheme() {
+        assert_eq!(refusal("mms://host/legacy"), Some(Refusal::Scheme));
+        assert_eq!(refusal("/music/one.flac"), Some(Refusal::Scheme));
+        assert_eq!(refusal("file:///music/one.flac"), Some(Refusal::Scheme));
+    }
+
+    /// An `.m3u8` is HLS, which the transport can't read, so it's turned
+    /// away at the door rather than imported as a row that connects and
+    /// plays a manifest.
+    #[test]
+    fn an_m3u8_is_refused_as_hls() {
+        assert_eq!(refusal("https://host/live.m3u8"), Some(Refusal::Hls));
+        assert_eq!(refusal("HTTPS://HOST/LIVE.M3U8"), Some(Refusal::Hls));
+        assert_eq!(refusal("https://host/live.m3u8?t=9"), Some(Refusal::Hls));
+    }
+
+    /// An `.m3u` or a `.pls` is a list of stations, and there's a reader
+    /// for it. The refusal exists to point at that reader.
+    #[test]
+    fn a_playlist_url_is_refused_as_a_playlist() {
+        assert_eq!(
+            refusal("https://host/stations.m3u"),
+            Some(Refusal::Playlist)
+        );
+        assert_eq!(
+            refusal("https://host/stations.pls"),
+            Some(Refusal::Playlist)
+        );
+        assert_eq!(
+            refusal("https://host/stations.PLS?v=2#top"),
+            Some(Refusal::Playlist)
+        );
+    }
+
+    /// The import reader runs the same rule, so a list that points at
+    /// other lists imports as nothing rather than as rows that play text.
+    #[test]
+    fn import_drops_playlists_and_hls_the_way_the_add_box_does() {
+        let nested = "#EXTM3U\n\
+                      #EXTINF:-1,Somebody's Station List\n\
+                      https://host/stations.pls\n\
+                      #EXTINF:-1,A Segmented One\n\
+                      https://host/live.m3u8\n\
+                      #EXTINF:-1,Jazz Forever\n\
+                      https://host/jazz\n";
+
+        assert_eq!(
+            import(nested),
+            vec![station_named("https://host/jazz", "Jazz Forever")]
+        );
     }
 
     /// An import goes straight into the library, names and all.

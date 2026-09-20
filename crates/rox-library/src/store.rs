@@ -284,6 +284,15 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
             )
         },
     },
+    // Where a listen came from: rox watching a play, Last.fm's scrobble
+    // history, or the import's own arithmetic filling a count out. Plus the
+    // (track_id, played_at) index the scrobble import probes to know it has
+    // a play already. Existing rows take the empty default, which reads as
+    // "recorded here" and is all the build that wrote them knew.
+    crate::migrate::Migration {
+        name: "listen-origin",
+        up: crate::listens::add_origin,
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {

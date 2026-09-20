@@ -58,8 +58,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 pub use library::{PresetLibrary, Rotation};
 
@@ -210,19 +211,33 @@ impl Shared {
     }
 }
 
+/// How long a dropped engine waits for its worker to stand down before it
+/// gives up on the thread and leaves it to the exit guard in [`worker`].
+///
+/// There is a wait at all so a caller that drops one engine and spawns
+/// another doesn't end up with two GL contexts alive at once. There is a
+/// bound on it because the same drop runs on the quit path, with the UI
+/// thread sitting on it, and a driver call that never comes back would hang
+/// the quit instead of crashing it.
+const STAND_DOWN: Duration = Duration::from_millis(400);
+
 /// The worker's mailbox. Cloneable and cheap; the last clone dropped shuts
-/// the worker down and waits for it.
+/// the worker down and waits up to [`STAND_DOWN`] for it.
 #[derive(Clone)]
 pub struct Engine {
     inner: Arc<EngineInner>,
 }
 
 struct EngineInner {
-    /// `Option` only so `Drop` can hang up the channel before joining. It is
-    /// `Some` for the whole life of the engine otherwise.
-    commands: Option<Sender<Command>>,
+    /// Behind a lock because [`Engine::stop`] hangs up through a shared
+    /// handle. `Some` for the whole life of the engine otherwise.
+    commands: Mutex<Option<Sender<Command>>>,
     shared: Arc<Shared>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    /// Never sent on. The worker thread holds the sending half, so this
+    /// disconnects when that thread returns, which is a join with a timeout
+    /// on it in everything but name.
+    finished: Receiver<()>,
 }
 
 impl Engine {
@@ -234,9 +249,17 @@ impl Engine {
         let (commands, receiver) = crossbeam_channel::unbounded();
 
         let worker_shared = Arc::clone(&shared);
+        // The sending half goes into the thread and is never used. What the
+        // engine waits on is its drop, which happens when the closure
+        // returns, past the worker's own GL teardown. A thread that never
+        // started drops it with the closure, so the wait ends at once.
+        let (ran, finished) = crossbeam_channel::bounded::<()>(0);
         let worker = std::thread::Builder::new()
             .name("rox-milkdrop".to_string())
-            .spawn(move || worker::run(options, receiver, worker_shared))
+            .spawn(move || {
+                let _ran = ran;
+                worker::run(options, receiver, worker_shared);
+            })
             .ok();
 
         if worker.is_none() {
@@ -247,19 +270,39 @@ impl Engine {
 
         Engine {
             inner: Arc::new(EngineInner {
-                commands: Some(commands),
+                commands: Mutex::new(Some(commands)),
                 shared,
                 worker: Mutex::new(worker),
+                finished,
             }),
         }
     }
 
     pub fn send(&self, command: Command) {
-        if let Some(commands) = self.inner.commands.as_ref() {
+        if let Some(commands) = self.inner.commands.lock().unwrap().as_ref() {
             // A closed channel means the worker gave up. Nothing to report:
             // `status()` already says why.
             let _ = commands.send(command);
         }
+    }
+
+    /// Tell the worker to stand down without waiting for it.
+    ///
+    /// Dropping the engine does this and then waits. The two are separable
+    /// for the quit path, which has several engines to take down at once:
+    /// hanging all of them up first and waiting afterwards overlaps the
+    /// teardowns instead of stacking them end to end. It also reaches the
+    /// worker through a shared handle, which the drop can't do while a
+    /// retained render tree still holds a clone of the engine.
+    pub fn stop(&self) {
+        self.inner.commands.lock().unwrap().take();
+    }
+
+    /// Wait up to [`STAND_DOWN`] for the worker thread to be gone, and say
+    /// whether it is. Only meaningful after [`Engine::stop`] or the last
+    /// clone's drop; nothing here asks the worker to finish.
+    pub fn wait(&self) -> bool {
+        self.inner.wait()
     }
 
     /// The newest frame if its seq is past `after`. The caller keeps the seq
@@ -300,16 +343,43 @@ impl Engine {
     }
 }
 
+impl EngineInner {
+    /// Wait for the worker thread to be gone, or [`STAND_DOWN`] to pass.
+    ///
+    /// The wait is on the thread finishing rather than on the join, because
+    /// a join has no timeout and this runs on the quit path with the UI
+    /// thread sitting on it.
+    fn wait(&self) -> bool {
+        !matches!(
+            self.finished.recv_timeout(STAND_DOWN),
+            Err(RecvTimeoutError::Timeout)
+        )
+    }
+}
+
 impl Drop for EngineInner {
     fn drop(&mut self) {
         // Hanging up is the shutdown signal: the worker's loop ends when the
         // channel disconnects, and only then does it destroy the projectM
-        // instance and drop the context. Joining here means a caller that
-        // drops the engine and immediately spawns another doesn't end up
-        // with two GL contexts alive at once.
-        self.commands = None;
-        if let Some(worker) = self.worker.lock().unwrap().take() {
+        // instance and drop the context.
+        self.commands.lock().unwrap().take();
+
+        let Some(worker) = self.worker.lock().unwrap().take() else {
+            return;
+        };
+
+        if self.wait() {
             let _ = worker.join();
+            return;
         }
+
+        // Stuck in a driver call, most likely. Leaving the handle unjoined
+        // detaches the thread, which is the lesser evil: the exit guard
+        // parks it before the GL under it is freed, and the alternative is
+        // a quit that never finishes.
+        log::warn!(
+            "milkdrop engine did not stand down in {} ms; leaving its thread to the exit guard",
+            STAND_DOWN.as_millis()
+        );
     }
 }

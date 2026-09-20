@@ -24,8 +24,10 @@ use gpui_component::{Icon, Root, Sizable as _};
 use rox_core::settings;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_net::sources::autoeq::{self, AutoEqEntry};
+use rox_net::sources::autoeq::{self, AutoEqEntry, BandSetting};
 use rox_services::player;
+
+use crate::eq_presets;
 
 /// Default window size: tall enough for search input, status line, and a comfortable hit list.
 const DEFAULT_SIZE: (f32, f32) = (560., 680.);
@@ -38,6 +40,23 @@ const MIN_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
 
 /// Maximum search results rendered at once for snappy interaction.
 const RESULT_LIMIT: usize = 100;
+
+/// What a fetched profile is wanted for: dropped on the live curve, or
+/// filed in the preset folder to reach for offline. The fetch is the same
+/// either way and is the whole cost of both, so the two buttons share it.
+#[derive(Clone, Copy, PartialEq)]
+enum Wanted {
+    Apply,
+    Save,
+}
+
+/// What a saved profile is filed under: the model and the measurement it came
+/// from. The index carries seven Sennheiser HD 600s off seven rigs, so a
+/// preset named after the model alone would be whichever of them was saved
+/// last, and the list couldn't say which one you kept.
+fn preset_name(entry: &AutoEqEntry) -> String {
+    format!("{} ({})", entry.name, entry.source)
+}
 
 /// The singleton handle for the open AutoEq window.
 struct OpenAutoEq(WindowHandle<Root>);
@@ -75,11 +94,21 @@ struct AutoEqWindow {
     loading_index: bool,
     error: Option<SharedString>,
     applying: Option<usize>,
+    saving: Option<usize>,
     applied_path: Option<String>,
     applied_info: Option<SharedString>,
+    /// The presets already on disk, so a profile that's been saved shows as
+    /// saved rather than offering the download again. Read when the window
+    /// opens and after each save; a row draws from this rather than from the
+    /// folder, which is a directory read a hundred rows can't each afford.
+    saved: Vec<String>,
     searched_query: String,
     focus: FocusHandle,
     _find_events: Subscription,
+    /// Re-reads the folder when a preset is written or dropped anywhere
+    /// else, so a preset deleted from the equalizer window stops reading as
+    /// saved here.
+    _presets_changed: Subscription,
 }
 
 impl AutoEqWindow {
@@ -105,11 +134,17 @@ impl AutoEqWindow {
             loading_index: false,
             error: None,
             applying: None,
+            saving: None,
             applied_path: None,
             applied_info: None,
+            saved: eq_presets::list(),
             searched_query: String::new(),
             focus: cx.focus_handle(),
             _find_events,
+            _presets_changed: eq_presets::observe(cx, |this, cx| {
+                this.saved = eq_presets::list();
+                cx.notify();
+            }),
         };
 
         this.init_index(cx);
@@ -193,8 +228,10 @@ impl AutoEqWindow {
         cx.notify();
     }
 
-    /// Apply an entry from the search results to the equalizer.
-    fn apply_entry(&mut self, ix: usize, cx: &mut Context<Self>) {
+    /// Fetch an entry from the search results and either put it on the
+    /// curve or file it as a preset. Both take the same trip to GitHub, so
+    /// what the profile is for only decides the last step.
+    fn fetch_entry(&mut self, ix: usize, wanted: Wanted, cx: &mut Context<Self>) {
         let Some(&entry_ix) = self.filtered.get(ix) else {
             return;
         };
@@ -202,7 +239,10 @@ impl AutoEqWindow {
             return;
         };
 
-        self.applying = Some(ix);
+        match wanted {
+            Wanted::Apply => self.applying = Some(ix),
+            Wanted::Save => self.saving = Some(ix),
+        }
         self.error = None;
         cx.notify();
 
@@ -221,28 +261,81 @@ impl AutoEqWindow {
 
             this.update(cx, |this, cx| {
                 this.applying = None;
-                match result {
-                    Ok(profile) => {
+                this.saving = None;
+                let profile = match result {
+                    Ok(profile) => profile,
+                    Err(err) => {
+                        this.error = Some(rox_i18n::t!("autoeq-failed", reason = err));
+                        cx.notify();
+                        return;
+                    }
+                };
+
+                match wanted {
+                    Wanted::Apply => {
                         player::apply_graphic_eq(&profile.gains_db, cx);
                         player::set_eq_enabled(true, cx);
 
                         this.applied_path = Some(path);
-                        let preamp_str = profile
-                            .preamp_db
-                            .map(|db| format!(" · Preamp: {db:+.1} dB"))
-                            .unwrap_or_default();
-                        this.applied_info =
-                            Some(format!("Applied: {name} ({source}){preamp_str}").into());
+                        // Two whole messages rather than a line with a
+                        // fragment glued on the end: where a preamp reading
+                        // sits in the sentence is the translator's call.
+                        this.applied_info = Some(match profile.preamp_db {
+                            Some(db) => rox_i18n::t!(
+                                "autoeq-applied-info-preamp",
+                                name = name,
+                                source = source,
+                                db = format!("{db:+.1}"),
+                            ),
+                            None => {
+                                rox_i18n::t!("autoeq-applied-info", name = name, source = source)
+                            }
+                        });
                     }
-                    Err(err) => {
-                        this.error = Some(rox_i18n::t!("autoeq-failed", reason = err));
-                    }
+                    Wanted::Save => this.store_profile(&entry, &profile, cx),
                 }
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// File a fetched profile in the preset folder under [`preset_name`]. A
+    /// profile is ten gains against the ISO octaves, so the preset is written
+    /// the way applying it would leave the window: each band on its own
+    /// octave, one octave wide. The profile's preamp rides along for whatever
+    /// else reads the file, since rox has no trim of its own.
+    fn store_profile(
+        &mut self,
+        entry: &AutoEqEntry,
+        profile: &autoeq::AutoEqProfile,
+        cx: &mut Context<Self>,
+    ) {
+        let bands: Vec<BandSetting> = autoeq::BAND_HZ
+            .iter()
+            .zip(profile.gains_db)
+            .map(|(&hz, gain_db)| BandSetting {
+                hz,
+                gain_db,
+                q: autoeq::Q_OCTAVE,
+            })
+            .collect();
+
+        match eq_presets::save(&preset_name(entry), &bands, profile.preamp_db, cx) {
+            Some(saved) => {
+                self.applied_info = Some(rox_i18n::t!("autoeq-saved-info", name = saved.clone()));
+                self.saved = eq_presets::list();
+            }
+            None => self.error = Some(rox_i18n::t!("autoeq-save-failed")),
+        }
+    }
+
+    /// Whether this entry is already sitting in the preset folder. Matched on
+    /// the name the save would use, since that's what the folder holds.
+    fn is_saved(&self, entry: &AutoEqEntry) -> bool {
+        let stem = rox_core::settings::safe_file_stem(&preset_name(entry), "preset");
+        self.saved.contains(&stem)
     }
 
     /// Prompt to import a local preset file (Equalizer APO .txt, GraphicEQ, or CSV).
@@ -261,14 +354,15 @@ impl AutoEqWindow {
                 let name = path
                     .file_stem()
                     .and_then(|s| s.to_str())
-                    .unwrap_or("Custom")
-                    .to_string();
+                    .map(str::to_string)
+                    .unwrap_or_else(|| rox_i18n::t!("autoeq-import-untitled").to_string());
 
                 let text = match std::fs::read_to_string(&path) {
                     Ok(t) => t,
                     Err(e) => {
                         this.update(cx, |this, cx| {
-                            this.error = Some(format!("Failed to read file: {e}").into());
+                            this.error =
+                                Some(rox_i18n::t!("autoeq-read-failed", reason = e.to_string()));
                             cx.notify();
                         })
                         .ok();
@@ -280,7 +374,7 @@ impl AutoEqWindow {
                     Ok(p) => p,
                     Err(e) => {
                         this.update(cx, |this, cx| {
-                            this.error = Some(format!("Failed to parse profile: {e}").into());
+                            this.error = Some(rox_i18n::t!("autoeq-parse-failed", reason = e));
                             cx.notify();
                         })
                         .ok();
@@ -292,11 +386,14 @@ impl AutoEqWindow {
                     player::apply_graphic_eq(&profile.gains_db, cx);
                     player::set_eq_enabled(true, cx);
                     this.applied_path = None;
-                    let preamp_str = profile
-                        .preamp_db
-                        .map(|db| format!(" · Preamp: {db:+.1} dB"))
-                        .unwrap_or_default();
-                    this.applied_info = Some(format!("Imported: {name}{preamp_str}").into());
+                    this.applied_info = Some(match profile.preamp_db {
+                        Some(db) => rox_i18n::t!(
+                            "autoeq-imported-info-preamp",
+                            name = name,
+                            db = format!("{db:+.1}"),
+                        ),
+                        None => rox_i18n::t!("autoeq-imported-info", name = name),
+                    });
                     cx.notify();
                 })
                 .ok();
@@ -451,12 +548,16 @@ impl AutoEqWindow {
         )
     }
 
-    /// One row representing an AutoEq entry.
+    /// One row representing an AutoEq entry: what it is, and the two things
+    /// to do with it. Save is beside Apply rather than behind it because the
+    /// reason to keep one is to have it without the network, and that's a
+    /// decision made while looking at the list.
     fn result_row(&self, pos: usize, entry: &AutoEqEntry, cx: &mut Context<Self>) -> AnyElement {
         let is_applied = self.applied_path.as_deref() == Some(&entry.path);
         let is_applying = self.applying == Some(pos);
+        let is_saving = self.saving == Some(pos);
 
-        let action: AnyElement = if is_applying {
+        let spinner = || {
             div()
                 .flex_none()
                 .flex()
@@ -464,7 +565,8 @@ impl AutoEqWindow {
                 .px(tokens::SPACE_SM)
                 .child(Spinner::new())
                 .into_any_element()
-        } else if is_applied {
+        };
+        let done = |label: SharedString| {
             div()
                 .flex_none()
                 .flex()
@@ -473,16 +575,45 @@ impl AutoEqWindow {
                 .text_xs()
                 .text_color(palette::accent())
                 .child(Icon::default().path(icons::CHECK))
-                .child(rox_i18n::t!("autoeq-applied"))
+                .child(label)
                 .into_any_element()
+        };
+
+        let apply: AnyElement = if is_applying {
+            spinner()
+        } else if is_applied {
+            done(rox_i18n::t!("autoeq-applied"))
         } else {
             Button::new(("autoeq-apply", pos))
                 .label(rox_i18n::t!("autoeq-apply"))
                 .small()
                 .outline()
-                .on_click(cx.listener(move |this, _, _, cx| this.apply_entry(pos, cx)))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.fetch_entry(pos, Wanted::Apply, cx)),
+                )
                 .into_any_element()
         };
+        let save: AnyElement = if is_saving {
+            spinner()
+        } else if self.is_saved(entry) {
+            done(rox_i18n::t!("autoeq-saved"))
+        } else {
+            Button::new(("autoeq-save", pos))
+                .label(rox_i18n::t!("autoeq-save"))
+                .small()
+                .outline()
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.fetch_entry(pos, Wanted::Save, cx)),
+                )
+                .into_any_element()
+        };
+        let action = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(apply)
+            .child(save);
 
         div()
             .id(("autoeq-row", pos))

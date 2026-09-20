@@ -624,6 +624,11 @@ stations-manage = Sender verwalten...
 stations-import = Sender importieren...
 stations-import-empty = In dieser Datei stehen keine Stream-URLs
 stations-not-a-stream = Sender laufen über http oder https; das ist keine Stream-URL
+stations-checking = Stream wird geprüft...
+stations-is-hls = Das ist eine HLS-Segmentliste; rox spielt einen durchgehenden Stream
+stations-is-a-playlist = Das ist eine Senderliste; lies sie mit Sender importieren ein
+stations-not-audio = Diese URL antwortet mit { $kind }, nicht mit Audio
+stations-added-unchecked = Ohne Prüfung hinzugefügt: der Stream hat nicht geantwortet ({ $reason })
 stations-empty-title = Noch keine Sender
 stations-empty = Finde einen im Verzeichnis oder pflege deine Liste in den Einstellungen.
 stations-on-air = Auf Sendung
@@ -1108,6 +1113,7 @@ settings-playback-capture-pattern = Benennung der Aufnahmen
 settings-playback-capture-pattern-date = %date% ist der Tag, an dem der Titel gespeichert wurde, als 2026-09-18.
 settings-playback-capture-pattern-preview = Vorschau: { $name }
 settings-playback-capture-pattern-station = %station% ist der Name des Senders, und %album% bedeutet dasselbe.
+settings-playback-capture-pattern-source = %source% ist die Art der Quelle, aus der der Stream stammt, sodass eine neue Quellenart in einem eigenen Ordner landet.
 settings-playback-section-capture = Aufnahme
 settings-playback-play-order = Wiedergabereihenfolge
     .description = Wie die bereits eingereihten Titel angeordnet werden, solange Zufall an ist. Die Zufallstaste im Transport schaltet ihn ein und aus; das hier ist, was er dann tut
@@ -1118,7 +1124,7 @@ settings-playback-rating-scale-stars = Sterne
 settings-playback-restore-last-session = Letzte Sitzung wiederherstellen
     .description = Mit der Warteschlange starten, wie du sie verlassen hast, pausiert auf dem Titel, der lief, und an der Stelle, wo er stand. Eingereihte Titel außerhalb deiner Bibliotheksordner lassen sich nicht wiederherstellen und fallen aus der Reihenfolge
 settings-playback-section-queue = Warteschlange
-settings-playback-section-radio = Radio
+settings-playback-section-streaming = Streaming
 settings-playback-section-ratings = Bewertungen
 settings-playback-section-stepping = Schrittweite
 settings-playback-step = Schrittgröße
@@ -1777,6 +1783,17 @@ autoeq-failed = AutoEq-Fehler: { $reason }
 autoeq-apply = Anwenden
 autoeq-applied = Angewendet
 autoeq-import-file = Voreinstellungsdatei importieren
+autoeq-save = Speichern
+autoeq-saved = Gespeichert
+autoeq-saved-info = Gespeichert als „{ $name }“
+autoeq-save-failed = Voreinstellungsdatei konnte nicht geschrieben werden
+autoeq-applied-info = Angewendet: { $name } ({ $source })
+autoeq-applied-info-preamp = Angewendet: { $name } ({ $source }), Vorverstärkung { $db } dB
+autoeq-imported-info = Importiert: { $name }
+autoeq-imported-info-preamp = Importiert: { $name }, Vorverstärkung { $db } dB
+autoeq-read-failed = Datei konnte nicht geöffnet werden: { $reason }
+autoeq-parse-failed = Profil konnte nicht gelesen werden: { $reason }
+autoeq-import-untitled = Eigenes Profil
 eq-flatten = Flach stellen
 eq-freq-label = Freq
 eq-gain-label = Gain
@@ -1786,6 +1803,11 @@ eq-hint-off = Klick zum Ausschalten
 eq-hint-on = Klick zum Einschalten
 eq-hint-open = Klick, um den Equalizer zu öffnen
 eq-open = Equalizer öffnen
+eq-preset-export = Exportieren
+eq-preset-export-default = Equalizer
+eq-preset-name = Name der Voreinstellung
+eq-preset-save = Voreinstellung speichern
+eq-presets = Voreinstellungen
 eq-readout-curve = Kurve
 eq-readout-icon = Symbol
 eq-readout-section = Anzeige
@@ -1914,6 +1936,8 @@ keymap-cue-prev = Vorherige Marke
     .description = Zur Marke vor dem Abspielkopf zurückspringen
 keymap-cue-next = Nächste Marke
     .description = Zur nächsten Marke springen
+keymap-cue-clear = Marken löschen
+    .description = Alle Sitzungsmarken des laufenden Titels entfernen
 keymap-stop-playback = Stopp
     .description = Die Wiedergabe beenden und den Titel freigeben
 keymap-toggle-playback = Wiedergabe / Pause
@@ -2093,6 +2117,11 @@ lastfm-import-plays-updated = { $count ->
     [one] , { $count } Wiedergabe hinzugefügt
    *[other] , { $count } Wiedergaben hinzugefügt
 }
+lastfm-import-history = Wiedergabeverlauf wird gelesen
+lastfm-import-plays-counts = Wiedergabezahlen werden gelesen
+lastfm-import-plays-writing = Wiedergabeverlauf wird geschrieben
+lastfm-import-plays-dated = , davon { $count } mit echtem Datum
+lastfm-import-plays-stopped-history = Nach { $count } Scrobbles gestoppt
 
 ## Tag tools
 tags-editor-add-tag = Hinzufügen
@@ -3451,6 +3480,10 @@ track-info-row-size = Größe von Zeile { $number }
 track-info-speed = Tempo
     .description = Wie schnell die Zeile kriecht
 track-info-text-size = Textgröße
+
+## Playback failures
+
+player-stream-refused = Titel übersprungen: { $reason }
 
 ## Seek panel
 seek-ending = Restzeit

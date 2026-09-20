@@ -23,8 +23,8 @@ use std::time::Duration;
 use gpui::{
     AnyElement, AnyWindowHandle, App, Axis, Bounds, ClipboardItem, Context, Div, ElementId, Entity,
     EntityId, FocusHandle, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions, Pixels,
-    ScrollHandle, SharedString, Stateful, Subscription, WeakEntity, Window, WindowHandle, div,
-    prelude::*, px, size, svg,
+    ScrollHandle, SharedString, Stateful, Subscription, Task, WeakEntity, Window, WindowHandle,
+    div, prelude::*, px, size, svg,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -53,10 +53,11 @@ use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, ROLES, Role, Side, Sides};
 use rox_design::tokens;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
-use rox_library::stations::{self, Station};
+use rox_library::stations::{self, Refusal, Station};
 use rox_library::store::{BpmCoverage, GainCoverage, Stats, Storage};
 use rox_net::lastfm::{AuthPhase, has_builtin_keys};
 use rox_net::providers;
+use rox_net::sources::stream_probe::Probe;
 use rox_panel_api::panel::{self, AppState};
 use rox_panel_api::panel_settings::{ShaderNameField, ShaderSource};
 use rox_panel_api::query::search::{SearchBox, SearchEvent};
@@ -599,6 +600,12 @@ struct SettingsWindow {
     /// renders without re-reading the file.
     broadcast_enabled: bool,
     broadcast_bitrate: u32,
+    /// Whether an Icecast field has been typed into since the sink last
+    /// re-applied. Set on the keystroke, cleared by the commit, so the
+    /// commit can be run from anywhere the edit ends rather than only from
+    /// a blur, and so a blur through a field nobody touched doesn't tear
+    /// down a live connection.
+    broadcast_dirty: bool,
     /// The capture switch and the folder it writes into, copied from
     /// settings so the Sources page renders without re-reading the file.
     capture_enabled: bool,
@@ -626,6 +633,13 @@ struct SettingsWindow {
     /// Whether a sync is in flight. The button reads as busy while it is,
     /// and a poll keeps the album count on the status line moving.
     subsonic_syncing: bool,
+    /// The prune the fields above kick off when one is left. Held so the
+    /// work survives the callback that started it, and so leaving a second
+    /// field replaces the first one's pass rather than racing it.
+    subsonic_follow: Option<Task<()>>,
+    /// The same flag for the Subsonic fields: whether one has moved since
+    /// the library last followed the account.
+    subsonic_dirty: bool,
     /// The radio stations the library holds, re-read at open and on every
     /// catalog write rather than per frame. The Sources page lists them
     /// and is where they're added, imported and removed.
@@ -636,8 +650,14 @@ struct SettingsWindow {
     station_name: Entity<InputState>,
     /// Why the last add or import did nothing, shown under the add row. A
     /// pasted line that isn't a stream is the common case, and failing
-    /// silently reads as the button being broken.
+    /// silently reads as the button being broken. It also carries the
+    /// "checking" line while an add is out at the stream, since that's
+    /// the same place the eye is already looking.
     station_notice: Option<SharedString>,
+    /// Whether an add is waiting on what the URL serves. The button is
+    /// held while it is: the round trip is a second at worst, and a
+    /// second press would put the same station in twice.
+    station_probing: bool,
     /// The ffmpeg path input; writes through like the credentials, and the
     /// probe is keyed by value, so a pasted path shows Convert everywhere
     /// without a restart.
@@ -922,6 +942,12 @@ struct SettingsWindow {
     /// `recording`, rather than subscribed per record: dropping a
     /// subscription from inside its own callback is not a thing to do.
     _record_keys: Subscription,
+    /// Commits the fields on the way out. The window can be closed, or the
+    /// app quit, with the caret still in a field that never blurred, and
+    /// the entity takes its pending commit down with it. See
+    /// [`SettingsWindow::flush_pending_edits`].
+    _flush_on_close: Subscription,
+    _flush_on_quit: Subscription,
 }
 
 /// The verbs a connection that authorizes in the browser answers to.
@@ -1090,6 +1116,36 @@ impl SettingsWindow {
             });
             true
         });
+        // The window can go away with the caret still in a field: the OS
+        // close button, rox::CloseWindow (which removes the window without
+        // ever asking should-close) and a quit all do it. Releasing the
+        // entity is the one point every one of those passes through, so the
+        // commit runs from there. A detached task is fine here because the
+        // app is still up and still pumping its executor.
+        let weak = cx.weak_entity();
+        let _flush_on_close = cx.on_release({
+            let this = weak.clone();
+            move |window: &mut Self, cx: &mut App| window.flush_pending_edits(this, cx).detach()
+        });
+        // Quitting drops the window too, but it gets there before the
+        // release above: `App::shutdown` runs the quit hooks first and only
+        // then clears the windows. So the flush happens here, while there
+        // is still an app to act on.
+        let _flush_on_quit = cx.on_app_quit({
+            let this = weak.clone();
+            move |window: &mut Self, cx: &mut Context<Self>| {
+                // The Subsonic prune is dropped rather than handed back to
+                // be awaited, because shutdown can't finish it: gpui parks
+                // the main thread on the quit futures and never pumps the
+                // foreground executor the prune is spawned on, so the whole
+                // 100 ms budget goes to a task that gets no poll at all.
+                // Measured under the harness, not reasoned. The rows wait
+                // for the next Sync Now, which is where they sat before.
+                drop(window.flush_pending_edits(this.clone(), cx));
+
+                async {}
+            }
+        });
         // Subscribe to the dock handed in rather than reading it off the
         // workspace: this constructor runs inside the workspace update
         // that opened the window, so the workspace entity can't be read
@@ -1208,12 +1264,13 @@ impl SettingsWindow {
                     InputEvent::Change => {
                         let value = input.read(cx).value().trim().to_string();
                         Settings::update(move |s| write(s, value));
+                        this.broadcast_dirty = true;
                     }
-                    InputEvent::Blur | InputEvent::PressEnter { .. } => {
-                        if this.broadcast_enabled {
-                            crate::integrations::broadcast::apply();
-                        }
-                    }
+
+                    // Leaving the field is the commit. The same one runs
+                    // from the flush, for a field the user never left.
+                    InputEvent::Blur | InputEvent::PressEnter { .. } => this.broadcast_moved(),
+
                     InputEvent::Focus => {}
                 }
             }));
@@ -1264,16 +1321,24 @@ impl SettingsWindow {
             }),
         ] {
             _subsonic_changes.push(cx.subscribe(input, {
-                move |this: &mut Self, input, event: &InputEvent, cx| {
-                    if let InputEvent::Change = event {
+                move |this: &mut Self, input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => {
                         let value = input.read(cx).value().to_string();
                         Settings::update(move |s| write(s, value));
+                        this.subsonic_dirty = true;
 
                         // Whatever the last Connect said was about the old
                         // server, so it stops standing for this one.
                         this.subsonic_status = None;
                         cx.notify();
                     }
+
+                    // The account may have moved, which the library has to
+                    // follow. On the way out of the field rather than on
+                    // the keystroke: see `subsonic_moved`.
+                    InputEvent::Blur | InputEvent::PressEnter { .. } => this.subsonic_moved(cx),
+
+                    InputEvent::Focus => {}
                 }
             }));
         }
@@ -1485,6 +1550,7 @@ impl SettingsWindow {
             broadcast_name,
             broadcast_enabled: settings.broadcast.enabled,
             broadcast_bitrate: settings.broadcast.bitrate,
+            broadcast_dirty: false,
             capture_enabled: settings.capture.enabled,
             capture_folder: settings.capture.folder.clone(),
             capture_pattern,
@@ -1497,10 +1563,13 @@ impl SettingsWindow {
             subsonic_rows,
             subsonic_last_sync: settings.accounts.subsonic.last_sync,
             subsonic_syncing: rox_services::sources::syncing(),
+            subsonic_follow: None,
+            subsonic_dirty: false,
             stations,
             station_url,
             station_name,
             station_notice: None,
+            station_probing: false,
             ffmpeg_path,
             ffmpeg_test: None,
             threshold_scrub: ScrubState::default(),
@@ -1609,6 +1678,8 @@ impl SettingsWindow {
             _player_changed,
             _player_view,
             _record_keys,
+            _flush_on_close,
+            _flush_on_quit,
         }
     }
 
@@ -5229,7 +5300,7 @@ impl SettingsWindow {
             .section(Section::new(
                 q,
                 icons::RADIO,
-                rox_i18n::t!("settings-playback-section-radio"),
+                rox_i18n::t!("settings-playback-section-streaming"),
                 None,
                 |rows| {
                     rows.row_dyn(
@@ -6230,6 +6301,97 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// A field was left, so follow the account with the authorize table and
+    /// the library. The rows filed under the address the account has left
+    /// can't be signed by anybody any more, so leaving them would show a
+    /// shelf of tracks that skip themselves and blame the password.
+    ///
+    /// Leaving the field is the commit, the same one the broadcast rows
+    /// take three hundred lines up. Hanging this off the keystroke instead
+    /// would drop the catalog on the first character typed, since mid-edit
+    /// every character is its own source id, and pay for a projection
+    /// rebuild on each one after it.
+    ///
+    /// Nothing here dials the server. A finished field is still just a
+    /// field; Connect and Sync Now are the round trips.
+    fn subsonic_moved(&mut self, cx: &mut Context<Self>) {
+        let this = cx.weak_entity();
+        self.subsonic_follow = self.subsonic_commit(this, cx);
+    }
+
+    /// The Icecast half of the same idea: re-dial the sink on whatever the
+    /// fields now say. Gated on the flag so a blur that passed through an
+    /// untouched field doesn't drop a live connection and build it again.
+    fn broadcast_moved(&mut self) {
+        if !self.broadcast_dirty {
+            return;
+        }
+
+        self.broadcast_dirty = false;
+
+        if self.broadcast_enabled {
+            crate::integrations::broadcast::apply();
+        }
+    }
+
+    /// Follow the account the Subsonic fields now describe, if one of them
+    /// has moved. `None` when none has, so a caller can tell a real pass
+    /// from nothing to do.
+    ///
+    /// The window handle comes in weak and separate rather than off `cx`
+    /// because the flush runs this while the entity is already on its way
+    /// out; the row count it would refresh has nowhere to land then, and
+    /// the prune underneath it still has to happen.
+    fn subsonic_commit(&mut self, this: WeakEntity<Self>, cx: &mut App) -> Option<Task<()>> {
+        if !self.subsonic_dirty {
+            return None;
+        }
+
+        self.subsonic_dirty = false;
+
+        // The table first, so a stream can be signed under the new source
+        // id without a restart.
+        rox_services::sources::install_registry();
+
+        let prune = rox_services::sources::prune_departed(self.library.clone(), cx);
+
+        Some(cx.spawn(async move |cx| {
+            // Nothing moves on the overwhelming majority of these, which is
+            // every edit that didn't change where the account points.
+            if prune.await == 0 {
+                return;
+            }
+
+            this.update(cx, |this, cx| {
+                this.subsonic_rows = subsonic_row_count(&this.library, cx);
+                cx.notify();
+            })
+            .ok();
+        }))
+    }
+
+    /// Run the commit every dirty field would have run on its way out.
+    ///
+    /// These fields write their value through on the keystroke but hold
+    /// the act on it until the field is left. Closing the window,
+    /// switching page and quitting all end the edit without any field ever
+    /// blurring, and the held task dies with the entity, so the typing
+    /// lands in the file with nothing acting on it: an Icecast port that
+    /// never reaches the sink, a moved server whose old rows stay in the
+    /// library. This is that same commit, run from the outside.
+    ///
+    /// Destructive and slow is not a reason to skip one here. Leaving the
+    /// field would have pruned; so does this.
+    ///
+    /// The returned task is the Subsonic prune. A caller that outlives it
+    /// detaches it; the quit hook drops it, for the reason spelled out
+    /// there. Everything else here is synchronous and runs either way.
+    fn flush_pending_edits(&mut self, this: WeakEntity<Self>, cx: &mut App) -> Task<()> {
+        self.broadcast_moved();
+
+        self.subsonic_commit(this, cx).unwrap_or(Task::ready(()))
+    }
+
     /// Ping the server and keep what it answered for the status line. Off
     /// the UI thread, since it's a round trip to somebody's machine.
     fn subsonic_connect(&mut self, cx: &mut Context<Self>) {
@@ -6364,7 +6526,7 @@ impl SettingsWindow {
                             .iter()
                             .filter(|p| **p != "%skip%")
                             .copied()
-                            .chain(["%station%", "%date%"])
+                            .chain(["%station%", "%source%", "%date%"])
                             .collect::<Vec<_>>()
                             .join(" "),
                     );
@@ -6443,9 +6605,12 @@ impl SettingsWindow {
                                     )
                                     .child(div().text_xs().text_color(palette::text_muted()).child(
                                         SharedString::from(format!(
-                                            "{} {}",
+                                            "{} {} {}",
                                             rox_i18n::t!(
                                                 "settings-playback-capture-pattern-station"
+                                            ),
+                                            rox_i18n::t!(
+                                                "settings-playback-capture-pattern-source"
                                             ),
                                             rox_i18n::t!("settings-playback-capture-pattern-date"),
                                         )),
@@ -6694,7 +6859,7 @@ impl SettingsWindow {
             .child(div().w(px(160.)).child(Input::new(&self.station_name)))
             .child(icon_button(
                 icons::PLUS,
-                false,
+                self.station_probing,
                 cx.listener(|this, _, window, cx| this.add_station(window, cx)),
             ))
     }
@@ -6719,33 +6884,101 @@ impl SettingsWindow {
         true
     }
 
-    /// Add whatever is in the two fields. An empty URL does nothing, and a
-    /// line that isn't a stream says so rather than landing as a row that
-    /// can never play.
+    /// Add whatever is in the two fields, in two passes. The URL string
+    /// is judged first, because most of what gets pasted in here is
+    /// wrong in a way the string already shows, and that answer is
+    /// instant. What survives that goes to the stream itself, because
+    /// the other common mistake is a station's web page, and a web page
+    /// URL is indistinguishable from a mount until something asks.
     fn add_station(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.station_url.read(cx).value().trim().to_string();
-        if url.is_empty() {
+        if url.is_empty() || self.station_probing {
             return;
         }
 
-        // What counts as a stream is the import reader's rule, so typing a
-        // URL in and importing a file holding it agree on which lines rox
-        // will take.
-        let Some(mut station) = stations::import(&url).pop() else {
-            self.station_notice = Some(rox_i18n::t!("stations-not-a-stream"));
+        // The string rule is the import reader's, so typing a URL in and
+        // importing a file holding it agree on which lines rox will take.
+        // Each refusal gets its own line: someone holding a perfectly good
+        // `.pls` needs to hear "Import", not "that isn't a stream".
+        if let Some(refusal) = stations::refusal(&url) {
+            self.station_notice = Some(match refusal {
+                Refusal::Scheme => rox_i18n::t!("stations-not-a-stream"),
+                Refusal::Hls => rox_i18n::t!("stations-is-hls"),
+                Refusal::Playlist => rox_i18n::t!("stations-is-a-playlist"),
+            });
             cx.notify();
             return;
+        }
+
+        self.station_probing = true;
+        self.station_notice = Some(rox_i18n::t!("stations-checking"));
+
+        let name = self.station_name.read(cx).value().trim().to_string();
+        let ask = cx.background_executor().spawn({
+            let url = url.clone();
+            async move { rox_net::sources::stream_probe::probe(&url) }
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = ask.await;
+
+            this.update_in(cx, |this, window, cx| {
+                this.station_probing = false;
+                this.finish_add_station(url, name, answer, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+
+        cx.notify();
+    }
+
+    /// The second half of an add, once the stream has answered.
+    ///
+    /// Only one answer stops the add, and that's the one where the URL
+    /// positively said it serves a document. Everything else lands as a
+    /// row, including a station that didn't answer at all: a stream URL
+    /// is something somebody found on a forum years ago, an Icecast
+    /// mount whose source is asleep answers 404, and refusing a station
+    /// for being down today would be a worse bug than the one this
+    /// check exists to catch. The line says the check came back empty so
+    /// the row isn't mistaken for a verified one.
+    fn finish_add_station(
+        &mut self,
+        url: String,
+        name: String,
+        answer: Probe,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Probe::Document { content_type } = answer {
+            self.station_notice = Some(rox_i18n::t!("stations-not-audio", kind = content_type));
+            cx.notify();
+            return;
+        }
+
+        let station = Station {
+            url,
+            name,
+            genre: String::new(),
         };
 
-        station.name = self.station_name.read(cx).value().trim().to_string();
-
-        if self.write_stations(&[station], cx) {
-            self.station_notice = None;
-            self.station_url
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.station_name
-                .update(cx, |input, cx| input.set_value("", window, cx));
+        if !self.write_stations(&[station], cx) {
+            return;
         }
+
+        self.station_notice = match answer {
+            Probe::Unknown { reason } => {
+                Some(rox_i18n::t!("stations-added-unchecked", reason = reason))
+            }
+
+            _ => None,
+        };
+
+        self.station_url
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.station_name
+            .update(cx, |input, cx| input.set_value("", window, cx));
     }
 
     /// Import a `.pls` or `.m3u` of stream URLs, which is how most people
@@ -9442,6 +9675,12 @@ impl SettingsWindow {
     /// search picks the page it runs on. Entering Storage measures the
     /// files fresh, so the numbers are current without a per-frame stat.
     fn open_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        // Leaving the page is leaving the field: the broadcast and Subsonic
+        // rows are gone from the screen after this, so whatever was typed
+        // into them commits now or never.
+        let this = cx.weak_entity();
+        self.flush_pending_edits(this, cx).detach();
+
         self.page = page;
         if !self.search_scoped {
             self.search

@@ -40,11 +40,14 @@ pub struct Cue {
 /// where only the front one is clickable.
 const DUPLICATE_MS: u32 = 250;
 
-/// How far behind the playhead a cue has to be before Previous goes to it.
-/// Sitting on a mark, Previous should reach the one before rather than pin
-/// to the one under the head, which is how stepping bookmarks and stepping
-/// tracks both already behave.
-const PREV_GRACE_MS: u32 = 1_000;
+/// How far from the playhead a cue has to be before a step goes to it, in
+/// either direction. Sitting on a mark, Previous should reach the one
+/// before rather than pin to the one under the head, which is how stepping
+/// bookmarks and stepping tracks both already behave. Next needs the same
+/// room: a seek onto a mark lands a few milliseconds short of it, and a
+/// bare "past the head" compare would find that same mark again and stick
+/// there for every press while paused.
+const STEP_GRACE_MS: u32 = 1_000;
 
 /// Every track's session marks. The sets stay sorted by position, since
 /// every reader wants them in strip order and there are never enough of
@@ -123,19 +126,21 @@ impl Cues {
         self.marks.get(key).cloned().unwrap_or_default()
     }
 
-    /// The first mark past `position_ms`, for Next.
+    /// The first mark far enough past `position_ms` to count, for Next.
+    /// See [`STEP_GRACE_MS`].
     pub fn next_after(&self, key: &TrackKey, position_ms: u32) -> Option<Cue> {
+        let cutoff = position_ms.saturating_add(STEP_GRACE_MS);
         self.marks
             .get(key)?
             .iter()
-            .find(|cue| cue.position_ms > position_ms)
+            .find(|cue| cue.position_ms > cutoff)
             .copied()
     }
 
     /// The last mark far enough behind `position_ms` to count, for
-    /// Previous. See [`PREV_GRACE_MS`].
+    /// Previous. See [`STEP_GRACE_MS`].
     pub fn prev_before(&self, key: &TrackKey, position_ms: u32) -> Option<Cue> {
-        let cutoff = position_ms.saturating_sub(PREV_GRACE_MS);
+        let cutoff = position_ms.saturating_sub(STEP_GRACE_MS);
         self.marks
             .get(key)?
             .iter()
@@ -182,8 +187,9 @@ mod tests {
         });
     }
 
-    /// Next takes the mark ahead; Previous skips the one under the head,
-    /// so a second press walks back rather than pinning where it landed.
+    /// Next takes the mark ahead and Previous the one behind, and both skip
+    /// the mark under the head, so a second press walks on rather than
+    /// pinning where it landed.
     #[gpui::test]
     fn stepping_reads_ahead_and_back_with_a_grace(cx: &mut TestAppContext) {
         let cues = cx.new(|_| Cues::default());
@@ -196,6 +202,9 @@ mod tests {
             let next = |at| cues.next_after(&track, at).map(|c| c.position_ms);
             assert_eq!(next(0), Some(10_000));
             assert_eq!(next(40_000), Some(70_000));
+            // A seek onto the 40s mark lands a hair short of it; Next still
+            // reaches past it instead of finding it again.
+            assert_eq!(next(39_917), Some(70_000));
             assert_eq!(next(70_000), None);
 
             let prev = |at| cues.prev_before(&track, at).map(|c| c.position_ms);

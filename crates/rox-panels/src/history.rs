@@ -352,7 +352,9 @@ impl HistoryPanel {
         // A rescan retags tracks and grows the never-played set; a favourite
         // change moves that column. A rating click only moved one cell through
         // the shared projection, and the play-keyed views never reorder on it,
-        // so patch it in place instead of re-running the listens query.
+        // so patch it in place instead of re-running the listens query. A
+        // play-count import is the other way round: every view here is keyed
+        // on the listens table it just filled, so all three re-read.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -362,7 +364,9 @@ impl HistoryPanel {
                 }
                 if matches!(
                     event,
-                    LibraryEvent::Updated | LibraryEvent::PlaylistsChanged
+                    LibraryEvent::Updated
+                        | LibraryEvent::PlaylistsChanged
+                        | LibraryEvent::PlaysReloaded
                 ) {
                     this.refresh(cx);
                 }

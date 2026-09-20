@@ -227,10 +227,11 @@ pub const CROSSFADE_MAX_SECS: f32 = 12.0;
 pub const LIVE_IDLE_HANGUP_SECS: u64 = 1800;
 
 /// How often the station's song boundaries are refreshed for their
-/// distances alone. Six times the pump's own clock, so nothing drawing them
-/// ever has a stale list, and nowhere near the rate the decode loop turns
-/// at.
-const MARKS_REFRESH: StdDuration = StdDuration::from_millis(100);
+/// distances alone. The pump's own clock, since the distances slide
+/// continuously with the drawn edge and a slower refresh draws them in
+/// steps behind a playhead that isn't stepping. Still nowhere near the rate
+/// the decode loop turns at.
+const MARKS_REFRESH: StdDuration = StdDuration::from_millis(16);
 
 /// The shortest tape the engine will keep, whatever it was asked for. The
 /// setting clamps to a real band before it gets here; this is the floor for a
@@ -1249,6 +1250,12 @@ impl Engine {
                     // at `Opening` for the rest of the session.
                     if remote {
                         self.shared.publish_stream(i, StreamState::Dropped);
+                        // A server that refused has a reason the listener
+                        // can act on: a password that stopped working, a
+                        // track the library still lists and the server
+                        // doesn't. A missing local file is its own kind of
+                        // obvious, so only a stream sends one up.
+                        self.shared.publish_refusal(e.clone());
                     }
 
                     log::warn!("skipping {}: {e}", self.queue[i].label());
@@ -1399,6 +1406,14 @@ impl Engine {
             return source;
         };
 
+        // What's decoded but not yet out of the speakers: the ring plus
+        // whatever is pending behind it. The tape takes it off the decoded
+        // seconds so the playhead follows the audio, not the decoder's
+        // top-ups.
+        let ringed = self.producer.buffer().capacity() - self.producer.slots();
+        let pending = self.pending.len() - self.pending_pos;
+        tape.note_queued((ringed + pending) as f64 / 2.0 / self.device_rate as f64);
+
         let shift = tape.shift();
         self.shared.publish_shift(self.idx, shift);
         self.publish_marks(&tape);
@@ -1412,17 +1427,22 @@ impl Engine {
         source
     }
 
-    /// Hand the station's song boundaries up for whatever is drawing the
-    /// buffer.
+    /// Hand the station's song boundaries and its reconnects up for
+    /// whatever is drawing the buffer.
     ///
-    /// Two clocks, because the list changes for two different reasons. A
-    /// song announced or one falling off the back is a real change and gets
-    /// a revision, which is what a reader polling for song changes watches.
-    /// The distances moving as the live edge advances is not, and it
-    /// happens on every chunk, so it rides a timer instead: often enough
-    /// that a strip drawn at sixty frames a second is never looking at a
-    /// stale one, rarely enough that this isn't rebuilding a list of
-    /// strings on every pass of the decode loop.
+    /// Two clocks, because the lists change for two different reasons. A
+    /// song announced, a connection spliced, or either falling off the back
+    /// is a real change and gets a revision, which is what a reader polling
+    /// for song changes watches. The distances moving as the live edge
+    /// advances is not, and it happens on every chunk, so it rides a timer
+    /// instead: often enough that a strip drawn at sixty frames a second is
+    /// never looking at a stale one, rarely enough that this isn't
+    /// rebuilding a list of strings on every pass of the decode loop.
+    ///
+    /// The gaps ride along rather than getting a pass of their own. They
+    /// slide with the same edge the songs do, and a strip that redrew its
+    /// songs against a set of breaks measured a tick earlier would put the
+    /// two out of line with each other for as long as the station stays on.
     fn publish_marks(&mut self, tape: &Arc<Tape>) {
         let rev = tape.marks_rev();
         let changed = rev != self.marks_rev;
@@ -1432,7 +1452,8 @@ impl Engine {
 
         self.marks_rev = rev;
         self.marks_at = Instant::now();
-        self.shared.publish_live_marks(tape.live_marks(), changed);
+        self.shared
+            .publish_live_marks(tape.live_marks(), tape.live_gaps(), changed);
     }
 
     /// Hang up on a station that has been sitting paused long enough for the

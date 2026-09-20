@@ -26,7 +26,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::bookmarks::Bookmark;
 use rox_library::cue::TrackKey;
 use rox_panel_api::{cue_ui, position_bound};
-use rox_playback::{LiveMark, Shift, StreamState};
+use rox_playback::{LiveGap, LiveMark, Shift, StreamState};
 use rox_services::cues::{Cue, CuesChanged};
 use serde::{Deserialize, Serialize};
 
@@ -1050,9 +1050,9 @@ pub(crate) fn live_tint(stream: Option<StreamState>, paused: bool, t: f32) -> (g
 }
 
 /// Whether the playhead is standing on the live edge. An exact compare,
-/// because the engine deadbands the distance and snaps it to zero at the
-/// edge: rounding a near-zero off on this side too would put a second
-/// boundary next to that one, and the clock would flicker across it.
+/// because the engine snaps the distance to zero at the edge: rounding a
+/// near-zero off on this side too would put a second boundary next to that
+/// one, and the clock would flicker across it.
 fn at_live_edge(behind_secs: f64) -> bool {
     behind_secs <= 0.0
 }
@@ -1187,8 +1187,8 @@ pub(crate) fn insert_layer<V: Panel>(
 /// the whole buffer the way the playhead is.
 ///
 /// Everything that arrives is drawn. The tape clips the list to what it
-/// still holds and holds it on the playhead's deadband, so a mark whose
-/// audio has been trimmed off the back never reaches here, and a second
+/// still holds and measures it against the playhead's own edge, so a mark
+/// whose audio has been trimmed off the back never reaches here, and a second
 /// opinion on that in the panel would only be a second place for the two
 /// to disagree. The id is the index, which is all the hover layer needs to
 /// tell one mark from another.
@@ -1211,13 +1211,29 @@ fn tape_marks(songs: &[LiveMark], shift: &Shift) -> Vec<cue_ui::CueMark> {
         .collect()
 }
 
+/// The station's reconnects placed along its strip, the same mapping back
+/// from the live edge the songs take.
+///
+/// A fraction and nothing else. There's no hover on these and nothing to
+/// click: a break is the one place on the strip a seek won't go, so the
+/// only thing it has to do is be visible before somebody aims past it.
+fn tape_gaps(gaps: &[LiveGap], shift: &Shift) -> Vec<f32> {
+    if shift.cap_secs <= 0.0 {
+        return Vec::new();
+    }
+
+    gaps.iter()
+        .map(|gap| (1.0 - gap.behind_secs / shift.cap_secs).clamp(0.0, 1.0) as f32)
+        .collect()
+}
+
 /// What the ending slot holds while a station plays: the distance back to
 /// the live edge once the playhead has left it. None at the edge, where the
 /// LIVE mark stands instead.
 ///
-/// Whole seconds, floored. The engine only moves this number when it has
-/// really moved, so rounding here would hand a deadbanded value a boundary
-/// of its own to sit on and tick across.
+/// Whole seconds, floored. The distance slides with the drawn edge, so a
+/// floor ticks once a second the way a countdown does, and rounding would
+/// only move the tick half a second earlier.
 fn behind_clock(shift: Option<&Shift>, digits: usize) -> Option<String> {
     let shift = shift.filter(|shift| !at_live_edge(shift.behind_secs))?;
 
@@ -1589,6 +1605,99 @@ impl LeadLine {
     }
 }
 
+/// How wide the break a reconnect cuts in the bar is, px: the hole taken
+/// out of it, and the line standing in the middle of the hole. Narrow on
+/// purpose. It marks a splice the listener can't cross, not a stretch of
+/// missing time, and a wide block would read as a length of silence that
+/// the tape is holding.
+const GAP_BREAK_W: f32 = 5.0;
+const GAP_LINE_W: f32 = 1.5;
+/// The notch over the break: how wide it is and how far above the bar it
+/// stands. Enough to catch the eye on a bar three pixels thick, where the
+/// break alone is a missing pixel or two. The height is public to the
+/// crate because the waveform has to leave the notch room at the top of
+/// its own strip before it hands the band over.
+const GAP_NOTCH_W: f32 = 5.0;
+pub(crate) const GAP_NOTCH_H: f32 = 3.0;
+/// The break's alpha at full weight.
+const GAP_ALPHA: u8 = 0xcc;
+
+/// Draw the tape's reconnects over a strip: each one a break cut out of
+/// the bar, a thin line standing in the break, and a notch across the top
+/// of it.
+///
+/// Its own shape in its own place, which is the rule the other marks on
+/// these strips already keep. Session cues hang off the top edge as
+/// chevrons and bookmarks off the bottom as ribbons, so a gap goes through
+/// the middle and touches neither edge, and it stays in the muted tone
+/// rather than the accent: nobody put it there, it's the broadcast
+/// missing.
+///
+/// `band` is the top and the height of the cut in strip-local px, the line
+/// itself on the seek strip and most of the panel on the waveform.
+/// `weight` scales the alpha the way the mark painters' does, for a strip
+/// that has dimmed.
+pub(crate) fn paint_gaps(
+    gaps: &[f32],
+    band: (f32, f32),
+    weight: f32,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
+    let w = f32::from(bounds.size.width);
+    let (top, height) = band;
+    if w <= 0.0 || height <= 0.0 || gaps.is_empty() {
+        return;
+    }
+
+    let alpha = (GAP_ALPHA as f32 * weight.clamp(0.0, 1.0)) as u8;
+    if alpha == 0 {
+        return;
+    }
+
+    let color = palette::alpha(palette::text_muted(), alpha);
+    // The notch takes whatever room there is above the cut, so a strip too
+    // short for the full height gets a shorter one instead of losing it.
+    let notch_h = GAP_NOTCH_H.min(top);
+    let quad = |x: f32, w: f32, y: f32, h: f32, color, window: &mut Window| {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(bounds.origin.x + px(x), bounds.origin.y + px(y)),
+                size(px(w), px(h)),
+            ),
+            color,
+        ));
+    };
+
+    for gap in gaps {
+        let x = gap.clamp(0.0, 1.0) * w;
+
+        // The hole first, in the panel's own background: the break has to
+        // read as the bar stopping rather than as something drawn on top
+        // of a bar that carries on underneath.
+        quad(
+            x - GAP_BREAK_W / 2.0,
+            GAP_BREAK_W,
+            top,
+            height,
+            palette::bg_root(),
+            window,
+        );
+        quad(x - GAP_LINE_W / 2.0, GAP_LINE_W, top, height, color, window);
+
+        if notch_h > 0.0 {
+            quad(
+                x - GAP_NOTCH_W / 2.0,
+                GAP_NOTCH_W,
+                top - notch_h,
+                notch_h,
+                color,
+                window,
+            );
+        }
+    }
+}
+
 /// A station's strip: the whole buffer the setting allows, with the tape
 /// held against its right end, where the live edge is.
 ///
@@ -1601,6 +1710,7 @@ impl LeadLine {
 fn paint_shift_strip(
     shift: &Shift,
     songs: &[cue_ui::CueMark],
+    gaps: &[f32],
     look: StripLook,
     bounds: Bounds<Pixels>,
     window: &mut Window,
@@ -1681,6 +1791,18 @@ fn paint_shift_strip(
         // gpui doesn't clamp radii to the quad, so the heard side's shrink
         // with it near the tape's start.
         .corner_radii(px(radius.min(heard / 2.0))),
+    );
+
+    // Where the connection broke: the bar stops and starts again. It goes
+    // on after both fills, since a break in the tape is a break in
+    // whichever of them covers it, and before the playhead, which crosses
+    // over it the way it crosses everything else.
+    paint_gaps(
+        gaps,
+        (f32::from(line_y - bounds.origin.y), line_h),
+        if look.dim { 0.5 } else { 1.0 },
+        bounds,
+        window,
     );
 
     // The station's own marks, where its songs turned over. Chevrons off
@@ -1843,6 +1965,13 @@ impl SeekStripPanel {
             .unwrap_or_default();
         self.settle_song_hover(&song_marks);
         let hovered_song = self.hovered_song;
+        // The station's reconnects, read and mapped on the same terms as
+        // the songs: the tape publishes both against one edge, and the two
+        // would drift apart if the strip took them a tick apart.
+        let gap_marks = shift
+            .as_ref()
+            .map(|shift| tape_gaps(&self.state.player.read(cx).live_gaps(), shift))
+            .unwrap_or_default();
         // The seek click is on the track alone so the clocks beside it
         // stay inert.
         // The seek preview shows once the duration resolves; before that a
@@ -1905,6 +2034,7 @@ impl SeekStripPanel {
                         let marks = marks.clone();
                         let cues = cues.clone();
                         let songs = song_marks.clone();
+                        let gaps = gap_marks.clone();
                         move |bounds, _, window, _| {
                             // A station with nothing held yet: the flat bar,
                             // and no drag to arm over it.
@@ -1920,7 +2050,7 @@ impl SeekStripPanel {
                                 // marks, since none of them have a position
                                 // on a broadcast to sit at.
                                 Some(shift) => {
-                                    paint_shift_strip(shift, &songs, look, bounds, window)
+                                    paint_shift_strip(shift, &songs, &gaps, look, bounds, window)
                                 }
 
                                 None => paint_strip(

@@ -1261,12 +1261,12 @@ impl FilterPanel {
     }
 }
 
-/// The rows a column counts over. The unqueried case is every live row in
-/// the library, and naming it beats materializing it: `(0..len).collect()`
-/// on a ten-million-row projection is forty megabytes allocated per
-/// rebuild to hold the numbers zero through ten million. It carries the
-/// projection rather than a length so the walk can skip the tombstones a
-/// patch left behind; every other way in here already excludes them.
+/// The rows a column counts over. The unqueried case is every browsable
+/// row in the library, and naming it beats materializing it:
+/// `(0..len).collect()` on a ten-million-row projection is forty megabytes
+/// allocated per rebuild to hold the numbers zero through ten million. It
+/// carries the projection rather than a length so the walk can ask which
+/// rows browse; every other way in here already excludes the rest.
 enum RowSet<'a> {
     All(&'a Projection),
     Only(Vec<u32>),
@@ -1289,7 +1289,7 @@ impl RowSet<'_> {
                 .into_par_iter()
                 .with_min_len(COUNT_CHUNK)
                 .fold(empty, |mut acc, row| {
-                    if !projection.is_dead(row as u32) {
+                    if projection.is_browsable(row as u32) {
                         acc[sym(row)] += 1;
                     }
                     acc
@@ -1309,8 +1309,8 @@ impl RowSet<'_> {
     /// The set narrowed by a mask, the cascade's step between columns.
     fn narrow(self, mask: &[bool]) -> Self {
         match self {
-            // The mask is false at every tombstone, so this drops them
-            // with the rows the filter rules out.
+            // The mask is false at every tombstone and every station, so
+            // this drops them with the rows the filter rules out.
             RowSet::All(projection) => RowSet::Only(
                 (0..projection.len() as u32)
                     .into_par_iter()

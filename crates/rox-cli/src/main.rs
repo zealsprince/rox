@@ -29,12 +29,19 @@ commands:
   status                     what's playing and where its clock sits
   toggle | play | pause      the deck
   next | prev | stop
-  seek <secs|+secs|-secs>    absolute, or relative when signed
+  seek <secs|+secs|-secs>    absolute, or relative when signed. On a
+                             station the number is seconds behind the live
+                             edge, since a broadcast has no position
+  seek live [secs]           a station only: jump to the live edge, or that
+                             many seconds behind it
   volume <0..2>
   ab [mark|clear|<a> <b>]    A-B repeat: step the cycle (default), clear
                              it, or set a section in seconds outright
   queue                      the play order with entry ids
-  add [--next|--now] <paths> queue files (default: end of the queue)
+  add [--next|--now] <what>  queue tracks (default: end of the queue): file
+                             or folder paths, a stream URL of a station in
+                             the library, or a source|path key off `search
+                             --json`
   remove <id...>             drop queued entries by id
   jump <id>                  play a queued entry now
   search [--limit N] <terms> search the library
@@ -158,12 +165,23 @@ fn run(
         "seek" => {
             let arg = args
                 .first()
-                .ok_or("seek takes seconds, signed for relative")?;
-            let secs: f64 = arg.parse().map_err(|_| format!("not seconds: {arg}"))?;
-            if arg.starts_with('+') || arg.starts_with('-') {
-                ("transport.seek".into(), json!({ "by": secs }))
+                .ok_or("seek takes seconds, signed for relative, or live")?;
+            // The one sub-form. A station's seek runs backwards from the
+            // live edge, so a bare number on one means the opposite of
+            // what it means on a file; `live` is how a script says which
+            // it meant and gets told off rather than obeyed if it's wrong.
+            if arg == "live" {
+                let behind: f64 = match args.get(1) {
+                    Some(secs) => secs.parse().map_err(|_| format!("not seconds: {secs}"))?,
+                    None => 0.0,
+                };
+                ("transport.seek".into(), json!({ "behind": behind }))
             } else {
-                ("transport.seek".into(), json!({ "to": secs }))
+                let secs: f64 = arg.parse().map_err(|_| format!("not seconds: {arg}"))?;
+                match arg.starts_with('+') || arg.starts_with('-') {
+                    true => ("transport.seek".into(), json!({ "by": secs })),
+                    false => ("transport.seek".into(), json!({ "to": secs })),
+                }
             }
         }
         "volume" => {
@@ -195,11 +213,11 @@ fn run(
                 match arg.as_str() {
                     "--next" => mode = "next",
                     "--now" => mode = "now",
-                    path => paths.push(absolute(path)),
+                    what => paths.push(add_arg(what)),
                 }
             }
             if paths.is_empty() {
-                return Err("add takes file or folder paths".into());
+                return Err("add takes paths, a stream URL, or a source|path key".into());
             }
             ("queue.add".into(), json!({ "paths": paths, "mode": mode }))
         }
@@ -487,6 +505,20 @@ fn absolute(path: &str) -> String {
         .unwrap_or_else(|_| path.to_owned())
 }
 
+/// One `add` argument on its way to the socket. A path leaves absolute,
+/// for the reason above. A stream URL goes through untouched, because it
+/// names a station row rather than a file and there is nothing on this
+/// machine to resolve it against; a `source|path` key off `search --json`
+/// rides the same fallback, since canonicalize has nothing to say about
+/// either and hands the string straight back.
+fn add_arg(what: &str) -> String {
+    if what.starts_with("http://") || what.starts_with("https://") {
+        return what.to_owned();
+    }
+
+    absolute(what)
+}
+
 fn print_status(status: &Value) {
     let state = match (
         status["active"].as_bool().unwrap_or(false),
@@ -515,6 +547,11 @@ fn print_status(status: &Value) {
                 clock(status["duration_secs"].as_f64()),
                 status["volume"].as_f64().unwrap_or_default(),
             );
+            // Where in the tape a station is playing from, on its own
+            // line and only when there is a tape: a file has none of this
+            // and a client reading `position_secs` on a station is
+            // reading a listen clock, not a position.
+            print_shift(&status["shift"], "        ");
             // The A-B section only when there's one to speak of: a line
             // that says "off" on every status would be noise.
             let ab = &status["ab"];
@@ -528,6 +565,26 @@ fn print_status(status: &Value) {
         }
         false => println!("{state}"),
     }
+}
+
+/// The timeshift line, for a station and nothing else. Says where the
+/// playhead is against the broadcast and how much tape there is to move
+/// through, which is the one thing `position_secs` can't tell a caller:
+/// on a station that clock counts the listen.
+fn print_shift(shift: &Value, indent: &str) {
+    let Some(shift) = shift.as_object() else {
+        return;
+    };
+
+    let edge = match shift["timeshifted"].as_bool().unwrap_or(false) {
+        true => format!("-{} behind live", clock(shift["behind_secs"].as_f64())),
+        false => "live".to_owned(),
+    };
+    println!(
+        "{indent}{edge}  tape {} of {}",
+        clock(shift["window_secs"].as_f64()),
+        clock(shift["cap_secs"].as_f64()),
+    );
 }
 
 fn print_windows(result: &Value) {
@@ -593,8 +650,31 @@ fn print_search(result: &Value) {
         return;
     };
     for track in tracks {
+        let source = track["source"].as_str();
+        // The key only where the tags can't stand in for it. A station
+        // and a Subsonic song have no path anyone could type, so without
+        // this a hit here can be read and not queued; a local file keeps
+        // the line it always had.
+        let key = match source {
+            Some("local") | None => String::new(),
+            Some(_) => match track["key"].as_str() {
+                Some(key) => format!("  {key}"),
+                None => String::new(),
+            },
+        };
+        // A station is a name and a stream. There's no artist, no album
+        // and no length to print, so the word goes where the artist
+        // would have been and the line stops after the name and the key.
+        // The source string is the wire's own, same as "local" above.
+        if source == Some("radio") {
+            println!(
+                "Radio - {}{key}",
+                track["title"].as_str().unwrap_or_default(),
+            );
+            continue;
+        }
         println!(
-            "{} - {} - {}  [{}]",
+            "{} - {} - {}  [{}]{key}",
             track["artist"].as_str().unwrap_or_default(),
             track["album"].as_str().unwrap_or_default(),
             track["title"].as_str().unwrap_or_default(),
@@ -635,6 +715,8 @@ fn print_now(track: &Value) {
             println!("{field:>12}  {text}");
         }
     }
+    // The tape under a station, on the same terms `status` prints it.
+    print_shift(&track["shift"], "       shift  ");
 }
 
 /// One line per pass: progress while it runs, otherwise what a start would
@@ -771,5 +853,35 @@ fn clock(secs: Option<f64>) -> String {
             format!("{}:{:02}", whole / 60, whole % 60)
         }
         _ => "-:--".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stream URL and a source key reach the socket as typed. A relative
+    /// path doesn't: the running rox has its own working directory, so it
+    /// would resolve against the wrong folder.
+    #[test]
+    fn add_leaves_a_url_and_a_source_key_alone() {
+        for what in [
+            "http://127.0.0.1:8767/stream",
+            "https://stream.example/live.mp3",
+            "radio|http://127.0.0.1:8767/stream",
+            "subsonic:9f2c|tr-1801",
+        ] {
+            assert_eq!(add_arg(what), what);
+        }
+
+        let here = std::env::current_dir().expect("a working directory");
+        assert_eq!(add_arg("."), here.to_string_lossy());
+    }
+
+    /// A path that doesn't resolve still goes as typed rather than being
+    /// dropped here, so the refusal comes from rox with the reason in it.
+    #[test]
+    fn add_passes_an_unresolvable_path_through() {
+        assert_eq!(add_arg("/m/not-here.flac"), "/m/not-here.flac");
     }
 }

@@ -277,7 +277,10 @@ fn folder_art(path: &Path, kind: ArtKind) -> Cover {
             continue;
         };
         // Rank 0 is the track's own name; the shared stems start at one.
-        let rank = if own == Some(stem) {
+        // Case-blind like the shared stems and the extension, since on a
+        // case-insensitive disk the two spellings are one file anyway and
+        // a path typed or dropped in carries whatever casing it was given.
+        let rank = if own.is_some_and(|own| own.eq_ignore_ascii_case(stem)) {
             0
         } else {
             match stems.iter().position(|n| stem.eq_ignore_ascii_case(n)) {
@@ -601,8 +604,10 @@ mod tests {
         std::fs::write(&own, b"not really audio").unwrap();
         std::fs::write(&other, b"not really audio").unwrap();
         std::fs::write(dir.join("cover.png"), png(b"shared")).unwrap();
+        // Cased differently from the track on purpose: the match is
+        // case-blind, the same as the shared stems.
         std::fs::write(
-            dir.join("Pendulum - Propane Nightmares.png"),
+            dir.join("pendulum - propane nightmares.png"),
             png(b"its own"),
         )
         .unwrap();

@@ -28,6 +28,7 @@ use rox_library::cue::TrackKey;
 use rox_library::projection::Projection;
 use rox_panel_api::panel::AppState;
 use rox_panels::milkdrop::MilkdropPanel;
+use rox_playback::Shift;
 use rox_services::catalog::Library;
 use rox_services::player::AbState;
 
@@ -171,15 +172,52 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             state.player.update(cx, |player, cx| player.stop(cx));
             Ok(status(state, cx))
         }
+        // Two timelines behind one verb. A file has a position, so `to` is
+        // where in it to play from and `by` steps along it. A station has
+        // no position at all: its clock counts how long you have been
+        // listening, and the only thing a seek can move is the cursor
+        // through the tape. So on a live entry `to` means seconds behind
+        // the live edge, and `by` keeps its direction, forward closing the
+        // distance to live and backward opening it.
+        //
+        // `behind` says the same thing outright and refuses on anything
+        // that isn't live, for a caller that would rather be told than
+        // have its number quietly reinterpreted.
         "transport.seek" => {
             let player = state.player.read(cx);
-            if let Some(to) = params.get("to").and_then(Value::as_f64) {
-                player.seek_to(to);
+            let now = player.now_playing();
+            let live = now.as_ref().is_some_and(|now| now.live);
+            if let Some(behind) = params.get("behind").and_then(Value::as_f64) {
+                if !live {
+                    return Err(RpcError::app(
+                        "nothing live is playing; \"behind\" only means something on a station",
+                    ));
+                }
+                player.seek_live(behind);
+            } else if let Some(to) = params.get("to").and_then(Value::as_f64) {
+                match live {
+                    true => player.seek_live(to),
+                    false => player.seek_to(to),
+                }
             } else if let Some(by) = params.get("by").and_then(Value::as_f64) {
-                player.seek_by(by);
+                match live {
+                    // Off the tape's own reading rather than a remembered
+                    // one: a pause keeps taping, so the distance to live
+                    // grows under a caller that stepped back a minute ago.
+                    true => {
+                        let behind = now
+                            .as_ref()
+                            .and_then(|now| now.shift)
+                            .map(|shift| shift.behind_secs)
+                            .unwrap_or(0.0);
+                        player.seek_live(behind - by);
+                    }
+                    false => player.seek_by(by),
+                }
             } else {
                 return Err(RpcError::invalid_params(
-                    "seek takes {\"to\": seconds} or {\"by\": seconds}",
+                    "seek takes {\"to\": seconds}, {\"by\": seconds}, or \
+                     {\"behind\": seconds} on a station",
                 ));
             }
             Ok(status(state, cx))
@@ -331,6 +369,18 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
                     .map(|(name, n)| json!([name, n]))
                     .collect::<Vec<_>>(),
             }))
+        }
+        // Re-read every play count off the listens table into the shared
+        // projection and raise `PlaysReloaded`, exactly what a finished
+        // Last.fm backfill does. Debug scope (ADR 22): without it the bulk
+        // path can only be exercised through a real account, so a test
+        // writes listens straight into the database and calls this to
+        // publish them.
+        "debug.reload_plays" => {
+            state
+                .library
+                .update(cx, |library, cx| library.reload_plays(cx));
+            Ok(Value::Null)
         }
         other => super::drive::route(other, params, cx)
             .unwrap_or_else(|| Err(RpcError::method_not_found(other))),
@@ -736,7 +786,25 @@ fn status(state: &AppState, cx: &App) -> Value {
         "muted": player.muted(),
         "queue_rev": player.queue_rev(),
         "ab": ab_json(player.ab_state()),
+        // Where in the tape a station is playing from, null for anything
+        // else. `position_secs` on a station counts the listen and says
+        // nothing about this, so a caller that wants to know whether it is
+        // on the broadcast or a few minutes behind it has to read here.
+        "shift": now.as_ref().and_then(|now| now.shift).map(shift_json),
         "track": track,
+    })
+}
+
+/// The timeshift as the wire shows it. `timeshifted` is the same exact
+/// compare the seek strip makes: the engine snaps the distance to zero at
+/// the edge, so rounding a near-zero off here would put a second boundary
+/// beside that one and flicker across it.
+fn shift_json(shift: Shift) -> Value {
+    json!({
+        "behind_secs": shift.behind_secs,
+        "window_secs": shift.window_secs,
+        "cap_secs": shift.cap_secs,
+        "timeshifted": shift.behind_secs > 0.0,
     })
 }
 
@@ -765,6 +833,7 @@ fn now_playing(state: &AppState, cx: &App) -> Value {
     track["position_secs"] = json!(now.position_secs);
     track["duration_secs"] = json!(now.duration_secs);
     track["live"] = json!(now.live);
+    track["shift"] = now.shift.map(shift_json).unwrap_or(Value::Null);
     track
 }
 
@@ -825,33 +894,114 @@ fn queue_list(state: &AppState, cx: &App) -> Value {
     })
 }
 
-/// Queue files by path. `mode` places them: "end" (the default) behind
-/// what's queued, "next" right after the playing track, "now" splices and
-/// jumps. Paths are filtered to decodable audio the same way an OS file
-/// open is; a `path#N` string names a cue track the way the m3u export
-/// does. Returns how many made the cut.
+/// What one `queue.add` argument names, before the library gets a say.
+/// Reading the string and asking whether the row exists are separate steps
+/// so the reading can be tested without an app around it.
+#[derive(Debug, PartialEq)]
+enum AddTarget {
+    /// A row belonging to some source other than the disk, written the way
+    /// [`TrackKey::to_fragment`] writes it: `subsonic:<digest>|<song id>`,
+    /// `radio|<url>`. What `library.search` hands back as `key`.
+    Row(TrackKey),
+    /// A bare stream URL, which is a station row's own identity: the
+    /// stations panel and the Sources page both file one under its URL, so
+    /// pasting that URL is the obvious thing to try and it should work.
+    Station(TrackKey),
+    /// A cue track, `path#N`: a slice of a file rather than a file.
+    Subsong(TrackKey),
+    /// A path on disk, for the filesystem walk that has always run here.
+    Path(PathBuf),
+}
+
+/// Read one add argument. `is_file` decides the literal reading the same
+/// way [`TrackKey::from_fragment`] uses it, so a real file whose name holds
+/// a `|` or ends in `#2` still beats the fragment reading of it.
+fn add_target(s: &str, is_file: impl Fn(&str) -> bool) -> AddTarget {
+    let key = TrackKey::from_fragment(s, &is_file);
+
+    if !key.is_local() {
+        return AddTarget::Row(key);
+    }
+
+    // Only after the fragment reading and the disk check have both passed
+    // on it: a scheme is not something a path has, but the callback is the
+    // one thing here that knows what is really on this machine.
+    if (s.starts_with("http://") || s.starts_with("https://")) && !is_file(s) {
+        return AddTarget::Station(TrackKey {
+            source: rox_library::cue::source_id(rox_library::stations::SOURCE),
+            path: PathBuf::from(s),
+            sub: 0,
+        });
+    }
+
+    match key.sub > 0 {
+        true => AddTarget::Subsong(key),
+        false => AddTarget::Path(PathBuf::from(s)),
+    }
+}
+
+/// Queue tracks. `mode` places them: "end" (the default) behind what's
+/// queued, "next" right after the playing track, "now" splices and jumps.
+///
+/// Four things can name a track. A path is filtered to decodable audio the
+/// same way an OS file open is, and a folder walks. A `path#N` string names
+/// a cue track the way the m3u export does. A `source|path` fragment names
+/// a row belonging to a source, which is what `library.search` prints as
+/// `key`. A bare `http(s)://` URL names the station filed under it.
+///
+/// The last two are refused rather than guessed at when the library holds
+/// no such row: nothing here can fetch a stream or a server's catalog, so
+/// a key with no row behind it would enter the queue and fail at the open,
+/// several seconds later and somewhere else. Local paths keep the old
+/// behaviour, where a path that isn't audio just falls out of the batch.
+///
+/// Returns how many made the cut.
 fn queue_add(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let paths = params
         .get("paths")
         .and_then(Value::as_array)
         .ok_or_else(|| RpcError::invalid_params("add takes {\"paths\": [..], \"mode\"?}"))?;
     let mut keys = Vec::new();
-    for path in paths {
-        let Some(s) = path.as_str() else {
-            return Err(RpcError::invalid_params("paths are strings"));
-        };
-        let key = TrackKey::from_fragment(s, |p| std::path::Path::new(p).is_file());
-        if key.sub > 0 {
-            // A cue track names a slice, not a file to sniff; the engine
-            // resolves its span off the library at insert.
-            keys.push(key);
-            continue;
+    {
+        // Scoped, because the queue edit below needs the context back.
+        let library = state.library.read(cx);
+        for path in paths {
+            let Some(s) = path.as_str() else {
+                return Err(RpcError::invalid_params("paths are strings"));
+            };
+
+            match add_target(s, |p| std::path::Path::new(p).is_file()) {
+                AddTarget::Row(key) => {
+                    if library.id_for_key(&key).is_none() {
+                        return Err(RpcError::app(format!(
+                            "nothing in the library under {s}; \
+                             see the key field of library.search"
+                        )));
+                    }
+                    keys.push(key);
+                }
+
+                AddTarget::Station(key) => {
+                    if library.id_for_key(&key).is_none() {
+                        return Err(RpcError::app(format!(
+                            "no station in the library at {s}; \
+                             add it on Settings > Sources first"
+                        )));
+                    }
+                    keys.push(key);
+                }
+
+                // A cue track names a slice, not a file to sniff; the
+                // engine resolves its span off the library at insert.
+                AddTarget::Subsong(key) => keys.push(key),
+
+                AddTarget::Path(path) => keys.extend(
+                    rox_library::open_files::resolve_audio_paths([path])
+                        .into_iter()
+                        .map(TrackKey::from),
+                ),
+            }
         }
-        keys.extend(
-            rox_library::open_files::resolve_audio_paths([PathBuf::from(s)])
-                .into_iter()
-                .map(TrackKey::from),
-        );
     }
     if keys.is_empty() {
         return Err(RpcError::app("no playable files in the batch"));
@@ -887,8 +1037,12 @@ fn id_list(params: &Value) -> Result<Vec<u64>, RpcError> {
         .ok_or_else(|| RpcError::invalid_params("remove takes {\"ids\": [..]}"))
 }
 
-/// Search the library off the projection, the same scan the panels run. The
-/// scan itself is rayon-parallel and proportional to the library, so it
+/// Search the library off the projection, the same scan the panels run,
+/// widened to the stations: this is a general search, not a browse, so a
+/// station answers a query here the way it does in the app's own search
+/// box. Its hits come after the tracks.
+///
+/// The scan itself is rayon-parallel and proportional to the library, so it
 /// leaves for the background executor with the responder; only the id-to-
 /// path resolve comes back to the UI side, bounded by the row cap.
 fn search(state: &AppState, request: Request, cx: &mut App) {
@@ -917,7 +1071,7 @@ fn search(state: &AppState, request: Request, cx: &mut App) {
             .background_executor()
             .spawn(async move {
                 let query = query;
-                scan.search(&query)
+                scan.search_all(&query)
             })
             .await;
         let total = scanned.len();
@@ -942,6 +1096,12 @@ fn search(state: &AppState, request: Request, cx: &mut App) {
 
 /// One search hit: the projection row's tags plus the key that plays it,
 /// resolved through the same id the rating writes use.
+///
+/// `path` alone stopped naming a track when sources arrived: a Subsonic
+/// song's path is whatever its server calls the song, and two servers can
+/// hand back the same string. `source` and `key` close that. `key` is the
+/// fragment form, which is exactly what `queue.add` takes back, so a hit
+/// here can be queued without the caller assembling anything.
 fn search_row(projection: &Projection, row: u32, library: &Library) -> Value {
     let view = projection.resolve(row);
     let id = projection.db_id[row as usize];
@@ -950,6 +1110,8 @@ fn search_row(projection: &Projection, row: u32, library: &Library) -> Value {
         "id": id,
         "path": key.as_ref().map(|k| k.path.clone()),
         "sub": key.as_ref().map(|k| k.sub),
+        "source": key.as_ref().map(|k| k.source.to_string()),
+        "key": key.as_ref().map(|k| k.to_fragment()),
         "title": view.title,
         "artist": view.artist,
         "album_artist": view.album_artist,
@@ -990,4 +1152,132 @@ fn artwork(request: Request, cx: &mut App) {
             }
         })
         .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file on disk, for the `is_file` callback the reading takes.
+    fn on_disk(paths: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |p| paths.contains(&p)
+    }
+
+    /// The reading every argument had before sources: a path walks, a
+    /// `path#N` names a cue track, and a name that really ends in `#2`
+    /// beats the cue reading of it.
+    #[test]
+    fn a_local_argument_reads_the_way_it_always_did() {
+        let disk = on_disk(&["/m/album.flac", "/m/odd#2"]);
+        assert_eq!(
+            add_target("/m/album.flac", &disk),
+            AddTarget::Path(PathBuf::from("/m/album.flac"))
+        );
+        assert_eq!(
+            add_target("/m/album.flac#3", &disk),
+            AddTarget::Subsong(TrackKey {
+                source: rox_library::cue::local(),
+                path: PathBuf::from("/m/album.flac"),
+                sub: 3,
+            })
+        );
+        assert_eq!(
+            add_target("/m/odd#2", &disk),
+            AddTarget::Path(PathBuf::from("/m/odd#2"))
+        );
+        // A path that isn't there is still a path: the walk drops it, the
+        // same silence a file open gives.
+        assert_eq!(
+            add_target("/m/gone.flac", &disk),
+            AddTarget::Path(PathBuf::from("/m/gone.flac"))
+        );
+    }
+
+    /// A bare stream URL names the station row filed under it, and the key
+    /// it becomes is the one the stations panel plays.
+    #[test]
+    fn a_stream_url_names_a_station() {
+        let disk = on_disk(&[]);
+        let expect = |url: &str| {
+            AddTarget::Station(TrackKey {
+                source: rox_library::cue::source_id(rox_library::stations::SOURCE),
+                path: PathBuf::from(url),
+                sub: 0,
+            })
+        };
+        assert_eq!(
+            add_target("http://127.0.0.1:8767/stream", &disk),
+            expect("http://127.0.0.1:8767/stream")
+        );
+        assert_eq!(
+            add_target("https://stream.example/live.mp3", &disk),
+            expect("https://stream.example/live.mp3")
+        );
+        // Not every scheme: only the two a station can be served over.
+        assert_eq!(
+            add_target("file:///m/album.flac", &disk),
+            AddTarget::Path(PathBuf::from("file:///m/album.flac"))
+        );
+    }
+
+    /// The fragment form round trips: what `library.search` prints as
+    /// `key` reads back as the same key.
+    #[test]
+    fn a_source_fragment_names_the_row_it_came_from() {
+        let disk = on_disk(&[]);
+        for key in [
+            TrackKey {
+                source: rox_library::cue::source_id("subsonic:9f2c"),
+                path: PathBuf::from("tr-1801"),
+                sub: 0,
+            },
+            TrackKey {
+                source: rox_library::cue::source_id(rox_library::stations::SOURCE),
+                path: PathBuf::from("http://127.0.0.1:8767/stream"),
+                sub: 0,
+            },
+        ] {
+            assert_eq!(
+                add_target(&key.to_fragment(), &disk),
+                AddTarget::Row(key.clone()),
+                "{}",
+                key.to_fragment()
+            );
+        }
+    }
+
+    /// A file whose name holds a `|` stays whole. The disk answer wins, or
+    /// every rip with a pipe in its title would queue under a source
+    /// nobody has.
+    #[test]
+    fn a_pipe_in_a_filename_is_not_a_source_prefix() {
+        let disk = on_disk(&["/m/a|b.flac"]);
+        assert_eq!(
+            add_target("/m/a|b.flac", &disk),
+            AddTarget::Path(PathBuf::from("/m/a|b.flac"))
+        );
+    }
+
+    /// The shift block carries the three numbers a client draws a tape
+    /// with, and says whether the playhead has left the edge.
+    #[test]
+    fn the_shift_block_reports_the_tape_and_the_edge() {
+        let tape = |behind| Shift {
+            behind_secs: behind,
+            window_secs: 240.0,
+            cap_secs: 600.0,
+            bytes_per_sec: 16_000.0,
+            song_secs: None,
+            song_len_secs: None,
+        };
+
+        let live = shift_json(tape(0.0));
+        assert_eq!(live["window_secs"], json!(240.0));
+        assert_eq!(live["cap_secs"], json!(600.0));
+        assert_eq!(live["timeshifted"], json!(false));
+
+        let back = shift_json(tape(45.5));
+        assert_eq!(back["behind_secs"], json!(45.5));
+        assert_eq!(back["timeshifted"], json!(true));
+    }
 }

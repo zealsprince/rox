@@ -67,7 +67,7 @@ use rox_panel_kit::expr::Expr;
 use rox_services::cues::{Cue, CuesChanged};
 use serde::{Deserialize, Serialize};
 
-use rox_playback::{StreamState, engine};
+use rox_playback::{LiveGap, StreamState, engine};
 use rox_viz::AudioFeed;
 
 use crate::assets::icons;
@@ -374,8 +374,9 @@ enum Shape {
     /// A stream drawn from an expression instead of from its audio: the
     /// bar's own position and the panel's clock go in, a height comes
     /// out. Nothing is sampled and nothing is stored, so this shape is
-    /// the same picture at every width.
-    Motion(Arc<Expr>),
+    /// the same picture at every width. The clock rides along the way the
+    /// playhead does on peaks, so a paused station holds its frame.
+    Motion(Arc<Expr>, f32),
 }
 
 impl Shape {
@@ -391,7 +392,7 @@ impl Shape {
             // drawn shape is the same case: it moves because `t` moved,
             // and an edit to the expression is the field's business, not
             // a shape change to ease through.
-            (Shape::Live(_), Shape::Live(_)) | (Shape::Motion(_), Shape::Motion(_)) => true,
+            (Shape::Live(_), Shape::Live(_)) | (Shape::Motion(..), Shape::Motion(..)) => true,
             _ => false,
         }
     }
@@ -404,7 +405,7 @@ impl Shape {
             // One row whatever the split says: the tap is mixed to mono on
             // the way in, so there are no channels to stack, and the drawn
             // shape has no channels at all.
-            Shape::Live(_) | Shape::Motion(_) => Some(1),
+            Shape::Live(_) | Shape::Motion(..) => Some(1),
             _ => None,
         }
     }
@@ -629,6 +630,12 @@ pub struct WaveformPanel {
     live: LiveTrace,
     /// The config's motion expression, parsed.
     motion: Motion,
+    /// The drawn shape's `t`, and when it was last advanced. Its own clock
+    /// rather than the epoch, because the strip still repaints while a
+    /// station is paused (the pump notifies as the buffer falls behind
+    /// live) and a shape read off wall time would keep moving under it.
+    motion_secs: f32,
+    motion_tick: Instant,
     /// The expression field on the settings page, built the first time
     /// that page shows it, with the subscription writing what's typed
     /// back into the config.
@@ -688,6 +695,8 @@ impl WaveformPanel {
             feed: state.player.read(cx).feed(),
             live: LiveTrace::new(config.live_secs(), LIVE_COLS),
             motion: Motion::compile(config.live_motion()),
+            motion_secs: 0.0,
+            motion_tick: Instant::now(),
             motion_input: None,
             state,
             config,
@@ -875,6 +884,7 @@ impl WaveformPanel {
         ab: Option<(f32, Option<f32>)>,
         marks: Vec<bookmark_ui::Mark>,
         cues: Vec<cue_ui::CueMark>,
+        gaps: Vec<f32>,
     ) -> impl IntoElement + use<> {
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();
@@ -890,7 +900,7 @@ impl WaveformPanel {
             },
             move |bounds, _, window, _| {
                 paint_morph(
-                    &from, &to, u, t, marker, ab, &marks, &cues, &config, bounds, window,
+                    &from, &to, u, t, marker, ab, &marks, &cues, &gaps, &config, bounds, window,
                 );
                 panel::scrub_on_paint(&scrub, window, {
                     let player = player.clone();
@@ -1119,6 +1129,27 @@ fn motion_bin(expr: &Expr, x: f32, t: f32) -> PeakBin {
     }
 }
 
+/// The station's reconnects placed along the live trace. The strip holds
+/// the last `secs` of audio that came out of the speakers and a gap says
+/// how long ago it went past, so the two line up with no tape arithmetic
+/// in between.
+///
+/// A break the cursor hasn't reached, or one that has scrolled off the
+/// left end, has no column to sit on and is dropped rather than pinned to
+/// an edge: a mark stuck at the end of the strip would claim a seam in
+/// audio that either hasn't been heard or is no longer drawn.
+fn trace_gaps(gaps: &[LiveGap], secs: f32) -> Vec<f32> {
+    if secs <= 0.0 {
+        return Vec::new();
+    }
+
+    gaps.iter()
+        .map(|gap| gap.heard_ago_secs)
+        .filter(|ago| (0.0..=secs as f64).contains(ago))
+        .map(|ago| (1.0 - ago / secs as f64) as f32)
+        .collect()
+}
+
 /// What the two layers are tinted with: the envelope at the bottom of the
 /// ramp, the band at the top. Flat mode keeps the strip's old look, a
 /// half-lit envelope under a full-strength band.
@@ -1204,8 +1235,8 @@ fn sample(
         // strip and the clock go into the expression, and a height comes
         // back. Full colors, like the trace: there's no past half of a
         // stream to ghost.
-        Shape::Motion(expr) => envelope_bar(
-            motion_bin(expr, x_mid / w, t),
+        Shape::Motion(expr, clock) => envelope_bar(
+            motion_bin(expr, x_mid / w, *clock),
             center,
             max_bar,
             layers.0,
@@ -1262,6 +1293,7 @@ fn paint_morph(
     ab: Option<(f32, Option<f32>)>,
     marks: &[bookmark_ui::Mark],
     cues: &[cue_ui::CueMark],
+    gaps: &[f32],
     config: &WaveformConfig,
     bounds: Bounds<Pixels>,
     window: &mut Window,
@@ -1376,6 +1408,19 @@ fn paint_morph(
             prev = (top, bottom);
         }
     }
+
+    // The station's reconnects, straight down the trace. The stall either
+    // side of one is silent, so there's often no bar left for the break to
+    // cut, and the notch over the top is what says a seam went past rather
+    // than a quiet passage. The seek strip draws the same shape; it lives
+    // over there because that's the strip that can't be clicked across.
+    seek::paint_gaps(
+        gaps,
+        (seek::GAP_NOTCH_H, h - seek::GAP_NOTCH_H),
+        1.0,
+        bounds,
+        window,
+    );
 
     for (shape, weight) in [(from, 1.0 - u), (to, u)] {
         let Shape::Peaks(_, _, progress) = shape else {
@@ -1850,6 +1895,15 @@ impl WaveformPanel {
         // with it.
         let live = now.as_ref().is_some_and(|now| now.live);
 
+        // The drawn shape's clock runs only while a station plays. The tick
+        // moves on regardless, so a resume picks up where the pause left
+        // off instead of jumping by however long it lasted.
+        let tick = Instant::now();
+        if live && playing {
+            self.motion_secs += tick.duration_since(self.motion_tick).as_secs_f32();
+        }
+        self.motion_tick = tick;
+
         // Kick a decode when the playing track changes.
         if let Some(now) = &now {
             // Keyed on the file: the strip draws the whole image's shape,
@@ -1897,6 +1951,18 @@ impl WaveformPanel {
             _ => Vec::new(),
         };
         let hovered_cue = self.hovered_cue;
+        // The station's reconnects, on the trace's own axis. Only the trace
+        // asks for them. Off draws nothing to break, and the motion shape
+        // is an expression over the strip's width rather than over anything
+        // that was heard, so a seam in the broadcast has no place on it.
+        let gaps = match live && self.config.live == LiveMode::Trace {
+            true => trace_gaps(
+                &self.state.player.read(cx).live_gaps(),
+                self.config.live_secs(),
+            ),
+
+            false => Vec::new(),
+        };
 
         // The seek preview only shows on real peaks: the placeholder and
         // the unavailable message have no track shape to point along.
@@ -1929,14 +1995,14 @@ impl WaveformPanel {
                         .unwrap_or(LIVE_COLS);
                     self.live.step(&self.feed, self.config.live_secs(), width);
                     self.retarget(Shape::Live(self.live.shape.clone()));
-                    self.strip(None, None, Vec::new(), Vec::new())
+                    self.strip(None, None, Vec::new(), Vec::new(), gaps.clone())
                         .into_any_element()
                 }
 
                 LiveMode::Motion => {
                     let expr = self.motion().expr.clone();
-                    self.retarget(Shape::Motion(expr));
-                    self.strip(None, None, Vec::new(), Vec::new())
+                    self.retarget(Shape::Motion(expr, self.motion_secs));
+                    self.strip(None, None, Vec::new(), Vec::new(), Vec::new())
                         .into_any_element()
                 }
             },
@@ -1944,7 +2010,7 @@ impl WaveformPanel {
             // and the next track's shape morphs from it instead of popping
             // in from blank.
             (None, _) if between_tracks => self
-                .strip(marker, ab, marks.clone(), cues.clone())
+                .strip(marker, ab, marks.clone(), cues.clone(), Vec::new())
                 .into_any_element(),
             (None, _) | (Some(_), Peaks::None) => {
                 // Nothing on screen to morph from later; snap the strip
@@ -1965,7 +2031,7 @@ impl WaveformPanel {
             }
             (Some(_), Peaks::Decoding) => {
                 self.retarget(Shape::Placeholder);
-                self.strip(marker, ab, marks.clone(), cues.clone())
+                self.strip(marker, ab, marks.clone(), cues.clone(), Vec::new())
                     .into_any_element()
             }
             (Some(now), Peaks::Ready(peaks)) => {
@@ -1980,7 +2046,7 @@ impl WaveformPanel {
                     self.config.split_channels,
                     progress,
                 ));
-                self.strip(marker, ab, marks.clone(), cues.clone())
+                self.strip(marker, ab, marks.clone(), cues.clone(), Vec::new())
                     .into_any_element()
             }
         };

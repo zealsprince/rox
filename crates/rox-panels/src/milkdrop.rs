@@ -591,11 +591,44 @@ pub struct MilkdropPanel {
     /// for the next frame. Without this, waking it by clicking on it would
     /// depend on something else happening to repaint the view.
     _focus_wake: Option<Subscription>,
+    /// Takes the engine down on quit. See [`MilkdropPanel::new`].
+    _quit: Subscription,
+    /// Latched by the quit hook, so a render that gets in after it doesn't
+    /// start another worker.
+    quitting: bool,
 }
 
 impl MilkdropPanel {
     pub fn new(state: AppState, mut config: MilkdropConfig, cx: &mut Context<Self>) -> Self {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        // gpui does not unwind its entities when the app loop returns, so
+        // without this the worker is still rendering while glibc runs Mesa's
+        // exit handlers, which is a segfault inside the driver. Hanging up
+        // happens here, in the part gpui runs before it polls anything, and
+        // the wait happens in the future, so several engines going down at
+        // once overlap rather than stack. `rox_milkdrop`'s exit guard stays
+        // under this as the backstop.
+        let _quit = cx.on_app_quit(|panel: &mut Self, _| {
+            panel.quitting = true;
+            let engine = panel.engine.take();
+            let at = Instant::now();
+            if let Some(engine) = engine.as_ref() {
+                engine.stop();
+            }
+            async move {
+                let Some(engine) = engine else {
+                    return;
+                };
+                if engine.wait() {
+                    log::info!(
+                        "milkdrop panel: engine stood down {} us after the hang-up",
+                        at.elapsed().as_micros()
+                    );
+                } else {
+                    log::warn!("milkdrop panel: engine still up at quit");
+                }
+            }
+        });
         // A layout from before names were the identity holds a path here.
         config.preset = config.preset.as_deref().map(preset_name);
         MilkdropPanel {
@@ -633,6 +666,8 @@ impl MilkdropPanel {
             tab_panel: None,
             _player_changed,
             _focus_wake: None,
+            _quit,
+            quitting: false,
         }
     }
 
@@ -2385,7 +2420,9 @@ impl MilkdropPanel {
         // The size the last paint measured. `Some` means a paint has run
         // with a real size, which is the cue to start the worker.
         let size = self.draw.lock().unwrap().size;
-        if let (Some(size), None) = (size, self.engine.as_ref()) {
+        if let (Some(size), None) = (size, self.engine.as_ref())
+            && !self.quitting
+        {
             self.start(size, cx);
         }
         self.drain_events();

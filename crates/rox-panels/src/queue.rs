@@ -411,6 +411,12 @@ impl QueuePanel {
                     this.patch_ratings(cx);
                     return;
                 }
+                // Same deal for a bulk play-count import: it moves the plays
+                // column and nothing else the rows show.
+                if matches!(event, LibraryEvent::PlaysReloaded) {
+                    this.patch_plays(cx);
+                    return;
+                }
                 if matches!(
                     event,
                     LibraryEvent::Updated | LibraryEvent::PlaylistsChanged
@@ -768,6 +774,29 @@ impl QueuePanel {
             && let Some(&r) = playing.track_id.and_then(|id| ratings.get(&id))
         {
             playing.rating = r;
+        }
+        cx.notify();
+    }
+
+    /// The plays column re-read off the projection and written onto the rows
+    /// in place, [`Self::patch_ratings`]'s move for a play-count import. A
+    /// full sync here would rebuild every row and take the selection with it,
+    /// for one column's numbers.
+    fn patch_plays(&mut self, cx: &mut Context<Self>) {
+        let mut ids: Vec<i64> = self.tracks.iter().filter_map(|t| t.track_id).collect();
+        if let Some(id) = self.playing.as_ref().and_then(|p| p.track_id) {
+            ids.push(id);
+        }
+        let plays = self.state.library.read(cx).plays_for(&ids);
+        for t in &mut self.tracks {
+            if let Some(&n) = t.track_id.and_then(|id| plays.get(&id)) {
+                t.plays = n;
+            }
+        }
+        if let Some(playing) = &mut self.playing
+            && let Some(&n) = playing.track_id.and_then(|id| plays.get(&id))
+        {
+            playing.plays = n;
         }
         cx.notify();
     }

@@ -45,6 +45,7 @@ use std::time::Instant;
 
 use crate::icy::IcyTitle;
 use crate::icy::TitleSink;
+use crate::shared::LiveGap;
 use crate::shared::LiveMark;
 use crate::shared::Shift;
 
@@ -91,25 +92,40 @@ const TRIM_SLACK: usize = 16;
 /// somewhere inside the last one.
 pub const LIVE_EDGE_SNAP_SECS: f64 = 2.0;
 
-/// The narrowest the deadband ever gets. A distance that hasn't moved by at
-/// least this much hasn't moved.
-const SHIFT_DEADBAND_SECS: f64 = 0.75;
+/// The narrowest the band ever gets. The band is the resolution of anything
+/// measured against the head: the head arrives a chunk at a time, so inside
+/// a chunk's worth of it there's nothing to know.
+const BAND_MIN_SECS: f64 = 0.75;
 
-/// How many chunks wide the deadband really is. The edge jumps a whole chunk
-/// every time one lands while the cursor walks smoothly, so the raw distance
-/// swings by exactly a chunk and a band narrower than that lets the published
-/// number flip across it. At radio bitrates a socket chunk is a second or
-/// more of audio, which is how a playhead that should be sitting still ends
-/// up twitching.
-const DEADBAND_CHUNKS: f64 = 1.5;
+/// How many chunks wide the band is. Wide enough that a chunk landing a
+/// little late doesn't catch the drawn edge up against the head and stall
+/// it there.
+const BAND_CHUNKS: f64 = 1.5;
 
 /// The longest a chunk is taken to be, in seconds of audio. The socket is
 /// read into a buffer of a few kilobytes, so a real one is a second or two
 /// at radio bitrates and four at the slowest anyone broadcasts music on.
-/// The cap matters because every band here is measured in chunks: without
-/// it, one oversized append would widen them past the numbers they're
-/// meant to steady and freeze the readout entirely.
+/// The cap matters because the band is measured in chunks: without it, one
+/// oversized append would hold the drawn edge that much further back.
 const CHUNK_MAX_SECS: f64 = 4.0;
+
+/// How long the drawn edge takes to close the distance back into its span
+/// behind the head once it has strayed out of it. Inside the span nothing
+/// pulls at all, so this only decides how quickly the bar settles after a
+/// connect or a burst: a few seconds of its pace easing, never a step.
+const EDGE_SETTLE_SECS: f64 = 2.0;
+
+/// The span behind the head the drawn edge is left alone in, in bands. The
+/// head saws by a chunk and a band is at least a chunk and a half, so the
+/// saw fits inside with room for a late chunk either side.
+const EDGE_NEAR_BANDS: f64 = 0.5;
+const EDGE_FAR_BANDS: f64 = 2.0;
+
+/// How far behind the head the drawn edge can fall before it gives up easing
+/// and jumps to it. The connect burst lands several seconds at once, and so
+/// does a reconnect, and easing across either would leave the bar short of
+/// the tape for most of a minute.
+const EDGE_SNAP_SECS: f64 = 4.0;
 
 /// How far the cursor may slip from the closest it has come to the edge
 /// before a live session counts as having fallen behind. A pause is the
@@ -196,6 +212,9 @@ struct Inner {
     /// Offsets where one connection ended and the next began. The bytes
     /// either side don't splice into one decodable stream, so a seek lands
     /// on the live side of the newest one it would have crossed.
+    ///
+    /// Published the way the title marks are, because a wall a click can't
+    /// get past is something the listener should see before they hit it.
     gaps: VecDeque<u64>,
     /// Where each title the station announced was found. Kept for the whole
     /// window, so a seek backwards resolves the title that was on then
@@ -213,27 +232,58 @@ struct Inner {
     /// for, so a cursor that has never been moved reads as live however far
     /// behind the edge it technically sits.
     timeshifted: bool,
-    /// The closest the cursor has come to the edge while live, in seconds.
-    /// A pause holds the cursor while the broadcast runs on, and that
+    /// The closest the listener has come to the edge while live, in seconds.
+    /// A pause holds them still while the broadcast runs on, and that
     /// slipping is how a session stops being live without anybody seeking.
     live_lead: f64,
-    /// Bumped whenever the set of marks changes: a song announced, or one
-    /// falling off the back. Not for the distances moving, which every
-    /// chunk does. What the engine polls to know a republish is worth a
-    /// revision of its own.
+    /// Bumped whenever the set of things drawn over the tape changes: a
+    /// song announced, a reconnect spliced, or either falling off the
+    /// back. Not for the distances moving, which every chunk does. What
+    /// the engine polls to know a republish is worth a revision of its
+    /// own.
+    ///
+    /// One counter for both sets. They're published together and they
+    /// change for the same reason, the tape taking something on or rolling
+    /// it off, and a reader that wanted only one of them would still have
+    /// to redraw the strip they share.
     marks_rev: u64,
     state: Feed,
     rate: Rate,
     /// How big the last chunk off the socket was. A station sends in real
     /// time but arrives in bursts, so this is the resolution of any distance
-    /// measured against the live edge, and the width of the band that keeps
-    /// such a distance still.
+    /// measured against the head, and what the band is sized from.
     last_chunk: usize,
-    /// The distance and the span as last published. Held rather than
-    /// recomputed so a number that hasn't really moved doesn't move on
-    /// screen. See [`SHIFT_DEADBAND_SECS`].
-    held_behind: Option<f64>,
-    held_window: Option<f64>,
+    /// The live edge everything is drawn against, in stream bytes, and when
+    /// it was last moved. None until the first look.
+    ///
+    /// The head itself is no good for that. It jumps a chunk every time one
+    /// lands, so a playhead, a bar and a set of marks all measured against it
+    /// jump with it. A broadcast runs at a second a second, so this does too,
+    /// eased to stay a band or so behind the head. See [`Inner::edge`].
+    edge: Option<f64>,
+    edge_since: Instant,
+    /// Which side of the middle of its span the edge was on when it last
+    /// strayed out of it, while it's being pulled back. None when it's
+    /// running free.
+    edge_pull: Option<f64>,
+    /// Where the listener is: the offset the reader was put at and the
+    /// seconds decoded since. The reader's own cursor won't do, because the
+    /// decoder pulls from it in blocks of up to 32 KiB, which is two seconds
+    /// of a 128 kbps station in one jump. The decoded seconds move a packet
+    /// at a time. See [`Inner::heard`].
+    heard_from: u64,
+    heard_secs: f64,
+    /// The pair as it stood before the last reader was built, for a reopen
+    /// that failed and hands the old reader back.
+    heard_was: (u64, f64),
+    /// The decoded seconds as the last look at the shift found them, which
+    /// is how that look knows whether the listener is still moving.
+    heard_seen: f64,
+    /// How much of what has been decoded is still waiting in the output
+    /// ring, in seconds, as the engine last said. Taken off the decoded
+    /// seconds so the playhead follows the speakers rather than the decoder,
+    /// which fills the ring in steps and would saw the playhead with them.
+    queued_secs: f64,
     /// The reader asked for bytes that had already been dropped, so its
     /// cursor snapped forward to the oldest byte held. Taken by the engine,
     /// which answers it with a re-sync: the decoder is mid-frame on bytes
@@ -252,10 +302,6 @@ struct Mark {
     /// announcement is a name for music already in progress: it names the
     /// song and it isn't a boundary, so nothing draws it.
     joined: bool,
-    /// The distance from the live edge as last published, held on the same
-    /// band as the playhead so a mark and the window it sits in move
-    /// together rather than one crossing the other between two paints.
-    held: Option<f64>,
 }
 
 /// How bytes become seconds, settled once and then held.
@@ -407,6 +453,7 @@ impl Inner {
         }
 
         let inside = self.inside_marks();
+        let spliced = self.gaps.len();
         let drop = self.buf.len() - cap;
         self.buf.drain(..drop);
         self.start += drop as u64;
@@ -427,8 +474,10 @@ impl Inner {
 
         // A song whose start has gone off the back is a song with no point
         // on the strip to draw it at, so the set being drawn changed even
-        // though the mark may still be held for the title it names.
-        if self.inside_marks() != inside {
+        // though the mark may still be held for the title it names. A gap
+        // that rolled off counts the same way: the strip has one break
+        // fewer to draw.
+        if self.inside_marks() != inside || self.gaps.len() != spliced {
             self.marks_rev += 1;
         }
     }
@@ -439,12 +488,82 @@ impl Inner {
         self.marks.iter().filter(|mark| self.drawn(mark)).count()
     }
 
-    /// The band every distance measured against the live edge is held
-    /// inside: as wide as the bursts it's measured against, and never
-    /// narrower than [`SHIFT_DEADBAND_SECS`]. One rule for the playhead and
-    /// for each mark, so they move together or not at all.
+    /// The resolution of anything measured against the head, in seconds: as
+    /// wide as the bursts it arrives in, and never narrower than
+    /// [`BAND_MIN_SECS`]. The drawn edge sits this far behind the head, and
+    /// a live listener has to slip this far before they count as behind.
     fn band(&self, bps: f64) -> f64 {
-        SHIFT_DEADBAND_SECS.max(DEADBAND_CHUNKS * self.chunk_secs(bps))
+        BAND_MIN_SECS.max(BAND_CHUNKS * self.chunk_secs(bps))
+    }
+
+    /// Move the drawn live edge up to `now` and say where it is, in stream
+    /// bytes.
+    ///
+    /// It runs at a second a second, the pace the station broadcasts at,
+    /// plus a pull back whenever it strays too near or too far behind the
+    /// head. The pull is clamped so the edge never runs backwards or at more
+    /// than double speed, and the edge never passes the head, since past it
+    /// there's nothing held to draw. That leaves the bar, the playhead's distance
+    /// and every mark moving smoothly while the chunks behind them land
+    /// whenever the socket delivers.
+    fn edge(&mut self, now: Instant, bps: f64) -> f64 {
+        let head = self.head() as f64;
+        let Some(edge) = self.edge else {
+            self.edge = Some(head);
+            self.edge_since = now;
+
+            return head;
+        };
+
+        let dt = now.saturating_duration_since(self.edge_since).as_secs_f64();
+        self.edge_since = now;
+
+        // No pull at all while the edge sits between half a band and two
+        // behind the head. That span is wider than the saw a chunk makes, so
+        // at a steady broadcast the edge runs at exactly a second a second
+        // and nothing measured against it moves unless the listener does.
+        //
+        // Straying out of it starts a pull towards the middle, and the pull
+        // lets go once the edge crosses there. Aiming at the boundary would
+        // leave the bottom of the saw dipping over it on every chunk, each
+        // dip a small nudge to the pace.
+        let band = self.band(bps);
+        let gap = (head - edge) / bps;
+        let mid = (EDGE_NEAR_BANDS + EDGE_FAR_BANDS) / 2.0 * band;
+        let side = (gap - mid).signum();
+        if self.edge_pull.is_some_and(|from| from != side) {
+            self.edge_pull = None;
+        }
+        if gap < EDGE_NEAR_BANDS * band || gap > EDGE_FAR_BANDS * band {
+            self.edge_pull = Some(side);
+        }
+
+        let pull = match self.edge_pull {
+            Some(_) => ((gap - mid) / EDGE_SETTLE_SECS).clamp(-1.0, 1.0),
+            None => 0.0,
+        };
+        let mut edge = (edge + dt * bps * (1.0 + pull)).min(head);
+
+        // A burst: the connect, a reconnect, or a stretch with nobody
+        // looking. Easing across it would leave the bar short for too long.
+        if head - edge > EDGE_SNAP_SECS.max(2.0 * EDGE_FAR_BANDS * band) * bps {
+            edge = head;
+        }
+
+        self.edge = Some(edge);
+        edge
+    }
+
+    /// Where the listener is, in stream bytes: where the reader was put plus
+    /// what has been decoded since, less what's still queued for the
+    /// speakers, held between the oldest byte and the reader's cursor,
+    /// since nothing outside those can have been heard.
+    fn heard(&self, bps: f64) -> f64 {
+        let secs = (self.heard_secs - self.queued_secs).max(0.0);
+
+        (self.heard_from as f64 + secs * bps)
+            .min(self.cursor as f64)
+            .max(self.start as f64)
     }
 
     /// How long the last chunk off the socket was, in seconds of audio, and
@@ -512,8 +631,14 @@ impl Tape {
                 state: Feed::Live,
                 rate: Rate::new(stated_kbps),
                 last_chunk: 0,
-                held_behind: None,
-                held_window: None,
+                edge: None,
+                edge_since: Instant::now(),
+                edge_pull: None,
+                heard_from: 0,
+                heard_secs: 0.0,
+                heard_was: (0, 0.0),
+                heard_seen: 0.0,
+                queued_secs: 0.0,
                 underran: false,
             }),
             wake: Condvar::new(),
@@ -576,12 +701,7 @@ impl Tape {
         // the song the listener is hearing and the clock counts from
         // somewhere; it just isn't a boundary anybody can point at.
         let joined = std::mem::take(&mut inner.joined);
-        inner.marks.push_back(Mark {
-            at,
-            title,
-            joined,
-            held: None,
-        });
+        inner.marks.push_back(Mark { at, title, joined });
         if !joined {
             inner.marks_rev += 1;
         }
@@ -594,6 +714,9 @@ impl Tape {
         let mut inner = self.inner.lock().unwrap();
         let at = inner.head();
         inner.gaps.push_back(at);
+        // The strips draw these, so a reconnect is a change to the set
+        // they're showing the same way a new song is.
+        inner.marks_rev += 1;
         // A reconnect rejoins mid-song exactly the way the first connect
         // did, so whatever the station announces next names music already
         // in progress.
@@ -620,66 +743,83 @@ impl Tape {
             return;
         }
 
-        self.inner.lock().unwrap().rate.played(secs);
+        let mut inner = self.inner.lock().unwrap();
+        inner.rate.played(secs);
+        inner.heard_secs += secs;
     }
 
-    /// Where the cursor stands, in the seconds the transport draws: how far
-    /// behind the live edge it is, how much tape there is either side of it,
-    /// and how far into the song it's under.
+    /// How much decoded audio is still waiting to reach the speakers, in
+    /// seconds. Decode thread only, before each look at the shift.
+    pub fn note_queued(&self, secs: f64) {
+        self.inner.lock().unwrap().queued_secs = secs.max(0.0);
+    }
+
+    /// Where the listener stands, in the seconds the transport draws: how
+    /// far behind the live edge they are, how much tape there is either side
+    /// of them, and how far into the song they're under.
     ///
     /// The song half comes off the in-band marks and nothing else. A
     /// broadcast has no other idea when a song began, and a listener who
     /// steps back into the middle of one should see the clock they'd have
     /// seen the first time round rather than a fresh zero. It's None until a
-    /// title has been announced behind the cursor, which is the first
+    /// title has been announced behind the listener, which is the first
     /// seconds of every connect.
     ///
     /// The length is None wherever it would be a guess: at the newest song,
     /// which hasn't ended, and at a song whose start has been trimmed off
     /// the back, where what's left isn't the whole of it.
     pub fn shift(&self) -> Shift {
+        self.shift_at(Instant::now())
+    }
+
+    fn shift_at(&self, now: Instant) -> Shift {
         let mut inner = self.inner.lock().unwrap();
         let bps = inner.rate.bytes_per_sec();
-        let edge = inner.head();
-        let cursor = inner.cursor;
-        let (song_at, next_at) = inner.song_bounds(cursor);
+        let edge = inner.edge(now, bps);
+        let heard = inner.heard(bps);
+        let (song_at, next_at) = inner.song_bounds(heard as u64);
 
-        // The two numbers measured against the edge are the ones that
-        // twitch, so both are held inside a band as wide as the bursts they
-        // are measured against. The song clock runs from a mark to the
-        // cursor, with the edge nowhere in it, and is left alone.
+        // Both ends move smoothly now, the edge on the clock and the
+        // listener on the decoded audio, so nothing here needs holding
+        // still. Playing along at speed, the distance between them only
+        // moves by the drift between the station's clock and ours.
         let band = inner.band(bps);
         let edge_of = LIVE_EDGE_SNAP_SECS.max(inner.chunk_secs(bps));
-        let behind = edge.saturating_sub(cursor) as f64 / bps;
+        let behind = (edge - heard).max(0.0) / bps;
 
         // Live is a state rather than a distance. A station bursts several
         // seconds of audio at the connect so the decoder has something to
         // work with, and playing from the start of that burst is what every
         // radio does: the listener is at the front of the broadcast, not six
-        // seconds behind it. So a cursor nobody has moved reads as live
-        // however far back it technically sits, and the distance only starts
-        // meaning something once the listener has stepped back or a pause
-        // has let the broadcast run on without them.
-        inner.live_lead = inner.live_lead.min(behind);
-        if behind > inner.live_lead + LIVE_SLIP_BANDS * band {
+        // seconds behind it. So a listener nobody has moved reads as live
+        // however far back they technically sit, and the distance only
+        // starts meaning something once they've stepped back or a pause has
+        // let the broadcast run on without them.
+        //
+        // Slipping is the listener standing still while the broadcast runs
+        // on. While the audio keeps coming the lead follows the distance
+        // wherever it goes, which absorbs a connect burst however many reads
+        // it lands over, and a rate that hasn't settled drifting the number.
+        // Only a listener who has stopped decoding can fall behind.
+        let moving = inner.heard_secs != inner.heard_seen;
+        inner.heard_seen = inner.heard_secs;
+        if moving || inner.live_lead.is_infinite() {
+            inner.live_lead = behind;
+        } else if behind > inner.live_lead + LIVE_SLIP_BANDS * band {
             inner.timeshifted = true;
         }
 
         let behind_secs = match !inner.timeshifted || behind < edge_of {
             true => 0.0,
-            false => steady(inner.held_behind, behind, band),
+            false => behind,
         };
-        let window_secs = steady(inner.held_window, (edge - inner.start) as f64 / bps, band);
-
-        inner.held_behind = Some(behind_secs);
-        inner.held_window = Some(window_secs);
 
         Shift {
             behind_secs,
-            window_secs,
+            window_secs: (edge - inner.start as f64).max(0.0) / bps,
             cap_secs: self.cap_secs() as f64,
             bytes_per_sec: bps,
-            song_secs: song_at.map(|at| cursor.saturating_sub(at) as f64 / bps),
+            song_secs: song_at.map(|at| (heard - at as f64).max(0.0) / bps),
             song_len_secs: song_at
                 .filter(|at| *at >= inner.start)
                 .zip(next_at)
@@ -688,40 +828,72 @@ impl Tape {
     }
 
     /// The song boundaries still inside the window, oldest first, each as a
-    /// distance back from the live edge.
-    ///
-    /// Raw distances, where [`Shift::behind_secs`] is held still. The
-    /// playhead is one number an eye follows and a band keeps it from
-    /// twitching; these are the buffer's own contents, and when a chunk
-    /// lands the whole of it really did slide away from the edge together.
+    /// distance back from the live edge. The same drawn edge the shift
+    /// measures against, so a mark and the playhead slide together.
     pub fn live_marks(&self) -> Vec<LiveMark> {
+        self.live_marks_at(Instant::now())
+    }
+
+    fn live_marks_at(&self, now: Instant) -> Vec<LiveMark> {
         let mut inner = self.inner.lock().unwrap();
         let bps = inner.rate.bytes_per_sec();
-        let band = inner.band(bps);
-        let head = inner.head();
-        let start = inner.start;
+        let edge = inner.edge(now, bps);
 
         inner
             .marks
-            .iter_mut()
-            .filter(|mark| !mark.joined && mark.at >= start && mark.at <= head)
-            .map(|mark| {
-                let behind_secs =
-                    steady(mark.held, head.saturating_sub(mark.at) as f64 / bps, band);
-                mark.held = Some(behind_secs);
-
-                LiveMark {
-                    behind_secs,
-                    artist: mark.title.artist.clone(),
-                    title: mark.title.title.clone(),
-                }
+            .iter()
+            .filter(|mark| inner.drawn(mark))
+            .map(|mark| LiveMark {
+                behind_secs: (edge - mark.at as f64).max(0.0) / bps,
+                artist: mark.title.artist.clone(),
+                title: mark.title.title.clone(),
             })
             .collect()
     }
 
-    /// The revision of that set, moved by a song being announced or one
-    /// falling off the back and by nothing else. Cheap to poll; the list
-    /// above allocates.
+    /// Where the connection broke and picked up again, oldest first, each
+    /// placed twice: back from the live edge, the way the songs and the
+    /// playhead are, and back from the listener in seconds of audio heard.
+    ///
+    /// Two axes because two strips draw these and they don't share one.
+    /// The seek strip spans the tape and reads the first; the waveform's
+    /// trace is the last few seconds of what came out of the speakers and
+    /// reads the second. Both come off the same read of the same bytes, so
+    /// neither can be a tick out of step with the other.
+    ///
+    /// Bytes are the only unit a gap is kept in and this is the one place
+    /// that knows the rate they divide by, so the conversion happens here
+    /// rather than in the panels.
+    pub fn live_gaps(&self) -> Vec<LiveGap> {
+        self.live_gaps_at(Instant::now())
+    }
+
+    fn live_gaps_at(&self, now: Instant) -> Vec<LiveGap> {
+        let mut inner = self.inner.lock().unwrap();
+        let bps = inner.rate.bytes_per_sec();
+        let edge = inner.edge(now, bps);
+        let heard = inner.heard(bps);
+
+        inner
+            .gaps
+            .iter()
+            .map(|at| LiveGap {
+                // A splice from the last second or two sits past the drawn
+                // edge, which eases up to the head rather than jumping to
+                // it. Zero is the right answer there: the break is at the
+                // live end of the strip and slides in as the edge catches
+                // up.
+                behind_secs: (edge - *at as f64).max(0.0) / bps,
+                // Signed, because a listener who has stepped back has
+                // breaks ahead of them as well as behind.
+                heard_ago_secs: (heard - *at as f64) / bps,
+            })
+            .collect()
+    }
+
+    /// The revision of those two sets, moved by a song being announced, a
+    /// reconnect, or either falling off the back, and by nothing else.
+    /// Cheap to poll; the lists above allocate.
     pub fn marks_rev(&self) -> u64 {
         self.inner.lock().unwrap().marks_rev
     }
@@ -764,7 +936,15 @@ impl Tape {
         // so it's set here rather than guessed from a distance later.
         inner.timeshifted = back > lead;
         inner.live_lead = f64::INFINITY;
-        let mut at = head.saturating_sub(back).max(inner.start);
+
+        // A step back is measured from the edge the strip draws, so a click
+        // lands where it was pointed. Live stays measured from the head,
+        // where the lead is what keeps the decoder fed.
+        let from = match inner.timeshifted {
+            true => inner.edge.map_or(head, |edge| edge as u64),
+            false => head,
+        };
+        let mut at = from.saturating_sub(back).max(inner.start);
 
         // A gap is a splice between two connections, and no decoder reads
         // across one. Landing on its live side gives up the older audio
@@ -787,6 +967,7 @@ impl Tape {
     pub fn restore_cursor(&self, at: u64) {
         let mut inner = self.inner.lock().unwrap();
         inner.cursor = at;
+        (inner.heard_from, inner.heard_secs) = inner.heard_was;
 
         // The seek that asked for this is the one that set the state, and it
         // didn't happen. Work it back out from where the cursor really is,
@@ -805,6 +986,12 @@ impl Tape {
         let mut inner = self.inner.lock().unwrap();
         let at = at.clamp(inner.start, inner.head());
         inner.cursor = at;
+        // The listener starts where the reader does, and the old place is
+        // kept in case the reopen around this fails and the old reader
+        // carries on.
+        inner.heard_was = (inner.heard_from, inner.heard_secs);
+        inner.heard_from = at;
+        inner.heard_secs = 0.0;
         // Whatever the last reader had published belonged to its own place
         // in the stream. The new one republishes from where it lands, which
         // for a seek backwards is an older song than the one standing.
@@ -815,22 +1002,6 @@ impl Tape {
             tape: Arc::clone(self),
             cursor: at,
         }
-    }
-}
-
-/// What to publish for a number that has been published before: the new
-/// value once it has moved by more than `band`, and the old one until then.
-///
-/// The raw distance to the live edge saws by a chunk, since the edge steps a
-/// chunk at a time and the cursor walks. Nothing downstream can do anything
-/// with that saw except draw it, so it's stopped here rather than smoothed:
-/// a band wider than the saw leaves one value standing, which is what a
-/// playhead sitting behind a broadcast should do. The cost is up to a band's
-/// worth of lag on a number that only ever changes slowly.
-fn steady(held: Option<f64>, value: f64, band: f64) -> f64 {
-    match held {
-        Some(held) if (value - held).abs() <= band => held,
-        _ => value,
     }
 }
 
@@ -1212,11 +1383,15 @@ mod tests {
 
         // Keeping pace with it: a second of audio decoded for every second
         // that arrives. Still live, however much of the burst is ahead.
-        for _ in 0..10 {
+        let t0 = Instant::now();
+        for second in 1..=10 {
             feed(&tape, 32_000);
             let mut out = vec![0u8; 32_000];
             assert_eq!(reader.read(&mut out).unwrap(), 32_000);
-            assert_eq!(tape.shift().behind_secs, 0.0, "still live");
+            tape.note_audio(1.0);
+
+            let now = t0 + Duration::from_secs(second);
+            assert_eq!(tape.shift_at(now).behind_secs, 0.0, "still live");
         }
 
         // Stepping back is what makes the distance mean something. Ten
@@ -1234,6 +1409,44 @@ mod tests {
         let at = tape.seek_target(0.0);
         let _reader = tape.reader(at);
         assert_eq!(tape.shift().behind_secs, 0.0, "live again");
+    }
+
+    /// Icecast's connect burst doesn't always land in one read. A server
+    /// that sends it over the first second, after the strip has already had
+    /// a look at the station, grows the distance while the listener plays
+    /// along at speed. That's still live, and has to read as live.
+    #[test]
+    fn a_burst_that_lands_after_the_first_look_still_reads_as_live() {
+        // 128 kbps is 16 kB/s, so ten milliseconds of audio is 160 bytes
+        // and the 64 kB burst is four seconds.
+        let tape = tape(600, 128);
+        tape.append(&bytes(4_000));
+
+        let t0 = Instant::now();
+        let mut reader = tape.reader(0);
+        assert_eq!(tape.shift_at(t0).behind_secs, 0.0, "live at the open");
+
+        let mut buffered = 0usize;
+        for tick in 1..=2000u64 {
+            // The burst over the first 160 ms, then a chunk every quarter
+            // second at the broadcast's pace.
+            if tick <= 16 {
+                tape.append(&bytes(4_000));
+            } else if tick % 25 == 0 {
+                tape.append(&bytes(4_000));
+            }
+
+            if buffered < 160 {
+                let mut out = vec![0u8; 32 * 1024];
+                buffered += reader.read(&mut out).unwrap();
+            }
+            buffered -= 160;
+            tape.note_audio(0.01);
+
+            let now = t0 + Duration::from_millis(tick * 10);
+            let behind = tape.shift_at(now).behind_secs;
+            assert_eq!(behind, 0.0, "still live {tick} ticks in: {behind}");
+        }
     }
 
     /// The other way a session stops being live: nobody seeked, the
@@ -1258,54 +1471,96 @@ mod tests {
         );
     }
 
-    /// The clock a listener sees while playing steadily behind the    /// The clock a listener sees while playing steadily behind the
-    /// broadcast. The edge lands a chunk at a time while the cursor walks,
-    /// so the raw distance saws by exactly a chunk, and the band is measured
-    /// in chunks for that reason: it holds whether a chunk is half a second
-    /// of radio or two.
-    ///
-    /// No clock in here. The distance is byte arithmetic against the rate,
-    /// so what the test has to reproduce is the pattern of arrivals, not the
-    /// pace of them.
+    /// The clock a listener sees while playing steadily behind the    /// What a listener sees while playing steadily behind the broadcast,
+    /// with everything arriving the way a session delivers it: the socket
+    /// lands a chunk at a time, the decoder pulls 32 KiB blocks off the
+    /// reader, and the audio comes out ten milliseconds at a time. The edge
+    /// saws by a chunk and the cursor by a block, and none of that may reach
+    /// the playhead, the bar or a mark: each moves by no more than the clock
+    /// allows between two looks, and the bar and the mark only ever one way.
     #[test]
-    fn the_behind_clock_holds_still_while_the_edge_arrives_in_bursts() {
-        // 256 kbps is 32 kB/s: the cursor walks 3.2 kB per tenth of a second
-        // of audio, and a chunk is however many tenths it carries.
-        for chunk_secs in [0.5, 1.0, 2.0] {
+    fn the_strip_moves_smoothly_while_the_edge_and_the_reads_arrive_in_bursts() {
+        let song = |title: &str| IcyTitle {
+            artist: String::new(),
+            title: title.to_string(),
+        };
+
+        // 256 kbps is 32 kB/s, so ten milliseconds of audio is 320 bytes.
+        for chunk_secs in [0.25, 1.0, 2.0] {
             let chunk = (chunk_secs * 32_000.0) as usize;
-            let period = (chunk_secs * 10.0) as usize;
+            let period = (chunk_secs * 100.0) as usize;
 
-            // Primed the way the feed fills it, a chunk at a time, so the
-            // band is measured against the chunk size the test is about.
+            // A minute on tape with a song starting halfway through it. The
+            // first title is the one already on at the connect, which isn't
+            // a boundary.
             let tape = tape(600, 256);
-            for _ in 0..(1_920_000 / chunk) {
-                tape.append(&bytes(chunk));
-            }
+            tape.mark_title(song("on at the connect"));
+            feed(&tape, 960_000);
+            tape.mark_title(song("second"));
+            feed(&tape, 960_000);
 
-            // Thirty seconds back and keeping pace, parked the way the
-            // engine parks it: a seek, which is what says the listener has
-            // stepped off the live edge.
+            // Thirty seconds back, the way the engine parks a listener there.
+            let t0 = Instant::now();
             let at = tape.seek_target(30.0);
             let mut reader = tape.reader(at);
+            let mut buffered = 0usize;
             let mut seen = Vec::new();
-            for tick in 0..(period * 3) {
-                if tick % period == period - 1 {
+            for tick in 1..=6000u64 {
+                if tick % period as u64 == 0 {
                     tape.append(&bytes(chunk));
                 }
 
-                let mut out = vec![0u8; 3_200];
-                assert_eq!(reader.read(&mut out).unwrap(), 3_200);
-                seen.push(tape.shift().behind_secs);
+                if buffered < 320 {
+                    let mut out = vec![0u8; 32 * 1024];
+                    buffered += reader.read(&mut out).unwrap();
+                }
+                buffered -= 320;
+                tape.note_audio(0.01);
+
+                let now = t0 + Duration::from_millis(tick * 10);
+                let shift = tape.shift_at(now);
+                let mark = tape.live_marks_at(now)[0].behind_secs;
+                seen.push((shift.behind_secs, shift.window_secs, mark));
             }
 
-            let first = seen[0];
+            for pair in seen.windows(2) {
+                let ((behind, window, mark), (behind_next, window_next, mark_next)) =
+                    (pair[0], pair[1]);
+
+                // The edge runs at up to twice real time and the listener at
+                // real time, so ten milliseconds apart the playhead can't
+                // have moved by more than ten of them.
+                assert!(
+                    (behind_next - behind).abs() <= 0.011,
+                    "the playhead jumped on a {chunk_secs}s chunk: {behind} to {behind_next}"
+                );
+                assert!(
+                    (0.0..=0.021).contains(&(window_next - window)),
+                    "the bar jumped on a {chunk_secs}s chunk: {window} to {window_next}"
+                );
+                assert!(
+                    (0.0..=0.021).contains(&(mark_next - mark)),
+                    "the mark jumped on a {chunk_secs}s chunk: {mark} to {mark_next}"
+                );
+            }
+
+            // Past the first half, with the edge settled in behind the head,
+            // the playhead doesn't wander either: the head's saw stays out
+            // of the edge's pace entirely.
+            let settled = seen[3000..].iter().map(|(behind, _, _)| *behind);
+            let (lo, hi) = settled.fold((f64::MAX, f64::MIN), |(lo, hi), b| (lo.min(b), hi.max(b)));
             assert!(
-                (first - 30.0).abs() < 1.0 + chunk_secs,
-                "thirty seconds behind on a {chunk_secs}s chunk: {first}"
+                hi - lo < 0.02,
+                "the playhead wandered {:.3}s on a {chunk_secs}s chunk",
+                hi - lo
             );
+
+            // Give or take the band the edge settles in behind the head,
+            // which the seek was measured before.
+            let (behind, _, _) = seen[seen.len() - 1];
             assert!(
-                seen.iter().all(|behind| *behind == first),
-                "and it never moved on a {chunk_secs}s chunk: {seen:?}"
+                (behind - 30.0).abs() < 1.0 + 1.5 * chunk_secs,
+                "still about thirty seconds behind on a {chunk_secs}s chunk: {behind}"
             );
         }
     }
@@ -1405,6 +1660,75 @@ mod tests {
         assert!(marks.iter().all(|mark| mark.artist == "Boards of Canada"));
     }
 
+    /// The breaks the strips draw: one per reconnect still inside the
+    /// window, placed against the live edge for the strip that spans the
+    /// tape and against the listener for the one that draws what has been
+    /// heard. The set moves the revision, since a break arriving is a
+    /// change to what the strips are showing.
+    #[test]
+    fn the_gaps_come_back_on_both_axes() {
+        // 256 kbps is 32 kB/s, so a second is 32000 bytes.
+        let tape = tape(600, 256);
+        let mut reader = tape.reader(0);
+
+        feed(&tape, 64_000);
+        let rev = tape.marks_rev();
+        tape.splice();
+        feed(&tape, 96_000);
+        assert!(tape.marks_rev() > rev, "the reconnect changed the set");
+
+        // The listener reads three seconds past the break, which is where
+        // the reader's cursor and the decoded seconds put them.
+        let mut out = vec![0u8; 160_000];
+        assert_eq!(reader.read(&mut out).unwrap(), 160_000);
+        tape.note_audio(5.0);
+
+        let gaps = tape.live_gaps();
+        assert_eq!(gaps.len(), 1, "one connection, one break");
+        assert_eq!(
+            gaps[0].behind_secs, 3.0,
+            "two seconds in, three from the edge"
+        );
+        assert_eq!(
+            gaps[0].heard_ago_secs, 3.0,
+            "and three seconds of audio ago"
+        );
+
+        // A second break, this one ahead of where the listener has got to:
+        // the audio distance reads negative rather than clamping to zero,
+        // since a strip drawing what has been heard has no column for it.
+        feed(&tape, 32_000);
+        tape.splice();
+
+        let gaps = tape.live_gaps();
+        assert_eq!(gaps.len(), 2, "both still inside the window");
+        assert_eq!(
+            gaps[1].heard_ago_secs, -1.0,
+            "a second of audio still to come"
+        );
+        assert!(gaps[0].behind_secs > gaps[1].behind_secs, "oldest first");
+    }
+
+    /// A break that rolled off the back of the window goes with it: there's
+    /// nothing behind it left to seek into, so there's nothing to draw.
+    #[test]
+    fn a_gap_trimmed_off_the_back_stops_being_published() {
+        // Ten seconds of window at 32 kB/s is 320 kB.
+        let tape = tape(10, 256);
+
+        feed(&tape, 64_000);
+        tape.splice();
+        feed(&tape, 64_000);
+        assert_eq!(tape.live_gaps().len(), 1, "inside the window");
+        let rev = tape.marks_rev();
+
+        // Ten more seconds, a whole window's worth, takes the splice with
+        // the bytes in front of it.
+        feed(&tape, 320_000);
+        assert!(tape.live_gaps().is_empty(), "rolled off with the tape");
+        assert!(tape.marks_rev() > rev, "and the set said it changed");
+    }
+
     /// A song whose start has been trimmed off the back has nowhere on the
     /// strip to be drawn, so it stops being published even though the tape
     /// keeps the mark to know what's playing at the back of the window.
@@ -1470,6 +1794,7 @@ mod tests {
         // And into the second song, which hasn't ended, so it has no length.
         let mut out = vec![0u8; 48_000];
         assert_eq!(reader.read(&mut out).unwrap(), 48_000);
+        tape.note_audio(1.5);
         let shift = tape.shift();
         assert_eq!(shift.song_secs, Some(0.5));
         assert_eq!(shift.song_len_secs, None, "the newest song is unfinished");

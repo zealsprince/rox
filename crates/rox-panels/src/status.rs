@@ -190,10 +190,13 @@ impl StatusPanel {
                 cx.notify();
             },
         );
+        // The plays readout sums the projection's counts, so a play-count
+        // import moves it; dropping the cached totals re-sums on the next
+        // paint and touches nothing else.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
-                if !matches!(event, LibraryEvent::Updated) {
+                if !matches!(event, LibraryEvent::Updated | LibraryEvent::PlaysReloaded) {
                     return;
                 }
                 this.totals = None;
@@ -284,6 +287,12 @@ impl StatusPanel {
                 continue;
             }
             if !selected.is_empty() && !selected.contains(id) {
+                continue;
+            }
+            // A station's plays are songs heard, so they count; the row
+            // itself is not a track, an album or an artist of the library.
+            if !projection.is_browsable(ix as u32) {
+                plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
                 continue;
             }
             tracks += 1;
@@ -445,6 +454,12 @@ fn scope_totals(
             continue;
         }
         if !selected.is_empty() && !selected.contains(id) {
+            continue;
+        }
+        // Same split as the status bar: a station's plays are real listens,
+        // the row is not a library track.
+        if !projection.is_browsable(ix as u32) {
+            plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
             continue;
         }
         tracks += 1;

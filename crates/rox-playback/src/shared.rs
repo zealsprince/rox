@@ -109,6 +109,35 @@ pub struct LiveMark {
     pub title: String,
 }
 
+/// A break in the buffer, as the strips over it draw one.
+///
+/// A reconnect splices two connections' bytes together and nothing decodes
+/// across the join, so a seek back over one stops at it. That wall is
+/// invisible until a click hits it, which is what these are for.
+///
+/// Two numbers rather than the one a [`LiveMark`] carries, because the two
+/// strips measure on different axes and a break has to sit in the right
+/// place on both.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveGap {
+    /// How far behind the live edge the break sits, in seconds, measured
+    /// the way [`LiveMark::behind_secs`] is. What a strip spanning the
+    /// tape places it by.
+    pub behind_secs: f64,
+    /// How long ago the listener crossed it, in seconds of audio actually
+    /// heard. Negative for a break the cursor hasn't reached, which is
+    /// every one of them for somebody who has stepped back into the tape.
+    ///
+    /// The distance above can't stand in for this. It's measured against
+    /// the live edge, and a listener standing on that edge reports a
+    /// distance of exactly zero while really sitting a second or two back,
+    /// since the edge arrives in socket-sized chunks and inside one there's
+    /// nothing to know. That rounding is invisible on a strip spanning ten
+    /// minutes of tape, and it's a fifth of the width of a rolling trace
+    /// spanning eight seconds of what has been heard.
+    pub heard_ago_secs: f64,
+}
+
 /// The pool index slot saying no live entry is publishing a shift.
 const NO_SHIFT: u64 = u64::MAX;
 
@@ -342,6 +371,33 @@ pub struct Shared {
     /// so a surface that only cares about song changes can poll the atomic
     /// and leave the lock alone.
     pub live_marks: Mutex<Vec<LiveMark>>,
+    /// Where the audible station's connection broke and picked up again,
+    /// oldest first. Belongs to the entry `shift_idx` names, like
+    /// everything else here.
+    ///
+    /// Beside the marks rather than inside them, because a listener reads
+    /// the two for opposite reasons: a song boundary is a point worth
+    /// jumping to, and this is a point nothing can play across. They share
+    /// a publish and a revision because they move on one clock, which is
+    /// the tape rolling under both.
+    pub live_gaps: Mutex<Vec<LiveGap>>,
+    /// Why the last entry the queue gave up on couldn't be opened, until
+    /// somebody reads it. None once it's been read, and None on a session
+    /// that has never lost an entry.
+    ///
+    /// A skip is the one failure with nothing left behind to look at: the
+    /// entry stops being the playing one, the next entry opens over the top
+    /// of it, and the only record is a log line nobody has open. So the
+    /// reason waits here for the pump to pick it up on its next tick.
+    ///
+    /// Not parallel to the queue like `stream` is, because it isn't a
+    /// property of an entry. It's the last thing that went wrong, and the
+    /// surface showing it has room for one line.
+    pub refusal: Mutex<Option<String>>,
+    /// Whether `refusal` holds something unread. The pump ticks sixty times
+    /// a second and a refusal is rare, so the common tick is one relaxed
+    /// load and no lock at all.
+    pub refusal_pending: AtomicBool,
 }
 
 impl Shared {
@@ -377,7 +433,34 @@ impl Shared {
             shift_song: AtomicU64::new(secs_bits(None)),
             shift_song_len: AtomicU64::new(secs_bits(None)),
             live_marks: Mutex::new(Vec::new()),
+            live_gaps: Mutex::new(Vec::new()),
+            refusal: Mutex::new(None),
+            refusal_pending: AtomicBool::new(false),
         }
+    }
+
+    /// Record why an entry couldn't be opened, which the decode thread does
+    /// as it falls past one. The newest reason wins: an unread one is about
+    /// a track the queue has already moved on from, and two lines don't fit
+    /// where one goes.
+    pub fn publish_refusal(&self, reason: String) {
+        *self.refusal.lock().unwrap() = Some(reason);
+        self.refusal_pending
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The reason, once. Reading it clears it, so a surface that showed it
+    /// keeps showing it on its own terms rather than being told again every
+    /// tick.
+    pub fn take_refusal(&self) -> Option<String> {
+        if !self
+            .refusal_pending
+            .swap(false, std::sync::atomic::Ordering::Acquire)
+        {
+            return None;
+        }
+
+        self.refusal.lock().unwrap().take()
     }
 
     /// Record the station title for pool entry `idx` and bump the revision,
@@ -504,26 +587,30 @@ impl Shared {
         self.shift_idx
             .store(NO_SHIFT, std::sync::atomic::Ordering::Release);
 
-        // The song boundaries went with it. Emptying a list that was
-        // already empty is the ordinary case, on every pass of a session
-        // playing a file, so the revision only moves when there was
-        // something there to take away.
-        let held = std::mem::take(&mut *self.live_marks.lock().unwrap());
-        if !held.is_empty() {
+        // The song boundaries and the breaks went with it. Emptying a list
+        // that was already empty is the ordinary case, on every pass of a
+        // session playing a file, so the revision only moves when there
+        // was something there to take away.
+        let marks = std::mem::take(&mut *self.live_marks.lock().unwrap());
+        let gaps = std::mem::take(&mut *self.live_gaps.lock().unwrap());
+        if !marks.is_empty() || !gaps.is_empty() {
             self.title_rev
                 .fetch_add(1, std::sync::atomic::Ordering::Release);
         }
     }
 
-    /// Say where the audible station's songs turned over.
+    /// Say where the audible station's songs turned over and where its
+    /// connection broke, which are the two things a strip over the tape
+    /// has to draw.
     ///
-    /// `changed` is the set itself having changed, a song announced or one
-    /// dropping off the back of the buffer, as against the distances moving
-    /// because the live edge did. Only the first is worth a revision: the
-    /// second happens every time a chunk lands and means nothing to anyone
-    /// who isn't already redrawing.
-    pub fn publish_live_marks(&self, marks: Vec<LiveMark>, changed: bool) {
+    /// `changed` is the sets themselves having changed, a song announced,
+    /// a reconnect, or either dropping off the back of the buffer, as
+    /// against the distances moving because the live edge did. Only the
+    /// first is worth a revision: the second happens every time a chunk
+    /// lands and means nothing to anyone who isn't already redrawing.
+    pub fn publish_live_marks(&self, marks: Vec<LiveMark>, gaps: Vec<LiveGap>, changed: bool) {
         *self.live_marks.lock().unwrap() = marks;
+        *self.live_gaps.lock().unwrap() = gaps;
 
         if changed {
             self.title_rev
@@ -535,6 +622,12 @@ impl Shared {
     /// whoever is drawing them.
     pub fn live_marks(&self) -> Vec<LiveMark> {
         self.live_marks.lock().unwrap().clone()
+    }
+
+    /// The audible station's reconnects, oldest first, cloned for whoever
+    /// is drawing them.
+    pub fn live_gaps(&self) -> Vec<LiveGap> {
+        self.live_gaps.lock().unwrap().clone()
     }
 
     /// Where pool entry `idx` is playing from, None when the shift on
@@ -674,6 +767,34 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
+
+    /// The refusal is a one-shot handoff: the decode thread leaves it, the
+    /// pump takes it, and a second look finds nothing. A tick that finds
+    /// nothing never touches the lock.
+    #[test]
+    fn a_refusal_is_read_once() {
+        let shared = Shared::new(2);
+        assert_eq!(shared.take_refusal(), None);
+
+        shared.publish_refusal("the server refused the stream: nope".into());
+        assert_eq!(
+            shared.take_refusal(),
+            Some("the server refused the stream: nope".to_string())
+        );
+        assert_eq!(shared.take_refusal(), None);
+    }
+
+    /// Two entries refused before anybody looked. The one that survives is
+    /// the newer one, since the older is about a track the queue has
+    /// already fallen past.
+    #[test]
+    fn the_newest_refusal_wins() {
+        let shared = Shared::new(2);
+        shared.publish_refusal("first".into());
+        shared.publish_refusal("second".into());
+
+        assert_eq!(shared.take_refusal(), Some("second".to_string()));
+    }
 
     fn push_segment(shared: &Shared, at_frame: u64, track: usize, track_frame: u64) {
         shared.segments.lock().unwrap().push(Segment {

@@ -1,5 +1,38 @@
---- a/src/platform/linux/wayland/client.rs	2026-09-19 08:39:24.752094758 -0500
-+++ b/src/platform/linux/wayland/client.rs	2026-09-19 08:35:23.525730465 -0500
+A held pointer button keeps its implicit grab after the pointer leaves.
+
+Wayland gives the surface under a pressed button an implicit grab: the
+pointer can travel anywhere, the surface still owns it, and the release
+comes back to that surface. gpui read `wl_pointer.leave` as the end of
+the interaction and cleared both `button_pressed` and the focused
+window, so a drag that crossed the window edge lost its button state
+mid-flight and the release it came back for had nowhere to go. Leave now
+returns early while a button is held, and the release is what tears the
+focus down, after the MouseUp has been dispatched so a drop that landed
+on the way out still runs. Motion records the pointer position before
+the focused-window check, because the grab keeps delivering coordinates
+past the window edge and the release needs to know where the pointer
+actually was.
+
+A compositor can also cancel the grab outright (workspace switch,
+overlay, Alt-Tab) and never send the release, which would leave the
+press and anything dragged with it stuck to the cursor. The next enter
+recovers that by synthesizing the MouseUp itself. Where the synthesized
+release lands decides whether the interrupted drag drops or cancels, so
+it is read off the surface the pointer came back to, not off the enter
+event. Coming back to the window that held the grab releases at that
+pointer's last recorded position over the window, the spot the user was
+on when the grab broke. Coming back to any other surface means the drag
+walked off the window, and no position over it stands for something the
+user did, so the release goes to a point outside the window's content
+instead. Nothing is hovered there, so no drop handler runs and gpui
+clears the drag on its own, which is what a cancel looks like from the
+platform layer. Either way the enter position is never used, so a
+recovered drag cannot drop wherever the pointer happened to re-enter.
+
+Diffed against the tree with every earlier gpui patch applied.
+
+--- a/src/platform/linux/wayland/client.rs
++++ b/src/platform/linux/wayland/client.rs
 @@ -226,6 +226,7 @@
      scroll_event_received: bool,
      enter_token: Option<()>,
@@ -16,9 +49,13 @@
              mouse_focused_window: None,
              keyboard_focused_window: None,
              loop_handle: handle.clone(),
-@@ -1533,7 +1535,31 @@
+@@ -1532,8 +1534,50 @@
+                 ..
              } => {
                  state.serial_tracker.update(SerialKind::MouseEnter, serial);
++                // rox patch: keep where the pointer was before this enter moves it. The
++                // grab recovery below needs it, and by the next line it is gone.
++                let last_location = state.mouse_location;
                  state.mouse_location = Some(point(px(surface_x as f32), px(surface_y as f32)));
 -                state.button_pressed = None;
 +                state.pointer_in_surface = true;
@@ -27,9 +64,24 @@
 +                // an implicit grab (e.g. workspace switch, overlay, or Alt-Tab) without delivering
 +                // a button release, clean up the orphaned button press and window state so drag
 +                // handlers do not remain stuck.
++                //
++                // Where the release lands decides whether the interrupted drag drops or
++                // cancels, so it is picked from the surface we came back to. Returning to
++                // the window that held the grab releases at the pointer's last position
++                // over it: the spot the user was actually on when the grab broke. Coming
++                // back anywhere else means the drag walked off that window, and there is
++                // no position over it that stands for anything the user did, so the
++                // release goes outside its content instead. No hitbox is hovered there,
++                // so no drop handler runs and gpui clears the drag on its own, which is
++                // what a cancelled drag looks like from the platform layer.
 +                if let Some(button) = state.button_pressed.take() {
 +                    if let Some(prev_window) = state.mouse_focused_window.take() {
-+                        let position = state.mouse_location.unwrap_or_default();
++                        let returned_to_grab_window = prev_window.surface().id() == surface.id();
++                        let position = match last_location {
++                            Some(location) if returned_to_grab_window => location,
++                            // Negative, so it is outside the content on both axes.
++                            _ => point(px(-1.0), px(-1.0)),
++                        };
 +                        drop(state);
 +                        prev_window.handle_input(PlatformInput::MouseUp(MouseUpEvent {
 +                            button,
@@ -49,7 +101,7 @@
  
                  if let Some(window) = get_window(&mut state, &surface.id()) {
                      state.mouse_focused_window = Some(window.clone());
-@@ -1562,15 +1588,22 @@
+@@ -1562,15 +1606,22 @@
                  }
              }
              wl_pointer::Event::Leave { .. } => {
@@ -75,7 +127,7 @@
  
                      drop(state);
                      focused_window.handle_input(input);
-@@ -1582,10 +1615,10 @@
+@@ -1582,10 +1633,10 @@
                  surface_y,
                  ..
              } => {
@@ -87,7 +139,7 @@
  
                  if let Some(window) = state.mouse_focused_window.clone() {
                      if state
-@@ -1674,14 +1707,30 @@
+@@ -1674,14 +1725,30 @@
                          state.button_pressed = None;
  
                          if let Some(window) = state.mouse_focused_window.clone() {

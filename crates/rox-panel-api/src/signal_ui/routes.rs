@@ -573,6 +573,11 @@ mod tests {
 
     #[test]
     fn the_field_names_what_the_route_is_on() {
+        // The prompt below is a translated string, and a test in this same
+        // binary flips the locale to German under the lock, so pin one here
+        // the same way rather than read whichever it left behind.
+        let _guard = rox_i18n::LOCALE_TEST_LOCK.lock().unwrap();
+        rox_i18n::set_locale(Some("en-CA"));
         let pool = vec![signal(1, "Kick")];
         let mut riding = route("slot0");
         riding.signal = 1;

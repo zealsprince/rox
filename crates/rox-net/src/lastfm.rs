@@ -8,11 +8,18 @@
 //! The protocol isn't Last.fm's alone: Libre.fm serves the same methods
 //! at its own host, so the call takes its root as an argument and
 //! [`crate::librefm`] points it there.
+//!
+//! Not everything an account needs is signed. Reading a public profile
+//! takes an api key and no session at all, so the account reads the
+//! imports run on live in [`user`] beside the signing rather than in the
+//! enrichment providers: they're the same identity asking about the same
+//! connected account.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 pub mod keys;
+pub mod user;
 
 /// Whether this build has its own api identity; without one the
 /// settings page asks for the user's pair.
@@ -25,6 +32,28 @@ pub fn has_builtin_keys() -> bool {
 }
 
 const API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
+
+/// Where every call in this module and its children goes: the constant
+/// above, or whatever `ROX_LASTFM_API_ROOT` names in a debug build. The
+/// override exists for one job, pointing the import paths at a stand-in
+/// server so they can be exercised without anyone's real listening
+/// history, and a release build never reads the variable, so a shipped
+/// rox cannot be aimed at another host by its environment.
+pub fn api_root() -> String {
+    override_root().unwrap_or_else(|| API_ROOT.to_string())
+}
+
+#[cfg(debug_assertions)]
+fn override_root() -> Option<String> {
+    std::env::var("ROX_LASTFM_API_ROOT")
+        .ok()
+        .filter(|root| !root.is_empty())
+}
+
+#[cfg(not(debug_assertions))]
+fn override_root() -> Option<String> {
+    None
+}
 
 /// The api_sig the API requires on every signed call: the parameters
 /// sorted by name, concatenated as name-value, the secret appended, md5
@@ -85,7 +114,7 @@ pub fn call(
     secret: &str,
     params: BTreeMap<String, String>,
 ) -> Result<serde_json::Value, ApiError> {
-    call_at(API_ROOT, method, secret, params)
+    call_at(&api_root(), method, secret, params)
 }
 
 /// The same call against any host that speaks the protocol: Last.fm's

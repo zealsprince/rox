@@ -1232,6 +1232,7 @@ actions!(
         Cue,
         CuePrev,
         CueNext,
+        CueClear,
         PlayRandom,
         ToggleMute,
         ToggleShuffle,
@@ -1538,6 +1539,14 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &CueNext, cx| {
         with_front_workspace(cx, |ws, _, cx| {
             rox_panel_api::cue_ui::step(&ws.state, true, cx);
+        });
+    });
+    // The fourth, which the strip's own menu has no room for: a track can
+    // collect a dozen marks in a listen and taking them off one right click
+    // at a time is the kind of chore nobody does.
+    cx.on_action(|_: &CueClear, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            rox_panel_api::cue_ui::clear(&ws.state, cx);
         });
     });
     // The plain draw, the transport panel's dice button without its per-panel

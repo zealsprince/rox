@@ -307,10 +307,13 @@ impl StatsWindow {
             &state.history,
             |this: &mut Self, _, _: &HistoryEvent, cx| this.refresh(cx),
         );
+        // Every number on the page is a listens read, so a play-count import
+        // moves all of them; a rescan moves them too, by dropping tracks the
+        // events point at.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
-                if matches!(event, LibraryEvent::Updated) {
+                if matches!(event, LibraryEvent::Updated | LibraryEvent::PlaysReloaded) {
                     this.refresh(cx);
                 }
             },
@@ -411,7 +414,7 @@ impl StatsWindow {
             genres: library.listen_rollup(Rollup::Genre, since, until, TOP_GENRES),
             recents,
             recent_files,
-            tracks: library.projection().map_or(0, |p| p.live_len()),
+            tracks: library.projection().map_or(0, |p| p.browse_len()),
             heap_bytes: library.projection().map_or(0, |p| p.heap_bytes()),
         };
         cx.notify();

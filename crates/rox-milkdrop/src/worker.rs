@@ -63,7 +63,13 @@ struct Callbacks {
 }
 
 pub(crate) fn run(options: EngineOptions, commands: Receiver<Command>, shared: Arc<Shared>) {
+    // Counted in before the context exists and out after it is gone, so the
+    // window this thread can make a GL call in is entirely inside the count.
+    // See `exit_guard`.
+    exit_guard::enter();
     match Worker::start(options, shared.clone()) {
+        // The worker's own drop, at the end of this arm, is the GL teardown,
+        // so `leave` comes after the match rather than inside it.
         Ok(mut worker) => worker.run(&commands),
         Err(message) => {
             log::warn!("milkdrop engine did not start: {message}");
@@ -72,6 +78,7 @@ pub(crate) fn run(options: EngineOptions, commands: Receiver<Command>, shared: A
             // block on a receiver that walked away.
         }
     }
+    exit_guard::leave();
 }
 
 struct Worker {
@@ -239,6 +246,14 @@ impl Worker {
     fn run(&mut self, commands: &Receiver<Command>) {
         let mut deadline = Instant::now();
         loop {
+            // The process is exiting and the driver is being torn down under
+            // us. One frame of latency on noticing is the cost of checking
+            // here rather than between every GL call, and the handler waits
+            // that out. See `exit_guard`.
+            if exit_guard::exiting() {
+                exit_guard::park();
+            }
+
             // Sleep out the rest of the frame in the channel, so a command
             // that lands mid-frame is acted on at once rather than after the
             // timer expires.
@@ -365,6 +380,17 @@ impl Worker {
     /// one. `Err` is a readback the driver refuses to map, which ends the
     /// worker; see [`MAP_MISS_LIMIT`].
     fn render(&mut self) -> Result<(), String> {
+        // A resize the driver refused leaves nothing to render into:
+        // `Targets::release` has zeroed the names but `width` and `height`
+        // still hold the old size, so going on would read a framebuffer
+        // that no longer exists back into a pixel buffer that doesn't
+        // either, which with no buffer bound is a readback straight into a
+        // null pointer. The failed resize already published its status; the
+        // loop idles under it rather than taking the app down.
+        if self.targets.fbo == 0 {
+            return Ok(());
+        }
+
         let (width, height) = (self.targets.width, self.targets.height);
         let stride = width as usize * 4;
         let bytes = stride * height as usize;
@@ -409,6 +435,10 @@ impl Worker {
                 bytes as isize,
                 gl::MAP_READ_BIT,
             );
+            // The map is where the driver first has to name a pixel format,
+            // so by the time it returns Mesa has registered the exit
+            // handlers ours has to run ahead of. See `exit_guard`.
+            exit_guard::arm();
             if mapped.is_null() {
                 (self.gl.BindBuffer)(gl::PIXEL_PACK_BUFFER, 0);
                 (self.gl.BindFramebuffer)(gl::FRAMEBUFFER, 0);
@@ -937,6 +967,97 @@ unsafe extern "C" fn on_switch_failed(
     let callbacks = unsafe { &*(user_data as *const Callbacks) };
     if let Ok(mut failures) = callbacks.failures.try_borrow_mut() {
         failures.push((path, message));
+    }
+}
+
+/// Getting the render thread off GL before the process finishes exiting.
+///
+/// `exit()` runs the C exit handlers on whichever thread called it and lets
+/// every other thread keep running. Mesa registers handlers of its own: one
+/// joins the driver's queue threads, another frees the table `glReadPixels`
+/// looks a pixel layout up in. A worker still rendering while those run
+/// walks freed memory, and the app dies in Mesa's hash table instead of
+/// quitting. Nothing above drops the engine on the way out and nothing
+/// should have to: the backdrop keeps one in a process static and the panel
+/// keeps one in an entity, and gpui unwinds neither when its loop returns.
+///
+/// So the thread that owns the context takes the hook. The handler sets a
+/// latch and waits for every live worker to stand down, and each worker
+/// checks the latch once a frame.
+///
+/// The registration point is the load-bearing part, and it's why this is
+/// armed from the render loop rather than from `Engine::spawn`. Handlers run
+/// in reverse registration order, so ours has to go in after Mesa's to run
+/// before them, and Mesa registers lazily: the queue handler when the screen
+/// comes up, the format table's the first time a readback asks for a format.
+/// Arming on the first readback is past both of those. A handler Mesa only
+/// registers later still slips underneath us, which is the residual this
+/// can't close from out here.
+mod exit_guard {
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// How long the exit handler gives the render threads. A frame at the
+    /// slowest rate the panel offers is a few tens of milliseconds, so this
+    /// is many frames of slack, and past it the quit goes ahead anyway
+    /// rather than hanging the app on a worker wedged inside the driver.
+    const STAND_DOWN: Duration = Duration::from_millis(500);
+
+    static EXITING: AtomicBool = AtomicBool::new(false);
+    /// Workers that would touch GL if they got another frame.
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    static ARMED: Once = Once::new();
+
+    // Declared rather than pulled in through libc: one C function with a
+    // signature that hasn't moved since C89 is not worth a dependency, and
+    // every platform this crate builds for has it.
+    unsafe extern "C" {
+        fn atexit(handler: extern "C" fn()) -> i32;
+    }
+
+    extern "C" fn on_exit() {
+        EXITING.store(true, Ordering::Release);
+
+        let deadline = Instant::now() + STAND_DOWN;
+        while LIVE.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Register the handler, once per process. See the module note for why
+    /// the timing of the first call matters.
+    pub(super) fn arm() {
+        ARMED.call_once(|| {
+            // A refusal means the process is already inside `exit()`, which
+            // is the case this guards and the point where there is nothing
+            // left to do about it.
+            unsafe { atexit(on_exit) };
+        });
+    }
+
+    /// Count a worker in from the moment it can make a GL call, and out
+    /// again once its context is gone.
+    pub(super) fn enter() {
+        LIVE.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(super) fn leave() {
+        LIVE.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    pub(super) fn exiting() -> bool {
+        EXITING.load(Ordering::Acquire)
+    }
+
+    /// Stand down and stay down. Returning instead would drop the `Worker`,
+    /// and that drop destroys the projectM instance and the render targets,
+    /// which is more GL than an exiting process has left.
+    pub(super) fn park() -> ! {
+        leave();
+        loop {
+            std::thread::park();
+        }
     }
 }
 

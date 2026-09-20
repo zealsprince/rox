@@ -13,14 +13,17 @@
 //! second one will need. When it lands, the shape these types already have
 //! is the trait.
 //!
-//! `radio_browser` sits beside the source clients without being one. It's
-//! a directory: it answers "which stations exist", and what it finds only
-//! becomes a row when someone adds it.
+//! Two modules here sit beside the source clients without being ones, and
+//! both are about radio. `radio_browser` is a directory: it answers "which
+//! stations exist", and what it finds only becomes a row when someone adds
+//! it. `stream_probe` answers the narrower question a typed URL raises,
+//! which is whether the thing on the other end is a stream at all.
 
 use serde_json::Value;
 
 pub mod autoeq;
 pub mod radio_browser;
+pub mod stream_probe;
 pub mod subsonic;
 
 /// One track as a source describes it, before anything maps it onto a

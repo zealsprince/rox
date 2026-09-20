@@ -1443,12 +1443,17 @@ impl TrackInfoPanel {
 
         let Some(now) = now else {
             // Nothing to describe: a session still opening, or the reason
-            // one failed to start. Plain idle stays blank, the chip still
-            // reporting if the arrangement has one.
-            let line: Option<SharedString> = if active {
-                Some(rox_i18n::t!("track-info-opening"))
-            } else {
-                error
+            // there's nothing to hear. Plain idle stays blank, the chip
+            // still reporting if the arrangement has one.
+            //
+            // A reason outranks the wait. A session whose every entry was
+            // refused is still a session, so the wait alone would sit on
+            // "opening..." for as long as the queue lasted and the only
+            // account of what happened would be in the log.
+            let line: Option<SharedString> = match error {
+                Some(error) => Some(error),
+                None if active => Some(rox_i18n::t!("track-info-opening")),
+                None => None,
             };
             let chip = items
                 .contains(&InfoPiece::Output)

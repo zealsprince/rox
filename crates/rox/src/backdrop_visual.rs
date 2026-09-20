@@ -50,6 +50,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -447,6 +448,27 @@ fn visual() -> MutexGuard<'static, Option<Visual>> {
     guard
 }
 
+/// Latched by [`take_engine`] on the way out, so nothing starts a second
+/// worker after the quit hook has taken the first one down.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Take the running engine out for shutdown. `None` if the layer never
+/// started one.
+///
+/// A process static is never dropped, so on quit the worker in here outlives
+/// `main` and goes on issuing GL calls while glibc runs Mesa's own exit
+/// handlers underneath it, which is a segfault in the driver's format table.
+/// The quit hook in `main` takes the engine out here and drops it, which
+/// hangs up the worker's channel and waits for the thread. `rox_milkdrop`'s
+/// exit guard is the backstop under that, not the mechanism.
+pub(crate) fn take_engine() -> Option<Engine> {
+    QUITTING.store(true, Ordering::Relaxed);
+    let mut guard = VISUAL.lock().ok()?;
+    let visual = guard.as_mut()?;
+    visual.parked = true;
+    visual.engine.take()
+}
+
 /// Whether the visual is switched on. Cheap enough for a hot path: one
 /// read lock on the settings cache.
 pub(crate) fn enabled() -> bool {
@@ -649,6 +671,12 @@ fn weight(strength: f32, opacity: f32) -> f32 {
 
 fn paint(bounds: gpui::Bounds<gpui::Pixels>, window: &mut Window, cx: &mut App, allowed: bool) {
     if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+        return;
+    }
+    // Past the quit hook there is no engine and no starting one: a paint
+    // that got in after it would spawn a GL context for a process on its
+    // way out.
+    if QUITTING.load(Ordering::Relaxed) {
         return;
     }
     let config = settings::backdrop_visual();

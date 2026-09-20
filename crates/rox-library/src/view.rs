@@ -384,6 +384,25 @@ mod tests {
         Projection::load_serial(&conn, false).unwrap()
     }
 
+    /// The same library with a radio station added, the way the sources
+    /// page adds one: an ordinary row under `source = 'radio'` with no
+    /// album, no artist and no duration.
+    fn projection_with_a_station(rows: &[TrackRow]) -> Projection {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, rows).unwrap();
+        crate::stations::put(
+            &mut conn,
+            &[crate::stations::Station {
+                url: "http://127.0.0.1:8768/stream".into(),
+                name: "Noise FM - EDM Radio".into(),
+                genre: "EDM".into(),
+            }],
+        )
+        .unwrap();
+        Projection::load_serial(&conn, false).unwrap()
+    }
+
     fn by_album(projection: &Projection, row: u32) -> u64 {
         let i = row as usize;
         (projection.album_artist[i] as u64) << 32 | projection.album[i] as u64
@@ -633,5 +652,49 @@ mod tests {
             })
             .collect();
         assert_eq!(ids, vec![p.db_id[2], p.db_id[0], p.db_id[1]]);
+    }
+
+    /// The track list the library panel draws never shows a station, and
+    /// never opens the Unknown group one would sit in. Nothing in here
+    /// names radio: the canonical order and the search both come out of
+    /// the projection's browse mask already.
+    #[test]
+    fn a_station_never_reaches_the_track_list() {
+        let p = projection_with_a_station(&[
+            track("/m/a1.flac", "A", "One", 1, 1, 1000, "flac", 900, 44100, 16),
+            track("/m/a2.flac", "A", "One", 1, 2, 2000, "flac", 700, 44100, 16),
+        ]);
+        assert_eq!(p.len(), 3, "the station is in the projection");
+
+        let empty = FilterSet::default();
+        let spec = |query: &'static str| ViewSpec {
+            query,
+            filter: &empty,
+            similar: None,
+            sort: None,
+            grouping: None,
+        };
+        let order = Arc::new(p.sort_canonical());
+        let (rows, _) = view_for(&p, order.clone(), &spec(""));
+        assert_eq!(rows.len(), 2);
+
+        // With headers on, the station would be its own Unknown run.
+        let (rows, groups) = view_for(
+            &p,
+            order,
+            &ViewSpec {
+                grouping: Some(grouping(1)),
+                ..spec("")
+            },
+        );
+        assert_eq!(groups.len(), 1, "one album, no Unknown beside it");
+        assert_eq!(
+            rows.iter().filter(|r| matches!(r, Row::Track(_))).count(),
+            2
+        );
+
+        // And the query box can't reach it either.
+        let (rows, _) = view_for(&p, Arc::new(p.sort_canonical()), &spec("noise"));
+        assert!(rows.is_empty());
     }
 }

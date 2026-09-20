@@ -6,6 +6,13 @@
 //! snapshot keeps the row readable. Every stat is derived from these
 //! rows by SQL; nothing stores a counter as the source.
 //!
+//! Rows carry where they came from, since not all of them were watched
+//! happen: an import can read Last.fm's scrobble history and file real
+//! plays at their real seconds, and where only a count survives it places
+//! the difference itself. An invented row is marked as one
+//! ([`ORIGIN_ESTIMATE`]) so nothing downstream mistakes a spread for a
+//! memory.
+//!
 //! Append-only covers the event itself: when it played and what the tags
 //! said then never change. The join back to the catalog is maintenance,
 //! not history: a prune kills the track id, and when the file returns
@@ -48,6 +55,44 @@ pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
               WHERE t.id = listens.track_id AND t.source = 'local'), '');",
     )
 }
+
+/// The store ladder's listen-origin step: events learn where they came
+/// from, and the pair every import probe reads gets its own index.
+///
+/// Three origins, and the default is the one that matters: an empty
+/// string is a play rox itself watched happen, which is every row written
+/// before this column existed and every row the recorder writes after it.
+/// [`ORIGIN_SCROBBLE`] is a play imported from Last.fm with the second it
+/// happened at, and [`ORIGIN_ESTIMATE`] is one this invented to make a
+/// play count add up. Rows from before this step keep the empty default
+/// and can't be told apart, which is the honest answer: the build that
+/// wrote them recorded nothing about where they came from.
+///
+/// The index is on (track_id, played_at) rather than unique on it. A
+/// unique constraint would be the tidier way to refuse a duplicate
+/// scrobble, but it can't be added to a database that already holds one,
+/// and two listens of the same track inside one second is a thing a stuck
+/// recorder can produce. The import probes the pair instead and this
+/// makes that probe an index-only lookup.
+pub(crate) fn add_origin(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE listens ADD COLUMN origin TEXT NOT NULL DEFAULT '';
+         CREATE INDEX IF NOT EXISTS listens_track_played ON listens (track_id, played_at);",
+    )
+}
+
+/// A play rox watched happen, the recorder's own rows and everything
+/// written before origins were recorded at all.
+pub const ORIGIN_LOCAL: &str = "";
+
+/// A play imported from Last.fm's scrobble history, carrying the second
+/// Last.fm says it happened at.
+pub const ORIGIN_SCROBBLE: &str = "lastfm";
+
+/// A play this invented: the count said a track was played more often
+/// than the history accounts for, and the difference was placed rather
+/// than left missing.
+pub const ORIGIN_ESTIMATE: &str = "estimate";
 
 /// Match events back to the catalog after a scan, the same maintenance
 /// [`crate::playlists::reattach`] runs for members: a pruned-and-returned
@@ -189,17 +234,184 @@ pub const MAX_IMPORTED_PLAYS: u32 = 50_000;
 /// recently-played views or skew recency-tiering continuation (ADR 17).
 pub const UNPLAYED_ANCHOR_OFFSET_SECS: i64 = 90 * 86_400;
 
+/// How far back an invented ladder spreads when nothing says how long the
+/// account has been listening. Five years: the point is that a thousand
+/// invented plays land in a thousand different places rather than in one
+/// bar of a weekly chart, and any span wide enough to do that is as
+/// truthful as any other, since none of these rows know their own date.
+pub const FALLBACK_SPAN_SECS: i64 = 5 * 365 * 86_400;
+
+/// Where an invented ladder is allowed to stand: the second the import
+/// ran, and the earliest the account could possibly have listened, its
+/// Last.fm registration. Without the second one the ladder falls back to
+/// [`FALLBACK_SPAN_SECS`].
+#[derive(Clone, Copy, Debug)]
+pub struct Ladder {
+    pub now: i64,
+    /// The account's registered second, where the profile gave one up.
+    pub since: Option<i64>,
+}
+
+impl Ladder {
+    /// A ladder with no registration date behind it, for the callers that
+    /// have no account to ask (the tests, and any path that only needs
+    /// the counts to add up).
+    pub fn at(now: i64) -> Ladder {
+        Ladder { now, since: None }
+    }
+
+    /// The oldest second a track's ladder may reach down to. The account's
+    /// registration, unless that leaves less room than there are rows to
+    /// place: a ladder needs a second per rung to keep its rows distinct,
+    /// so a tight span is widened rather than stacked.
+    fn floor(&self, anchor: i64, needed: usize) -> i64 {
+        let since = self
+            .since
+            .unwrap_or_else(|| self.now.saturating_sub(FALLBACK_SPAN_SECS));
+        since.min(anchor.saturating_sub(needed as i64))
+    }
+}
+
+/// The gap between two rungs: the span divided by one more than the rows
+/// in it, so the oldest row still lands above the floor. At least a
+/// second, which is what keeps every rung its own moment.
+fn ladder_step(anchor: i64, floor: i64, needed: usize) -> i64 {
+    let span = anchor.saturating_sub(floor).max(needed as i64);
+    (span / (needed as i64 + 1)).max(1)
+}
+
+/// A play count folded to what a backfill will actually insert, and
+/// whether the cap had to step in. A count past [`MAX_IMPORTED_PLAYS`]
+/// isn't a listening habit, it's a response nobody should trust, so it
+/// gets clamped and the caller says so out loud.
+fn capped(target: u32) -> (u32, bool) {
+    (target.min(MAX_IMPORTED_PLAYS), target > MAX_IMPORTED_PLAYS)
+}
+
+/// Record plays that arrived with their own timestamps, the scrobble
+/// history import. Each `(track_id, played_at)` becomes a listen at
+/// exactly that second, tagged [`ORIGIN_SCROBBLE`], with the track's tags
+/// snapshotted beside it the way the recorder writes one.
+///
+/// Idempotent by the pair: a row already sitting at that track and that
+/// second is the same play, so a re-import adds what arrived since and
+/// nothing else. That probe is why the ladder rung adds an index on
+/// (track_id, played_at).
+///
+/// `on_progress` is called with `(processed, total)` and returns false to
+/// stop, the same contract [`backfill_plays_batch`] runs on. A stop keeps
+/// what was already written: the plays it got through are no less real
+/// for the rest going unread.
+pub fn import_scrobbles<F>(
+    conn: &mut Connection,
+    plays: &[(i64, i64)],
+    mut on_progress: F,
+) -> rusqlite::Result<usize>
+where
+    F: FnMut(usize, usize) -> bool,
+{
+    if plays.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    let mut seen_stmt =
+        tx.prepare_cached("SELECT 1 FROM listens WHERE track_id = ?1 AND played_at = ?2")?;
+    let mut track_stmt = tx.prepare_cached(
+        "SELECT title, artist, album, genre,
+                CASE WHEN sub = 0 THEN path ELSE path || '#' || sub END
+         FROM tracks WHERE id = ?1",
+    )?;
+    let mut insert_stmt = tx.prepare_cached(
+        "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path, origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+
+    // One lookup per track rather than one per scrobble: a heavy account
+    // scrobbles the same few hundred tracks thousands of times.
+    let mut tags: HashMap<i64, (String, String, String, String, String)> = HashMap::new();
+    let mut added = 0usize;
+    let total = plays.len();
+    for (index, &(track_id, played_at)) in plays.iter().enumerate() {
+        if !on_progress(index, total) {
+            break;
+        }
+        if seen_stmt.exists(rusqlite::params![track_id, played_at])? {
+            continue;
+        }
+        let entry = match tags.entry(track_id) {
+            std::collections::hash_map::Entry::Occupied(found) => found.into_mut(),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                let row = track_stmt.query_row([track_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                });
+                // A track that left the library between the match and the
+                // write has nothing to snapshot, so its scrobbles wait for
+                // the next run rather than landing tagless.
+                let Ok(row) = row else { continue };
+                slot.insert(row)
+            }
+        };
+        let (title, artist, album, genre, path) = entry.clone();
+        insert_stmt.execute(rusqlite::params![
+            track_id,
+            played_at,
+            title,
+            artist,
+            album,
+            genre,
+            path,
+            ORIGIN_SCROBBLE,
+        ])?;
+        added += 1;
+    }
+    on_progress(total, total);
+
+    drop(seen_stmt);
+    drop(track_stmt);
+    drop(insert_stmt);
+    tx.commit()?;
+    Ok(added)
+}
+
+/// The newest scrobble this library has already imported, or None when
+/// none has been. The bound a re-import asks Last.fm to start after, so a
+/// second run reads what arrived since instead of the whole history
+/// again. Imported rows only: a play rox watched happen says nothing
+/// about how far the import got.
+pub fn latest_scrobble(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT MAX(played_at) FROM listens WHERE origin = ?1",
+        [ORIGIN_SCROBBLE],
+        |row| row.get(0),
+    )
+}
+
 /// Backfill play history for multiple tracks up to their target play counts.
 /// For each `(track_id, target_plays)`, if the track currently has fewer listens
 /// than `target_plays`, inserts the missing listens anchored before the earliest
 /// existing listen (or well in the past if never played).
+///
+/// The inserted rows carry no real date, because the counts this works
+/// from carry none: only `user.getRecentTracks` dates a play, and this is
+/// the fallback for what it couldn't answer for. So the ladder spreads
+/// evenly down `ladder`'s span instead of stepping back an hour at a
+/// time, which is what kept a whole import inside one bar of a weekly
+/// chart. The rows are tagged [`ORIGIN_ESTIMATE`], because an even spread
+/// is still a guess and anything reading them should be able to tell.
+///
 /// `on_progress` is called with `(processed_tracks, total_tracks)` and returns
 /// `false` if the operation was cancelled/stopped.
 /// Returns the number of listens inserted.
 pub fn backfill_plays_batch<F>(
     conn: &mut Connection,
     targets: &[(i64, u32)],
-    now: i64,
+    ladder: Ladder,
     mut on_progress: F,
 ) -> rusqlite::Result<usize>
 where
@@ -217,8 +429,8 @@ where
          FROM tracks WHERE id = ?1",
     )?;
     let mut insert_stmt = tx.prepare_cached(
-        "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path, origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
 
     let mut total_added = 0usize;
@@ -230,7 +442,13 @@ where
         if target_plays == 0 {
             continue;
         }
-        let target_plays = target_plays.min(MAX_IMPORTED_PLAYS);
+        let (target_plays, clamped) = capped(target_plays);
+        if clamped {
+            log::warn!(
+                "listens: track {track_id} claims more plays than anyone has, \
+                 clamping the backfill to {MAX_IMPORTED_PLAYS}"
+            );
+        }
         let (current_count, min_played): (u32, Option<i64>) = count_stmt
             .query_row([track_id], |row| {
                 Ok((row.get::<_, i64>(0)? as u32, row.get::<_, Option<i64>>(1)?))
@@ -252,11 +470,24 @@ where
             continue;
         };
 
-        let anchor = min_played.unwrap_or_else(|| now.saturating_sub(UNPLAYED_ANCHOR_OFFSET_SECS));
+        // Everything this track already has sits at or above the anchor,
+        // so the ladder hangs below it and no invented row ever claims to
+        // be the most recent play of anything.
+        let anchor =
+            min_played.unwrap_or_else(|| ladder.now.saturating_sub(UNPLAYED_ANCHOR_OFFSET_SECS));
+        let floor = ladder.floor(anchor, needed);
+        let step = ladder_step(anchor, floor, needed);
         for i in 0..needed {
-            let played_at = anchor.saturating_sub((i as i64 + 1) * 3600);
+            let played_at = anchor.saturating_sub((i as i64 + 1) * step);
             insert_stmt.execute(rusqlite::params![
-                track_id, played_at, title, artist, album, genre, path,
+                track_id,
+                played_at,
+                title,
+                artist,
+                album,
+                genre,
+                path,
+                ORIGIN_ESTIMATE,
             ])?;
         }
         total_added += needed;
@@ -1351,9 +1582,13 @@ mod tests {
         let now = 1_700_000_000i64;
 
         // Backfill 1000 plays for track 1 and 42 plays for track 2.
-        let added =
-            backfill_plays_batch(&mut conn, &[(track1, 1000), (track2, 42)], now, |_, _| true)
-                .unwrap();
+        let added = backfill_plays_batch(
+            &mut conn,
+            &[(track1, 1000), (track2, 42)],
+            Ladder::at(now),
+            |_, _| true,
+        )
+        .unwrap();
         assert_eq!(added, 1042);
 
         let count_map = counts(&conn).unwrap();
@@ -1361,14 +1596,19 @@ mod tests {
         assert_eq!(count_map.get(&track2).copied(), Some(42));
 
         // Re-running with same targets does nothing (idempotent).
-        let added_again =
-            backfill_plays_batch(&mut conn, &[(track1, 1000), (track2, 42)], now, |_, _| true)
-                .unwrap();
+        let added_again = backfill_plays_batch(
+            &mut conn,
+            &[(track1, 1000), (track2, 42)],
+            Ladder::at(now),
+            |_, _| true,
+        )
+        .unwrap();
         assert_eq!(added_again, 0);
 
         // Updating with a higher count adds only the difference.
         let added_diff =
-            backfill_plays_batch(&mut conn, &[(track1, 1005)], now, |_, _| true).unwrap();
+            backfill_plays_batch(&mut conn, &[(track1, 1005)], Ladder::at(now), |_, _| true)
+                .unwrap();
         assert_eq!(added_diff, 5);
         let count_map_after = counts(&conn).unwrap();
         assert_eq!(count_map_after.get(&track1).copied(), Some(1005));
@@ -1389,8 +1629,13 @@ mod tests {
         listen(&conn, "/m/1.mp3", 1_700_000_000);
 
         // Backfill up to 10 plays at anchor 1_700_050_000.
-        let added =
-            backfill_plays_batch(&mut conn, &[(track_id, 10)], 1_700_050_000, |_, _| true).unwrap();
+        let added = backfill_plays_batch(
+            &mut conn,
+            &[(track_id, 10)],
+            Ladder::at(1_700_050_000),
+            |_, _| true,
+        )
+        .unwrap();
         assert_eq!(added, 9);
 
         // Play count is 10.
@@ -1426,7 +1671,8 @@ mod tests {
             .unwrap();
 
         let now = 1_700_000_000i64;
-        let added = backfill_plays_batch(&mut conn, &[(track_id, 5)], now, |_, _| true).unwrap();
+        let added = backfill_plays_batch(&mut conn, &[(track_id, 5)], Ladder::at(now), |_, _| true)
+            .unwrap();
         assert_eq!(added, 5);
 
         // Synthetic listens should be anchored 90 days before `now`, not within the last few hours.
@@ -1454,9 +1700,220 @@ mod tests {
 
         let now = 1_700_000_000i64;
         // Request 1_000_000 plays, should cap to MAX_IMPORTED_PLAYS (50_000).
-        let added =
-            backfill_plays_batch(&mut conn, &[(track_id, 1_000_000)], now, |_, _| true).unwrap();
+        let added = backfill_plays_batch(
+            &mut conn,
+            &[(track_id, 1_000_000)],
+            Ladder::at(now),
+            |_, _| true,
+        )
+        .unwrap();
         assert_eq!(added, MAX_IMPORTED_PLAYS as usize);
+    }
+
+    #[test]
+    fn imported_scrobbles_keep_their_own_seconds_and_survive_a_rerun() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", "First", "rock"),
+                track("/m/2.mp3", "Two", "A", "First", "rock"),
+            ],
+        )
+        .unwrap();
+        let id = |path: &str| -> i64 {
+            conn.query_row("SELECT id FROM tracks WHERE path = ?1", [path], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        let (one, two) = (id("/m/1.mp3"), id("/m/2.mp3"));
+
+        let history = [
+            (one, 1_700_000_000),
+            (one, 1_600_000_000),
+            (two, 1_650_000_000),
+        ];
+        assert_eq!(
+            import_scrobbles(&mut conn, &history, |_, _| true).unwrap(),
+            3
+        );
+
+        // The real seconds land as the real seconds, in the order history
+        // reads them: newest first.
+        let played: Vec<i64> = recent(&conn, 0, i64::MAX, 10)
+            .unwrap()
+            .iter()
+            .map(|row| row.last_played)
+            .collect();
+        assert_eq!(played, [1_700_000_000, 1_650_000_000, 1_600_000_000]);
+        assert_eq!(counts(&conn).unwrap().get(&one).copied(), Some(2));
+
+        // A second run over the same history writes nothing: the pair is
+        // the identity of a play.
+        assert_eq!(
+            import_scrobbles(&mut conn, &history, |_, _| true).unwrap(),
+            0
+        );
+        assert_eq!(counts(&conn).unwrap().get(&one).copied(), Some(2));
+
+        // And one that overlaps takes only what is new.
+        let next = [(one, 1_700_000_000), (two, 1_710_000_000)];
+        assert_eq!(import_scrobbles(&mut conn, &next, |_, _| true).unwrap(), 1);
+        assert_eq!(
+            latest_scrobble(&conn).unwrap(),
+            Some(1_710_000_000),
+            "the bound a re-import starts after"
+        );
+    }
+
+    #[test]
+    fn a_scrobble_import_stops_where_it_is_asked_to() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        let one: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", ["/m/1.mp3"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        let history = [(one, 100), (one, 200), (one, 300)];
+        let added = import_scrobbles(&mut conn, &history, |done, _| done < 2).unwrap();
+        assert_eq!(added, 2, "what it got through is kept");
+        assert_eq!(counts(&conn).unwrap().get(&one).copied(), Some(2));
+    }
+
+    #[test]
+    fn a_local_play_is_not_the_import_bound() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        listen(&conn, "/m/1.mp3", 1_800_000_000);
+
+        assert_eq!(
+            latest_scrobble(&conn).unwrap(),
+            None,
+            "rox watching a play says nothing about how far the import got"
+        );
+    }
+
+    #[test]
+    fn an_invented_ladder_spreads_across_the_accounts_own_span() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        let one: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", ["/m/1.mp3"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        let now = 1_700_000_000i64;
+        // An account four years old, and a hundred plays with no dates.
+        let since = now - 4 * 365 * 86_400;
+        let ladder = Ladder {
+            now,
+            since: Some(since),
+        };
+        assert_eq!(
+            backfill_plays_batch(&mut conn, &[(one, 100)], ladder, |_, _| true).unwrap(),
+            100
+        );
+
+        let mut played: Vec<i64> = conn
+            .prepare("SELECT played_at FROM listens WHERE track_id = ?1 ORDER BY played_at")
+            .unwrap()
+            .query_map([one], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        played.sort_unstable();
+        assert_eq!(played.len(), 100);
+        assert!(
+            played[0] >= since,
+            "nothing lands before the account existed"
+        );
+        assert!(
+            *played.last().unwrap() <= now - UNPLAYED_ANCHOR_OFFSET_SECS,
+            "and nothing lands in the recent past"
+        );
+
+        // The whole point: a hundred invented plays are a hundred
+        // different weeks, not one bar of a weekly chart.
+        let weeks: std::collections::HashSet<i64> =
+            played.iter().map(|at| at / (7 * 86_400)).collect();
+        assert!(
+            weeks.len() > 50,
+            "the ladder piled up: {} weeks for 100 plays",
+            weeks.len()
+        );
+    }
+
+    #[test]
+    fn a_ladder_with_no_registration_still_spreads() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        let one: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", ["/m/1.mp3"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        let now = 1_700_000_000i64;
+        backfill_plays_batch(&mut conn, &[(one, 20)], Ladder::at(now), |_, _| true).unwrap();
+        let spread: i64 = conn
+            .query_row(
+                "SELECT MAX(played_at) - MIN(played_at) FROM listens WHERE track_id = ?1",
+                [one],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            spread > 365 * 86_400,
+            "a fallback span still has to be a span: {spread} seconds"
+        );
+    }
+
+    #[test]
+    fn a_tight_span_still_gives_every_rung_its_own_second() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        let one: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", ["/m/1.mp3"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        // An account registered this morning, with plays to place anyway.
+        let now = 1_700_000_000i64;
+        let ladder = Ladder {
+            now,
+            since: Some(now - 60),
+        };
+        backfill_plays_batch(&mut conn, &[(one, 10)], ladder, |_, _| true).unwrap();
+        let distinct: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT played_at) FROM listens WHERE track_id = ?1",
+                [one],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct, 10, "no two rungs share a second");
+    }
+
+    #[test]
+    fn a_count_past_the_cap_says_so() {
+        assert_eq!(capped(42), (42, false));
+        assert_eq!(capped(MAX_IMPORTED_PLAYS), (MAX_IMPORTED_PLAYS, false));
+        assert_eq!(
+            capped(MAX_IMPORTED_PLAYS + 1),
+            (MAX_IMPORTED_PLAYS, true),
+            "past the cap it clamps, and the caller warns"
+        );
     }
 
     #[test]
@@ -1484,9 +1941,12 @@ mod tests {
 
         let now = 1_700_000_000i64;
         // Stop after first track (idx 1 returns false).
-        let added = backfill_plays_batch(&mut conn, &[(track1, 5), (track2, 5)], now, |idx, _| {
-            idx < 1
-        })
+        let added = backfill_plays_batch(
+            &mut conn,
+            &[(track1, 5), (track2, 5)],
+            Ladder::at(now),
+            |idx, _| idx < 1,
+        )
         .unwrap();
         assert_eq!(added, 5);
 

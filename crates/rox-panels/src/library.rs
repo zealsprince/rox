@@ -90,6 +90,10 @@ fn group_quality(group: &Group, projection: &Projection) -> String {
 /// newer one has landed since.
 struct ViewInputs {
     projection: Arc<Projection>,
+    /// Which build of the catalog's projection this pass counts rows
+    /// against, so the rows it produces can be refused if the catalog has
+    /// rebuilt by the time they land.
+    projection_gen: u64,
     order: Arc<Vec<u32>>,
     query: String,
     filter: rox_library::projection::FilterSet,
@@ -214,11 +218,18 @@ fn shuffle_seed(view: &[Row], ix: usize, count: usize) -> Vec<usize> {
 fn install_view(
     table: &mut TableState<TrackTable>,
     generation: u64,
+    projection_gen: u64,
     view: Arc<Vec<Row>>,
     groups: Vec<Group>,
     cx: &mut Context<TableState<TrackTable>>,
 ) -> bool {
     if table.delegate().view_gen != generation {
+        return false;
+    }
+    // Rows counted off a projection the catalog has since rebuilt. They
+    // name nothing now, and the refresh that followed the swap is already
+    // computing the ones that do.
+    if projection_gen != table.delegate().state.library.read(cx).projection_gen() {
         return false;
     }
     // Selection indices point into the old view; drop them along with the
@@ -227,6 +238,7 @@ fn install_view(
     let delegate = table.delegate_mut();
     delegate.view = view;
     delegate.groups = groups;
+    delegate.view_projection = projection_gen;
     delegate.selected.clear();
     delegate.sel_gen += 1;
     delegate.anchor = None;
@@ -376,6 +388,20 @@ struct TrackTable {
     /// unless this still matches, so a slow pass over a big library can
     /// never overwrite the answer to a later keystroke.
     view_gen: u64,
+    /// Which build of the catalog's projection the row indices in `view` and
+    /// `groups` belong to.
+    ///
+    /// Browsing never reads SQLite: a view row is a position in the
+    /// projection, and the projection is rebuilt from the database and
+    /// swapped whole. A rebuild renumbers every row, and the pass that
+    /// answers one runs on the background executor, so the swap lands a
+    /// frame or more before the rows that match it. In that gap the
+    /// installed view indexes a library that no longer has those rows,
+    /// which is how a sync that pruned twenty-four rows to eighteen read
+    /// row 22 off the end of an eighteen-row projection and took the app
+    /// down. [`TrackTable::projection`] is the gate; every read of a view
+    /// row against the projection goes through it.
+    view_projection: u64,
     /// The wall clock the "added" column dates against, refreshed at most every
     /// half minute instead of a `SystemTime::now` per shown cell per frame;
     /// relative-time granularity is coarse enough that the small lag is unseen.
@@ -431,6 +457,7 @@ impl TrackTable {
         let Some(inputs) = self.view_inputs(&query, &filter, cx) else {
             return;
         };
+        let projection_gen = inputs.projection_gen;
         let panel = self.panel.clone();
         cx.spawn(async move |table, cx| {
             let (view, groups) = cx
@@ -439,7 +466,7 @@ impl TrackTable {
                 .await;
             let installed = table
                 .update(cx, |table, cx| {
-                    install_view(table, generation, view, groups, cx)
+                    install_view(table, generation, projection_gen, view, groups, cx)
                 })
                 .unwrap_or(false);
             // A sort is a landing like any other, so the panel's post-swap
@@ -490,6 +517,24 @@ impl TrackTable {
         self.added_now
     }
 
+    /// The projection a row out of `view` or `groups` may be read against:
+    /// the live one, and only while it is still the build those rows were
+    /// computed over.
+    ///
+    /// None across the gap between a rebuilt projection being swapped in
+    /// and this panel's own pass landing with rows that match it. Cells
+    /// draw empty for that frame or two, which is what the pass was always
+    /// going to replace anyway; the alternative is reading an index into a
+    /// library that no longer has that row.
+    fn projection<'a>(&self, cx: &'a App) -> Option<&'a Arc<Projection>> {
+        let library = self.state.library.read(cx);
+        if library.projection_gen() != self.view_projection {
+            return None;
+        }
+
+        library.projection()
+    }
+
     /// The track a view row holds; None for a header row.
     fn track_at(&self, ix: usize) -> Option<u32> {
         match self.view.get(ix) {
@@ -505,7 +550,7 @@ impl TrackTable {
     /// built eagerly every frame, so keys come from `drag_keys`, filled per
     /// id on the first grab that needs it rather than a query per row per frame.
     fn drag_payload(&mut self, ix: usize, cx: &App) -> Option<PlayDrag> {
-        let projection = self.state.library.read(cx).projection().cloned()?;
+        let projection = self.projection(cx).cloned()?;
         let title = self
             .track_at(ix)
             .map(|row| projection.resolve(row).title.to_string())
@@ -738,10 +783,10 @@ impl TrackTable {
                 })
                 .collect();
             let name = {
-                let library = self.state.library.read(cx);
+                let projection = self.projection(cx);
                 self.groups
                     .get(g as usize)
-                    .zip(library.projection())
+                    .zip(projection)
                     .map(|(group, projection)| projection.resolve(group.first).genre.to_string())
                     .unwrap_or_default()
             };
@@ -797,8 +842,7 @@ impl TrackTable {
             return None;
         }
         let name = {
-            let library = self.state.library.read(cx);
-            let projection = library.projection()?;
+            let projection = self.projection(cx)?;
             let v = projection.resolve(self.groups.get(g as usize)?.first);
             if v.album_artist.is_empty() {
                 v.artist.to_string()
@@ -826,11 +870,11 @@ impl TrackTable {
             return paths;
         }
         let paths = {
-            let library = self.state.library.read(cx);
+            let projection = self.projection(cx);
             let ids: Vec<i64> = self
                 .groups
                 .get(g as usize)
-                .zip(library.projection())
+                .zip(projection)
                 .map(|(group, projection)| {
                     let v = projection.resolve(group.first);
                     match self.group_by {
@@ -845,7 +889,11 @@ impl TrackTable {
                     }
                 })
                 .unwrap_or_default();
-            library.paths_for(&ids).unwrap_or_default()
+            self.state
+                .library
+                .read(cx)
+                .paths_for(&ids)
+                .unwrap_or_default()
         };
         if let Some(group) = self.groups.get_mut(g as usize) {
             group.art = Some(paths.clone());
@@ -932,10 +980,7 @@ impl TrackTable {
         // The inline art piece draws the single cover (or portrait); a
         // line-tall square has no room for the genre mosaic.
         let inline_art = with_art && self.head_lines.iter().any(|l| l.contains(&HeadPiece::Art));
-        let mut head = match (
-            self.groups.get(g as usize),
-            self.state.library.read(cx).projection(),
-        ) {
+        let mut head = match (self.groups.get(g as usize), self.projection(cx)) {
             (Some(group), Some(projection)) => {
                 let v = projection.resolve(group.first);
                 let name = match self.group_by {
@@ -1148,8 +1193,7 @@ impl TrackTable {
     /// The first row along `order` the phrase matches, [`find_prefix`]'s
     /// rules.
     fn find_in(&self, order: impl Iterator<Item = usize>, prefix: &str, cx: &App) -> Option<usize> {
-        let library = self.state.library.read(cx);
-        let projection = library.projection()?;
+        let projection = self.projection(cx)?;
         let pin = Self::type_ahead_pin(prefix);
         order.into_iter().find(|&ix| {
             let Some(row) = self.track_at(ix) else {
@@ -1179,8 +1223,7 @@ impl TrackTable {
     /// swap or track change, never per frame.
     fn locate_playing(&mut self, cx: &App) {
         let row = self.playing_id.and_then(|id| {
-            let library = self.state.library.read(cx);
-            let projection = library.projection()?;
+            let projection = self.projection(cx)?;
             self.view
                 .iter()
                 .position(|&row| matches!(row, Row::Track(r) if projection.db_id[r as usize] == id))
@@ -1202,6 +1245,7 @@ impl TrackTable {
         let projection = library.projection()?.clone();
         Some(ViewInputs {
             projection,
+            projection_gen: library.projection_gen(),
             order: library.order(),
             query: query.to_string(),
             filter: filter.clone(),
@@ -1236,7 +1280,7 @@ impl TrackTable {
     /// Resolve the selected rows to db ids in view order and publish them
     /// on the shared selection.
     fn publish_selection(&self, cx: &mut App) {
-        let Some(projection) = self.state.library.read(cx).projection().cloned() else {
+        let Some(projection) = self.projection(cx).cloned() else {
             return;
         };
         let mut rows: Vec<usize> = self.selected.iter().copied().collect();
@@ -1532,10 +1576,7 @@ impl TableDelegate for TrackTable {
         // set even if another panel publishes over the shared selection
         // before the click is handled.
         let ids: Vec<i64> = self
-            .state
-            .library
-            .read(cx)
-            .projection()
+            .projection(cx)
             .map(|projection| {
                 rows.iter()
                     .filter_map(|&ix| self.track_at(ix))
@@ -1585,10 +1626,7 @@ impl TableDelegate for TrackTable {
         // to filter by.
         let menu = if album.is_none() && rows.len() == 1 {
             let (jump_album, jump_artist) = self
-                .state
-                .library
-                .read(cx)
-                .projection()
+                .projection(cx)
                 .and_then(|projection| {
                     self.track_at(row_ix).map(|row| {
                         let v = projection.resolve(row);
@@ -1664,7 +1702,7 @@ impl TableDelegate for TrackTable {
         let Some(row) = self.track_at(row_ix) else {
             return div().into_any_element();
         };
-        let Some(projection) = self.state.library.read(cx).projection().cloned() else {
+        let Some(projection) = self.projection(cx).cloned() else {
             return div().into_any_element();
         };
         let v = projection.resolve(row);
@@ -2091,6 +2129,26 @@ impl LibraryPanel {
                     this.table.update(cx, |_, cx| cx.notify());
                     return;
                 }
+                // A play-count import moved counts for a set of tracks it
+                // doesn't name. The cells read the shared projection, so a
+                // repaint is the whole fix unless the view is ordered by the
+                // plays column, which is now in the wrong order. Only that
+                // case pays the view pass.
+                if matches!(event, LibraryEvent::PlaysReloaded) {
+                    let sorted_on_plays = this
+                        .table
+                        .read(cx)
+                        .delegate()
+                        .sort
+                        .as_ref()
+                        .is_some_and(|(key, _)| key == "plays");
+                    if sorted_on_plays {
+                        this.refresh_view(cx);
+                    } else {
+                        this.table.update(cx, |_, cx| cx.notify());
+                    }
+                    return;
+                }
                 // A playlist edit doesn't touch the catalog view, only the
                 // favourite highlights: reload the set and repaint, no rebuild.
                 if matches!(event, LibraryEvent::PlaylistsChanged) {
@@ -2171,6 +2229,10 @@ impl LibraryPanel {
             drag_keys: HashMap::new(),
             sel_gen: 0,
             view_gen: 0,
+            // The empty opening view indexes nothing, so it belongs to
+            // whatever the catalog holds now; the first real pass stamps
+            // its own.
+            view_projection: state.library.read(cx).projection_gen(),
             added_now: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -2799,12 +2861,21 @@ impl LibraryPanel {
             // No projection yet: install the empty view straight away, so a
             // panel built before the catalog loads shows nothing rather
             // than whatever it held before.
+            let live = self.state.library.read(cx).projection_gen();
             self.table.update(cx, |table, cx| {
-                install_view(table, generation, Arc::new(Vec::new()), Vec::new(), cx);
+                install_view(
+                    table,
+                    generation,
+                    live,
+                    Arc::new(Vec::new()),
+                    Vec::new(),
+                    cx,
+                );
             });
             self.on_view_installed(cx);
             return;
         };
+        let projection_gen = inputs.projection_gen;
         cx.spawn(async move |this, cx| {
             if debounce {
                 cx.background_executor().timer(VIEW_DEBOUNCE).await;
@@ -2825,7 +2896,7 @@ impl LibraryPanel {
                 .await;
             this.update(cx, |this, cx| {
                 let installed = this.table.update(cx, |table, cx| {
-                    install_view(table, generation, view, groups, cx)
+                    install_view(table, generation, projection_gen, view, groups, cx)
                 });
                 if installed {
                     this.on_view_installed(cx);
@@ -3445,9 +3516,9 @@ impl LibraryPanel {
         cx: &mut Context<Self>,
     ) {
         let (result, scope) = {
-            let view = self.table.read(cx).delegate().view.clone();
-            let library = self.state.library.read(cx);
-            let Some(projection) = library.projection() else {
+            let delegate = self.table.read(cx).delegate();
+            let view = delegate.view.clone();
+            let Some(projection) = delegate.projection(cx) else {
                 return;
             };
             let ids: Vec<i64> = rows
@@ -3470,7 +3541,7 @@ impl LibraryPanel {
                 })
                 .collect();
             (
-                library.keys_for(&ids),
+                self.state.library.read(cx).keys_for(&ids),
                 continuation::Scope::View(order.into()),
             )
         };
@@ -3505,10 +3576,10 @@ impl LibraryPanel {
             return;
         };
         let Some(&id) = self
-            .state
-            .library
+            .table
             .read(cx)
-            .projection()
+            .delegate()
+            .projection(cx)
             .and_then(|projection| projection.db_id.get(row as usize))
         else {
             return;
@@ -5129,6 +5200,7 @@ mod tests {
     fn inputs(projection: &Arc<Projection>, query: &str, head_rows: Option<u8>) -> ViewInputs {
         ViewInputs {
             projection: projection.clone(),
+            projection_gen: 0,
             order: Arc::new(projection.sort_canonical()),
             query: query.to_string(),
             filter: FilterSet::default(),

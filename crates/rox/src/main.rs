@@ -23,6 +23,7 @@ mod convert_dialog;
 mod cover;
 mod duplicates;
 mod embeddings;
+mod eq_presets;
 mod eq_window;
 mod genre_tagger;
 mod goto_dialog;
@@ -413,6 +414,34 @@ fn main() {
         // The backdrop layer's shade hook, wired before any window paints
         // a bake so the look's backdrop shader is there from frame one.
         workspace::install_backdrop_shade();
+        // The backdrop's Milkdrop worker, told to stand down on the way out.
+        // Its engine lives in a process static, which is never dropped, so
+        // without this nothing ever tells that thread to stop and it is
+        // still issuing GL calls while glibc runs Mesa's exit handlers and
+        // frees the driver under it. The hang-up is synchronous here, the
+        // wait is in the future, and the panels' own hooks are the same
+        // shape, so the teardowns overlap rather than stack.
+        cx.on_app_quit(|_| {
+            let engine = backdrop_visual::take_engine();
+            let at = std::time::Instant::now();
+            if let Some(engine) = engine.as_ref() {
+                engine.stop();
+            }
+            async move {
+                let Some(engine) = engine else {
+                    return;
+                };
+                if engine.wait() {
+                    log::info!(
+                        "backdrop visual: engine stood down {} us after the hang-up",
+                        at.elapsed().as_micros()
+                    );
+                } else {
+                    log::warn!("backdrop visual: engine still up at quit");
+                }
+            }
+        })
+        .detach();
         gpui_component::init(cx);
         rox_panel_kit::ui::init(cx);
         rox_dock::init(cx);

@@ -143,6 +143,21 @@ pub fn step(state: &AppState, forward: bool, cx: &mut App) {
     }
 }
 
+/// Take every session mark off the playing track in one go, the counterpart
+/// to dropping them one press at a time.
+///
+/// No position-bound gate, unlike [`step`] and the drop. Clearing doesn't
+/// need a position to point at, and a station that can't hold marks in the
+/// first place has nothing here to take, so the guard would only ever
+/// refuse a no-op.
+pub fn clear(state: &AppState, cx: &mut App) {
+    let Some(now) = state.player.read(cx).now_playing() else {
+        return;
+    };
+
+    state.cues.update(cx, |cues, cx| cues.clear(&now.key, cx));
+}
+
 /// The interactive layer over a strip's cues: a hit target per chevron
 /// that seeks on a click, reports its hover, and offers the removal on a
 /// right click, plus the readout over the hovered one. Laid over the

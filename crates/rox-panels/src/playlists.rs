@@ -16,7 +16,10 @@
 //! nothing, so a smart playlist keyed on either ("never played", "four
 //! stars and up") can show a row that no longer belongs until the next
 //! refresh. Accepted for now; the alternative is re-materializing every
-//! open smart list on every star click.
+//! open smart list on every star click. A bulk play-count import
+//! (`LibraryEvent::PlaysReloaded`) is the exception that does refresh: it
+//! moves too many rows to leave stale, and it arrives once rather than per
+//! click.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -607,7 +610,9 @@ impl PlaylistsPanel {
         // Playlist edits and rescans both change what the tree shows. A rating
         // click only moved one cell through the shared projection and never
         // reorders the tree, so patch it in place instead of reloading the
-        // expanded lists.
+        // expanded lists. A play-count import is a reload: it moves the plays
+        // column and the membership of every smart list keyed on plays, and
+        // the refresh keeps the selection by member id.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -617,7 +622,9 @@ impl PlaylistsPanel {
                 }
                 if matches!(
                     event,
-                    LibraryEvent::PlaylistsChanged | LibraryEvent::Updated
+                    LibraryEvent::PlaylistsChanged
+                        | LibraryEvent::Updated
+                        | LibraryEvent::PlaysReloaded
                 ) {
                     this.refresh(cx);
                 }

@@ -105,9 +105,11 @@ pub struct Tape {
     /// How many bytes a song has to reach to count as heard, the thirty
     /// seconds turned into bytes at the station's own bitrate.
     min_bytes: usize,
-    /// How many bytes a song may grow to before it's abandoned: the live
-    /// buffer's seconds at the same bitrate, under the hard ceiling.
-    max_bytes: usize,
+    /// The station's stated bitrate, kept rather than a byte ceiling
+    /// computed from it once: the ceiling follows the live buffer setting,
+    /// and that setting moves while a station plays, so it's read at each
+    /// check instead of frozen at connect.
+    kbps: u32,
 }
 
 impl Default for Tape {
@@ -116,7 +118,7 @@ impl Default for Tape {
             current: None,
             joined: true,
             min_bytes: min_bytes_at(ASSUMED_KBPS),
-            max_bytes: max_bytes_at(ASSUMED_KBPS),
+            kbps: ASSUMED_KBPS,
         }
     }
 }
@@ -127,7 +129,7 @@ impl Tape {
     /// the only duration it can know.
     fn follow_bitrate(&mut self, kbps: u32) {
         self.min_bytes = min_bytes_at(kbps);
-        self.max_bytes = max_bytes_at(kbps);
+        self.kbps = kbps;
     }
 
     /// Feed one event, and answer with a song if that event finished one.
@@ -164,8 +166,15 @@ impl Tape {
                 let current = self.current.as_mut()?;
 
                 // Past the ceiling this isn't a song, it's a broadcast that
-                // never announced its end. Drop it and wait for a boundary.
-                if current.bytes.len() + bytes.len() > self.max_bytes {
+                // never announced its end. Drop it and wait for a boundary,
+                // and say so: a buffer set shorter than the songs on air
+                // otherwise looks like capture doing nothing at all.
+                if current.bytes.len() + bytes.len() > max_bytes_at(self.kbps) {
+                    log::info!(
+                        "capture: dropping {} - {}: longer than the live buffer allows",
+                        current.title.artist,
+                        current.title.title
+                    );
                     self.current = None;
                     return None;
                 }
@@ -195,8 +204,25 @@ struct Station {
     url: String,
     name: String,
     genre: String,
+    /// The provider the station belongs to, as [`source_label`] spells it.
+    source: String,
     /// The container the station encodes in, as a file extension.
     ext: &'static str,
+}
+
+/// The provider a stream belongs to, as a folder name: the source id's
+/// kind with its first letter up, so `radio` files as "Radio" and a
+/// `subsonic:<server>` as "Subsonic". Read off the id rather than a
+/// table, so a source that doesn't exist yet names its own folder without
+/// anyone coming back here.
+pub fn source_label(source: &str) -> String {
+    let kind = source.split(':').next().unwrap_or(source).trim();
+    let mut chars = kind.chars();
+
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// What a capture pattern may name. Every placeholder the rename dialog
@@ -211,6 +237,10 @@ pub enum CaptureField {
     /// The station's name. %album% spells the same thing, since a station
     /// is the only release a song off the air belongs to.
     Station,
+    /// The kind of source the stream came from, "Radio" today. Its own
+    /// field so a pattern can file by provider, and a source that doesn't
+    /// exist yet lands in a folder of its own the day it ships.
+    Source,
     Genre,
     /// The year the capture landed, off the same clock as the day.
     Year,
@@ -229,6 +259,7 @@ impl PatternField for CaptureField {
             "artist" => CaptureField::Artist,
             "title" => CaptureField::Title,
             "album" | "station" => CaptureField::Station,
+            "source" => CaptureField::Source,
             "genre" => CaptureField::Genre,
             "year" => CaptureField::Year,
             // The renamer reads %date% as the release year. A stream has
@@ -260,6 +291,7 @@ impl PatternField for CaptureField {
             CaptureField::Title => "Capture",
 
             CaptureField::Station => "Unknown Station",
+            CaptureField::Source => "Unknown Source",
             CaptureField::Genre => "Unknown Genre",
 
             // Both read off the clock at write time, so nothing reaches
@@ -368,6 +400,7 @@ impl Capture {
             url: now.key.path.to_string_lossy().to_string(),
             name: info.name.clone(),
             genre: info.genre.clone(),
+            source: source_label(&now.key.source),
             ext: rox_playback::http::extension_for(&info.content_type).unwrap_or("mp3"),
         };
 
@@ -431,10 +464,14 @@ impl Capture {
 pub fn apply() {
     let settings = Settings::load();
     rox_playback::icy::set_capturing(settings.capture.enabled);
-    CEILING_SECS.store(
-        settings::clamp_live_buffer_secs(settings.live_buffer_secs),
-        Ordering::Relaxed,
-    );
+    follow_live_buffer(settings.live_buffer_secs);
+}
+
+/// The live buffer moved. The player calls this from its setter, so a
+/// slider change reaches the ceiling while a station plays, rather than
+/// waiting for the next launch or the capture switch.
+pub fn follow_live_buffer(secs: u32) {
+    CEILING_SECS.store(settings::clamp_live_buffer_secs(secs), Ordering::Relaxed);
 }
 
 /// The sink the transport feeds. A channel send and nothing else: this
@@ -563,6 +600,7 @@ fn fields_for(title: &IcyTitle, station: &Station, stamp: &Stamp) -> Vec<(Captur
         (CaptureField::Artist, title.artist.trim().to_string()),
         (CaptureField::Title, title.title.trim().to_string()),
         (CaptureField::Station, station.name.clone()),
+        (CaptureField::Source, station.source.clone()),
         (CaptureField::Genre, station.genre.clone()),
         (CaptureField::Year, stamp.year.clone()),
         (CaptureField::Date, stamp.day.clone()),
@@ -603,6 +641,7 @@ fn fold_segments(path: &Path) -> PathBuf {
 pub struct Sample {
     pub title: IcyTitle,
     pub station: String,
+    pub source: String,
     pub genre: String,
     pub ext: &'static str,
 }
@@ -615,6 +654,7 @@ impl Default for Sample {
                 title: "Xtal".into(),
             },
             station: "Noise FM".into(),
+            source: source_label(rox_library::stations::SOURCE),
             genre: "Electronic".into(),
             ext: "mp3",
         }
@@ -628,10 +668,12 @@ impl Sample {
     pub fn playing(player: &Player) -> Option<Sample> {
         let title = player.live_title()?;
         let info = player.station_info()?;
+        let source = source_label(&player.now_playing()?.key.source);
 
         Some(Sample {
             title,
             station: info.name,
+            source,
             genre: info.genre,
             ext: rox_playback::http::extension_for(&info.content_type).unwrap_or("mp3"),
         })
@@ -647,6 +689,7 @@ pub fn preview(pattern: &str, sample: &Sample) -> Result<String, String> {
         url: String::new(),
         name: sample.station.clone(),
         genre: sample.genre.clone(),
+        source: sample.source.clone(),
         // The container is appended below rather than rendered; a pattern
         // never names it.
         ext: "",
@@ -745,6 +788,10 @@ mod tests {
 
     use rox_core::settings::CaptureSettings;
 
+    /// Two tests move the ceiling, which is one global, so they take
+    /// turns rather than read each other's value mid-assertion.
+    static CEILING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn title(artist: &str, song: &str) -> IcyTitle {
         IcyTitle {
             artist: artist.into(),
@@ -820,11 +867,12 @@ mod tests {
 
     #[test]
     fn a_capture_past_the_ceiling_is_given_up() {
+        let _guard = CEILING_LOCK.lock().unwrap();
         let mut tape = tape();
 
         tape.feed(CaptureEvent::Boundary(title("A", "1")));
         tape.feed(CaptureEvent::Boundary(title("B", "2")));
-        let ceiling = tape.max_bytes;
+        let ceiling = max_bytes_at(tape.kbps);
         tape.feed(CaptureEvent::Bytes(vec![0; ceiling]));
         tape.feed(CaptureEvent::Bytes(vec![0; 1]));
 
@@ -834,8 +882,31 @@ mod tests {
     /// The ceiling is the live buffer at the station's rate: ten minutes
     /// at 128 kbps is 9.6 MB, and a station stating nothing is measured at
     /// the assumed rate. The hard cap still wins over a huge buffer.
+    /// A song already taping is judged against the buffer as it is now,
+    /// not as it was when the station connected.
+    #[test]
+    fn a_longer_buffer_reaches_a_song_in_flight() {
+        let _guard = CEILING_LOCK.lock().unwrap();
+        CEILING_SECS.store(60, Ordering::Relaxed);
+        let mut tape = Tape::default();
+        tape.follow_bitrate(128);
+        tape.feed(CaptureEvent::Boundary(title("A", "First")));
+        tape.feed(CaptureEvent::Boundary(title("B", "Second")));
+
+        // Ninety seconds at 128 kbps, over a one minute buffer.
+        let chunk = vec![0u8; bytes_at(128, 30.0)];
+        tape.feed(CaptureEvent::Bytes(chunk.clone()));
+        tape.feed(CaptureEvent::Bytes(chunk.clone()));
+        CEILING_SECS.store(1800, Ordering::Relaxed);
+        tape.feed(CaptureEvent::Bytes(chunk.clone()));
+        let took = tape.feed(CaptureEvent::Boundary(title("C", "Third")));
+        assert!(took.is_some(), "the raised buffer kept the song");
+        CEILING_SECS.store(settings::DEFAULT_LIVE_BUFFER_SECS, Ordering::Relaxed);
+    }
+
     #[test]
     fn the_ceiling_is_the_live_buffer_at_the_stations_bitrate() {
+        let _guard = CEILING_LOCK.lock().unwrap();
         CEILING_SECS.store(600, Ordering::Relaxed);
         assert_eq!(max_bytes_at(128), 9_600_000);
         assert_eq!(max_bytes_at(0), max_bytes_at(ASSUMED_KBPS));
@@ -869,8 +940,22 @@ mod tests {
             url: "https://example.org/stream".into(),
             name: "Noise FM".into(),
             genre: "Electronic".into(),
+            source: "Radio".into(),
             ext: "mp3",
         }
+    }
+
+    /// %source% is the provider, spelled off the id so a source nobody has
+    /// written yet already has a folder name.
+    #[test]
+    fn the_source_names_the_provider() {
+        assert_eq!(source_label("radio"), "Radio");
+        assert_eq!(source_label("subsonic:9620683f4e1f3ac2"), "Subsonic");
+        assert_eq!(source_label("mixcloud"), "Mixcloud");
+        assert_eq!(
+            placed(&pattern("%source%/%station%/%title%"), "Aphex Twin", "Xtal"),
+            "Radio/Noise FM/Xtal"
+        );
     }
 
     /// Where one capture lands under the capture folder, as a relative
@@ -979,6 +1064,7 @@ mod tests {
             url: "https://example.org/stream".into(),
             name: "NTS 1".into(),
             genre: "Electronic".into(),
+            source: "Radio".into(),
             ext: "mp3",
         };
 
@@ -1016,6 +1102,7 @@ mod tests {
             url: "https://example.org/stream".into(),
             name: "NTS 1".into(),
             genre: "Electronic".into(),
+            source: "Radio".into(),
             ext: "mp3",
         };
         let fields = fields_for(&take.title, &station, &now());
@@ -1044,6 +1131,7 @@ mod tests {
             url: String::new(),
             name: String::new(),
             genre: String::new(),
+            source: String::new(),
             ext: "mp3",
         };
 

@@ -484,8 +484,9 @@ struct Entry {
     id: i64,
 }
 
-/// The library folded to what a loved track can be looked up by: normalized
-/// artist to every track filed under it.
+/// The library folded to what a Last.fm name can be looked up by:
+/// normalized artist to every track filed under it. Built by both imports,
+/// the hearts here and the play history next door.
 pub(crate) struct Index(HashMap<String, Vec<Entry>>);
 
 impl Index {
@@ -509,11 +510,15 @@ impl Index {
         Index(index)
     }
 
-    /// Every library track a loved entry names, empty when there's nothing
-    /// this can be sure of.
+    /// Every library track an artist and title name, empty when there's
+    /// nothing this can be sure of.
     ///
-    /// All of them: the same recording on an album, a compilation, and a
-    /// single is three rows and one song, and a heart belongs on the song.
+    /// All of them, and it's the caller's business which ones to act on:
+    /// the same recording on an album, a compilation, and a single is
+    /// three rows and one song, so a heart goes on all three while an
+    /// imported play belongs to one of them
+    /// ([`super::plays_import`] picks which).
+    ///
     /// The second look drops bracketed qualifiers from both sides, but only
     /// settles when what's left names a single title. A studio take and a
     /// live one that differ by nothing else are exactly the guess this

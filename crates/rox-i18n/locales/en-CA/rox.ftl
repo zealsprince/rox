@@ -655,6 +655,11 @@ stations-manage = Manage Stations...
 stations-import = Import Stations...
 stations-import-empty = That file holds no stream URLs
 stations-not-a-stream = Stations play over http or https; that isn't a stream URL
+stations-checking = Checking the stream...
+stations-is-hls = That's an HLS segment playlist; rox plays one continuous stream
+stations-is-a-playlist = That's a playlist of stations; read it in with Import Stations
+stations-not-audio = That URL answers with { $kind }, not audio
+stations-added-unchecked = Added without a check: the stream didn't answer ({ $reason })
 stations-empty-title = No stations yet
 stations-empty = Find one in the directory, or keep your own list in settings.
 stations-on-air = On air
@@ -1165,6 +1170,7 @@ settings-playback-capture-pattern = Capture Names
 settings-playback-capture-pattern-date = %date% is the day the song was saved, as 2026-09-18.
 settings-playback-capture-pattern-preview = Preview: { $name }
 settings-playback-capture-pattern-station = %station% is what the station calls itself, and %album% says the same thing.
+settings-playback-capture-pattern-source = %source% is the kind of source the stream came from, so a new kind files under a folder of its own.
 settings-playback-section-capture = Capture
 settings-playback-play-order = Play Order
     .description = How the tracks already queued are arranged while shuffle is on. The transport's shuffle button turns it on and off; this sets what it does once it's on
@@ -1175,7 +1181,7 @@ settings-playback-rating-scale-stars = Stars
 settings-playback-restore-last-session = Restore Last Session
     .description = Launch with the play queue as you left it, paused on the track that was playing and where it left off. Queued tracks outside your library folders can't be restored and drop from the order
 settings-playback-section-queue = Queue
-settings-playback-section-radio = Radio
+settings-playback-section-streaming = Streaming
 settings-playback-section-ratings = Ratings
 settings-playback-section-stepping = Stepping
 settings-playback-step = Step Size
@@ -1862,6 +1868,17 @@ autoeq-failed = AutoEq error: { $reason }
 autoeq-apply = Apply
 autoeq-applied = Applied
 autoeq-import-file = Import preset file
+autoeq-save = Save
+autoeq-saved = Saved
+autoeq-saved-info = Saved as "{ $name }"
+autoeq-save-failed = Could not write the preset file
+autoeq-applied-info = Applied: { $name } ({ $source })
+autoeq-applied-info-preamp = Applied: { $name } ({ $source }), preamp { $db } dB
+autoeq-imported-info = Imported: { $name }
+autoeq-imported-info-preamp = Imported: { $name }, preamp { $db } dB
+autoeq-read-failed = Could not open the file: { $reason }
+autoeq-parse-failed = Could not read the profile: { $reason }
+autoeq-import-untitled = Custom
 eq-flatten = Flatten
 eq-freq-label = Freq
 eq-gain-label = Gain
@@ -1871,6 +1888,11 @@ eq-hint-off = Click to turn it off
 eq-hint-on = Click to turn it on
 eq-hint-open = Click to open the equalizer
 eq-open = Open Equalizer
+eq-preset-export = Export
+eq-preset-export-default = Equalizer
+eq-preset-name = Preset name
+eq-preset-save = Save Preset
+eq-presets = Presets
 eq-readout-curve = Curve
 eq-readout-icon = Icon
 eq-readout-section = Readout
@@ -2000,6 +2022,8 @@ keymap-cue-prev = Previous Marker
     .description = Jump back to the marker before the playhead
 keymap-cue-next = Next Marker
     .description = Jump ahead to the next marker
+keymap-cue-clear = Clear Markers
+    .description = Take every session marker off the playing track
 keymap-stop-playback = Stop
     .description = Stop playback and release the track
 keymap-toggle-playback = Play / Pause
@@ -2167,6 +2191,11 @@ lastfm-import-plays-read = Read { $count } tracks with plays
 lastfm-import-plays-stopped = Stopped after { $count } tracks
 lastfm-import-plays-matched = , matched { $count }
 lastfm-import-plays-updated = , added { $count } plays
+lastfm-import-history = Reading scrobble history
+lastfm-import-plays-counts = Reading play counts
+lastfm-import-plays-writing = Writing play history
+lastfm-import-plays-dated = , { $count } dated from Last.fm
+lastfm-import-plays-stopped-history = Stopped after { $count } scrobbles
 
 ## Tag tools
 
@@ -3538,6 +3567,15 @@ track-info-row-size = Row { $number } Size
 track-info-speed = Speed
     .description = How fast the line crawls
 track-info-text-size = Text Size
+
+## Playback failures
+
+# Set by the player service, drawn wherever the last failure is: the track
+# info line while nothing plays, and the output panel's callout. The reason
+# is the far end's own words, so it arrives in the server's language rather
+# than this file's.
+player-stream-refused = Skipped a track: { $reason }
+
 
 ## Seek panel
 

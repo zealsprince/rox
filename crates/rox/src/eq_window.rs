@@ -14,11 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, Context, Div, Global, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Path, Pixels, Point, ScrollWheelEvent, SharedString, Subscription, WeakEntity, Window,
-    WindowHandle, canvas, div, fill, point, prelude::*, px, relative, size,
+    App, Bounds, Context, Div, Entity, Global, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Path, Pixels, Point, ScrollWheelEvent, SharedString, Subscription, WeakEntity,
+    Window, WindowHandle, canvas, div, fill, point, prelude::*, px, relative, size,
 };
 use gpui_component::Root;
+use gpui_component::Sizable as _;
+use gpui_component::input::{Input, InputEvent, InputState};
 
 use rox_panel_kit::axis::fmt_axis_hz;
 use rox_playback::eq::{BANDS, FREQ_MAX, FREQ_MIN, GAIN_MAX_DB, Q_MAX, Q_MIN};
@@ -28,10 +30,23 @@ use rox_viz::analysis::{self, Analyzer};
 use rox_core::settings::{AnalyzerStyle, LayoutSize, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
+use rox_net::sources::autoeq::{self, BandSetting};
 use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ScrubState;
-use rox_panel_kit::ui::{self as settings_ui, small_button};
+use rox_panel_kit::ui::{self as settings_ui, icon_button, small_button};
 use rox_services::player;
+
+use crate::eq_presets;
+
+/// How wide the preset name field is. Enough for a name like "Night Shift"
+/// without the row pushing the picker off the left of a narrow window.
+const NAME_W: f32 = 140.0;
+
+/// How close two curves have to be to count as the same one, per band. The
+/// picker's label leans on this: it names a preset only while the curve is
+/// still what that preset holds, and a file written to a hundredth of a dB
+/// comes back a hair off what was saved.
+const SAME_CURVE: f32 = 0.01;
 
 /// The plot's dB range either side of flat. Wider than a single band's
 /// ceiling: a stack of overlapping boosts sums past 12 dB, and a
@@ -249,11 +264,31 @@ struct EqWindow {
     /// How the analyzer is drawn. Held here rather than read off the
     /// settings file each frame, and written back when the picker moves.
     analyzer_style: AnalyzerStyle,
+    /// The name a save writes under.
+    preset_name: Entity<InputState>,
+    /// What's in the preset folder, read when the window opens and after
+    /// every write rather than per frame: it's a directory read, and this
+    /// window repaints at the pump's clock.
+    presets: Vec<String>,
+    /// Whether this window had the focus on the last frame, for spotting the
+    /// moment it comes forward.
+    active: bool,
+    /// The preset the curve came from, held as the curve it applied rather
+    /// than the name alone. The picker names it only while the two still
+    /// agree, so a band dragged afterwards drops the label instead of
+    /// leaving a name standing over a curve that isn't it.
+    picked: Option<(String, Vec<BandSetting>)>,
     /// Repaints the transport strip when playback moves under it.
     _player_changed: Option<Subscription>,
     /// Repaints when the curve moves somewhere else, an EQ widget's toggle in
     /// a workspace window being the one that's easy to hit while this is open.
     _eq_changed: Subscription,
+    /// Wakes the row on every keystroke, since the Save button greys out
+    /// while the name field is empty.
+    _name_changed: Subscription,
+    /// Re-reads the folder when a preset is written anywhere else, the AutoEq
+    /// browser's Save being the one that lands in this window's picker.
+    _presets_changed: Subscription,
     /// Keeps the sample ring shallow for as long as this window is open (ADR
     /// 19), so a band follows about a tenth of a second behind the drag
     /// instead of half a second. Dropped with the window entity, which the
@@ -281,10 +316,27 @@ impl EqWindow {
         let _player_changed = state
             .as_ref()
             .map(|state| cx.observe(&state.player, |_, _, cx| cx.notify()));
+        let preset_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("eq-preset-name")));
+        let _name_changed = cx.subscribe_in(
+            &preset_name,
+            window,
+            |this: &mut Self, _, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => cx.notify(),
+                // Enter saves, the same stroke the panel preset dialog
+                // commits on.
+                InputEvent::PressEnter { .. } => this.save_preset(cx),
+                _ => {}
+            },
+        );
         let eq = Settings::load().eq;
         let fft = fft_size(eq.fft_size);
         EqWindow {
             state,
+            preset_name,
+            presets: eq_presets::list(),
+            active: false,
+            picked: None,
             scrubs: std::array::from_fn(|_| ScrubState::default()),
             value_edit: panel::ValueEdit::default(),
             plot: Arc::new(Mutex::new(None)),
@@ -302,6 +354,11 @@ impl EqWindow {
             analyzer_style: eq.analyzer,
             _player_changed,
             _eq_changed: player::observe_eq(cx),
+            _name_changed,
+            _presets_changed: eq_presets::observe(cx, |this, cx| {
+                this.presets = eq_presets::list();
+                cx.notify();
+            }),
             _latency: latency::hold(),
         }
     }
@@ -466,6 +523,174 @@ impl EqWindow {
         let state = self.state.as_ref()?;
         let strip = panel::transport_strip(&state.player.clone(), &state.library.clone(), cx);
         Some(div().flex().flex_row().justify_center().child(strip))
+    }
+
+    /// The preset the live curve still matches, if any. Compared band for
+    /// band rather than trusted from the pick, because everything else in
+    /// this window moves bands and none of it knows the picker exists.
+    fn picked_name(&self) -> Option<SharedString> {
+        let (name, applied) = self.picked.as_ref()?;
+        let live = eq_presets::live_bands();
+        let same = applied.len() == live.len()
+            && applied.iter().zip(&live).all(|(a, b)| {
+                (a.hz - b.hz).abs() < SAME_CURVE
+                    && (a.gain_db - b.gain_db).abs() < SAME_CURVE
+                    && (a.q - b.q).abs() < SAME_CURVE
+            });
+        same.then(|| SharedString::from(name.clone()))
+    }
+
+    /// The name a save or an export uses: what's typed, falling back to the
+    /// preset the curve came from so exporting what you just picked doesn't
+    /// need it typed again.
+    fn name(&self, cx: &App) -> String {
+        let typed = self.preset_name.read(cx).value().trim().to_string();
+        if typed.is_empty() {
+            self.picked_name()
+                .map(|n| n.to_string())
+                .unwrap_or_default()
+        } else {
+            typed
+        }
+    }
+
+    /// Write the live curve into the preset folder under the typed name.
+    /// A name already saved is written over, which is the only thing a
+    /// second save of one could mean.
+    fn save_preset(&mut self, cx: &mut Context<Self>) {
+        let name = self.name(cx);
+        if name.is_empty() {
+            return;
+        }
+        let bands = eq_presets::live_bands();
+        let Some(saved) = eq_presets::save(&name, &bands, None, cx) else {
+            return;
+        };
+
+        self.presets = eq_presets::list();
+        // Read back rather than kept, so the label survives whatever the
+        // engine clamped on the way in.
+        self.picked = Some((saved, eq_presets::live_bands()));
+        cx.notify();
+    }
+
+    /// Put a saved preset's curve in the window and turn the EQ on, the way
+    /// the AutoEq browser's Apply does: a preset picked and not heard is a
+    /// pick that looks broken.
+    fn apply_preset(&mut self, name: String, cx: &mut Context<Self>) {
+        // The picker leads with a row that names the group rather than a
+        // preset, so nothing is picked and nothing happens.
+        if name.is_empty() {
+            return;
+        }
+        let Some(bands) = eq_presets::load(&name) else {
+            // Deleted from under the open menu, or a file that stopped
+            // being readable: drop it from the list rather than sit on it.
+            self.presets = eq_presets::list();
+            cx.notify();
+            return;
+        };
+
+        let curve: Vec<(f32, f32, f32)> = bands
+            .iter()
+            .map(|band| (band.hz, band.gain_db, band.q))
+            .collect();
+        player::apply_eq_bands(&curve, cx);
+        player::set_eq_enabled(true, cx);
+        self.picked = Some((name, eq_presets::live_bands()));
+        cx.notify();
+    }
+
+    /// Delete whichever preset the picker is naming.
+    fn delete_preset(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.picked_name() else {
+            return;
+        };
+        eq_presets::remove(&name, cx);
+        self.presets = eq_presets::list();
+        self.picked = None;
+        cx.notify();
+    }
+
+    /// Write the live curve to a file the user picks. The same text a preset
+    /// is, so an exported curve is a preset someone else can drop in their
+    /// own folder, and Equalizer APO and the rest read it as it stands.
+    fn export_preset(&mut self, cx: &mut Context<Self>) {
+        let name = {
+            let typed = self.name(cx);
+            if typed.is_empty() {
+                rox_i18n::t!("eq-preset-export-default").to_string()
+            } else {
+                typed
+            }
+        };
+        let text = autoeq::format_bands(&name, &eq_presets::live_bands(), None);
+
+        let home = dirs::home_dir().unwrap_or_default();
+        let file = format!("{name}.txt");
+        let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
+        cx.spawn(async move |_, _| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            if let Err(e) = std::fs::write(&path, text) {
+                log::warn!("eq presets: exporting to {}: {e}", path.display());
+            }
+        })
+        .detach();
+    }
+
+    /// The preset row: what's saved on the left, what a save would be called
+    /// on the right. Its own row rather than more buttons beside Flatten,
+    /// since a whole curve is a different size of thing from one band, and
+    /// the field needs the width anyway.
+    fn presets(&self, cx: &mut Context<Self>) -> Div {
+        let picked = self.picked_name();
+        // The list leads with a row that names the group, so the button has
+        // something to say while nothing is picked and the menu can't come
+        // up ticking a preset that isn't applied.
+        let mut options = vec![(String::new(), rox_i18n::t!("eq-presets"))];
+        options.extend(
+            self.presets
+                .iter()
+                .map(|name| (name.clone(), SharedString::from(name.clone()))),
+        );
+        let current = picked.clone().map(|n| n.to_string()).unwrap_or_default();
+        let named = picked.is_some();
+        let unnamed = self.name(cx).is_empty();
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(panel::picker(
+                "eq-preset",
+                current,
+                options,
+                self.presets.is_empty(),
+                |this: &mut Self, name, cx| this.apply_preset(name, cx),
+                cx,
+            ))
+            .child(icon_button(
+                icons::TRASH,
+                !named,
+                cx.listener(|this, _, _, cx| this.delete_preset(cx)),
+            ))
+            .child(div().flex_1())
+            .child(Input::new(&self.preset_name).small().w(px(NAME_W)))
+            .child(small_button(
+                rox_i18n::t!("eq-preset-save"),
+                icons::DOWNLOAD,
+                unnamed,
+                cx.listener(|this, _, _, cx| this.save_preset(cx)),
+            ))
+            .child(small_button(
+                rox_i18n::t!("eq-preset-export"),
+                icons::UPLOAD,
+                false,
+                cx.listener(|this, _, _, cx| this.export_preset(cx)),
+            ))
     }
 
     /// The row under the plot: Flatten and Reset Bands, the analyzer's style
@@ -977,7 +1202,15 @@ impl Render for EqWindow {
             .as_ref()
             .map(|state| state.player.entity_id())
             .unwrap_or_else(|| cx.entity().entity_id());
-        palette::note_focus(player, window.is_window_active(), cx);
+        let active = window.is_window_active();
+        palette::note_focus(player, active, cx);
+        // The folder is re-read when this window comes forward, which is how
+        // a profile saved over in the AutoEq browser reaches the picker
+        // without this one polling a directory at the pump's clock.
+        if active && !self.active {
+            self.presets = eq_presets::list();
+        }
+        self.active = active;
         // The whole tree builds inside the closure: an element made outside it
         // reads the palette before the tint is in place and paints untinted.
         // The analyzer steps once per frame. While audio moves the player
@@ -994,6 +1227,7 @@ impl Render for EqWindow {
             window.request_animation_frame();
         }
         panel::window_body(player, || {
+            let presets = self.presets(cx);
             let plot = self.plot(cx);
             let axis = self.axis();
             let readouts = self.readouts(cx);
@@ -1016,6 +1250,7 @@ impl Render for EqWindow {
                         .child(div().child(rox_i18n::t!("eq-heading")))
                         .child(self.controls(cx)),
                 )
+                .child(presets)
                 .child(
                     div()
                         .text_xs()

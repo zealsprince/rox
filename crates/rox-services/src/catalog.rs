@@ -37,6 +37,12 @@ pub enum LibraryEvent {
     /// One listen was recorded, its count bumped in place through the shared
     /// projection, same deal as Rated: cells repaint, nothing rebuilds.
     Played,
+    /// Many plays moved at once: counts and last-played changed for a set of
+    /// tracks nobody enumerated, and nothing else about the library did. What
+    /// a Last.fm backfill raises. The panels that read plays re-read on it
+    /// and keep what the user had picked; Updated would be right about the
+    /// numbers and wrong about the selection, the cursor, and the scroll.
+    PlaysReloaded,
     /// A playlist was created, renamed, deleted, or had its tracks change.
     /// The playlist panel and the add-to-playlist menu re-read on it.
     PlaylistsChanged,
@@ -314,6 +320,15 @@ pub struct Library {
     /// open their own connections on the background executor.
     conn: Option<Connection>,
     projection: Option<Arc<Projection>>,
+    /// Which build of the projection is installed, counted up on every
+    /// whole swap. A row index only means anything against the build it was
+    /// read out of: a rebuild renumbers every row, so an index taken before
+    /// one points at a different track afterwards, or past the end of a
+    /// library a sync has pruned. Anything that holds row indices across an
+    /// event stamps them with this and compares before it reads. A patch
+    /// leaves it alone, because a patch appends and tombstones rather than
+    /// renumbering, so indices taken before it still hold.
+    projection_gen: u64,
     /// The canonical browse order: album artist, album, disc, track number.
     order: Arc<Vec<u32>>,
     /// db id -> projection row, rebuilt on every projection swap. A rating
@@ -429,6 +444,7 @@ impl Library {
             db_path,
             conn,
             projection: None,
+            projection_gen: 0,
             order: Arc::new(Vec::new()),
             row_by_id: HashMap::new(),
             scan_roots,
@@ -480,10 +496,19 @@ impl Library {
         self.order.clone()
     }
 
+    /// Which build of the projection is installed. Anything that caches row
+    /// indices reads this when it builds the cache and again before it uses
+    /// one, and throws the cache away when the two differ: the rows were
+    /// renumbered underneath it.
+    pub fn projection_gen(&self) -> u64 {
+        self.projection_gen
+    }
+
     /// Swap in a freshly loaded projection, its canonical order, and the
     /// id -> row index built beside them. The only place `projection` and
     /// `order` change wholesale, so it is the one place the index has to
-    /// stay in sync.
+    /// stay in sync, and the one place [`Library::projection_gen`] moves:
+    /// every row index anybody was holding stops meaning anything here.
     ///
     /// The index arrives built rather than being built here: at a million
     /// rows it is a million hash inserts, and doing them inside the update
@@ -499,6 +524,7 @@ impl Library {
         self.row_by_id = row_by_id;
         self.projection = Some(Arc::new(projection));
         self.order = Arc::new(order);
+        self.projection_gen = self.projection_gen.wrapping_add(1);
     }
 
     /// Fold a sync's rows into the live projection instead of replacing it:
@@ -552,6 +578,11 @@ impl Library {
 
     /// Fix the two indexes that live beside the projection, now that it has
     /// moved: the canonical order and the id -> row map.
+    ///
+    /// [`Library::projection_gen`] deliberately stays put. A patch appends
+    /// rows and tombstones the ones that went; it renumbers nothing, so a
+    /// row index taken before it still names the same track and a holder
+    /// has no reason to throw its cache away.
     fn install_patch(&mut self, projection: Projection, patch: Patch) {
         if !patch.is_empty() {
             // A patch that moved a value the projection already knew (an
@@ -1248,14 +1279,14 @@ impl Library {
     }
 
     /// Where each of `ids` plays from, in the order given: a file for a
-    /// local track, a URL with the source's own headers on it for a remote
-    /// one. What the player hands the engine, in place of the bare paths it
-    /// used to send.
+    /// local track, a finished URL with the source's own headers on it for
+    /// a remote one. What the player hands the engine, in place of the bare
+    /// paths it used to send.
     ///
-    /// The store answers with the url and the live flag and no headers,
-    /// since those are per-session credentials it doesn't hold. They're
-    /// filled in here off the registry the app installs at startup, so the
-    /// engine never has to ask a source anything.
+    /// The store answers with the bare url and the live flag, since what
+    /// makes the request acceptable is a per-session credential it doesn't
+    /// hold. That gets put on here, off the registry the app installs at
+    /// startup, so the engine never has to ask a source anything.
     pub fn locators_for(&self, ids: &[i64]) -> Result<Vec<Locator>, String> {
         let Some(conn) = &self.conn else {
             return Ok(Vec::new());
@@ -1264,7 +1295,7 @@ impl Library {
         let mut out = Vec::with_capacity(ids.len());
         for &id in ids {
             // One id at a time for [`keys_for`](Self::keys_for)'s reason: a
-            // dropped id would slide the headers onto the wrong locator.
+            // dropped id would slide the credentials onto the wrong locator.
             let Some(mut locator) = store::locators_for(conn, &[id])
                 .map_err(|e| e.to_string())?
                 .pop()
@@ -1281,7 +1312,7 @@ impl Library {
                     .map(|key| key.source)
                     .unwrap_or_else(rox_library::cue::local);
 
-                remote.headers = sources_registry::headers_for(&source);
+                sources_registry::authorize(&source, remote);
             }
 
             out.push(locator);
@@ -2059,8 +2090,12 @@ impl Library {
         }
     }
 
-    /// Reload all play counts from the database into the shared in-memory projection
-    /// and notify observers. Used after an external play count import (e.g. Last.fm).
+    /// Reload all play counts from the database into the shared in-memory
+    /// projection and notify observers. Used after an external play count
+    /// import (e.g. Last.fm). Unlike [`Self::record_play`] this moves counts
+    /// for a set of tracks the caller never names, so it raises
+    /// [`LibraryEvent::PlaysReloaded`]: the play-keyed views have to re-read
+    /// rather than repaint the one cell a single listen touched.
     pub fn reload_plays(&mut self, cx: &mut Context<Self>) {
         let (Some(projection), Some(conn)) = (&self.projection, &self.conn) else {
             return;
@@ -2072,7 +2107,7 @@ impl Library {
             let count = counts.get(id).copied().unwrap_or(0);
             projection.plays[row as usize].store(count, Ordering::Relaxed);
         }
-        cx.emit(LibraryEvent::Played);
+        cx.emit(LibraryEvent::PlaysReloaded);
     }
 
     /// The total play count for each of `ids`, off the in-memory projection,
@@ -2241,7 +2276,7 @@ impl Library {
                                 row_by_id,
                             } => {
                                 this.status = status_line(
-                                    projection.live_len(),
+                                    projection.browse_len(),
                                     summary.as_ref(),
                                     watch.as_ref(),
                                 )
@@ -2255,7 +2290,7 @@ impl Library {
                                 spans,
                             } => {
                                 owed = !this.apply_patch(*shard, &gone, &plays, &spans);
-                                let total = this.projection.as_ref().map_or(0, |p| p.live_len());
+                                let total = this.projection.as_ref().map_or(0, |p| p.browse_len());
                                 this.status =
                                     status_line(total, summary.as_ref(), watch.as_ref()).into();
                             }

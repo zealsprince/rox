@@ -176,7 +176,8 @@ pub struct StatsWidgetPanel {
     /// A new listen moves every number here.
     _history_changed: Subscription,
     /// A rescan can drop tracks the events point at, which moves the
-    /// rollups the stats window shows beside these counts.
+    /// rollups the stats window shows beside these counts, and a play-count
+    /// import writes listens straight into the table these count.
     _library_changed: Subscription,
 }
 
@@ -189,7 +190,7 @@ impl StatsWidgetPanel {
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
-                if matches!(event, LibraryEvent::Updated) {
+                if matches!(event, LibraryEvent::Updated | LibraryEvent::PlaysReloaded) {
                     this.refresh(cx);
                 }
             },

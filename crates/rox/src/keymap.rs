@@ -33,7 +33,7 @@ use rox_panels::lyrics::StampLine;
 
 use crate::workspace::{
     AbClear, AbRepeat, AbortScan, AddBookmark, AddNamedBookmark, AnalyzeTempo, BuildAcoustic,
-    ClearQueue, ClosePanelAction, CloseWindow, Cue, CueNext, CuePrev, CycleLoop,
+    ClearQueue, ClosePanelAction, CloseWindow, Cue, CueClear, CueNext, CuePrev, CycleLoop,
     CycleReplayGainMode, CycleShuffleMode, DecreaseFontSize, FillSortNames, FindDuplicates,
     FlattenEq, FocusSearch, ImportWorkspace, IncreaseFontSize, MeasureReplayGain, NewEmptyWindow,
     NewWindow, NextBookmark, NextTrack, OpenAbout, OpenChat, OpenConsole, OpenDiscussions,
@@ -546,6 +546,18 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             &[],
             CueNext,
             rox_i18n::t_static("keymap-cue-next.description")
+        ),
+        // Unbound for the same reason as the two above, and with one more:
+        // this one throws away work, so it should cost a deliberate trip to
+        // the Keymap page rather than sit under a key someone brushes.
+        command!(
+            "cue_clear",
+            rox_i18n::t_static("keymap-cue-clear"),
+            Group::Playback,
+            WORKSPACE,
+            &[],
+            CueClear,
+            rox_i18n::t_static("keymap-cue-clear.description")
         ),
         command!(
             "next_track",

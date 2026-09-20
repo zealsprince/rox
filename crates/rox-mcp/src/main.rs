@@ -142,7 +142,12 @@ fn base_tools() -> Value {
         {
             "name": "now_playing",
             "description": "What rox is playing right now: the track's tags, where its \
-                            clock sits, and whether audio is moving.",
+                            clock sits, and whether audio is moving. On a radio station \
+                            live is true and there is no position to speak of: the clock \
+                            counts the listen, and shift says where the playhead sits \
+                            against the broadcast (behind_secs from the live edge, \
+                            window_secs of buffer taped so far, cap_secs the buffer's \
+                            size). shift is null for a file.",
             "inputSchema": { "type": "object", "properties": {} },
         },
         {
@@ -184,7 +189,11 @@ fn base_tools() -> Value {
                             album artist, album, and genre; a field: prefix narrows to \
                             one, as in artist:name or year:1990. Fields: title, artist, \
                             albumartist, album, genre, year, folder, codec, rating, \
-                            plays, added.",
+                            plays, added. Each hit carries a key field, the string \
+                            add_to_queue takes to queue that exact track. Radio \
+                            stations match by name and come last, with source set to \
+                            radio, no artist or album, and duration_ms 0, since a \
+                            stream has no length.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -199,6 +208,29 @@ fn base_tools() -> Value {
             "description": "The play order: every queued entry with its stable id, \
                             path, and whether it is the one playing.",
             "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "add_to_queue",
+            "description": "Queue tracks. Each item is a file or folder path, a radio \
+                            station's stream URL, or a source|path key as search_library \
+                            prints one in its key field, which is the only thing that \
+                            names a track on a Subsonic server or a station uniquely. \
+                            mode places them: end behind what is queued, next right \
+                            after the playing track, now splices and starts playing. \
+                            A stream URL or a source key with no row in the library is \
+                            refused; nothing here can fetch one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                    },
+                    "mode": { "type": "string", "enum": ["end", "next", "now"] },
+                },
+                "required": ["items"],
+            },
         },
         {
             "name": "rescan_library",
@@ -444,6 +476,27 @@ fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev:
             ("library.search", params)
         }
         "get_queue" => ("queue.list", json!({})),
+        // The items go through as typed. An MCP client has no working
+        // directory in common with the running rox, so a relative path
+        // would be resolved against the wrong folder either way; the
+        // socket's own refusal says so in a sentence.
+        "add_to_queue" => {
+            let Some(items) = args.get("items").and_then(Value::as_array) else {
+                return refusal(
+                    "add_to_queue takes items: paths, station stream URLs, or \
+                     source|path keys from search_library",
+                );
+            };
+            if items.is_empty() {
+                return refusal("add_to_queue takes at least one item");
+            }
+
+            let mut params = json!({ "paths": items });
+            if let Some(mode) = args.get("mode").and_then(Value::as_str) {
+                params["mode"] = json!(mode);
+            }
+            ("queue.add", params)
+        }
         "rescan_library" => ("library.rescan", json!({})),
         "get_tasks" => ("tasks.status", json!({})),
         // The pass argument goes through whole: the socket method validates

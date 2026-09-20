@@ -527,6 +527,21 @@ impl GridPanel {
                         this.warm_last_played(cx);
                         cx.notify();
                     }
+                    // A play-count import moves the wall's order when it is
+                    // keyed on plays, and every tile's last-played label.
+                    // Neither needs the view rebuilt: the rows and the album
+                    // runs over them are untouched, so re-sort the tiles in
+                    // place and carry the picks across instead of going
+                    // through `rebuild`, which clears them.
+                    LibraryEvent::PlaysReloaded => {
+                        if this.config.labels && this.config.label_last_played {
+                            this.warm_last_played(cx);
+                        }
+                        if this.config.sort == GridSort::Plays {
+                            this.resort_keeping_picks(cx);
+                        }
+                        cx.notify();
+                    }
                     _ => {}
                 }
             },
@@ -971,6 +986,42 @@ impl GridPanel {
                 });
             }
         }
+    }
+
+    /// Re-run [`Self::sort_cells`] over the tiles already built and carry the
+    /// selection, anchor, cursor and hover across the new order. The view and
+    /// its album runs never move here, only the tiles pointing into them, so
+    /// a cell's `start` is a stable identity to map the old indices through.
+    /// What a play-count reload uses so an import doesn't drop what was
+    /// picked on the way to fixing the order.
+    fn resort_keeping_picks(&mut self, cx: &mut Context<Self>) {
+        let start_of = |cells: &[Cell], ix: usize| cells.get(ix).map(|c| c.start);
+        let selected: Vec<usize> = self
+            .selected
+            .iter()
+            .filter_map(|&ix| start_of(&self.cells, ix))
+            .collect();
+        let anchor = self.anchor.and_then(|ix| start_of(&self.cells, ix));
+        let cursor = self.cursor.and_then(|ix| start_of(&self.cells, ix));
+        let hovered = self.hovered.and_then(|ix| start_of(&self.cells, ix));
+
+        self.sort_cells(cx);
+
+        // One pass to the new indices rather than a scan per pick: a wall
+        // with everything selected would be quadratic otherwise.
+        let by_start: HashMap<usize, usize> = self
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(ix, cell)| (cell.start, ix))
+            .collect();
+        self.selected = selected
+            .iter()
+            .filter_map(|start| by_start.get(start).copied())
+            .collect();
+        self.anchor = anchor.and_then(|start| by_start.get(&start).copied());
+        self.cursor = cursor.and_then(|start| by_start.get(&start).copied());
+        self.hovered = hovered.and_then(|start| by_start.get(&start).copied());
     }
 
     /// Pick the wall's order from the menu. Any motion in flight aimed at

@@ -25,6 +25,7 @@ use rox_library::locator::Locator;
 use rox_library::song;
 use rox_library::store;
 use rox_playback::IcyTitle;
+use rox_playback::LiveGap;
 use rox_playback::LiveMark;
 use rox_playback::Shift;
 use rox_playback::StationInfo;
@@ -54,6 +55,11 @@ pub use rox_playback::engine::LoopMode;
 /// (about 170 ms at 48 kHz stereo), so a tick has an order of magnitude of
 /// headroom before the callback's pushes start getting dropped.
 const PUMP_INTERVAL: Duration = Duration::from_millis(16);
+
+/// How many times a second a paused station repaints for its timeshift
+/// growing. Fine enough that the bar slides on a short buffer, where a
+/// quarter second is several pixels a step.
+const PAUSED_SHIFT_STEPS: f64 = 30.0;
 
 /// How long the similarity ordering will wait for a freshly started context
 /// to publish its queue, as a number of tries and the gap between them. The
@@ -637,8 +643,9 @@ fn resolve_queue_meta(
 
 /// Where each of these keys plays from, which is what the engine opens. A
 /// local key is its own answer. Anything else has to go back to the row,
-/// since the stream URL and the live flag are stored and the credentials
-/// are not: those come off the registry the app fills at startup.
+/// since the stream URL and the live flag are stored and what authorizes
+/// the request is not: that comes off the registry the app fills at
+/// startup, which both sets the headers and finishes the URL.
 ///
 /// A remote key whose row has gone (a source pruned it mid-queue) answers
 /// with an empty URL rather than a path, so the open fails instead of
@@ -674,7 +681,7 @@ fn resolve_locators(
                 },
             };
 
-            remote.headers = sources_registry::headers_for(&key.source);
+            sources_registry::authorize(&key.source, &mut remote);
             Locator::Remote(remote)
         })
         .collect()
@@ -1380,6 +1387,33 @@ impl Player {
         // doesn't hand its songs to the file's strip.
         match session.shared.shift(track).is_some() {
             true => session.shared.live_marks(),
+            false => Vec::new(),
+        }
+    }
+
+    /// Where the audible station's connection broke and picked up again,
+    /// oldest first. Empty for a file and for a station that has held one
+    /// connection throughout, which is most of them.
+    ///
+    /// A strip drawing the buffer draws these as breaks in the bar. They
+    /// are the one thing on that strip a click can't get past: the bytes
+    /// either side came off two connections and don't decode as one run, so
+    /// a seek back over a break stops at it. Showing the wall is the whole
+    /// point, since the alternative is a listener finding it by aiming past
+    /// it.
+    pub fn live_gaps(&self) -> Vec<LiveGap> {
+        let Some(session) = self.session.as_ref() else {
+            return Vec::new();
+        };
+        let Some((track, _)) = session.shared.position(session.device_rate) else {
+            return Vec::new();
+        };
+
+        // The shift's index guard again, for the reason the marks use it:
+        // a station pre-rolled behind a file has a tape of its own and no
+        // business drawing on the file's strip.
+        match session.shared.shift(track).is_some() {
+            true => session.shared.live_gaps(),
             false => Vec::new(),
         }
     }
@@ -2161,6 +2195,10 @@ impl Player {
                     // A station's songs turn over on the same clock too, and
                     // nothing else is watching the title revision.
                     this.track_song_start();
+                    // And an entry the engine gave up on, for the same
+                    // reason again: a skip happens inside the session, so
+                    // nothing else here would ever notice one went past.
+                    this.take_refusal(cx);
                     let playing = this.is_playing();
                     let rev = this.queue_rev();
                     // A seek while paused moves the clock without touching any
@@ -2996,6 +3034,7 @@ impl Player {
         }
         self.settings.live_buffer_secs = secs;
         self.send(Cmd::SetLiveBuffer(secs));
+        crate::capture::follow_live_buffer(secs);
         self.persist_playback_soon(cx);
         cx.notify();
     }
@@ -3241,19 +3280,21 @@ impl Player {
     /// paused station has drifted folded in.
     ///
     /// A pause on a station is the one state where nothing moves except the
-    /// thing worth watching: the position is frozen and the timeshift is
-    /// growing by a second a second. Quantised to a quarter, so a paused
-    /// session repaints four times a second rather than sixty.
+    /// thing worth watching: the position is frozen, the timeshift grows by
+    /// a second a second, and so does the tape while it fills. Quantised to
+    /// [`PAUSED_SHIFT_STEPS`] a second, which draws the bar and the playhead
+    /// sliding rather than stepping while still repainting at half the
+    /// pump's rate.
     fn paused_key(&self) -> Option<(usize, u64, u64)> {
         let session = self.session.as_ref()?;
         let (track, secs) = self.position_key()?;
-        let behind = session
+        let moved = session
             .shared
             .shift(track)
-            .map(|shift| (shift.behind_secs * 4.0) as u64)
+            .map(|shift| ((shift.behind_secs + shift.window_secs) * PAUSED_SHIFT_STEPS) as u64)
             .unwrap_or(0);
 
-        Some((track, secs, behind))
+        Some((track, secs, moved))
     }
 
     /// Take whatever the tap holds, never wait for more; the samples move
@@ -4015,6 +4056,31 @@ impl Player {
         Settings::update(|s| s.session.set_loop_mode(mode));
     }
 
+    /// Put the reason the engine gave up on an entry onto the error line.
+    ///
+    /// The queue moves on by itself when a track won't open, which is the
+    /// right thing to do and also the reason nobody sees why: the entry
+    /// stops being the playing one and the next one opens over the top of
+    /// it. The line is the one place a failure already gets said out loud,
+    /// so a refused stream says it there.
+    ///
+    /// It clears where everything else on this line clears: the next
+    /// session start, and stop. A mid-queue skip is neither, so the reason
+    /// stays up for the rest of the queue instead of blinking past on the
+    /// frame the next track opens.
+    fn take_refusal(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+
+        let Some(reason) = session.shared.take_refusal() else {
+            return;
+        };
+
+        self.error = Some(rox_i18n::t!("player-stream-refused", reason = reason));
+        cx.notify();
+    }
+
     /// The last session-start failure, shown while nothing plays.
     pub fn error(&self) -> Option<SharedString> {
         self.error.clone()
@@ -4186,6 +4252,32 @@ pub fn apply_graphic_eq(gains: &[f32; rox_playback::eq::BANDS], cx: &mut App) {
     let (gains_vec, freqs, qs) = (params.gains(), params.freqs(), params.qs());
     Settings::update(move |s| {
         s.eq.gains = gains_vec;
+        s.eq.freqs = freqs;
+        s.eq.qs = qs;
+    });
+    eq_changed(cx);
+}
+
+/// Put a whole curve in place at once, each band as its center in Hz, its
+/// gain in dB and its width. What a saved preset applies through, where
+/// [`apply_graphic_eq`] is for the ten fixed octaves a headphone profile
+/// arrives as: a curve someone shaped in the window has bands that moved
+/// and narrowed, and those numbers have to come back with the gains or the
+/// preset isn't the curve they saved.
+///
+/// A list longer than the engine holds is cut off at the end, and bands it
+/// doesn't reach stay where they are.
+pub fn apply_eq_bands(bands: &[(f32, f32, f32)], cx: &mut App) {
+    let params = eq_params();
+    for (band, &(hz, db, q)) in bands.iter().take(rox_playback::eq::BANDS).enumerate() {
+        params.set_freq(band, hz);
+        params.set_gain(band, db);
+        params.set_q(band, q);
+    }
+
+    let (gains, freqs, qs) = (params.gains(), params.freqs(), params.qs());
+    Settings::update(move |s| {
+        s.eq.gains = gains;
         s.eq.freqs = freqs;
         s.eq.qs = qs;
     });
@@ -4888,6 +4980,72 @@ mod tests {
         assert_eq!(meta.ids, vec![None, None]);
         assert_eq!(meta.spans, vec![None, None]);
         assert_eq!(meta.gains.len(), 2);
+    }
+
+    /// A remote row's locator is finished by its own source before the
+    /// engine ever sees it: headers set and URL signed, per request.
+    ///
+    /// This is the shape the Subsonic blocker broke. The signing existed,
+    /// the resolve path only asked for headers, and Subsonic authorizes in
+    /// the query string, so every remote track went out with a username and
+    /// nothing to prove it and every server answered error 40.
+    #[test]
+    fn a_remote_key_resolves_through_the_source_that_authorizes_it() {
+        let mut conn = rox_library::rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+
+        let source = "test:resolve-authorizes";
+        let mut row = album_row("sg-1", "Album");
+        row.remote_url = "https://srv/rest/stream.view?id=sg-1&format=raw".into();
+        store::upsert_source_rows(&mut conn, source, &[row]).unwrap();
+
+        // Stands in for the Subsonic server the binary installs at startup:
+        // one that rewrites the URL, which is the half a header table alone
+        // could never carry.
+        crate::sources_registry::install(
+            source,
+            Box::new(|remote| {
+                remote.headers.push(("X-Test".into(), "1".into()));
+                remote.url = format!("{}&t=tok&s=salt", remote.url);
+            }),
+        );
+
+        let key = TrackKey {
+            source: rox_library::cue::source_id(source),
+            path: PathBuf::from("sg-1"),
+            sub: 0,
+        };
+        let locators = resolve_locators(Some(&conn), std::slice::from_ref(&key));
+
+        // A queued row the source has since pruned has no URL to finish, so
+        // the open fails on the missing row rather than on a request built
+        // out of an empty string.
+        let pruned = TrackKey {
+            path: PathBuf::from("gone"),
+            ..key
+        };
+        let missing = resolve_locators(Some(&conn), &[pruned]);
+
+        crate::sources_registry::forget(source);
+
+        match &locators[0] {
+            Locator::Remote(remote) => {
+                assert_eq!(
+                    remote.url,
+                    "https://srv/rest/stream.view?id=sg-1&format=raw&t=tok&s=salt"
+                );
+                assert_eq!(
+                    remote.headers,
+                    vec![("X-Test".to_string(), "1".to_string())]
+                );
+            }
+            other => panic!("a remote row resolved to {other:?}"),
+        }
+
+        match &missing[0] {
+            Locator::Remote(remote) => assert!(remote.url.is_empty()),
+            other => panic!("a pruned row resolved to {other:?}"),
+        }
     }
 
     /// A row on one album, for the group compares above.

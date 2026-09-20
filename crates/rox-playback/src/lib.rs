@@ -45,6 +45,10 @@ pub use shared::Shift;
 // station's songs turned over is the only structure its timeline has.
 pub use shared::LiveMark;
 
+// The breaks in one, which the same strips draw beside those boundaries:
+// where a reconnect spliced two connections and nothing plays across.
+pub use shared::LiveGap;
+
 // Embedders hold the output stream and the tap consumer, so the types those
 // come in need to be nameable without taking on the deps directly.
 pub use cpal;

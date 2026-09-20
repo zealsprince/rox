@@ -26,6 +26,7 @@ use gpui_component::input::{MoveDown, MovePageDown, MovePageUp, MoveUp, SelectAl
 use gpui_component::menu::ContextMenuExt;
 use rox_core::QUEUE_CAP;
 use rox_core::fmt::fmt_ms;
+use rox_library::cue::Origin;
 use rox_library::projection::{FilterSet, Projection, QUERY_FIELDS};
 use rox_playback::engine::shuffle_slice;
 
@@ -119,6 +120,9 @@ struct RowInfo {
     /// A head shows its tag whatever the toggles; a track's duration cell
     /// follows the show-duration switch and drops when blank.
     is_head: bool,
+    /// A radio station: it wears the radio glyph where a cover would go,
+    /// says "Radio" on its subtitle line, and has no duration to show.
+    is_station: bool,
 }
 
 impl Head {
@@ -252,6 +256,26 @@ fn nearest_selected(selected: &HashSet<usize>, from: usize) -> Option<usize> {
         .iter()
         .copied()
         .min_by_key(|&ix| (ix.abs_diff(from), ix))
+}
+
+/// A station's mark, in the slot a cover thumbnail would take: the same
+/// radio glyph the queue puts where a track number goes and the track
+/// info strip puts before the station's name, so the three surfaces spell
+/// "this is off the air" the same way.
+fn station_cell() -> Div {
+    let side = palette::scaled_px(track_columns::ROW_HEIGHT_STOCK - 6.);
+    div()
+        .flex_none()
+        .size(side)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            svg()
+                .path(icons::RADIO)
+                .size(px(14.))
+                .text_color(palette::text_muted()),
+        )
 }
 
 pub struct QuickPlay {
@@ -506,7 +530,10 @@ impl QuickPlay {
                                 row: hit.row,
                             });
                         }
-                        let mut hits = projection.search(&self.query);
+                        // The widened scan: a station is a result here,
+                        // drawn as one and sorted behind the tracks, where
+                        // the browse surfaces still never see it.
+                        let mut hits = projection.search_all(&self.query);
                         if let Some(rows) = &seed {
                             heads.retain(|head| rows.keeps_head(*head));
                             hits.retain(|&row| rows.keeps(row));
@@ -820,15 +847,21 @@ impl QuickPlay {
                             trailing: tag,
                             path: cover_path(head.row()),
                             is_head: true,
+                            is_station: false,
                         });
                     }
                     let row = *hits.get(ix - head_count)?;
                     let v = projection.resolve(row);
-                    let sub = match (v.artist.is_empty(), v.album.is_empty()) {
-                        (false, false) => format!("{} - {}", v.artist, v.album),
-                        (false, true) => v.artist.to_string(),
-                        (true, false) => v.album.to_string(),
-                        (true, true) => String::new(),
+                    // A station carries a name and nothing else: no artist,
+                    // no album, no length. The subtitle says what it is
+                    // instead of composing a line out of three blanks.
+                    let is_station = Origin::of(v.source) == Origin::Radio;
+                    let sub = match (is_station, v.artist.is_empty(), v.album.is_empty()) {
+                        (true, _, _) => rox_i18n::t!("metadata-source-radio").to_string(),
+                        (_, false, false) => format!("{} - {}", v.artist, v.album),
+                        (_, false, true) => v.artist.to_string(),
+                        (_, true, false) => v.album.to_string(),
+                        (_, true, true) => String::new(),
                     };
                     // A zero length is unknown, not a real 0:00 (the
                     // scanner leaves it zero when it can't read a file's
@@ -844,8 +877,14 @@ impl QuickPlay {
                         title_reading: SharedString::from(v.title_sort.to_string()),
                         sub: SharedString::from(sub),
                         trailing: time,
-                        path: cover_path(row),
+                        // No file behind a stream, so nothing to read a
+                        // cover off: the glyph takes the cell instead.
+                        path: match is_station {
+                            true => None,
+                            false => cover_path(row),
+                        },
                         is_head: false,
+                        is_station,
                     })
                 })
                 .collect()
@@ -870,6 +909,7 @@ impl QuickPlay {
                     trailing,
                     path: _,
                     is_head,
+                    is_station,
                 } = info;
                 div()
                     // Fills the list's width so a long title truncates
@@ -922,7 +962,12 @@ impl QuickPlay {
                             }),
                         )
                     })
-                    .when(show_cover, |d| {
+                    // The station's mark takes the cover's slot and shows
+                    // whether or not covers do: with the thumbnail off and
+                    // the subtitle off there'd otherwise be nothing telling
+                    // a station from a track but the absent duration.
+                    .when(is_station, |d| d.child(station_cell()))
+                    .when(show_cover && !is_station, |d| {
                         d.child(track_columns::cover_cell(
                             &cover,
                             track_columns::ROW_HEIGHT_STOCK,

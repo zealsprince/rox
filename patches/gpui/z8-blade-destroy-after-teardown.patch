@@ -1,0 +1,84 @@
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -720,6 +720,12 @@
+     retired_textures: Vec<UserTexture>,
+     texture_belt: BufferBelt,
+     rendering_parameters: RenderingParameters,
++    // rox patch: set by `destroy`, so everything that would touch GPU state
++    // afterwards can bail. The window's platform object is dropped while its
++    // native window is still alive and still receiving events, so the OS can
++    // call back into a renderer that has already handed all its resources
++    // back. See `destroy`.
++    destroyed: bool,
+ }
+ 
+ impl BladeRenderer {
+@@ -829,6 +835,7 @@
+                 alignment: 64, // Vulkan `optimalBufferCopyOffsetAlignment` on Intel Xe
+             }),
+             rendering_parameters,
++            destroyed: false,
+         })
+     }
+ 
+@@ -898,6 +905,12 @@
+     }
+ 
+     fn update_drawable_size_impl(&mut self, size: Size<DevicePixels>, always_resize: bool) {
++        // rox patch: a resize after teardown, which is what a macOS fullscreen
++        // Space closing sends. See `destroy`.
++        if self.destroyed {
++            return;
++        }
++
+         let gpu_size = gpu::Extent {
+             width: size.width.0 as u32,
+             height: size.height.0 as u32,
+@@ -966,6 +979,11 @@
+     }
+ 
+     pub fn update_transparency(&mut self, transparent: bool) {
++        // rox patch: same teardown guard as the resize above.
++        if self.destroyed {
++            return;
++        }
++
+         if transparent != self.surface_config.transparent {
+             self.wait_for_gpu();
+             self.surface_config.transparent = transparent;
+@@ -1435,6 +1453,21 @@
+     }
+ 
+     pub fn destroy(&mut self) {
++        // rox patch: the resources below are handed back by raw pointer and
++        // the fields keep pointing at them, so a second pass through here
++        // releases objects that are already gone. That was reachable: closing
++        // a window while it sits in a macOS fullscreen Space drops the
++        // platform window (this runs), and AppKit then animates the Space
++        // away, resizing the view that still holds the window state. The
++        // resize lands in `update_drawable_size`, which destroys and
++        // recreates the path intermediates, and the over-release of a dead
++        // MTLTexture takes the process out. Latch it once and let every
++        // post-teardown caller no-op.
++        if self.destroyed {
++            return;
++        }
++        self.destroyed = true;
++
+         self.wait_for_gpu();
+         self.atlas.destroy();
+         self.gpu.destroy_sampler(self.atlas_sampler);
+@@ -2367,6 +2400,13 @@
+     }
+ 
+     pub fn draw(&mut self, scene: &Scene) {
++        // rox patch: nothing to draw into once the surface is gone, and the
++        // OS can still ask for a frame during a window's teardown. See
++        // `destroy`.
++        if self.destroyed {
++            return;
++        }
++
+         self.command_encoder.start();
+         self.atlas.before_frame(&mut self.command_encoder);
+         self.flush_texture_uploads();

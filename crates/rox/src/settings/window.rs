@@ -6609,6 +6609,12 @@ impl SettingsWindow {
                                 div()
                                     .flex()
                                     .flex_col()
+                                    // Fill the block instead of shrinking to
+                                    // the placeholder line: the block's control
+                                    // slot is a row, so a column in it is
+                                    // content-sized unless it grows.
+                                    .flex_1()
+                                    .min_w_0()
                                     .gap(tokens::SPACE_XS)
                                     .child(Input::new(&pattern_input).small())
                                     .child(

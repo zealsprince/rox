@@ -6,6 +6,19 @@
 //! follow on, glides it to the middle the way the library's now-playing
 //! row does; clicking a timed line seeks to it.
 //!
+//! With the read head on, the active line is cut where the playhead has
+//! sung to and the unsung tail colored back, which is the karaoke fill. An
+//! enhanced (A2) sheet times each word and drives that cut off its own
+//! clock, so the head lands mid-word where the singer is; a plain
+//! line-synced sheet has nothing finer to go on and spreads the text
+//! across the line's span instead.
+//!
+//! The synced sheet builds every row rather than a window of them. Rows
+//! wrap to as many visual lines as the words need, so there's no uniform
+//! stride to virtualize against, and a sheet is a few dozen lines either
+//! way. The scroll records what it laid out and the follow centers the
+//! active line off those measured bounds.
+//!
 //! The pencil in the title row opens the edit window:
 //! the raw text becomes a multi-line input over a baseline read off the
 //! file, and a save writes it back where it came from: the embedded tag
@@ -33,10 +46,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, FontWeight,
+    AnyElement, App, Axis, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, FontWeight,
     MouseButton, Pixels, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Size,
-    Subscription, UniformListScrollHandle, WeakEntity, Window, canvas, div, prelude::*, px,
-    uniform_list,
+    Subscription, WeakEntity, Window, canvas, div, prelude::*, px,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::spinner::Spinner;
@@ -84,10 +96,6 @@ const WORD_FADE: f32 = 0.5;
 /// How far a word rises into place as it fades in, as a fraction of the
 /// text size.
 const WORD_RISE: f32 = 0.35;
-
-/// The assumed duration of a synced line with nothing timed after it, so
-/// the last line still builds word by word instead of snapping whole.
-const WORD_TAIL_SECS: f64 = 4.0;
 
 /// The wheel delta one lyric-line step costs when scrolling the followed
 /// sheet. A wheel notch arrives as three lines, so one notch steps to the
@@ -168,6 +176,20 @@ impl RestMark {
     }
 }
 
+/// How the active line shows the read head running through it.
+///
+/// Fill is the karaoke look: the whole line stays up and a brightness
+/// boundary sweeps across it, landing mid-word on a sheet that times its
+/// words. Build is the older one, each word waiting out of sight and
+/// fading up as its turn comes.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WordStyle {
+    #[default]
+    Fill,
+    Build,
+}
+
 /// The lyrics panel's per-view config: what a saved layout restores and
 /// what the settings window edits. Missing fields take the defaults, so a
 /// layout dumped before a knob existed still loads.
@@ -202,9 +224,24 @@ pub struct LyricsConfig {
     pub pre_scroll: bool,
     /// Fade a synced line up from dim as it becomes the active one.
     pub fade_lines: bool,
-    /// Build the active synced line word by word across its span, the rest
-    /// of the words waiting dim until the playhead gets to them.
+    /// Run a read head through the active synced line as it is sung. An
+    /// enhanced (A2) sheet drives it off its own word clock; a
+    /// line-synced one spreads the text evenly across the line's span.
     pub word_by_word: bool,
+    /// How that read head shows: the karaoke fill or the older per-word
+    /// build.
+    pub word_style: WordStyle,
+    /// How dim the unsung half of the active line sits under the fill, 0
+    /// to 1, where 1 is as dim as a line the playhead has left behind and
+    /// 0 leaves it at full.
+    pub word_dim: f32,
+    /// Hide every line the playhead hasn't reached, so the sheet reveals
+    /// itself as it is sung. Off shows the whole sheet with the falloff
+    /// dimming it, which is how a lyric sheet normally reads.
+    pub hide_upcoming: bool,
+    /// Wrap a synced line too long for the panel onto as many rows as it
+    /// needs. Off keeps every row one line tall and truncates.
+    pub wrap_lines: bool,
     /// Weave a blank rest before a first sung line that opens past the
     /// [`gap_secs`] threshold, so the sheet has a lead-in and the
     /// first line fades in when it arrives.
@@ -256,6 +293,10 @@ impl Default for LyricsConfig {
             pre_scroll: true,
             fade_lines: false,
             word_by_word: false,
+            word_style: WordStyle::default(),
+            word_dim: 0.6,
+            hide_upcoming: false,
+            wrap_lines: true,
             intro_rest: false,
             gap_rest: false,
             gap_secs: 5.0,
@@ -328,22 +369,23 @@ pub struct LyricsPanel {
     faded_line: Option<usize>,
     /// The active line's fade-in progress, 0 to 1; 1 when fading is off.
     active_fade: f32,
-    /// The active line's word-build fraction, 0 to 1; None when nothing is
-    /// building.
-    reveal: Option<f32>,
+    /// Where the read head sits in the active line's text this render, as
+    /// a byte offset into it; None when the head isn't running.
+    head: Option<usize>,
     /// The playhead is on the shown track this render. Word-by-word only
     /// hides un-reached lines while this holds; a sheet viewed with no
     /// playhead on it still reads whole.
     positioned: bool,
-    /// The blank rows padding each end of the synced list this frame, so
-    /// line_rows maps a row index back to its lyric line.
-    pad: usize,
+    /// The pad each end of the synced list carries this frame, so the
+    /// first and last lines can still reach the middle.
+    pad: Pixels,
+    /// The synced sheet's own scroll once rows wrap and stop being a
+    /// uniform height, so the glide can center a row off its real bounds.
+    wrap_scroll: ScrollHandle,
     /// The line the follow glide is easing toward; None once arrived.
     glide_to: Option<usize>,
     /// Last frame's clock, for the glide's per-frame step.
     last_tick: Instant,
-    /// The synced list's scroll, driven by the glide.
-    scroll: UniformListScrollHandle,
     /// Wheel delta banked toward the next lyric-line step, so a slow scroll
     /// still steps one line at a time and the remainder is kept.
     scroll_accum: f32,
@@ -353,6 +395,8 @@ pub struct LyricsPanel {
     size_scrub: ScrubState,
     /// The line-spacing slider's drag state on the Appearance page.
     spacing_scrub: ScrubState,
+    /// The unsung-dim slider's drag state on the Content page.
+    word_dim_scrub: ScrubState,
     /// The line-falloff slider's drag state on the Content page.
     dim_scrub: ScrubState,
     /// The gap-threshold slider's drag state on the Content page.
@@ -421,16 +465,17 @@ impl LyricsPanel {
             active_line: None,
             faded_line: None,
             active_fade: 1.0,
-            reveal: None,
+            head: None,
             positioned: false,
-            pad: 0,
+            pad: px(0.),
+            wrap_scroll: ScrollHandle::new(),
             glide_to: None,
             last_tick: Instant::now(),
-            scroll: UniformListScrollHandle::new(),
             scroll_accum: 0.0,
             text_scroll: ScrollHandle::new(),
             size_scrub: ScrubState::default(),
             spacing_scrub: ScrubState::default(),
+            word_dim_scrub: ScrubState::default(),
             dim_scrub: ScrubState::default(),
             gap_scrub: ScrubState::default(),
             value_edit: panel::ValueEdit::default(),
@@ -565,8 +610,7 @@ impl LyricsPanel {
     /// Send both faces back to the top and drop the follow glide, for a
     /// sheet that has been swapped out from under them.
     fn rewind(&mut self) {
-        let base = self.scroll.0.borrow().base_handle.clone();
-        base.set_offset(Default::default());
+        self.wrap_scroll.set_offset(Default::default());
         self.text_scroll.set_offset(Default::default());
         self.glide_to = None;
     }
@@ -981,6 +1025,61 @@ impl PanelSettings for LyricsPanel {
                     self.config.word_by_word,
                     |this: &mut Self, on, cx| {
                         this.config.word_by_word = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                rox_i18n::t!("lyrics-read-head-style"),
+                Some(rox_i18n::t!("lyrics-read-head-style.description")),
+                panel::choices_shared(
+                    &[
+                        (rox_i18n::t!("lyrics-head-fill"), WordStyle::Fill),
+                        (rox_i18n::t!("lyrics-head-build"), WordStyle::Build),
+                    ],
+                    self.config.word_style,
+                    |this: &mut Self, style, cx| {
+                        this.config.word_style = style;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                rox_i18n::t!("lyrics-unsung-dim"),
+                Some(rox_i18n::t!("lyrics-unsung-dim.description")),
+                settings_ui::scalar(
+                    &self.word_dim_scrub,
+                    &self.value_edit,
+                    self.config.word_dim * 100.0,
+                    settings_ui::span(0., 100., "%").hard(),
+                    |this: &mut Self, value, cx| {
+                        this.config.word_dim = value / 100.0;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                rox_i18n::t!("lyrics-hide-upcoming"),
+                Some(rox_i18n::t!("lyrics-hide-upcoming.description")),
+                panel::toggle(
+                    self.config.hide_upcoming,
+                    |this: &mut Self, on, cx| {
+                        this.config.hide_upcoming = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                rox_i18n::t!("lyrics-wrap-lines"),
+                Some(rox_i18n::t!("lyrics-wrap-lines.description")),
+                panel::toggle(
+                    self.config.wrap_lines,
+                    |this: &mut Self, on, cx| {
+                        this.config.wrap_lines = on;
                         cx.notify();
                     },
                     cx,
@@ -1724,33 +1823,32 @@ impl LyricsPanel {
             self.active_fade = 1.0;
         }
 
-        // Word-build: how far the playhead has run into the active line's
-        // span, as a fraction, so line_rows lights words up to there.
-        self.reveal = None;
+        // The read head: how far into the active line's text the playhead
+        // has sung, so line_rows knows where to cut it. A sheet that times
+        // its words drives this off that clock; one that doesn't spreads
+        // the text across the span the next timed line closes.
+        self.head = None;
         if self.config.word_by_word
             && let (Some(pos), Some(ix)) = (position, active)
         {
-            let start = lyrics.lines[ix].at.unwrap_or(pos);
-            let end = lyrics.lines[ix + 1..]
-                .iter()
-                .find_map(|line| line.at)
-                .unwrap_or(start + WORD_TAIL_SECS);
-            let frac = if end > start {
-                ((pos - start) / (end - start)) as f32
-            } else {
-                1.0
-            };
-            self.reveal = Some(frac.clamp(0.0, 1.0));
+            let line = &lyrics.lines[ix];
+            let until = lyrics.lines[ix + 1..].iter().find_map(|line| line.at);
+            self.head = Some(lyrics::read_head(line, pos, until));
         }
-        // The word-build tracks the playhead across the line, so keep the
-        // frames coming while it still has words to light; the pump's tick
-        // no longer wakes the panel between line changes.
-        animating |= self.reveal.is_some_and(|frac| frac < 1.0);
+        // The read head tracks the playhead across the line, so keep the
+        // frames coming while it still has line left to run; the pump's
+        // tick no longer wakes the panel between line changes. Paused, the
+        // head sits still and asking for another frame would just rebuild
+        // the sheet sixty times a second to draw the same thing; the
+        // player's own change wakes the panel again on resume.
+        animating |= self.state.player.read(cx).is_playing()
+            && match (self.head, active) {
+                (Some(head), Some(ix)) => head < lyrics.lines[ix].text.len(),
+                _ => false,
+            };
 
         // Pad the ends so the first and last lines can center as well.
-        let pad = self.pad_rows(line_height(self.config.font_size, self.config.line_spacing));
-        self.pad = pad;
-        let count = pad + lyrics.lines.len() + pad;
+        self.pad = self.pad_height(line_height(self.config.font_size, self.config.line_spacing));
 
         // Re-aim the glide when the active line moves; drive it toward the
         // middle here in render, the grid's follow idiom, asking for the
@@ -1758,14 +1856,21 @@ impl LyricsPanel {
         if self.config.follow
             && let Some(active) = active
         {
-            self.glide_to = Some(active + pad);
+            self.glide_to = Some(active);
         }
         if let Some(row) = self.glide_to {
-            let arrived = match panel::glide_target(&self.scroll, row, count) {
-                Some(target) => !panel::glide_step(&self.scroll, target, dt),
+            let arrived = match self.center_target(row) {
+                Some(target) => {
+                    !panel::glide_step_axis(&self.wrap_scroll, Axis::Vertical, target, dt)
+                }
+                // Before the sheet's first layout there is nothing to
+                // measure against; hold the glide for the next frame.
                 None => false,
             };
-            if arrived {
+            // A shorter sheet can strand the target past its last line,
+            // which would never measure and never arrive. Drop the glide
+            // instead of asking for frames forever.
+            if arrived || row >= lyrics.lines.len() {
                 self.glide_to = None;
             } else {
                 animating = true;
@@ -1775,7 +1880,8 @@ impl LyricsPanel {
             window.request_animation_frame();
         }
 
-        let this = cx.entity().downgrade();
+        let pad = self.pad;
+        let rows = self.line_rows(cx);
         div()
             .size_full()
             // With follow on, the glide pins the sheet to the playhead so the
@@ -1816,60 +1922,91 @@ impl LyricsPanel {
                 }
             }))
             .child(
-                uniform_list("lyrics-lines", count, move |range, _, cx| {
-                    this.upgrade()
-                        .map(|this| this.update(cx, |this, cx| this.line_rows(range, cx)))
-                        .unwrap_or_default()
-                })
-                .track_scroll(self.scroll.clone())
-                .size_full(),
+                div()
+                    .id("lyrics-lines")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.wrap_scroll)
+                    .flex()
+                    .flex_col()
+                    // The pads are children 0 and last, so a line at index
+                    // ix is child ix + 1, which is what center_target
+                    // measures. They stay in the tree at zero height with
+                    // pre-scroll off so that offset never moves.
+                    .child(div().flex_none().h(pad))
+                    .children(rows)
+                    .child(div().flex_none().h(pad)),
             )
     }
 
-    /// The blank rows to pad each end of the synced list with, so the
-    /// first and last lines can glide to the middle. Half the viewport in
-    /// rows when pre-scroll is on, off the list's measured height (a
-    /// generous default before the first layout); none when it is off.
-    fn pad_rows(&self, line_h: f32) -> usize {
+    /// Where the scroll should sit to center line `ix`, read off the
+    /// bounds the sheet actually laid that row out at. None before the
+    /// first layout, and while the row hasn't been measured.
+    ///
+    /// Rows wrap, so one line can be twice another's height and a stride
+    /// estimate would put the active line off center or off screen. The
+    /// handle records every child's bounds in window space; the content
+    /// offset is that minus where the viewport starts, minus how far it is
+    /// already scrolled.
+    fn center_target(&self, ix: usize) -> Option<Pixels> {
+        let view = self.wrap_scroll.bounds();
+        let item = self.wrap_scroll.bounds_for_item(ix + 1)?;
+        let origin = item.top() - view.top() - self.wrap_scroll.offset().y;
+
+        panel::glide_target_at(&self.wrap_scroll, Axis::Vertical, origin, item.size.height)
+    }
+
+    /// The pad each end of the synced sheet carries so the first and last
+    /// lines can still glide to the middle: half the viewport when
+    /// pre-scroll is on, nothing when it is off. A screenful of rows
+    /// stands in before the first layout gives the scroll a viewport, so
+    /// the opening frame is close rather than jumping once measured.
+    fn pad_height(&self, line_h: f32) -> Pixels {
         if !self.config.pre_scroll {
-            return 0;
+            return px(0.);
         }
-        let viewport = self
-            .scroll
-            .0
-            .borrow()
-            .last_item_size
-            .map(|size| f32::from(size.item.height))
-            .filter(|h| *h > 0.0);
-        match viewport {
-            Some(h) => (((h / 2.0) / line_h).ceil() as usize).max(1),
-            None => 12,
+        let viewport = self.wrap_scroll.bounds().size.height;
+
+        if viewport > px(0.) {
+            viewport / 2.0
+        } else {
+            px(line_h * 12.0)
         }
     }
 
-    /// The rows a synced list asks for: blank pad rows at the ends, and
-    /// between them each timed line at a height that tracks the text size,
-    /// the active one lit (faded in and built word by word when those are
-    /// on), the rest muted and clickable to seek. Full width, so the
-    /// alignment knob actually centers the text.
-    fn line_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// The synced sheet's rows: each timed line, the one under the
+    /// playhead lit and the rest muted and clickable to seek. Full width,
+    /// so the alignment knob actually centers the text.
+    ///
+    /// Every line is built, not a window of them. A sheet is a few dozen
+    /// lines and rows wrap to as many visual lines as they need, so
+    /// there's no stride to virtualize against; the scroll measures what
+    /// it laid out and the glide centers off those real bounds.
+    fn line_rows(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         // The woven sheet synced_face built this frame, rests and all.
         let Some(lyrics) = self.display_arc().cloned() else {
             return Vec::new();
         };
         let active = self.active_line;
         let align = self.config.align;
+        let text_align = text_align(align);
         let font = self.config.font_size;
         let line_h = line_height(font, self.config.line_spacing);
-        let pad = self.pad;
         let fade = self.active_fade;
         let fade_lines = self.config.fade_lines;
-        let reveal = self.reveal;
+        let head = self.head;
         let word_by_word = self.config.word_by_word;
+        let word_style = self.config.word_style;
+        let word_dim = self.config.word_dim;
+        let wrap = self.config.wrap_lines;
         let positioned = self.positioned;
         let dim = self.config.dim;
         let dim_edge = self.config.dim_edge;
         let rest_mark = self.config.rest_mark.str();
+        // The unsung half of the active line under the fill: the lit color
+        // pulled toward the muted one by the knob, so 0 leaves the whole
+        // line bright and 1 sinks the tail to where a passed line sits.
+        let unsung = palette::mix(palette::text_bright(), palette::text_muted(), word_dim);
         // Before the first line lights up, still measure the falloff from
         // where the read head is headed (the first timed line) so a live
         // intro shows the sheet already dimmed toward the edge instead of
@@ -1884,63 +2021,71 @@ impl LyricsPanel {
                     .unwrap_or(0)
             })
         });
-        range
-            .map(|row_ix| {
-                // The pad rows at the ends are blank spacers.
-                let Some(ix) = row_ix
-                    .checked_sub(pad)
-                    .filter(|&ix| ix < lyrics.lines.len())
-                else {
-                    return div().h(px(line_h)).into_any_element();
-                };
+
+        (0..lyrics.lines.len())
+            .map(|ix| {
                 let line = &lyrics.lines[ix];
                 let at = line.at;
                 let is_active = Some(ix) == active;
                 let text = &line.text;
+                // Paused off a playhead there's no head to run, and the
+                // line reads whole like any other.
+                let running = is_active && word_by_word && !text.is_empty();
 
-                // The active line builds word by word: each word waits
-                // hidden, then fades and rises into place as the read head
-                // gets to it. No reveal (paused off a position) shows the
-                // whole line.
-                let content: AnyElement = if is_active && word_by_word && !text.is_empty() {
-                    let words: Vec<&str> = text.split_whitespace().collect();
-                    let n = words.len().max(1);
-                    let read_head = reveal.map(|frac| frac * n as f32);
-                    let rise = font * WORD_RISE;
-                    div()
+                let content: AnyElement = match (running.then_some(head).flatten(), word_style) {
+                    // The karaoke fill: one wrapping text layout with the
+                    // unsung tail colored back. Splitting it into two
+                    // elements instead would break the wrap and stop the
+                    // cut landing inside a word, which is the whole look.
+                    (Some(head), WordStyle::Fill) => gpui::StyledText::new(text.clone())
+                        .with_highlights([(
+                            head..text.len(),
+                            gpui::HighlightStyle {
+                                color: Some(unsung.into()),
+                                ..Default::default()
+                            },
+                        )])
+                        .into_any_element(),
+
+                    // The older build: each word waits out of sight, then
+                    // fades and rises into place as the head crosses it.
+                    (Some(head), WordStyle::Build) => {
+                        let rise = font * WORD_RISE;
+                        div()
+                            .max_w_full()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .children(word_spans(text).into_iter().map(|span| {
+                                let opacity = crossed(head, &span);
+                                div()
+                                    .relative()
+                                    .top(px((1.0 - opacity) * rise))
+                                    .opacity(opacity)
+                                    .child(SharedString::from(format!("{}\u{a0}", &text[span])))
+                            }))
+                            .into_any_element()
+                    }
+
+                    _ => div()
                         .max_w_full()
-                        .flex()
-                        .flex_row()
-                        .children(words.into_iter().enumerate().map(|(i, word)| {
-                            let opacity = read_head
-                                .map(|head| ((head - i as f32) / WORD_FADE).clamp(0.0, 1.0))
-                                .unwrap_or(1.0);
-                            div()
-                                .relative()
-                                .top(px((1.0 - opacity) * rise))
-                                .opacity(opacity)
-                                .child(SharedString::from(format!("{word}\u{a0}")))
-                        }))
-                        .into_any_element()
-                } else {
-                    div()
-                        .max_w_full()
-                        .truncate()
+                        .when(!wrap, |d| d.truncate())
                         .child(if text.is_empty() {
                             SharedString::from(rest_mark)
                         } else {
                             SharedString::from(text.clone())
                         })
-                        .into_any_element()
+                        .into_any_element(),
                 };
 
-                // Word-by-word keeps un-sung text out of sight: while the
-                // playhead is on this track, every line past the active
-                // one (and every line during the intro) waits invisible
-                // until its turn, its row still holding the space. With no
-                // playhead on the track the sheet reads whole.
-                let upcoming =
-                    word_by_word && positioned && active.is_none_or(|active| ix > active);
+                // With the reveal on, every line past the active one (and
+                // every line during the intro) waits invisible until its
+                // turn, its row still holding the space. Off, the whole
+                // sheet reads and the falloff does the dimming. Either way
+                // a sheet viewed with no playhead on it reads whole.
+                let upcoming = self.config.hide_upcoming
+                    && positioned
+                    && active.is_none_or(|active| ix > active);
 
                 // The active line fades up from the floor; the others dim
                 // by their distance from it, on the chosen edge.
@@ -1958,16 +2103,21 @@ impl LyricsPanel {
 
                 let row = justify(
                     div()
-                        .h(px(line_h))
                         .w_full()
                         .flex()
                         .flex_none()
                         .items_center()
-                        .overflow_hidden(),
+                        // Wrapping rows size to their content and lead
+                        // through the text's own line height; fixed rows
+                        // keep the one height they always had and clip.
+                        .min_h(px(line_h))
+                        .when(!wrap, |d| d.h(px(line_h)).overflow_hidden()),
                     align,
                 )
                 .px(tokens::SPACE_MD)
                 .text_size(px(font))
+                .line_height(px(line_h))
+                .text_align(text_align)
                 .opacity(opacity)
                 .text_color(if is_active {
                     palette::text_bright()
@@ -2088,6 +2238,52 @@ fn falloff(dim: f32, edge: DimEdge, active: Option<usize>, ix: usize) -> f32 {
         return 1.0;
     }
     curve::falloff(dim, ix.abs_diff(active) as u32)
+}
+
+/// The lyric text's alignment as the text system spells it.
+fn text_align(align: Align) -> gpui::TextAlign {
+    match align {
+        Align::Left => gpui::TextAlign::Left,
+        Align::Center => gpui::TextAlign::Center,
+        Align::Right => gpui::TextAlign::Right,
+    }
+}
+
+/// The byte ranges of `text`'s whitespace-separated words, in order. The
+/// per-word build needs where each word sits, not a copy of it, so the
+/// read head's byte offset can be measured against the same string.
+fn word_spans(text: &str) -> Vec<Range<usize>> {
+    let mut spans = Vec::new();
+    let mut open: Option<usize> = None;
+    for (ix, ch) in text.char_indices() {
+        match (ch.is_whitespace(), open) {
+            (false, None) => open = Some(ix),
+            (true, Some(from)) => {
+                spans.push(from..ix);
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = open {
+        spans.push(from..text.len());
+    }
+    spans
+}
+
+/// How far the read head at `head` has crossed the word spanning `span`,
+/// 0 before it and 1 once past. The build fades a word in over the first
+/// [`WORD_FADE`] of its own span, so a short word still reads as a beat
+/// rather than a blink.
+fn crossed(head: usize, span: &Range<usize>) -> f32 {
+    if head <= span.start {
+        return 0.0;
+    }
+    if head >= span.end {
+        return 1.0;
+    }
+    let through = (head - span.start) as f32 / (span.end - span.start).max(1) as f32;
+    (through / WORD_FADE).clamp(0.0, 1.0)
 }
 
 /// A sheet held in memory rather than read from anywhere: the same parse

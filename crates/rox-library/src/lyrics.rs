@@ -26,8 +26,15 @@
 //! (`[ar:]`, `[ti:]`, and the like) are dropped. Text with no timestamps
 //! at all comes back as plain lines in file order, so an unsynced sheet
 //! still reads.
+//!
+//! Enhanced (A2) sheets time each word as well, with a `<mm:ss.xx>` tag
+//! before it and often one closing the line. Those come off the text into
+//! [`Line::words`], so a display can run a read head through a line at the
+//! speed it was actually sung instead of spreading it evenly, and so the
+//! tags never reach the panel as literal text.
 
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -124,12 +131,33 @@ impl From<PathBuf> for Subject {
     }
 }
 
+/// One timed word in an enhanced (A2) sheet: when it starts, and where it
+/// sits in the line it belongs to. The position is a byte range into
+/// [`Line::text`] rather than a copy of the word, so the line stays one
+/// string and a display can cut it anywhere, including inside a word, to
+/// put a read head partway through.
+#[derive(Clone, Debug)]
+pub struct Word {
+    pub at: f64,
+    pub range: Range<usize>,
+}
+
 /// One lyric line: its start time in seconds when the source timed it,
 /// None when it did not, and the text.
-#[derive(Clone, Debug)]
+///
+/// An enhanced (A2) sheet times each word inside the line as well, which
+/// fills [`words`](Line::words) and, when the line closes with a trailing
+/// tag, [`end`](Line::end). A plain line-synced sheet leaves both empty
+/// and a display falls back to spreading the line across its own span.
+#[derive(Clone, Debug, Default)]
 pub struct Line {
     pub at: Option<f64>,
     pub text: String,
+    /// The line's words in text order, empty unless the source timed them.
+    pub words: Vec<Word>,
+    /// When the last word stops, off a trailing `<mm:ss.xx>` tag. None
+    /// leaves a display to guess from the next line's start.
+    pub end: Option<f64>,
 }
 
 /// A track's loaded lyrics: the raw text an editor round-trips, the
@@ -488,10 +516,30 @@ pub fn parse(text: &str) -> (Vec<Line>, bool) {
     let mut timed = Vec::new();
     for raw in text.lines() {
         let (times, body) = scan_times(raw);
+        // An enhanced (A2) line carries a `<mm:ss.xx>` tag before each
+        // word. Pull those out here so the tags never reach a display as
+        // literal text, and a plain line just comes back with no words.
+        let (body, words, end) = scan_words(&body);
+
+        // Several stamps on one line repeat the same text at each time.
+        // The word clock was written for the first of them, so each repeat
+        // carries its own copy shifted by how far it sits from that first
+        // one. A sheet that only ever stamps a line once, which is nearly
+        // all of them, shifts by zero.
+        let first = times.first().copied();
         for at in times {
+            let shift = at - first.unwrap_or(at);
             timed.push(Line {
                 at: Some((at - offset).max(0.0)),
                 text: body.clone(),
+                words: words
+                    .iter()
+                    .map(|word| Word {
+                        at: (word.at + shift - offset).max(0.0),
+                        range: word.range.clone(),
+                    })
+                    .collect(),
+                end: end.map(|end| (end + shift - offset).max(0.0)),
             });
         }
     }
@@ -507,6 +555,7 @@ pub fn parse(text: &str) -> (Vec<Line>, bool) {
         .map(|line| Line {
             at: None,
             text: line.trim_end().to_string(),
+            ..Line::default()
         })
         .collect();
     (plain, false)
@@ -531,6 +580,86 @@ fn scan_times(line: &str) -> (Vec<f64>, String) {
         rest = &trimmed[inner_end + 2..];
     }
     (times, rest.trim_end().to_string())
+}
+
+/// Split an enhanced (A2) line body into its text with the inline
+/// `<mm:ss.xx>` tags removed, the words those tags timed, and the time a
+/// trailing tag closes the line at.
+///
+/// Each tag times whatever text follows it up to the next tag, so a word
+/// spans from where its tag sat to where the next one does. A line with no
+/// tags comes back as itself with no words, which is the plain
+/// line-synced case and nearly every sheet in the wild. Brackets with no
+/// time in them are left in the text, so a lyric that writes `<3` still
+/// reads.
+fn scan_words(body: &str) -> (String, Vec<Word>, Option<f64>) {
+    // Cheap reject before any allocation: no bracket, nothing to scan.
+    if !body.contains('<') {
+        return (body.trim_end().to_string(), Vec::new(), None);
+    }
+
+    let mut text = String::with_capacity(body.len());
+    let mut words: Vec<Word> = Vec::new();
+    // The tag that opened the stretch of text being built, and where in
+    // the clean text that stretch starts.
+    let mut open: Option<(f64, usize)> = None;
+    let mut rest = body;
+
+    while let Some(bracket) = rest.find('<') {
+        text.push_str(&rest[..bracket]);
+        let after = &rest[bracket..];
+
+        let Some(close) = after.find('>') else {
+            // An unclosed bracket is just text; take the rest and stop.
+            text.push_str(after);
+            rest = "";
+            break;
+        };
+
+        match parse_time(&after[1..close]) {
+            Some(at) => {
+                push_word(&mut words, open.take(), &text);
+                open = Some((at, text.len()));
+            }
+            // Not a time, so the brackets are part of the lyric.
+            None => text.push_str(&after[..=close]),
+        }
+        rest = &after[close + 1..];
+    }
+    text.push_str(rest);
+
+    // The last tag has nothing after it to close it. With words behind it
+    // it marks where the line stops; with text behind it, it opened the
+    // final word like any other.
+    let end = match open {
+        Some((at, start)) if text[start..].trim().is_empty() => Some(at),
+        open => {
+            push_word(&mut words, open, &text);
+            None
+        }
+    };
+    (text.trim_end().to_string(), words, end)
+}
+
+/// Record the word a tag opened, spanning from where the tag sat to the
+/// end of the text built since it. The span is trimmed at both ends: a
+/// display colors it, and one that swallowed the surrounding spaces would
+/// light the gap before the next word's turn. A tag with only whitespace
+/// behind it names no word and is dropped.
+fn push_word(words: &mut Vec<Word>, open: Option<(f64, usize)>, text: &str) {
+    let Some((at, start)) = open else { return };
+
+    let span = &text[start..];
+    let from = start + (span.len() - span.trim_start().len());
+    let to = start + span.trim_end().len();
+    if from >= to {
+        return;
+    }
+
+    words.push(Word {
+        at,
+        range: from..to,
+    });
 }
 
 /// Parse an LRC time-tag body ("mm:ss", "mm:ss.xx", "mm:ss.xxx") into
@@ -604,6 +733,7 @@ pub fn rest_line(at: f64) -> Line {
     Line {
         at: Some(at),
         text: String::new(),
+        ..Line::default()
     }
 }
 
@@ -623,6 +753,104 @@ pub fn active_line(lyrics: &Lyrics, position: f64) -> Option<usize> {
     }
     active
 }
+
+/// How far into `line` the read head has run at `position`, as a byte
+/// offset into [`Line::text`] landing on a character boundary. `until` is
+/// when the line stops, which the caller takes off the next timed line, and
+/// is only consulted when the line doesn't time its own end.
+///
+/// A word-timed line advances at the speed it was sung: the head sits at
+/// the start of the word under the playhead and slides through it over
+/// that word's own span, so it can land mid-word the way a karaoke fill
+/// does. A line-synced one has nothing finer to go on and spreads the
+/// whole text evenly across its span instead, which is a guess but a
+/// smooth one.
+pub fn read_head(line: &Line, position: f64, until: Option<f64>) -> usize {
+    let Some(start) = line.at else {
+        return 0;
+    };
+    // The line's own trailing tag is the honest end; without one, the next
+    // line's start is the best available, and with neither the line is the
+    // last on the sheet and reads as already run through.
+    let end = line.end.or(until);
+
+    if position <= start {
+        return 0;
+    }
+
+    // A word's span runs to the next word, then to the line's end. With no
+    // word under the playhead at all the head is past the last one, which
+    // is the whole line.
+    let (from, to, opens, closes) = match word_at(line, position) {
+        Some(ix) => {
+            let word = &line.words[ix];
+            let next = line.words.get(ix + 1);
+            (
+                word.range.start,
+                word.range.end,
+                word.at,
+                next.map(|next| next.at).or(end).unwrap_or(word.at),
+            )
+        }
+        None if !line.words.is_empty() => {
+            // Either side of the timed words: nothing lit before the first
+            // one starts, the whole line once the last one is done.
+            return match line.words.first() {
+                Some(first) if position < first.at => 0,
+                _ => line.text.len(),
+            };
+        }
+        // Line-synced: the whole text over the whole span.
+        None => (
+            0,
+            line.text.len(),
+            start,
+            end.unwrap_or(start + LINE_SPAN_SECS),
+        ),
+    };
+
+    let frac = if closes > opens {
+        ((position - opens) / (closes - opens)).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let head = from + ((to - from) as f64 * frac).round() as usize;
+
+    // A byte offset in the middle of a multi-byte character would panic a
+    // split, so walk back to where that character starts.
+    floor_boundary(&line.text, head.min(line.text.len()))
+}
+
+/// The word under the playhead: the last one that has started. None
+/// before the first word, and on a line with no words at all.
+fn word_at(line: &Line, position: f64) -> Option<usize> {
+    let mut found = None;
+    for (ix, word) in line.words.iter().enumerate() {
+        if word.at > position {
+            break;
+        }
+        found = Some(ix);
+    }
+    // Past the last word's own end, the head has run off the line.
+    match (found, line.end) {
+        (Some(ix), Some(end)) if ix + 1 == line.words.len() && position > end => None,
+        (found, _) => found,
+    }
+}
+
+/// `at` moved back to the nearest character boundary at or below it, so a
+/// split there never lands inside a multi-byte character.
+fn floor_boundary(text: &str, mut at: usize) -> usize {
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// The span a line-synced line is assumed to run for with nothing timed
+/// after it, so the last line on a sheet still reads through instead of
+/// snapping whole.
+const LINE_SPAN_SECS: f64 = 4.0;
 
 #[cfg(test)]
 mod tests {
@@ -864,5 +1092,120 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert!(lines.iter().all(|l| l.at.is_none()));
         assert_eq!(lines[1].text, "");
+    }
+
+    /// The word tags an enhanced sheet writes inline come off the text
+    /// and become a clock; before this they rendered as literal text.
+    #[test]
+    fn enhanced_line_times_its_words() {
+        let (lines, synced) =
+            parse("[00:12.00]<00:12.00>Bring <00:12.40>me <00:12.80>to <00:13.10>life<00:15.00>\n");
+        assert!(synced);
+        assert_eq!(lines.len(), 1);
+
+        let line = &lines[0];
+        assert_eq!(line.text, "Bring me to life");
+        assert_eq!(line.end, Some(15.0));
+
+        let words: Vec<(&str, f64)> = line
+            .words
+            .iter()
+            .map(|w| (&line.text[w.range.clone()], w.at))
+            .collect();
+        assert_eq!(
+            words,
+            vec![("Bring", 12.0), ("me", 12.4), ("to", 12.8), ("life", 13.1)]
+        );
+    }
+
+    /// A line-synced sheet is the common case and must come through
+    /// untouched, words empty so a display knows to spread it evenly.
+    #[test]
+    fn plain_synced_line_has_no_words() {
+        let (lines, _) = parse("[00:12.00]Bring me to life\n");
+        assert_eq!(lines[0].text, "Bring me to life");
+        assert!(lines[0].words.is_empty());
+        assert_eq!(lines[0].end, None);
+    }
+
+    /// Angle brackets with no time in them are lyric text, not tags.
+    #[test]
+    fn non_time_brackets_stay_in_the_text() {
+        let (lines, _) = parse("[00:12.00]i <3 you <not a tag>\n");
+        assert_eq!(lines[0].text, "i <3 you <not a tag>");
+        assert!(lines[0].words.is_empty());
+    }
+
+    /// An offset tag shifts the word clock the same way it shifts the
+    /// line, or the two would drift apart.
+    #[test]
+    fn offset_shifts_words_with_the_line() {
+        let (lines, _) = parse("[offset:500]\n[00:12.00]<00:12.00>Bring <00:12.40>me<00:13.00>\n");
+        assert_eq!(lines[0].at, Some(11.5));
+        assert_eq!(lines[0].words[0].at, 11.5);
+        assert_eq!(lines[0].words[1].at, 11.9);
+        assert_eq!(lines[0].end, Some(12.5));
+    }
+
+    /// One line stamped at two times repeats, and the second copy's word
+    /// clock has to move with it rather than staying on the first.
+    #[test]
+    fn repeated_stamp_shifts_its_word_clock() {
+        let (lines, _) = parse("[00:10.00][00:30.00]<00:10.00>na <00:10.50>na<00:11.00>\n");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].words[0].at, 10.0);
+        assert_eq!(lines[1].at, Some(30.0));
+        assert_eq!(lines[1].words[0].at, 30.0);
+        assert_eq!(lines[1].words[1].at, 30.5);
+        assert_eq!(lines[1].end, Some(31.0));
+    }
+
+    /// The read head walks a word-timed line at the speed it was sung,
+    /// landing inside the word under the playhead.
+    #[test]
+    fn read_head_slides_through_the_sung_word() {
+        let (lines, _) =
+            parse("[00:12.00]<00:12.00>Bring <00:12.40>me <00:12.80>to <00:13.10>life<00:15.00>\n");
+        let line = &lines[0];
+        let head = |at| &line.text[..read_head(line, at, None)];
+
+        assert_eq!(head(11.0), "");
+        assert_eq!(head(12.0), "");
+        // Partway through "Bring", which spans 12.0 to 12.4. Where exactly
+        // is float arithmetic; that it cuts inside the word at all is the
+        // thing, since that is what a karaoke fill looks like.
+        assert!(head(12.2).starts_with("Br"));
+        assert!(head(12.2).len() < "Bring".len());
+        // On a word's own stamp the head sits at its first character, so
+        // the space behind it reads as sung.
+        assert_eq!(head(12.4), "Bring ");
+        assert_eq!(head(12.8), "Bring me ");
+        assert_eq!(head(13.1), "Bring me to ");
+        // Past the line's own end, every word is behind the head.
+        assert_eq!(head(20.0), "Bring me to life");
+    }
+
+    /// With no word clock the head still moves, spread evenly across the
+    /// span the next line closes.
+    #[test]
+    fn read_head_spreads_a_line_synced_line() {
+        let (lines, _) = parse("[00:10.00]abcd\n[00:20.00]next\n");
+        let line = &lines[0];
+
+        assert_eq!(read_head(line, 10.0, Some(20.0)), 0);
+        assert_eq!(read_head(line, 15.0, Some(20.0)), 2);
+        assert_eq!(read_head(line, 20.0, Some(20.0)), 4);
+    }
+
+    /// A head landing mid-character would panic the split that renders it.
+    #[test]
+    fn read_head_lands_on_a_character_boundary() {
+        let (lines, _) = parse("[00:10.00]\u{3042}\u{3044}\u{3046}\n");
+        let line = &lines[0];
+        for step in 0..=40 {
+            let at = 10.0 + f64::from(step) * 0.1;
+            let head = read_head(line, at, Some(14.0));
+            assert!(line.text.is_char_boundary(head), "cut at {head} at {at}");
+        }
     }
 }

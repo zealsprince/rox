@@ -45,7 +45,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use gpui::{Context, Entity, Subscription};
 
-use rox_core::pattern::{Pattern, PatternField};
+use rox_core::pattern::{Name, Pattern, PatternField};
 use rox_core::settings::{self, Settings, safe_file_stem};
 use rox_library::writer::{self, Change, Field};
 use rox_playback::icy::{CaptureEvent, CaptureSink, IcyTitle};
@@ -225,11 +225,11 @@ pub fn source_label(source: &str) -> String {
     }
 }
 
-/// What a capture pattern may name. Every placeholder the rename dialog
-/// takes parses here, so a pattern carried over from there still works,
-/// plus the two things only a broadcast has. What the air actually gives
-/// you is an artist, a title, the station, its genre, and the clock;
-/// everything else the renamer knows parses and renders as nothing.
+/// What a capture pattern fills. Every placeholder in the app-wide
+/// vocabulary parses here, so a pattern carried over from the rename
+/// dialog still works. What the air actually gives you is an artist, a
+/// title, the station, its genre, the container and the clock;
+/// everything else parses and renders as nothing.
 #[derive(Clone, PartialEq)]
 pub enum CaptureField {
     Artist,
@@ -242,6 +242,10 @@ pub enum CaptureField {
     /// exist yet lands in a folder of its own the day it ships.
     Source,
     Genre,
+    /// The container the stream sends, "MP3". As much of a format as a
+    /// broadcast states: the bitrate it claims in its headers is a
+    /// station-wide number rather than this song's.
+    Format,
     /// The year the capture landed, off the same clock as the day.
     Year,
     /// The day the capture landed, as `YYYY-MM-DD`.
@@ -254,29 +258,24 @@ pub enum CaptureField {
 }
 
 impl PatternField for CaptureField {
-    fn from_placeholder(name: &str) -> Result<Option<Self>, String> {
-        Ok(Some(match name {
-            "artist" => CaptureField::Artist,
-            "title" => CaptureField::Title,
-            "album" | "station" => CaptureField::Station,
-            "source" => CaptureField::Source,
-            "genre" => CaptureField::Genre,
-            "year" => CaptureField::Year,
+    fn from_name(name: Name) -> Option<Self> {
+        Some(match name {
+            Name::Artist => CaptureField::Artist,
+            Name::Title => CaptureField::Title,
+            // A station is the only release a song off the air belongs
+            // to, so the album is the station.
+            Name::Album | Name::Station => CaptureField::Station,
+            Name::Source => CaptureField::Source,
+            Name::Genre => CaptureField::Genre,
+            Name::Format => CaptureField::Format,
+            Name::Year => CaptureField::Year,
             // The renamer reads %date% as the release year. A stream has
             // no release, so here it's the day the song was heard, which
             // is the only date a capture has.
-            "date" => CaptureField::Date,
-            "albumartist" | "album artist" | "track" | "tracknumber" | "disc" | "discnumber"
-            | "comment" => CaptureField::Unfilled,
-            "skip" | "dummy" | "ignore" => return Ok(None),
-            other => {
-                return Err(rox_i18n::t!(
-                    "tags-guess-unknown-placeholder",
-                    name = other.to_owned()
-                )
-                .to_string());
-            }
-        }))
+            Name::Date => CaptureField::Date,
+            Name::AlbumArtist | Name::Track | Name::Disc | Name::Comment => CaptureField::Unfilled,
+            Name::Skip => return None,
+        })
     }
 
     fn fallback(&self) -> &'static str {
@@ -293,6 +292,7 @@ impl PatternField for CaptureField {
             CaptureField::Station => "Unknown Station",
             CaptureField::Source => "Unknown Source",
             CaptureField::Genre => "Unknown Genre",
+            CaptureField::Format => "Unknown Format",
 
             // Both read off the clock at write time, so nothing reaches
             // these from a real capture. Kept total rather than
@@ -602,6 +602,7 @@ fn fields_for(title: &IcyTitle, station: &Station, stamp: &Stamp) -> Vec<(Captur
         (CaptureField::Station, station.name.clone()),
         (CaptureField::Source, station.source.clone()),
         (CaptureField::Genre, station.genre.clone()),
+        (CaptureField::Format, station.ext.to_uppercase()),
         (CaptureField::Year, stamp.year.clone()),
         (CaptureField::Date, stamp.day.clone()),
     ]

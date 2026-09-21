@@ -53,17 +53,18 @@ pub use shader::PanelShader;
 // crate::panel the way they always have, so the split stays behind this
 // line.
 pub use rox_panel_kit::{
-    Align, FlickState, ModeSpec, PANEL_NAV_CONTEXT, ResumeIdle, SLIDER_STEP, ScrubState,
-    SliderWidth, TYPE_AHEAD_CYCLE_CONTEXT, Tip, Tone, TrackedImage, VAlign, ValueEdit, align_row,
-    banner, banner_flow, check_row, choices, choices_gated, choices_icons, choices_shared,
-    display_name, flick_on_paint_axis, follow_panel, font_picker, glide_snap_axis, glide_step,
-    glide_step_axis, glide_target, glide_target_at, glide_target_axis, icon_choices, icon_control,
-    icon_control_sized, icon_toggles, items, justify, justify_v, language_picker, letter_initial,
-    letter_rail, mode_list, paint_slider, panel_nav_context, picker, scrub_on_paint, setting_block,
-    setting_row, setting_row_dyn, title_text, toggle, toggle_face, toggle_locked, tracking_section,
-    type_ahead_context, type_ahead_fade, type_ahead_grow, type_ahead_hit, type_ahead_live,
-    type_ahead_overlay, type_ahead_scan, valign_row, value_slider_edit, value_slider_edit_over,
-    value_slider_edit_sized, window_body, workspace_body,
+    Align, FlickState, ModeSpec, PANEL_NAV_CONTEXT, PatternNote, ResumeIdle, SLIDER_STEP,
+    ScrubState, SliderWidth, TYPE_AHEAD_CYCLE_CONTEXT, Tip, Tone, TrackedImage, VAlign, ValueEdit,
+    align_row, banner, banner_flow, check_row, choices, choices_gated, choices_icons,
+    choices_shared, display_name, flick_on_paint_axis, follow_panel, font_picker, glide_snap_axis,
+    glide_step, glide_step_axis, glide_target, glide_target_at, glide_target_axis, icon_choices,
+    icon_control, icon_control_sized, icon_toggles, items, justify, justify_v, language_picker,
+    letter_initial, letter_rail, mode_list, paint_slider, panel_nav_context, pattern_input, picker,
+    scrub_on_paint, setting_block, setting_row, setting_row_dyn, title_text, toggle, toggle_face,
+    toggle_locked, tracking_section, type_ahead_context, type_ahead_fade, type_ahead_grow,
+    type_ahead_hit, type_ahead_live, type_ahead_overlay, type_ahead_scan, valign_row,
+    value_slider_edit, value_slider_edit_over, value_slider_edit_sized, window_body,
+    workspace_body,
 };
 
 /// The shared entities every panel renders over: one player, one catalog,
@@ -1023,7 +1024,10 @@ fn panel_window(panel: Arc<dyn PanelView>, state: AppState, fresh: bool, cx: &mu
         // playback bindings have a dispatch path before the panel grabs
         // focus, same as the main workspace's fallback.
         host.read(cx).focus.clone().focus(window);
-        cx.new(|cx| Root::new(host, window, cx))
+        // A popped-out panel is a child window like any other, so it takes
+        // the same fallback titlebar when the compositor withholds one.
+        let framed = crate::fallback_chrome::wrap(host, cx);
+        cx.new(|cx| Root::new(framed, window, cx))
     })
     .expect("failed to open the panel window");
 }
@@ -1090,7 +1094,11 @@ fn open_window<V: 'static + Render>(
         // window needs it too.
         window.activate_window();
         let view = build(window, cx);
-        cx.new(|cx| Root::new(view, window, cx))
+        // Under a compositor that won't decorate the window, this is the
+        // only close button it gets; everywhere else the wrapper renders
+        // its child and nothing more. See `fallback_chrome`.
+        let framed = crate::fallback_chrome::wrap(view, cx);
+        cx.new(|cx| Root::new(framed, window, cx))
     })
     .expect("failed to open child window")
 }

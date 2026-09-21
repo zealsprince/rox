@@ -134,6 +134,8 @@
           "rescan": true
         },
         "os_decorations": true,
+        "chrome_style": "icons",
+        "chrome_side": "right",
         "resize_border": true
       }
     }
@@ -629,9 +631,19 @@
           }
         },
         "os_decorations": {
-          "description": "Whether the main workspace windows get the OS's own decorations\n(titlebar, borders). Off asks the compositor for a bare\nclient-drawn window; the window controls panel stands in for the\nmissing buttons. Child windows (settings, popouts, editors) keep\nthe OS chrome either way.",
+          "description": "Whether the main workspace windows get the OS's own decorations\n(titlebar, borders). Off asks the compositor for a bare\nclient-drawn window; the window controls panel stands in for the\nmissing buttons. Child windows (settings, popouts, editors) always\nask for the OS chrome, and draw the fallback titlebar below when\nthe compositor can't give it.",
           "type": "boolean",
           "default": true
+        },
+        "chrome_style": {
+          "description": "How the fallback titlebar's buttons draw: flat icons, or the macOS\ntraffic lights. Only ever seen on a Wayland compositor with no\nxdg-decoration support, where nothing else supplies a close button.",
+          "$ref": "#/$defs/ChromeStyle",
+          "default": "icons"
+        },
+        "chrome_side": {
+          "description": "Which end of the fallback titlebar those buttons sit at.",
+          "$ref": "#/$defs/ChromeSide",
+          "default": "right"
         },
         "resize_border": {
           "description": "Whether the main windows resize by dragging their edges. Windows\nonly, and only once the OS decorations are off: with them on the OS\nowns the frame and its border. Off keeps the frame itself, so the\nshadow, snap layouts and Win+arrow still work, and only the resize\ncursor at the edges goes away.",
@@ -799,6 +811,22 @@
           "default": true
         }
       }
+    },
+    "ChromeStyle": {
+      "description": "How rox's stand-in window buttons draw when it supplies its own\nchrome: flat icons in the app's palette, or the macOS traffic lights.\nShared by the window controls panel and the fallback titlebar, so a\nlayout and a settings window read the same on one desktop.",
+      "type": "string",
+      "enum": [
+        "icons",
+        "traffic"
+      ]
+    },
+    "ChromeSide": {
+      "description": "Which end of the fallback titlebar the buttons sit at. Right is the\nWindows and GNOME convention and the default; left is where macOS puts\nthem, and where anyone coming from a tiling setup tends to want them.",
+      "type": "string",
+      "enum": [
+        "left",
+        "right"
+      ]
     }
   },
   "required": [

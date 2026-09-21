@@ -166,6 +166,18 @@ pub(crate) fn apply_decorations(cx: &mut App) {
     });
 }
 
+/// Repaint every open window, deferred. The caller is usually mid-update
+/// inside one of them (a settings row, a menu action), and a refresh
+/// dispatched into the window already on the update stack is dropped, so
+/// the window that asked would be the one left stale.
+pub(crate) fn refresh_all_windows(cx: &mut App) {
+    cx.defer(|cx| {
+        for window in cx.windows() {
+            window.update(cx, |_, window, _| window.refresh()).ok();
+        }
+    });
+}
+
 /// Push the live resize-border flag at every workspace window, the
 /// decorations apply's twin. A no-op off Windows, where gpui leaves the
 /// call unimplemented. Deferred for the same reason: the Window menu runs
@@ -6246,8 +6258,22 @@ impl Render for Workspace {
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         let dock_empty = self.dock_is_empty(cx);
+        // The close this window's own titlebar runs when it has one: the
+        // same teardown the OS close button gets, so shutting the last
+        // window still quits and takes its children with it.
+        let weak = cx.weak_entity();
+        let close = move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut App| {
+            // Deferred for the reason the window controls panel defers: the
+            // teardown persists the layout, and dumping reads every panel
+            // while this one is mid-render.
+            let weak = weak.clone();
+            window.defer(cx, move |window, cx| {
+                close_workspace_window(weak.upgrade(), window, cx);
+                window.remove_window();
+            });
+        };
         panel::workspace_body(player, || {
-            div()
+            let body = div()
                 .flex()
                 .flex_col()
                 .size_full()
@@ -6541,7 +6567,17 @@ impl Render for Workspace {
                 // hitbox: an occluded workspace-root drop target would miss the
                 // drop entirely (panels block the hit test).
                 .children(self.drop_zones_overlay(window, cx).map(overlay_phase))
-                .into_any_element()
+                .into_any_element();
+            // A workspace window that asked the compositor for its frame and
+            // didn't get one draws its own, the way the child windows do.
+            // Asking to go bare (OS Decorations, off) is left alone: that
+            // layout has the window controls panel for this.
+            rox_panel_api::fallback_chrome::framed(
+                settings::window_decorations(),
+                body,
+                window,
+                close,
+            )
         })
     }
 }

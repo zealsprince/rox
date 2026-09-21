@@ -9,8 +9,9 @@ use gpui::{
     MouseDownEvent, Pixels, Stateful, Subscription, WeakEntity, Window, div, prelude::*, px, svg,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use rox_core::settings::ChromeStyle;
 use rox_dock::{Panel, PanelEvent, TabPanel};
-use rox_panel_kit::{maximize, maximize_icon, maximize_tip, traffic_lights};
+use rox_panel_kit::{icon_controls, traffic_lights};
 use serde::{Deserialize, Serialize};
 
 use crate::workspace::Workspace;
@@ -19,16 +20,6 @@ use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
 use rox_panel_api::panel_settings;
 use rox_panel_kit::{Align, align_row, justify};
-
-/// How the three buttons draw: flat icons like the rest of the chrome, or
-/// the macOS traffic lights.
-#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ControlStyle {
-    #[default]
-    Icons,
-    Traffic,
-}
 
 /// The window controls panel's per-view config: what a saved layout
 /// restores, and what the settings window edits.
@@ -39,7 +30,7 @@ pub struct WindowControlsConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     #[serde(default)]
-    pub style: ControlStyle,
+    pub style: ChromeStyle,
     /// Lead the row with the mini-layout toggle, the menubar button's
     /// twin. Only shows once a mini layout is assigned.
     #[serde(default)]
@@ -88,13 +79,13 @@ impl WindowControlsPanel {
         let weak = cx.entity().downgrade();
         let menu = menu.item(
             PopupMenuItem::new(rox_i18n::t!("window-controls-traffic-lights"))
-                .checked(self.config.style == ControlStyle::Traffic)
+                .checked(self.config.style == ChromeStyle::Traffic)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
                     this.update(cx, |this, cx| {
                         this.config.style = match this.config.style {
-                            ControlStyle::Icons => ControlStyle::Traffic,
-                            ControlStyle::Traffic => ControlStyle::Icons,
+                            ChromeStyle::Icons => ChromeStyle::Traffic,
+                            ChromeStyle::Traffic => ChromeStyle::Icons,
                         };
                         cx.notify();
                     });
@@ -193,54 +184,15 @@ impl WindowControlsPanel {
             .children(self.mini_button(cx))
             .map(|d| match self.config.style {
                 // Windows order: minimize, maximize, close.
-                ControlStyle::Icons => d
+                ChromeStyle::Icons => d
                     .gap(tokens::SPACE_XS)
-                    .child(icon_button(
-                        icons::MINUS,
-                        rox_i18n::t_static("window-controls-minimize"),
-                        |_, w, _| w.minimize_window(),
-                    ))
-                    .child(icon_button(
-                        maximize_icon(window),
-                        maximize_tip(window),
-                        maximize,
-                    ))
-                    .child(icon_button(
-                        icons::CLOSE,
-                        rox_i18n::t_static("panel-close"),
-                        cx.listener(close),
-                    )),
+                    .children(icon_controls(window, cx.listener(close))),
                 // macOS order: close, minimize, zoom.
-                ControlStyle::Traffic => d
+                ChromeStyle::Traffic => d
                     .gap(tokens::SPACE_SM)
                     .children(traffic_lights(window, cx.listener(close))),
             })
     }
-}
-
-/// One flat button: an icon that runs its click handler.
-fn icon_button(
-    icon: &'static str,
-    tip: &'static str,
-    handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    panel::Tip::from(tip).apply(
-        div()
-            .size(px(24.))
-            .rounded(tokens::RADIUS)
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|d| d.bg(palette::bg_control_hover()))
-            .on_mouse_down(MouseButton::Left, handler)
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(14.))
-                    .text_color(palette::text_muted()),
-            ),
-    )
 }
 
 impl PanelSettings for WindowControlsPanel {
@@ -283,11 +235,11 @@ impl PanelSettings for WindowControlsPanel {
                     &[
                         (
                             rox_i18n::t!("window-controls-style-icons"),
-                            ControlStyle::Icons,
+                            ChromeStyle::Icons,
                         ),
                         (
                             rox_i18n::t!("window-controls-traffic-lights"),
-                            ControlStyle::Traffic,
+                            ChromeStyle::Traffic,
                         ),
                     ],
                     self.config.style,

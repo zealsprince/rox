@@ -13,10 +13,10 @@ use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use gpui::{Context, Entity, Subscription};
 use log::{error, info, warn};
 
-use rox_core::pattern::{self, Pattern, PatternField};
+use rox_core::pattern::{self, Name, Pattern, PatternField};
 use rox_core::settings::{
-    DEFAULT_PRESENCE_FIRST_LINE, DEFAULT_PRESENCE_SECOND_LINE, DiscordSettings, DiscordStatusLine,
-    Settings,
+    DEFAULT_PRESENCE_FIRST_LINE, DEFAULT_PRESENCE_HOVER, DEFAULT_PRESENCE_SECOND_LINE,
+    DiscordSettings, DiscordStatusLine, Settings,
 };
 
 use crate::catalog::Library;
@@ -27,23 +27,9 @@ use crate::player::Player;
 /// different album by the same artist does not.
 const ART_MATCH_BAR: f32 = 0.5;
 
-/// The placeholders a card line can fill, the help line's source of
-/// truth. The renamer's names minus the tags a playing track has nothing
-/// for, plus the format the card used to keep in hover text alone.
-pub const PRESENCE_PLACEHOLDERS: &[&str] = &[
-    "%artist%",
-    "%albumartist%",
-    "%album%",
-    "%title%",
-    "%track%",
-    "%year%",
-    "%genre%",
-    "%format%",
-];
-
-/// What a card line may name. The renamer's vocabulary wherever a playing
-/// track can fill it, and the tags it can't parse and render nothing
-/// rather than refusing a pattern the rename dialog would have accepted.
+/// What a card line fills. Every placeholder in the app-wide vocabulary
+/// parses here; what a playing track can't answer for renders as nothing
+/// and takes its separator with it.
 #[derive(Clone, PartialEq)]
 pub enum PresenceField {
     Artist,
@@ -53,36 +39,36 @@ pub enum PresenceField {
     Track,
     Year,
     Genre,
+    /// The station's own name, while a station is what's playing.
+    Station,
+    /// Where what's playing came from, "Radio" or "Subsonic".
+    Source,
     /// The codec and bitrate as one phrase, "FLAC Lossless".
     Format,
     /// A placeholder the card can't fill: a comment, a disc number. It
-    /// parses and renders nothing, taking its separator with it.
+    /// parses and renders nothing rather than refusing a pattern the
+    /// rename dialog would have accepted.
     Unfilled,
 }
 
 impl PatternField for PresenceField {
-    fn from_placeholder(name: &str) -> Result<Option<Self>, String> {
-        Ok(Some(match name {
-            "artist" => PresenceField::Artist,
-            "albumartist" | "album artist" => PresenceField::AlbumArtist,
-            "album" => PresenceField::Album,
-            "title" => PresenceField::Title,
-            "track" | "tracknumber" => PresenceField::Track,
-            // The renamer reads both as the release year, and a card has
-            // no other date to mean.
-            "year" | "date" => PresenceField::Year,
-            "genre" => PresenceField::Genre,
-            "format" => PresenceField::Format,
-            "comment" | "disc" | "discnumber" => PresenceField::Unfilled,
-            "skip" | "dummy" | "ignore" => return Ok(None),
-            other => {
-                return Err(rox_i18n::t!(
-                    "tags-guess-unknown-placeholder",
-                    name = other.to_owned()
-                )
-                .to_string());
-            }
-        }))
+    fn from_name(name: Name) -> Option<Self> {
+        Some(match name {
+            Name::Artist => PresenceField::Artist,
+            Name::AlbumArtist => PresenceField::AlbumArtist,
+            Name::Album => PresenceField::Album,
+            Name::Title => PresenceField::Title,
+            Name::Track => PresenceField::Track,
+            // A track's only date is its release year, the renamer's
+            // reading of both names.
+            Name::Year | Name::Date => PresenceField::Year,
+            Name::Genre => PresenceField::Genre,
+            Name::Station => PresenceField::Station,
+            Name::Source => PresenceField::Source,
+            Name::Format => PresenceField::Format,
+            Name::Comment | Name::Disc => PresenceField::Unfilled,
+            Name::Skip => return None,
+        })
     }
 
     /// Every field here is allowed to vanish, which is the opposite of
@@ -106,6 +92,10 @@ pub struct PresenceSample {
     /// pattern that names one closes its own hole.
     pub year: String,
     pub track: String,
+    /// The station's name, empty unless a station is playing.
+    pub station: String,
+    /// The kind of source behind the track, "Radio" or "Subsonic".
+    pub source: String,
     pub codec: String,
     pub bitrate_kbps: u16,
 }
@@ -123,6 +113,8 @@ impl Default for PresenceSample {
             genre: "Electronic".into(),
             year: "1992".into(),
             track: "1".into(),
+            station: "Noise FM".into(),
+            source: "Library".into(),
             codec: "FLAC".into(),
             bitrate_kbps: 936,
         }
@@ -148,6 +140,11 @@ impl PresenceSample {
                 .unwrap_or_else(|| "Unknown Track".into())
         };
         let number = |n: u16| if n == 0 { String::new() } else { n.to_string() };
+        let station = player
+            .station_info()
+            .map(|info| info.name)
+            .unwrap_or_default();
+        let source = crate::capture::source_label(&now.key.source);
 
         let Some(meta) = meta else {
             return Some(PresenceSample {
@@ -158,6 +155,8 @@ impl PresenceSample {
                 genre: String::new(),
                 year: String::new(),
                 track: String::new(),
+                station,
+                source,
                 codec: now
                     .path()
                     .and_then(|path| path.extension())
@@ -183,6 +182,8 @@ impl PresenceSample {
             genre: meta.genre,
             year: number(meta.year),
             track: number(meta.track_no),
+            station,
+            source,
             codec: meta.codec,
             bitrate_kbps: meta.bitrate_kbps,
         })
@@ -198,6 +199,8 @@ impl PresenceSample {
             (PresenceField::Track, self.track.clone()),
             (PresenceField::Year, self.year.clone()),
             (PresenceField::Genre, self.genre.clone()),
+            (PresenceField::Station, self.station.clone()),
+            (PresenceField::Source, self.source.clone()),
             (
                 PresenceField::Format,
                 format_quality(&self.codec, self.bitrate_kbps),
@@ -242,6 +245,7 @@ pub enum DiscordCommand {
 pub struct DiscordTrackState {
     pub first_line: String,
     pub second_line: String,
+    pub hover_line: String,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -260,6 +264,7 @@ impl DiscordTrackState {
     pub fn same_metadata(&self, other: &Self) -> bool {
         self.first_line == other.first_line
             && self.second_line == other.second_line
+            && self.hover_line == other.hover_line
             && self.title == other.title
             && self.artist == other.artist
             && self.album == other.album
@@ -281,6 +286,7 @@ pub struct DiscordPresence {
     /// renders rather than re-parses.
     first_line: Pattern<PresenceField>,
     second_line: Pattern<PresenceField>,
+    hover_line: Pattern<PresenceField>,
     /// What the last tick read off the playing track, kept for the
     /// settings rows' preview. Reading it again from there would put a
     /// library lookup in a render pass, and the values are the same ones.
@@ -317,6 +323,7 @@ impl DiscordPresence {
             library: library.clone(),
             first_line: line(&config.first_line, DEFAULT_PRESENCE_FIRST_LINE),
             second_line: line(&config.second_line, DEFAULT_PRESENCE_SECOND_LINE),
+            hover_line: line(&config.hover_line, DEFAULT_PRESENCE_HOVER),
             config,
             sender: tx,
             last_sample: None,
@@ -332,14 +339,16 @@ impl DiscordPresence {
         self.config = Settings::load().accounts.discord;
         self.first_line = line(&self.config.first_line, DEFAULT_PRESENCE_FIRST_LINE);
         self.second_line = line(&self.config.second_line, DEFAULT_PRESENCE_SECOND_LINE);
+        self.hover_line = line(&self.config.hover_line, DEFAULT_PRESENCE_HOVER);
         info!(
-            "Discord RPC settings reloaded: enabled={}, lastfm_button={}, youtube_button={}, status_line={:?}, lines={:?} / {:?}",
+            "Discord RPC settings reloaded: enabled={}, lastfm_button={}, youtube_button={}, status_line={:?}, lines={:?} / {:?}, hover={:?}",
             self.config.enabled,
             self.config.show_lastfm_button,
             self.config.show_youtube_button,
             self.config.status_line,
             self.config.first_line,
-            self.config.second_line
+            self.config.second_line,
+            self.config.hover_line
         );
         self.last_sent_track = None;
         let player = self.player.clone();
@@ -382,6 +391,7 @@ impl DiscordPresence {
                 Some(DiscordTrackState {
                     first_line: self.first_line.render_line(&values),
                     second_line: self.second_line.render_line(&values),
+                    hover_line: self.hover_line.render_line(&values),
                     // The raw tags ride along beside the rendered lines:
                     // the cover art search and the two buttons want the
                     // artist and title as tags rather than as whatever
@@ -585,14 +595,6 @@ impl DiscordPresence {
                         }
 
                         let image_key = cover_url.as_deref().unwrap_or("app_icon");
-                        let format_str = format_quality(&state.codec, state.bitrate_kbps);
-
-                        let large_text = match (!state.album.is_empty(), !format_str.is_empty()) {
-                            (true, true) => format!("{} • {}", state.album, format_str),
-                            (true, false) => state.album.clone(),
-                            (false, true) => format_str,
-                            (false, false) => state.title.clone(),
-                        };
 
                         let (small_key, small_text) = if state.is_playing {
                             ("play", "Playing")
@@ -600,11 +602,19 @@ impl DiscordPresence {
                             ("pause", "Paused")
                         };
 
-                        let assets = Assets::new()
+                        let mut assets = Assets::new()
                             .large_image(image_key)
-                            .large_text(&large_text)
                             .small_image(small_key)
                             .small_text(small_text);
+
+                        // No hover text rather than an empty one, the same
+                        // rule the two lines follow: Discord draws a
+                        // tooltip for a string it was given, so an empty
+                        // one is a blank box under the pointer.
+                        if !state.hover_line.is_empty() {
+                            assets = assets.large_text(&state.hover_line);
+                        }
+
                         activity = activity.assets(assets);
 
                         // Add clickable buttons if enabled and artist/title available
@@ -728,17 +738,40 @@ mod tests {
         assert_eq!(preview("%album% (%year%)", &bare).unwrap(), "");
     }
 
-    /// %format% reads as the phrase the artwork's hover text uses, so the
-    /// two can't drift.
+    /// The artwork's hover text is the third pattern, and it ships as the
+    /// quality: the album has a line of its own now, so saying it under
+    /// the cover as well said it twice.
     #[test]
-    fn the_format_placeholder_reads_as_the_quality_phrase() {
+    fn the_hover_text_ships_as_the_quality() {
         let sample = PresenceSample::default();
 
-        assert_eq!(preview("%format%", &sample).unwrap(), "FLAC Lossless");
         assert_eq!(
-            preview("%title% • %format%", &sample).unwrap(),
-            "Xtal • FLAC Lossless"
+            preview(DEFAULT_PRESENCE_HOVER, &sample).unwrap(),
+            "FLAC Lossless"
         );
+        assert_eq!(
+            preview("%album% • %format%", &sample).unwrap(),
+            "Selected Ambient Works 85-92 • FLAC Lossless"
+        );
+    }
+
+    /// The names that aren't tags: where what's playing came from, and
+    /// the station when one is. Both are the card's own, and a pattern
+    /// can put them on either line.
+    #[test]
+    fn a_line_can_name_the_station_and_the_source() {
+        let sample = PresenceSample::default();
+
+        assert_eq!(
+            preview("%station% (%source%)", &sample).unwrap(),
+            "Noise FM (Library)"
+        );
+        // Off a file there's no station, and the line closes around it.
+        let file = PresenceSample {
+            station: String::new(),
+            ..PresenceSample::default()
+        };
+        assert_eq!(preview("%station% - %title%", &file).unwrap(), "Xtal");
     }
 
     /// A typo is refused rather than published as literal text, and the

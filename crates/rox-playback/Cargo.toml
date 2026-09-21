@@ -100,6 +100,13 @@ base64 = "0.22"
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.11"
 
+# The one call that asks macOS how much memory the machine has, which is
+# what the live buffer's ceiling is a share of. Already in the build graph
+# under half the tree's deps, so this only names it to reach the sysctl.
+# See crates/rox-playback/src/memory.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 # ADR 19's exclusive backend on Windows. cpal can't do WASAPI exclusive at
 # all, so this reaches the API directly. Same version cpal 0.18 already
 # depends on, so the two share one copy of the bindings instead of compiling
@@ -117,6 +124,9 @@ windows = { version = "0.61.3", features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    # GlobalMemoryStatusEx, which is how the live buffer's memory ceiling
+    # learns what the machine has. See crates/rox-playback/src/memory.rs.
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_Shell_PropertiesSystem",

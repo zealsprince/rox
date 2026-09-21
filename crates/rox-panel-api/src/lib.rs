@@ -15,6 +15,7 @@ pub mod bookmark_ui;
 pub mod buttons;
 pub mod charts;
 pub mod cue_ui;
+pub mod fallback_chrome;
 pub mod group_head;
 pub mod openers;
 pub mod panel;

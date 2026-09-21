@@ -5,24 +5,33 @@
 //! file inside them. foobar2000's masstagger idea, and the half of it
 //! that writes rather than reads.
 //!
-//! It lives down here because two unrelated parts of rox render names the
-//! same way and neither can see the other: the tag renamer and the
-//! conversion output naming up in the app, and the stream capture down in
-//! the services. What they share is the grammar, the escaping, and the
-//! rule that a segment can't come out empty, so that's what this module
-//! is. What each one may name is its own business: a caller brings a
+//! It lives down here because parts of rox that can't see each other
+//! render names the same way: the tag renamer and the conversion output
+//! naming up in the app, the stream capture down in the services, and
+//! Discord's presence card beside it. What they share is the grammar,
+//! the escaping, the rule that a segment can't come out empty, and
+//! [`Name`], the one set of placeholder names every box takes. What each
+//! surface can fill is its own business: a caller brings a
 //! [`PatternField`] and the engine never learns what a tag is.
+//!
+//! A name a surface has no value for still parses there and renders as
+//! nothing, so a pattern written in one box works in the next one. That
+//! is what makes the vocabulary worth sharing: without it every box
+//! would have to print its own list, and typing %station% into the wrong
+//! one would read as a mistake rather than as a blank.
 //!
 //! What isn't here either is matching, reading values back out of a path
 //! a pattern describes. That only makes sense over files that already
 //! exist and it stays with the tag guesser, on top of the same parse.
 //!
-//! Rendering is stricter than matching because it produces names rather
-//! than reads them: `%skip%` is an error, every value goes through
-//! [`safe_file_stem`] so a slash in an artist name can't open a folder,
-//! and a segment that comes out empty is refused rather than quietly
-//! dropping a folder level and putting the file somewhere it doesn't
-//! belong.
+//! A path is stricter than a line, so the two directions are separate
+//! calls. [`parse`] and [`Pattern::render`] make file names: `%skip%` is
+//! an error, values go through [`safe_file_stem`] so a slash in an
+//! artist name can't open a folder, and an empty segment is refused
+//! rather than quietly dropping a folder level. [`parse_line`] and
+//! [`Pattern::render_line`] make one line of prose for a card or a
+//! status, where a slash is a slash and an empty line is a line left
+//! off.
 
 use std::path::PathBuf;
 
@@ -41,12 +50,46 @@ pub struct Pattern<F> {
     components: Vec<Vec<Token<F>>>,
 }
 
-/// The placeholder names a pattern over tags may use, the help line's
-/// source of truth. Names only: what each one resolves to, and the
-/// aliases a vocabulary also answers to, live with the vocabulary. Kept
-/// here because the surfaces that print this list (the rename dialog, the
-/// convert dialog, the capture row) have no crate in common but this
-/// one.
+/// Every placeholder name a pattern may use, app-wide. One vocabulary
+/// rather than one per box: a pattern learned in the rename dialog parses
+/// in the capture row and in Discord's card, so nobody has to find out
+/// which box speaks which dialect.
+///
+/// What differs per surface is what it can fill. A name a surface has no
+/// value for renders nothing and takes its separator with it, which is
+/// the [`PatternField`] implementation's call, made against this enum so
+/// the compiler asks about every name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Name {
+    Artist,
+    AlbumArtist,
+    Album,
+    Title,
+    Track,
+    Disc,
+    Year,
+    /// A date rather than a year: the day a capture landed, where a
+    /// surface has one. The rename dialog reads it as the release year,
+    /// which is the only date a tagged file carries.
+    Date,
+    Genre,
+    Comment,
+    /// The station a stream came from, which doubles as its album.
+    Station,
+    /// The kind of source behind what's playing, "Radio" or "Subsonic".
+    Source,
+    /// The audio format, as much of it as the surface knows: "FLAC
+    /// Lossless" off a tagged file, the container off a stream.
+    Format,
+    /// `%skip%`: swallow a piece while matching, and render nothing.
+    /// Matching-only, so the surfaces that render don't list it.
+    Skip,
+}
+
+/// The names as a pattern spells them, in the order the placeholder tip
+/// lists them. %skip% is left out: it swallows text while matching and
+/// renders nothing, so the surfaces that read a pattern forwards have no
+/// use for it, and the one that matches says so in its own note.
 pub const PLACEHOLDERS: &[&str] = &[
     "%artist%",
     "%albumartist%",
@@ -55,21 +98,52 @@ pub const PLACEHOLDERS: &[&str] = &[
     "%track%",
     "%disc%",
     "%year%",
+    "%date%",
     "%genre%",
     "%comment%",
-    "%skip%",
+    "%station%",
+    "%source%",
+    "%format%",
 ];
+
+/// The name a placeholder spells, with the aliases folded in. An unknown
+/// name is a parse error, not a literal: a typoed `%tittle%` silently
+/// matching as text would be far harder to spot in a preview.
+fn name(text: &str) -> Result<Name, String> {
+    Ok(match text {
+        "artist" => Name::Artist,
+        "albumartist" | "album artist" => Name::AlbumArtist,
+        "album" => Name::Album,
+        "title" => Name::Title,
+        "track" | "tracknumber" => Name::Track,
+        "disc" | "discnumber" => Name::Disc,
+        "year" => Name::Year,
+        "date" => Name::Date,
+        "genre" => Name::Genre,
+        "comment" => Name::Comment,
+        "station" => Name::Station,
+        "source" => Name::Source,
+        "format" => Name::Format,
+        "skip" | "dummy" | "ignore" => Name::Skip,
+        other => {
+            return Err(
+                rox_i18n::t!("tags-guess-unknown-placeholder", name = other.to_owned()).to_string(),
+            );
+        }
+    })
+}
 
 /// What a pattern is allowed to name, and what each name does on the way
 /// out. One implementation per set of values: the tag fields up in the
-/// tag guesser, and the capture's own set down in the services, which has
-/// a station and a date and no album in the file sense.
+/// tag guesser, the capture's own set down in the services, and Discord's
+/// card beside it.
 pub trait PatternField: Clone + PartialEq + Sized {
-    /// The field a placeholder name stands for, None for the skip marker.
-    /// An unknown name is a parse error, not a literal: a typoed
-    /// `%tittle%` silently matching as text would be far harder to spot
-    /// in a preview.
-    fn from_placeholder(name: &str) -> Result<Option<Self>, String>;
+    /// The field this surface fills a name from, None for a name it
+    /// swallows rather than fills. Every surface answers for every
+    /// [`Name`], because a pattern that parses in one box has to parse in
+    /// all of them; a name with no value behind it takes a field whose
+    /// [`fallback`](PatternField::fallback) is empty and renders nothing.
+    fn from_name(name: Name) -> Option<Self>;
 
     /// What this renders as when the values carry nothing for it.
     ///
@@ -138,7 +212,7 @@ fn tokenize<F: PatternField>(part: &str) -> Result<Vec<Token<F>>, String> {
             return Err(rox_i18n::t!("tags-guess-unclosed").to_string());
         };
 
-        match F::from_placeholder(&after[..end])? {
+        match F::from_name(name(&after[..end])?) {
             Some(field) => tokens.push(Token::Capture(field)),
             None => tokens.push(Token::Skip),
         }
@@ -323,53 +397,55 @@ mod tests {
     /// A vocabulary for the engine's own tests. The tag fields live two
     /// crates up now, and what's being tested here is the grammar rather
     /// than any particular set of names: two fields that always render,
-    /// and one that's allowed to vanish.
+    /// and one that's allowed to vanish, which every name this
+    /// vocabulary doesn't spell out lands in.
     #[derive(Clone, PartialEq)]
-    enum Name {
+    enum Word {
         Artist,
         Title,
         Maybe,
     }
 
-    impl PatternField for Name {
-        fn from_placeholder(name: &str) -> Result<Option<Self>, String> {
-            Ok(Some(match name {
-                "artist" => Name::Artist,
-                "title" => Name::Title,
-                "maybe" => Name::Maybe,
-                "skip" => return Ok(None),
-                other => return Err(format!("unknown placeholder {other}")),
-            }))
+    impl PatternField for Word {
+        fn from_name(name: super::Name) -> Option<Self> {
+            match name {
+                super::Name::Artist => Some(Word::Artist),
+                super::Name::Title => Some(Word::Title),
+                super::Name::Skip => None,
+                // Everything else is a name this vocabulary carries no
+                // value for, the case every real surface has some of.
+                _ => Some(Word::Maybe),
+            }
         }
 
         fn fallback(&self) -> &'static str {
             match self {
-                Name::Artist => "Unknown Artist",
-                Name::Title => "Untitled",
-                Name::Maybe => "",
+                Word::Artist => "Unknown Artist",
+                Word::Title => "Untitled",
+                Word::Maybe => "",
             }
         }
     }
 
-    fn render(pattern: &str, values: &[(Name, &str)]) -> Result<String, String> {
-        let values: Vec<(Name, String)> = values
+    fn render(pattern: &str, values: &[(Word, &str)]) -> Result<String, String> {
+        let values: Vec<(Word, String)> = values
             .iter()
             .map(|(f, v)| (f.clone(), (*v).to_owned()))
             .collect();
 
-        parse::<Name>(pattern)
+        parse::<Word>(pattern)
             .unwrap()
             .render(&values)
             .map(|p| p.to_string_lossy().into_owned())
     }
 
-    fn render_line(pattern: &str, values: &[(Name, &str)]) -> String {
-        let values: Vec<(Name, String)> = values
+    fn render_line(pattern: &str, values: &[(Word, &str)]) -> String {
+        let values: Vec<(Word, String)> = values
             .iter()
             .map(|(f, v)| (f.clone(), (*v).to_owned()))
             .collect();
 
-        parse_line::<Name>(pattern).unwrap().render_line(&values)
+        parse_line::<Word>(pattern).unwrap().render_line(&values)
     }
 
     /// A line keeps what a file name can't: the slash the pattern wrote,
@@ -380,7 +456,7 @@ mod tests {
         assert_eq!(
             render_line(
                 "%artist% / %title%",
-                &[(Name::Artist, "AC/DC"), (Name::Title, "T.N.T.")]
+                &[(Word::Artist, "AC/DC"), (Word::Title, "T.N.T.")]
             ),
             "AC/DC / T.N.T."
         );
@@ -394,14 +470,14 @@ mod tests {
     fn an_empty_value_takes_its_separator_along() {
         assert_eq!(
             render_line(
-                "%maybe% - %title%",
-                &[(Name::Maybe, ""), (Name::Title, "Xtal")]
+                "%comment% - %title%",
+                &[(Word::Maybe, ""), (Word::Title, "Xtal")]
             ),
             "Xtal"
         );
         // Nothing to render at all is an empty line, not an error: the
         // surface leaves the line off.
-        assert_eq!(render_line("%maybe%", &[(Name::Maybe, "")]), "");
+        assert_eq!(render_line("%comment%", &[(Word::Maybe, "")]), "");
     }
 
     #[test]
@@ -409,7 +485,7 @@ mod tests {
         assert_eq!(
             render(
                 "%artist%/%title%",
-                &[(Name::Artist, "AC/DC"), (Name::Title, "Who Made Who?")]
+                &[(Word::Artist, "AC/DC"), (Word::Title, "Who Made Who?")]
             )
             .unwrap(),
             "AC DC/Who Made Who"
@@ -417,7 +493,7 @@ mod tests {
         assert_eq!(
             render(
                 "%artist% - %title%",
-                &[(Name::Artist, "../etc"), (Name::Title, "x:y|z")]
+                &[(Word::Artist, "../etc"), (Word::Title, "x:y|z")]
             )
             .unwrap(),
             "etc - x y z"
@@ -427,14 +503,14 @@ mod tests {
     #[test]
     fn empty_values_fall_back_instead_of_vanishing() {
         assert_eq!(
-            render("%artist%/%title%", &[(Name::Title, "Song")]).unwrap(),
+            render("%artist%/%title%", &[(Word::Title, "Song")]).unwrap(),
             "Unknown Artist/Song"
         );
         // A value that sanitizes down to nothing takes the same road.
         assert_eq!(
             render(
                 "%artist% - %title%",
-                &[(Name::Artist, "///"), (Name::Title, "Song")]
+                &[(Word::Artist, "///"), (Word::Title, "Song")]
             )
             .unwrap(),
             "Unknown Artist - Song"
@@ -446,7 +522,7 @@ mod tests {
         assert_eq!(
             render(
                 "%artist% - /%title%.",
-                &[(Name::Artist, "Name"), (Name::Title, "Song")]
+                &[(Word::Artist, "Name"), (Word::Title, "Song")]
             )
             .unwrap(),
             "Name -/Song"
@@ -456,25 +532,25 @@ mod tests {
     #[test]
     fn render_rejects_skip_and_empty_segments() {
         assert!(
-            parse::<Name>("%skip% - %title%")
+            parse::<Word>("%skip% - %title%")
                 .unwrap()
-                .render(&[(Name::Title, "Song".into())])
+                .render(&[(Word::Title, "Song".into())])
                 .is_err()
         );
         assert!(
-            parse::<Name>("%artist%//%title%")
+            parse::<Word>("%artist%//%title%")
                 .unwrap()
-                .render(&[(Name::Artist, "A".into()), (Name::Title, "B".into())])
+                .render(&[(Word::Artist, "A".into()), (Word::Title, "B".into())])
                 .is_err()
         );
     }
 
     #[test]
     fn parse_rejects_bad_patterns() {
-        assert!(parse::<Name>("%tittle%").is_err());
-        assert!(parse::<Name>("%artist").is_err());
-        assert!(parse::<Name>("plain text").is_err());
-        assert!(parse::<Name>("%skip%").is_err());
+        assert!(parse::<Word>("%tittle%").is_err());
+        assert!(parse::<Word>("%artist").is_err());
+        assert!(parse::<Word>("plain text").is_err());
+        assert!(parse::<Word>("%skip%").is_err());
     }
 
     /// A field with an empty fallback takes a separator with it. No tag
@@ -484,23 +560,23 @@ mod tests {
     fn a_field_allowed_to_vanish_takes_its_separator() {
         // The separator after the hole goes, wherever the hole sits.
         assert_eq!(
-            render("%maybe% - %title%", &[(Name::Title, "Song")]).unwrap(),
+            render("%comment% - %title%", &[(Word::Title, "Song")]).unwrap(),
             "Song"
         );
         assert_eq!(
-            render("%title% - %maybe%", &[(Name::Title, "Song")]).unwrap(),
+            render("%title% - %comment%", &[(Word::Title, "Song")]).unwrap(),
             "Song"
         );
         assert_eq!(
             render(
-                "%maybe% - %title%",
-                &[(Name::Maybe, "Band"), (Name::Title, "Song")]
+                "%comment% - %title%",
+                &[(Word::Maybe, "Band"), (Word::Title, "Song")]
             )
             .unwrap(),
             "Band - Song"
         );
 
         // Nothing left at all is still a refusal.
-        assert!(render("%maybe%/%title%", &[(Name::Title, "Song")]).is_err());
+        assert!(render("%comment%/%title%", &[(Word::Title, "Song")]).is_err());
     }
 }

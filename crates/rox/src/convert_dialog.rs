@@ -34,7 +34,7 @@ use rox_core::settings::{LayoutSize, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_library::writer::Field;
-use rox_panel_api::panel::AppState;
+use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ui::{self as settings_ui, Seg, kbd_line, section};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 
@@ -832,7 +832,13 @@ impl ConvertDialog {
             ))
             .child(Self::control_row(
                 rox_i18n::t!("convert-dialog-label-named"),
-                Input::new(&self.pattern).small(),
+                panel::pattern_input(
+                    "convert-pattern",
+                    &self.pattern,
+                    guess::PLACEHOLDERS,
+                    vec![rox_i18n::t!("convert-dialog-pattern-help")],
+                    None,
+                ),
             ))
             .child(
                 div()
@@ -860,20 +866,6 @@ impl ConvertDialog {
                                 this.set_mirror(!mirroring, window, cx);
                             })),
                     ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(rox_i18n::t!(
-                        "convert-dialog-pattern-help",
-                        placeholders = guess::PLACEHOLDERS
-                            .iter()
-                            .filter(|p| **p != "%skip%")
-                            .copied()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    )),
             )
     }
 

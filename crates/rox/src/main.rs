@@ -67,10 +67,11 @@ use gpui_component::Root;
 use rox_core::settings::{
     MIN_WINDOW_SIZE, Settings, layouts, note_first_run, note_os_appearance, os_decorations,
     resize_border, seed_os_appearance, set_acoustic_analysis, set_app_font, set_app_frame,
-    set_design_mode, set_experimental, set_fold_case, set_gain_mode, set_hide_menubar,
-    set_language, set_menubar_buttons, set_os_decorations, set_quit_to_tray, set_rating_dots,
-    set_rating_style, set_resize_border, set_resize_lock, set_seams, set_show_readings,
-    set_tempo_analysis, set_theme, set_workspace_migrator, window_decorations,
+    set_chrome_side, set_chrome_style, set_design_mode, set_experimental, set_fold_case,
+    set_gain_mode, set_hide_menubar, set_language, set_menubar_buttons, set_os_decorations,
+    set_quit_to_tray, set_rating_dots, set_rating_style, set_resize_border, set_resize_lock,
+    set_seams, set_show_readings, set_tempo_analysis, set_theme, set_workspace_migrator,
+    window_decorations,
 };
 use rox_core::{APP_ID, logging};
 use rox_design::assets::Assets;
@@ -491,6 +492,8 @@ fn main() {
         set_hide_menubar(settings.look.bundle.appearance.hide_menubar, cx);
         set_menubar_buttons(settings.look.bundle.appearance.menubar_buttons, cx);
         set_os_decorations(settings.look.bundle.appearance.os_decorations);
+        set_chrome_style(settings.look.bundle.appearance.chrome_style);
+        set_chrome_side(settings.look.bundle.appearance.chrome_side);
         set_resize_border(settings.look.bundle.appearance.resize_border);
         set_fold_case(settings.fold_case);
         set_show_readings(settings.show_readings, cx);

@@ -45,10 +45,11 @@ use crate::tempo_job;
 use crate::workspace::{ApplyShaders, Workspace};
 use rox_core::settings::layouts::Preset;
 use rox_core::settings::{
-    self, AcousticSave, BORDER_MAX, DEFAULT_PRESENCE_FIRST_LINE, DEFAULT_PRESENCE_SECOND_LINE,
-    DiscordStatusLine, Frame, GainModeSetting, LayoutSize, LyricsSave, MARGIN_MAX, NamedLayout,
-    PADDING_MAX, Providers, ROUNDING_MAX, RatingStyle, ReplayGainSave, Settings, ShuffleMode,
-    Theme, WorkspaceMeta, data_dir, settings_path,
+    self, AcousticSave, BORDER_MAX, ChromeSide, ChromeStyle, DEFAULT_PRESENCE_FIRST_LINE,
+    DEFAULT_PRESENCE_HOVER, DEFAULT_PRESENCE_SECOND_LINE, DiscordStatusLine, Frame,
+    GainModeSetting, LayoutSize, LyricsSave, MARGIN_MAX, NamedLayout, PADDING_MAX, Providers,
+    ROUNDING_MAX, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme, WorkspaceMeta,
+    data_dir, settings_path,
 };
 use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, ROLES, Role, Side, Sides};
@@ -59,7 +60,7 @@ use rox_library::store::{BpmCoverage, GainCoverage, Stats, Storage};
 use rox_net::lastfm::{AuthPhase, has_builtin_keys};
 use rox_net::providers;
 use rox_net::sources::stream_probe::Probe;
-use rox_panel_api::panel::{self, AppState};
+use rox_panel_api::panel::{self, AppState, PatternNote};
 use rox_panel_api::panel_settings::{ShaderNameField, ShaderSource};
 use rox_panel_api::query::search::{SearchBox, SearchEvent};
 use rox_panel_api::signal_ui::{self, routes::RouteEditState};
@@ -600,6 +601,7 @@ struct SettingsWindow {
     /// follows the typing.
     discord_first_line: Entity<InputState>,
     discord_second_line: Entity<InputState>,
+    discord_hover_line: Entity<InputState>,
     /// The api credential inputs; edits write through to the scrobbler per
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
@@ -1410,6 +1412,11 @@ impl SettingsWindow {
                 .placeholder(DEFAULT_PRESENCE_SECOND_LINE)
                 .default_value(settings.accounts.discord.second_line.clone())
         });
+        let discord_hover_line = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(DEFAULT_PRESENCE_HOVER)
+                .default_value(settings.accounts.discord.hover_line.clone())
+        });
         let _discord_line_changes = vec![
             cx.subscribe(
                 &discord_first_line,
@@ -1428,6 +1435,17 @@ impl SettingsWindow {
                     if let InputEvent::Change = event {
                         let value = input.read(cx).value().trim().to_string();
                         Settings::update(move |s| s.accounts.discord.second_line = value);
+                        this.discord.update(cx, |d, cx| d.reload_config(cx));
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.subscribe(
+                &discord_hover_line,
+                |this: &mut Self, input, event: &InputEvent, cx| {
+                    if let InputEvent::Change = event {
+                        let value = input.read(cx).value().trim().to_string();
+                        Settings::update(move |s| s.accounts.discord.hover_line = value);
                         this.discord.update(cx, |d, cx| d.reload_config(cx));
                         cx.notify();
                     }
@@ -1601,6 +1619,7 @@ impl SettingsWindow {
             discord_status_line: settings.accounts.discord.status_line,
             discord_first_line,
             discord_second_line,
+            discord_hover_line,
             lastfm_key,
             lastfm_secret,
             listenbrainz_token,
@@ -2073,6 +2092,23 @@ impl SettingsWindow {
         settings::set_os_decorations(on);
         Settings::update(move |s| s.look.bundle.appearance.os_decorations = on);
         crate::workspace::apply_decorations(cx);
+        cx.notify();
+    }
+
+    /// The fallback titlebar's style and side. Every open window repaints
+    /// rather than just the workspaces: the strip draws in the child
+    /// windows too, this one included.
+    fn set_chrome_style(&mut self, style: ChromeStyle, cx: &mut Context<Self>) {
+        settings::set_chrome_style(style);
+        Settings::update(move |s| s.look.bundle.appearance.chrome_style = style);
+        crate::workspace::refresh_all_windows(cx);
+        cx.notify();
+    }
+
+    fn set_chrome_side(&mut self, side: ChromeSide, cx: &mut Context<Self>) {
+        settings::set_chrome_side(side);
+        Settings::update(move |s| s.look.bundle.appearance.chrome_side = side);
+        crate::workspace::refresh_all_windows(cx);
         cx.notify();
     }
 
@@ -2602,6 +2638,51 @@ impl SettingsWindow {
                         &["title bar", "chrome", "frameless"],
                         panel::toggle(settings::os_decorations(), Self::set_os_decorations, cx),
                     )
+                    // Linux only: it's the one platform where the compositor
+                    // can refuse the OS frame outright, so the stand-in strip
+                    // these two dress is the only thing that ever draws there.
+                    // On Windows and macOS the frame always arrives and the
+                    // rows would be knobs on something invisible.
+                    .when(cfg!(target_os = "linux"), |rows| {
+                        rows.keyed(
+                            "settings-appearance-chrome-style",
+                            &["title bar", "buttons", "close", "traffic lights"],
+                            panel::choices_shared(
+                                &[
+                                    (
+                                        rox_i18n::t!("window-controls-style-icons"),
+                                        ChromeStyle::Icons,
+                                    ),
+                                    (
+                                        rox_i18n::t!("window-controls-traffic-lights"),
+                                        ChromeStyle::Traffic,
+                                    ),
+                                ],
+                                settings::chrome_style(),
+                                Self::set_chrome_style,
+                                cx,
+                            ),
+                        )
+                        .keyed(
+                            "settings-appearance-chrome-side",
+                            &["title bar", "buttons", "align", "left", "right"],
+                            panel::choices_shared(
+                                &[
+                                    (
+                                        rox_i18n::t!("settings-appearance-chrome-side-left"),
+                                        ChromeSide::Left,
+                                    ),
+                                    (
+                                        rox_i18n::t!("settings-appearance-chrome-side-right"),
+                                        ChromeSide::Right,
+                                    ),
+                                ],
+                                settings::chrome_side(),
+                                Self::set_chrome_side,
+                                cx,
+                            ),
+                        )
+                    })
                     // Windows only: on Linux and macOS the borderless window has
                     // no edge resize to take away, so the row would be a switch
                     // that does nothing.
@@ -5318,7 +5399,8 @@ impl SettingsWindow {
     /// listener is about to tune into. A station already playing gets a
     /// third clause at its own measured rate, which is the one figure on
     /// the row that's about this listener's own memory rather than radio
-    /// in general.
+    /// in general. The ceiling comes last, because every weight above it
+    /// is what the length asks for rather than what it gets.
     fn live_buffer_description(&self, cx: &mut Context<Self>) -> SharedString {
         let player = self.playback.read(cx);
         let secs = player.live_buffer_secs() as f64;
@@ -5338,6 +5420,19 @@ impl SettingsWindow {
             text.push_str(&rox_i18n::t!(
                 "settings-playback-live-buffer-playing",
                 size = weight(rate),
+            ));
+        }
+
+        // The ceiling under all of it, which the weights above can be well
+        // past: a lossless station at twelve hours asks for more memory
+        // than most machines have. Named only when the machine said how
+        // much it has, since the sentence is about this machine's memory
+        // and there's nothing honest to say about a figure we guessed.
+        if rox_playback::memory::total().is_some() {
+            text.push(' ');
+            text.push_str(&rox_i18n::t!(
+                "settings-playback-live-buffer-cap",
+                cap = human_size(rox_playback::memory::live_buffer_cap() as u64),
             ));
         }
 
@@ -5652,45 +5747,62 @@ impl SettingsWindow {
                     // The card's own contents live on a presence that's
                     // being shown.
                     .when(self.discord_enabled, |rows| {
-                        // The vocabulary is the renamer's, minus what a
-                        // playing track has nothing for, plus the format.
-                        let placeholders = SharedString::from(
-                            rox_services::discord_presence::PRESENCE_PLACEHOLDERS.join(" "),
-                        );
                         let first = self.discord_first_line.clone();
                         let second = self.discord_second_line.clone();
+                        let hover = self.discord_hover_line.clone();
                         let presence = self.discord.read(cx);
-                        let first_preview = presence.preview_line(first.read(cx).value().trim());
-                        let second_preview = presence.preview_line(second.read(cx).value().trim());
+                        let first_note = presence_line_note(
+                            presence.preview_line(first.read(cx).value().trim()),
+                        );
+                        let second_note = presence_line_note(
+                            presence.preview_line(second.read(cx).value().trim()),
+                        );
+                        let hover_note = presence_line_note(
+                            presence.preview_line(hover.read(cx).value().trim()),
+                        );
 
                         rows.custom(
                             &["discord", "line", "pattern", "title", "artist", "template"],
-                            {
-                                let placeholders = placeholders.clone();
-                                move || {
-                                    presence_line_block(
-                                        rox_i18n::t!("settings-integrations-discord-first-line"),
-                                        rox_i18n::t!(
-                                            "settings-integrations-discord-first-line.description"
-                                        ),
-                                        first,
-                                        placeholders,
-                                        first_preview,
-                                    )
-                                }
+                            move || {
+                                presence_line_block(
+                                    "discord-first-line",
+                                    rox_i18n::t!("settings-integrations-discord-first-line"),
+                                    rox_i18n::t!(
+                                        "settings-integrations-discord-first-line.description"
+                                    ),
+                                    &first,
+                                    first_note,
+                                )
                             },
                         )
                         .custom(
                             &["discord", "line", "pattern", "album", "template"],
                             move || {
                                 presence_line_block(
+                                    "discord-second-line",
                                     rox_i18n::t!("settings-integrations-discord-second-line"),
                                     rox_i18n::t!(
                                         "settings-integrations-discord-second-line.description"
                                     ),
-                                    second,
-                                    placeholders,
-                                    second_preview,
+                                    &second,
+                                    second_note,
+                                )
+                            },
+                        )
+                        .custom(
+                            &[
+                                "discord", "hover", "tooltip", "artwork", "cover", "quality",
+                                "template",
+                            ],
+                            move || {
+                                presence_line_block(
+                                    "discord-hover-line",
+                                    rox_i18n::t!("settings-integrations-discord-hover-line"),
+                                    rox_i18n::t!(
+                                        "settings-integrations-discord-hover-line.description"
+                                    ),
+                                    &hover,
+                                    hover_note,
                                 )
                             },
                         )
@@ -6650,6 +6762,8 @@ impl SettingsWindow {
             rox_i18n::t!("settings-playback-section-capture"),
             None,
             |rows| {
+                let buffer = self.playback.read(cx).live_buffer_secs();
+
                 rows.keyed(
                     "settings-playback-capture-enable",
                     &[
@@ -6657,23 +6771,43 @@ impl SettingsWindow {
                     ],
                     panel::toggle(self.capture_enabled, Self::set_capture_enabled, cx),
                 )
+                // A saved song is only ever as long as the buffer it comes
+                // out of, so a buffer shorter than what a station plays is
+                // capture quietly doing nothing, with the setting that
+                // decides it sitting in another section. Warn rather than
+                // Bad, the same reading the ffmpeg note takes: nothing
+                // failed, a capability is just out of reach where it stands.
+                .when(
+                    self.capture_enabled && buffer < settings::DEFAULT_LIVE_BUFFER_SECS,
+                    |rows| {
+                        rows.custom(&["capture", "buffer", "short", "length"], || {
+                            panel::banner(
+                                panel::Tone::Warn,
+                                rox_i18n::t!("settings-playback-capture-buffer-title"),
+                                vec![rox_i18n::t!(
+                                    "settings-playback-capture-buffer-note",
+                                    buffer = settings_ui::fmt_duration_secs(buffer as f32),
+                                    default = settings_ui::fmt_duration_secs(
+                                        settings::DEFAULT_LIVE_BUFFER_SECS as f32
+                                    ),
+                                )],
+                            )
+                            .into_any_element()
+                        })
+                    },
+                )
                 .when(self.capture_enabled, |rows| {
                     let folder = self.capture_folder.clone();
 
                     // The vocabulary is the renamer's, so a pattern
-                    // learned there reads the same here, plus the two
-                    // things only a broadcast has. %skip% is left out for
-                    // the same reason the rename dialog leaves it out: it
-                    // swallows text while matching and renders nothing.
-                    let placeholders = SharedString::from(
-                        rox_core::pattern::PLACEHOLDERS
-                            .iter()
-                            .filter(|p| **p != "%skip%")
-                            .copied()
-                            .chain(["%station%", "%source%", "%date%"])
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    );
+                    // learned there reads the same here. What the tip
+                    // adds is the three names a broadcast reads its own
+                    // way.
+                    let notes = vec![
+                        rox_i18n::t!("settings-playback-capture-pattern-station"),
+                        rox_i18n::t!("settings-playback-capture-pattern-source"),
+                        rox_i18n::t!("settings-playback-capture-pattern-date"),
+                    ];
                     let sample =
                         capture::Sample::playing(self.playback.read(cx)).unwrap_or_default();
                     let preview =
@@ -6730,54 +6864,30 @@ impl SettingsWindow {
                             "structure",
                         ],
                         move || {
+                            let note = match preview {
+                                Ok(name) => PatternNote::Preview(rox_i18n::t!(
+                                    "settings-playback-capture-pattern-preview",
+                                    name = name
+                                )),
+
+                                Err(e) => PatternNote::Wrong(e.into()),
+                            };
+
                             panel::setting_block(
                                 rox_i18n::t!("settings-playback-capture-pattern"),
                                 Some(rox_i18n::t!(
                                     "settings-playback-capture-pattern.description"
                                 )),
                                 None,
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(tokens::SPACE_XS)
-                                    // The input carries its width as 100% and
-                                    // has no size of its own, so as a flex item
-                                    // it shrinks to its padding. A plain div
-                                    // around it is the slot Capture Album's
-                                    // input sits in directly.
-                                    .child(div().child(Input::new(&pattern_input).small()))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(palette::text_muted())
-                                            .child(placeholders),
-                                    )
-                                    .child(div().text_xs().text_color(palette::text_muted()).child(
-                                        SharedString::from(format!(
-                                            "{} {} {}",
-                                            rox_i18n::t!(
-                                                "settings-playback-capture-pattern-station"
-                                            ),
-                                            rox_i18n::t!(
-                                                "settings-playback-capture-pattern-source"
-                                            ),
-                                            rox_i18n::t!("settings-playback-capture-pattern-date"),
-                                        )),
-                                    ))
-                                    .child(match preview {
-                                        Ok(name) => div()
-                                            .text_xs()
-                                            .text_color(palette::text_bright())
-                                            .child(rox_i18n::t!(
-                                                "settings-playback-capture-pattern-preview",
-                                                name = name
-                                            )),
-
-                                        Err(e) => div()
-                                            .text_xs()
-                                            .text_color(palette::tone_warn())
-                                            .child(SharedString::from(e)),
-                                    }),
+                                panel::pattern_input(
+                                    "capture-pattern",
+                                    &pattern_input,
+                                    rox_core::pattern::PLACEHOLDERS,
+                                    notes,
+                                    Some(note),
+                                )
+                                .flex_1()
+                                .min_w_0(),
                             )
                             .into_any_element()
                         },
@@ -10188,59 +10298,50 @@ fn coverage_note(text: String) -> Div {
         .child(text)
 }
 
-/// One Discord card line's block: the pattern input, the placeholders it
-/// may name, and what the line reads as right now. Both lines take the
-/// same shape, so they share the builder, and it mirrors the capture
-/// pattern's block because a pattern row is a pattern row.
-fn presence_line_block(
-    title: SharedString,
-    description: SharedString,
-    input: Entity<InputState>,
-    placeholders: SharedString,
-    preview: Result<String, String>,
-) -> AnyElement {
-    let readout = match preview {
+/// What the line under a Discord card line's input says: the line the
+/// card will show, a note where the pattern renders nothing, or what's
+/// wrong with the pattern.
+fn presence_line_note(preview: Result<String, String>) -> PatternNote {
+    match preview {
         // A line that renders to nothing isn't an error, but it does need
         // saying: the card goes out without it.
-        Ok(line) if line.is_empty() => div()
-            .text_xs()
-            .text_color(palette::text_muted())
-            .child(rox_i18n::t!("settings-integrations-discord-line-off")),
+        Ok(line) if line.is_empty() => {
+            PatternNote::Quiet(rox_i18n::t!("settings-integrations-discord-line-off"))
+        }
 
-        Ok(line) => div()
-            .text_xs()
-            .text_color(palette::text_bright())
-            .child(rox_i18n::t!(
-                "settings-integrations-discord-line-preview",
-                line = line
-            )),
+        Ok(line) => PatternNote::Preview(rox_i18n::t!(
+            "settings-integrations-discord-line-preview",
+            line = line
+        )),
 
-        Err(e) => div()
-            .text_xs()
-            .text_color(palette::tone_warn())
-            .child(SharedString::from(e)),
-    };
+        Err(e) => PatternNote::Wrong(e.into()),
+    }
+}
 
+/// One Discord card line's block: the label, and the pattern box every
+/// other pattern in the app is typed into.
+fn presence_line_block(
+    id: &'static str,
+    title: SharedString,
+    description: SharedString,
+    input: &Entity<InputState>,
+    note: PatternNote,
+) -> AnyElement {
     panel::setting_block(
         title,
         Some(description),
         None,
-        div()
-            .flex()
-            .flex_col()
-            // Fill the block rather than shrinking to the placeholder
-            // line, the same as the capture pattern's column.
-            .flex_1()
-            .min_w_0()
-            .gap(tokens::SPACE_XS)
-            .child(Input::new(&input).small())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(placeholders),
-            )
-            .child(readout),
+        panel::pattern_input(
+            id,
+            input,
+            rox_core::pattern::PLACEHOLDERS,
+            Vec::new(),
+            Some(note),
+        )
+        // Fill the block rather than shrinking to the input's own width,
+        // the same as the capture pattern's column.
+        .flex_1()
+        .min_w_0(),
     )
     .into_any_element()
 }

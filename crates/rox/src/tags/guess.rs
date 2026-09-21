@@ -18,13 +18,13 @@
 
 use std::path::{Path, PathBuf};
 
-use rox_core::pattern::{PatternField, Token};
+use rox_core::pattern::{Name, PatternField, Token};
 use rox_library::writer::Field;
 
 pub use rox_core::pattern::PLACEHOLDERS;
 
-/// The tag fields as a pattern vocabulary: which placeholder names this
-/// crate answers to, and what each one renders as. The engine down in
+/// The tag fields as a pattern vocabulary: what this crate makes of each
+/// placeholder name, and what it renders as. The engine down in
 /// [`rox_core::pattern`] never learns what a tag is, so this is where
 /// that gets said.
 ///
@@ -33,32 +33,32 @@ pub use rox_core::pattern::PLACEHOLDERS;
 /// an impl from a third. It stays inside this module: everything outside
 /// hands over and takes back plain [`Field`] values.
 #[derive(Clone, PartialEq)]
-struct TagField(Field);
+enum TagField {
+    Tag(Field),
+    /// A name the vocabulary parses and a file can't answer: the station
+    /// a stream came from, its source, the audio format. They belong to
+    /// the surfaces that have them, and a pattern carried over from one
+    /// of those renders without them here rather than being refused.
+    Unfilled,
+}
 
 impl PatternField for TagField {
-    /// Unknown names are a parse error, not a literal: a typoed
-    /// `%tittle%` silently matching as text would be far harder to spot
-    /// in the preview.
-    fn from_placeholder(name: &str) -> Result<Option<Self>, String> {
-        Ok(Some(TagField(match name {
-            "artist" => Field::Artist,
-            "albumartist" | "album artist" => Field::AlbumArtist,
-            "album" => Field::Album,
-            "title" => Field::Title,
-            "track" | "tracknumber" => Field::TrackNo,
-            "disc" | "discnumber" => Field::DiscNo,
-            "year" | "date" => Field::Year,
-            "genre" => Field::Genre,
-            "comment" => Field::Comment,
-            "skip" | "dummy" | "ignore" => return Ok(None),
-            other => {
-                return Err(rox_i18n::t!(
-                    "tags-guess-unknown-placeholder",
-                    name = other.to_owned()
-                )
-                .to_string());
-            }
-        })))
+    fn from_name(name: Name) -> Option<Self> {
+        Some(TagField::Tag(match name {
+            Name::Artist => Field::Artist,
+            Name::AlbumArtist => Field::AlbumArtist,
+            Name::Album => Field::Album,
+            Name::Title => Field::Title,
+            Name::Track => Field::TrackNo,
+            Name::Disc => Field::DiscNo,
+            // A tagged file's only date is its release year, so both
+            // names read as that.
+            Name::Year | Name::Date => Field::Year,
+            Name::Genre => Field::Genre,
+            Name::Comment => Field::Comment,
+            Name::Station | Name::Source | Name::Format => return Some(TagField::Unfilled),
+            Name::Skip => return None,
+        }))
     }
 
     /// What a field renders as when the track has nothing for it. No tag
@@ -67,7 +67,14 @@ impl PatternField for TagField {
     /// double as the sanitizer's fallback, so a value of pure punctuation
     /// ends up here too.
     fn fallback(&self) -> &'static str {
-        match self.0 {
+        let field = match self {
+            TagField::Tag(field) => field,
+            // The one field that is allowed to vanish, because there was
+            // never a value to miss.
+            TagField::Unfilled => return "",
+        };
+
+        match field {
             Field::Artist | Field::AlbumArtist => "Unknown Artist",
             Field::Album => "Unknown Album",
             Field::Title => "Untitled",
@@ -83,8 +90,8 @@ impl PatternField for TagField {
     }
 
     fn value(&self, raw: &str) -> String {
-        match self.0 {
-            Field::TrackNo | Field::DiscNo => padded(raw),
+        match self {
+            TagField::Tag(Field::TrackNo | Field::DiscNo) => padded(raw),
             _ => raw.trim().to_owned(),
         }
     }
@@ -139,8 +146,11 @@ fn match_tokens(tokens: &[Token<TagField>], text: &str, out: &mut Vec<(Field, St
                     continue;
                 }
                 let mark = out.len();
-                if let Token::Capture(field) = token {
-                    out.push((field.0.clone(), trimmed.to_owned()));
+                // An unfilled name matches like %skip%: the text it
+                // covers is swallowed, and there's no tag to keep it
+                // under.
+                if let Token::Capture(TagField::Tag(field)) = token {
+                    out.push((field.clone(), trimmed.to_owned()));
                 }
                 if match_tokens(&tokens[1..], rest, out) {
                     return true;
@@ -166,7 +176,7 @@ impl Pattern {
     pub fn render(&self, values: &[(Field, String)]) -> Result<PathBuf, String> {
         let values: Vec<(TagField, String)> = values
             .iter()
-            .map(|(field, value)| (TagField(field.clone()), value.clone()))
+            .map(|(field, value)| (TagField::Tag(field.clone()), value.clone()))
             .collect();
 
         self.0.render(&values)
@@ -266,6 +276,25 @@ mod tests {
                 (Field::Title, "Outro".into())
             ]
         );
+    }
+
+    /// A name this vocabulary can't fill still parses, so a pattern
+    /// written in the capture row or on Discord's card carries over.
+    /// Matching swallows it like %skip%, and rendering leaves it out
+    /// along with its separator.
+    #[test]
+    fn a_name_a_file_cannot_answer_carries_over_anyway() {
+        let got = apply("%station% - %title%", "/m/Noise FM - Song.mp3").unwrap();
+        assert_eq!(got, vec![(Field::Title, "Song".into())]);
+
+        let rendered = parse("%artist% - %format%/%title%")
+            .unwrap()
+            .render(&[
+                (Field::Artist, "Boards".into()),
+                (Field::Title, "Julie".into()),
+            ])
+            .unwrap();
+        assert_eq!(rendered, PathBuf::from("Boards/Julie"));
     }
 
     #[test]

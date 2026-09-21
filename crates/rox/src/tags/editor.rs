@@ -44,7 +44,7 @@ use rox_core::settings::{RatingStyle, Settings, rating_style};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_net::providers;
-use rox_panel_api::panel::AppState;
+use rox_panel_api::panel::{self, AppState};
 use rox_panel_api::suggest;
 use rox_panel_kit::ui::{
     self as settings_ui, SECTION_GAP, Seg, kbd_line, section, section_with_control,
@@ -2396,22 +2396,19 @@ impl TagEditor {
                             // preview is right there and a save would
                             // close the window out from under it.
                             .on_action(|_: &Save, _, cx: &mut App| cx.stop_propagation())
-                            .child(Input::new(&self.pattern).small()),
+                            .child(panel::pattern_input(
+                                "guess-pattern",
+                                &self.pattern,
+                                guess::PLACEHOLDERS,
+                                vec![rox_i18n::t!("tags-editor-guess-help")],
+                                None,
+                            )),
                     )
                     .child(settings_ui::small_button(
                         "Apply",
                         icons::ARROW_DOWN,
                         self.saving || self.baselines.is_none() || hits == 0,
                         cx.listener(|this, _, window, cx| this.apply_guesses(window, cx)),
-                    )),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(rox_i18n::t!(
-                        "tags-editor-guess-help",
-                        placeholders = guess::PLACEHOLDERS.join(" ")
                     )),
             )
             .children(rows)

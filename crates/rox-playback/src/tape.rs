@@ -200,6 +200,11 @@ pub struct Tape {
 struct Inner {
     /// The window itself: raw container bytes, oldest first.
     buf: Vec<u8>,
+    /// The ceiling on that window in bytes, whatever length it's set to:
+    /// [`crate::memory::live_buffer_cap`], a share of what the machine has.
+    /// Read off the machine once at the open and then held, so the trim
+    /// doesn't go asking the OS anything.
+    cap_bytes: usize,
     /// Stream offset `buf[0]` sits at. Everything else here is an absolute
     /// offset on that same clock, so a cursor stays meaningful after the
     /// bytes under it have been dropped.
@@ -433,21 +438,67 @@ impl Inner {
         self.start + self.buf.len() as u64
     }
 
-    /// How many bytes `window_secs` of this station comes to. The rate is
-    /// held to a band here and nowhere else: too low an estimate would make
-    /// the window shorter than the listener asked for, too high is memory
-    /// spent on a station that doesn't need it, and neither is worth
-    /// inheriting from a header a station made up.
+    /// How many bytes `window_secs` of this station comes to, and never
+    /// more than the machine can spare. The rate is held to a band here and
+    /// nowhere else: too low an estimate would make the window shorter than
+    /// the listener asked for, too high is memory spent on a station that
+    /// doesn't need it, and neither is worth inheriting from a header a
+    /// station made up.
+    ///
+    /// [`cap_bytes`](Inner::cap_bytes) is the other half of the rule. The
+    /// length is set in seconds against a bitrate nobody knows at the time,
+    /// so a fat enough station would otherwise turn twelve hours into
+    /// however much of the machine's memory it likes. Past the ceiling the
+    /// window comes up short of the length it was asked for, which is what
+    /// [`held_secs`](Inner::held_secs) publishes.
     fn cap(&self, cap_secs: u32) -> usize {
         let bps = self.rate.bytes_per_sec().clamp(RATE_FLOOR, RATE_CEILING);
 
-        (bps * cap_secs as f64) as usize
+        ((bps * cap_secs as f64) as usize).min(self.cap_bytes)
+    }
+
+    /// The window as it will actually be held, in seconds: the length it
+    /// was set to, or what the memory ceiling leaves of it at this
+    /// station's rate, whichever is shorter.
+    ///
+    /// This rather than the setting is what gets published, because the
+    /// strip is drawn against it. A capped window measured against the
+    /// length nobody is going to get would read as a buffer still filling,
+    /// forever.
+    fn held_secs(&self, cap_secs: u32, bps: f64) -> f64 {
+        let asked = cap_secs as f64;
+
+        match bps > 0.0 {
+            true => (self.cap(cap_secs) as f64 / bps).min(asked),
+            false => asked,
+        }
+    }
+
+    /// Make room for `incoming` bytes without letting the allocation run
+    /// away from the cap. A Vec grows by doubling, which near the ceiling
+    /// means holding twice the window the ceiling is there to bound.
+    /// Doubling is still what a tape well under its cap does, since that's
+    /// what keeps filling one cheap; only once the window is within a
+    /// sixteenth of the cap does the growth flatten into steps of that
+    /// size, which is also what the trim below hands back.
+    fn reserve(&mut self, cap: usize, incoming: usize) {
+        if self.buf.capacity() >= self.buf.len() + incoming {
+            return;
+        }
+
+        let step = (cap / TRIM_SLACK).min(self.buf.len());
+        self.buf.reserve_exact(incoming + step);
     }
 
     /// Drop the oldest bytes once the window has overrun its cap, and the
     /// gaps and title marks that went with them.
     fn trim(&mut self, cap_secs: u32) {
-        let cap = self.cap(cap_secs);
+        self.trim_to(self.cap(cap_secs));
+    }
+
+    /// The same against a cap already worked out, for the append that has
+    /// one in hand.
+    fn trim_to(&mut self, cap: usize) {
         if self.buf.len() <= cap + cap / TRIM_SLACK {
             return;
         }
@@ -479,6 +530,18 @@ impl Inner {
         // fewer to draw.
         if self.inside_marks() != inside || self.gaps.len() != spliced {
             self.marks_rev += 1;
+        }
+
+        // The drain hands back length, not memory: the allocation stays at
+        // whatever high-water mark it reached, so a window turned down from
+        // twelve hours to ten minutes would sit on the twelve hours of
+        // memory until the station ended. Hand it back once it's half a
+        // window clear of what the cap needs, which a tape at a steady cap
+        // never is, since the reserve above only ever grows it a sixteenth
+        // past the trim point.
+        let keep = cap + cap / TRIM_SLACK;
+        if self.buf.capacity() > keep + cap / 2 {
+            self.buf.shrink_to(keep);
         }
     }
 
@@ -619,6 +682,7 @@ impl Tape {
         Tape {
             inner: Mutex::new(Inner {
                 buf: Vec::new(),
+                cap_bytes: crate::memory::live_buffer_cap(),
                 start: 0,
                 cursor: 0,
                 gaps: VecDeque::new(),
@@ -649,9 +713,18 @@ impl Tape {
         }
     }
 
-    /// How long a window this is set to hold, in seconds.
+    /// How long a window this is set to hold, in seconds. What it will
+    /// actually hold is this or what the memory ceiling leaves of it,
+    /// whichever is shorter, which is the `cap_secs` the shift publishes.
     pub fn cap_secs(&self) -> u32 {
         self.cap_secs.load(Ordering::Relaxed)
+    }
+
+    /// Put a smaller machine under this tape, so a test can reach the
+    /// memory ceiling at a size it can actually write.
+    #[cfg(test)]
+    fn set_cap_bytes(&self, bytes: usize) {
+        self.inner.lock().unwrap().cap_bytes = bytes;
     }
 
     /// Re-cap the tape with a station already on air, for the setting being
@@ -677,10 +750,16 @@ impl Tape {
         }
 
         let mut inner = self.inner.lock().unwrap();
-        inner.buf.extend_from_slice(bytes);
         inner.rate.wire_bytes += bytes.len() as u64;
         inner.last_chunk = bytes.len();
-        inner.trim(self.cap_secs());
+
+        // One cap for the pair: the room made for this chunk and the trim
+        // that follows it are the same number, so the window can't be grown
+        // for and then cut against two different readings of the rate.
+        let cap = inner.cap(self.cap_secs());
+        inner.reserve(cap, bytes.len());
+        inner.buf.extend_from_slice(bytes);
+        inner.trim_to(cap);
         drop(inner);
 
         self.wake.notify_all();
@@ -817,7 +896,7 @@ impl Tape {
         Shift {
             behind_secs,
             window_secs: (edge - inner.start as f64).max(0.0) / bps,
-            cap_secs: self.cap_secs() as f64,
+            cap_secs: inner.held_secs(self.cap_secs(), bps),
             bytes_per_sec: bps,
             song_secs: song_at.map(|at| (heard - at as f64).max(0.0) / bps),
             song_len_secs: song_at
@@ -1600,6 +1679,61 @@ mod tests {
             "what's held, not the cap: {window}"
         );
         assert_eq!(tape.shift().cap_secs, 600.0);
+    }
+
+    /// The length is set in seconds and paid for in memory, so there's a
+    /// ceiling in bytes under it: a station fat enough to spend the
+    /// machine's memory on the length asked for gets a shorter window
+    /// instead of the memory.
+    #[test]
+    fn the_memory_ceiling_cuts_a_window_the_setting_asked_for() {
+        // 256 kbps is 32 kB/s, so ten minutes of it is 19.2 MB. On a
+        // machine that can only spare 2 MB, those ten minutes are a minute
+        // and two seconds.
+        let tape = tape(600, 256);
+        tape.set_cap_bytes(2_000_000);
+        feed(&tape, 19_200_000);
+
+        let held = tape.inner.lock().unwrap().buf.len();
+        assert!(
+            held <= 2_000_000 + 2_000_000 / TRIM_SLACK,
+            "held {held} bytes"
+        );
+        assert_eq!(tape.cap_secs(), 600, "the setting itself is untouched");
+        assert_eq!(tape.shift().cap_secs, 62.5, "and the strip is drawn to it");
+    }
+
+    /// What's allocated behind the window stays inside the ceiling too. A
+    /// Vec doubles when it runs out of room, and a doubling at the ceiling
+    /// is twice the memory the ceiling is there to bound.
+    #[test]
+    fn the_allocation_stays_inside_the_ceiling() {
+        // Twice the ten minutes the tape will hold, so the growth has run
+        // well past where a doubling would have landed.
+        let tape = tape(600, 256);
+        feed(&tape, 38_400_000);
+
+        let inner = tape.inner.lock().unwrap();
+        let capacity = inner.buf.capacity();
+        assert!(inner.buf.len() <= 19_200_000 + 19_200_000 / TRIM_SLACK);
+        assert!(capacity < 24_000_000, "allocation of {capacity} bytes");
+    }
+
+    /// And turning the setting down hands the allocation back, not just
+    /// the length: the drain leaves the old window's memory sitting there
+    /// otherwise, which is the memory the listener just asked for back.
+    #[test]
+    fn a_smaller_cap_hands_the_allocation_back() {
+        let tape = tape(600, 256);
+        feed(&tape, 19_200_000);
+        assert!(tape.inner.lock().unwrap().buf.capacity() >= 19_200_000);
+
+        tape.set_cap_secs(60);
+
+        let inner = tape.inner.lock().unwrap();
+        assert_eq!(inner.buf.len(), 1_920_000);
+        let capacity = inner.buf.capacity();
+        assert!(capacity < 4_000_000, "allocation of {capacity} bytes");
     }
 
     /// The rate the window is sized against rides along too, because it's

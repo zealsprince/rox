@@ -64,9 +64,10 @@ pub struct Shift {
     /// `cap_secs` until a station has been on long enough to fill the
     /// buffer, and equal to it from then on.
     pub window_secs: f64,
-    /// How much the buffer is set to hold, in seconds: the setting's value
-    /// as this session is running it. What a strip drawing the buffer spans,
-    /// with the part past `window_secs` still to arrive.
+    /// How much the buffer will hold, in seconds: the setting's value as
+    /// this session is running it, or as much of it as the memory ceiling
+    /// leaves at this station's rate. What a strip drawing the buffer
+    /// spans, with the part past `window_secs` still to arrive.
     pub cap_secs: f64,
     /// How many bytes a second of this broadcast comes to, as the tape
     /// works it out: what playback has measured where it has enough to go

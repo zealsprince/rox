@@ -630,74 +630,123 @@
               "panel_name": "StackPanel",
               "children": [
                 {
-                  "panel_name": "TabPanel",
+                  "panel_name": "StackPanel",
                   "children": [
                     {
-                      "panel_name": "seek",
-                      "children": [],
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "seek",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "max_height": 24.0,
+                              "show_total": false,
+                              "scrobble_marker": true,
+                              "live_dash_len": 2.0,
+                              "live_sweep": true,
+                              "items": [
+                                "elapsed",
+                                "strip",
+                                "ending"
+                              ]
+                            }
+                          }
+                        }
+                      ],
                       "info": {
-                        "panel": {
-                          "max_height": 24.0,
-                          "show_total": false,
-                          "scrobble_marker": true,
-                          "live_dash_len": 2.0,
-                          "live_sweep": true,
-                          "items": [
-                            "elapsed",
-                            "strip",
-                            "ending"
-                          ]
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "StackPanel",
+                      "children": [
+                        {
+                          "panel_name": "TabPanel",
+                          "children": [
+                            {
+                              "panel_name": "spectrum",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "style": "bars",
+                                  "orientation": "bottom",
+                                  "symmetry": "none",
+                                  "freq_lo": 30.0,
+                                  "freq_hi": 16000.0,
+                                  "bar_width": 3.0,
+                                  "bar_gap": 2.0,
+                                  "block_height": 3.0,
+                                  "block_gap": 1.0,
+                                  "fft_size": 16384,
+                                  "split": true,
+                                  "split_hz": 100.2374,
+                                  "fft_size_hi": 4096,
+                                  "gradient": "theme",
+                                  "gradient_lo": "#33aacc",
+                                  "gradient_hi": "#cc5588",
+                                  "outline": false,
+                                  "outline_width": 1.0,
+                                  "caps": true,
+                                  "freeze": true,
+                                  "cap_gravity": 0.05,
+                                  "labels": true
+                                }
+                              }
+                            }
+                          ],
+                          "info": {
+                            "tabs": {
+                              "active_index": 0
+                            }
+                          }
+                        },
+                        {
+                          "panel_name": "TabPanel",
+                          "children": [
+                            {
+                              "panel_name": "waveform",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "bar_width": 3.0,
+                                  "bar_gap": 2.0,
+                                  "outline": false,
+                                  "scrobble_marker": false
+                                }
+                              }
+                            }
+                          ],
+                          "info": {
+                            "tabs": {
+                              "active_index": 0
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "stack": {
+                          "sizes": [
+                            100.0,
+                            100.0
+                          ],
+                          "axis": 1
                         }
                       }
                     }
                   ],
                   "info": {
-                    "tabs": {
-                      "active_index": 0
+                    "stack": {
+                      "sizes": [
+                        40.0,
+                        200.0
+                      ],
+                      "axis": 1
                     }
                   }
                 },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
-                      "panel_name": "volume",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "max_height": 24.0,
-                          "min_width": 200.0,
-                          "align": "right",
-                          "stretch": false,
-                          "items": [
-                            "icon",
-                            "slider",
-                            "percent"
-                          ]
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                }
-              ],
-              "info": {
-                "stack": {
-                  "sizes": [
-                    955.0,
-                    188.0
-                  ],
-                  "axis": 0
-                }
-              }
-            },
-            {
-              "panel_name": "StackPanel",
-              "children": [
                 {
                   "panel_name": "StackPanel",
                   "children": [
@@ -705,32 +754,19 @@
                       "panel_name": "TabPanel",
                       "children": [
                         {
-                          "panel_name": "spectrum",
+                          "panel_name": "volume",
                           "children": [],
                           "info": {
                             "panel": {
-                              "style": "bars",
-                              "orientation": "bottom",
-                              "symmetry": "none",
-                              "freq_lo": 30.0,
-                              "freq_hi": 16000.0,
-                              "bar_width": 3.0,
-                              "bar_gap": 2.0,
-                              "block_height": 3.0,
-                              "block_gap": 1.0,
-                              "fft_size": 16384,
-                              "split": true,
-                              "split_hz": 100.2374,
-                              "fft_size_hi": 4096,
-                              "gradient": "theme",
-                              "gradient_lo": "#33aacc",
-                              "gradient_hi": "#cc5588",
-                              "outline": false,
-                              "outline_width": 1.0,
-                              "caps": true,
-                              "freeze": true,
-                              "cap_gravity": 0.05,
-                              "labels": true
+                              "max_height": 24.0,
+                              "min_width": 200.0,
+                              "align": "right",
+                              "stretch": true,
+                              "items": [
+                                "icon",
+                                "slider",
+                                "percent"
+                              ]
                             }
                           }
                         }
@@ -745,14 +781,15 @@
                       "panel_name": "TabPanel",
                       "children": [
                         {
-                          "panel_name": "waveform",
+                          "panel_name": "cover art",
                           "children": [],
                           "info": {
                             "panel": {
-                              "bar_width": 3.0,
-                              "bar_gap": 2.0,
-                              "outline": false,
-                              "scrobble_marker": false
+                              "min_width": 200.0,
+                              "min_height": 200.0,
+                              "source": "playing",
+                              "align": "right",
+                              "stretch": false
                             }
                           }
                         }
@@ -767,33 +804,10 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        100.0,
-                        100.0
+                        40.0,
+                        200.0
                       ],
                       "axis": 1
-                    }
-                  }
-                },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
-                      "panel_name": "cover art",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "min_width": 200.0,
-                          "min_height": 200.0,
-                          "source": "playing",
-                          "align": "right",
-                          "stretch": false
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
                     }
                   }
                 }
@@ -853,8 +867,7 @@
                 40.0,
                 30.0,
                 537.0,
-                40.0,
-                200.0,
+                240.0,
                 40.0
               ],
               "axis": 1

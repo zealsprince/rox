@@ -55,7 +55,12 @@ pub use tracked_load::TrackedImage;
 pub mod ui;
 
 mod window_buttons;
-pub use window_buttons::{maximize, maximize_icon, maximize_tip, traffic_lights};
+pub use window_buttons::{
+    icon_button, icon_controls, maximize, maximize_icon, maximize_tip, traffic_lights,
+};
+
+mod window_chrome;
+pub use window_chrome::{chrome_missing, resize_grips};
 
 /// What a control's hover tooltip says, and the identity gpui parks its
 /// timing under. Every [`icon_control`] takes one: a glyph on its own says
@@ -147,6 +152,104 @@ pub fn icon_control_sized<V: 'static>(
             .child(svg().path(icon).size(size).text_color(color)),
     )
 }
+
+/// What the line under a pattern box says.
+pub enum PatternNote {
+    /// What the pattern reads as right now.
+    Preview(SharedString),
+    /// A pattern that renders nothing, and what that means here.
+    Quiet(SharedString),
+    /// What's wrong with the pattern.
+    Wrong(SharedString),
+}
+
+/// A pattern box, the same one everywhere a pattern is typed: the input,
+/// the vocabulary behind an info icon, and a line under it saying what the
+/// pattern reads as.
+///
+/// The vocabulary is one list app-wide, so the tip says the same thing in
+/// every box and no box has to print its own. `notes` are what's true only
+/// here: which way a "/" goes, what %date% means to this surface, a name
+/// it fills from somewhere unusual. They go in the tip with the names,
+/// because the wall of grey text under an input was the thing everyone
+/// scrolled past.
+pub fn pattern_input(
+    id: &'static str,
+    input: &Entity<InputState>,
+    placeholders: &[&str],
+    notes: Vec<SharedString>,
+    note: Option<PatternNote>,
+) -> Div {
+    let names = SharedString::from(placeholders.join(" "));
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_XS)
+        .child(
+            h_flex()
+                .items_center()
+                .gap(tokens::SPACE_XS)
+                .child(Input::new(input).small().flex_1())
+                .child(placeholder_tip(id, names, notes)),
+        )
+        .when_some(note, |column, note| {
+            let (text, color) = match note {
+                PatternNote::Preview(text) => (text, palette::text_bright()),
+                PatternNote::Quiet(text) => (text, palette::text_muted()),
+                PatternNote::Wrong(text) => (text, palette::tone_warn()),
+            };
+
+            column.child(div().text_xs().text_color(color).child(text))
+        })
+}
+
+/// The info icon beside a pattern box: the placeholder names, then
+/// whatever the surface added. Faint at rest, because it's there for the
+/// first pattern someone writes and in the way of every one after.
+fn placeholder_tip(
+    id: &'static str,
+    names: SharedString,
+    notes: Vec<SharedString>,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .p(tokens::ICON_PAD)
+        .rounded(tokens::RADIUS)
+        .child(
+            svg()
+                .path(icons::INFO)
+                .size(px(14.))
+                .text_color(palette::text_faint()),
+        )
+        .tooltip(move |window, cx| {
+            let names = names.clone();
+            let notes = notes.clone();
+
+            Tooltip::element(move |_, _| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_XS)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(rox_i18n::t!("tags-guess-placeholders")),
+                    )
+                    .child(div().text_xs().child(names.clone()))
+                    .children(notes.iter().map(|note| {
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(note.clone())
+                    }))
+            })
+            .build(window, cx)
+        })
+}
+
 /// A panel's tab and title text: the rename when one is set, the built-in
 /// name otherwise.
 pub fn title_text(custom: Option<&str>, default: impl Into<SharedString>) -> SharedString {

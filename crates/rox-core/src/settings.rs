@@ -600,8 +600,8 @@ pub struct Settings {
     /// through a pause and the bytes pile up here, so Play carries on where
     /// the listener stopped instead of at the broadcast's live edge, and the
     /// last few minutes can be stepped back through. Held to
-    /// [`clamp_live_buffer_secs`]'s band, since the memory is real: ten
-    /// minutes of a 320 kbps stream is 24 MB.
+    /// [`clamp_live_buffer_secs`]'s band, since the memory is real: fifteen
+    /// minutes of a 320 kbps stream is 36 MB.
     pub live_buffer_secs: u32,
     /// Whether closing the last workspace window leaves the app resident,
     /// music playing, with the tray (Linux) or the dock (macOS) as the way
@@ -1395,6 +1395,58 @@ pub fn set_os_decorations(on: bool) {
     OS_DECORATIONS.store(on, Ordering::Relaxed);
 }
 
+/// How rox's stand-in window buttons draw when it supplies its own
+/// chrome: flat icons in the app's palette, or the macOS traffic lights.
+/// Shared by the window controls panel and the fallback titlebar, so a
+/// layout and a settings window read the same on one desktop.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChromeStyle {
+    #[default]
+    Icons,
+    Traffic,
+}
+
+/// Which end of the fallback titlebar the buttons sit at. Right is the
+/// Windows and GNOME convention and the default; left is where macOS puts
+/// them, and where anyone coming from a tiling setup tends to want them.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChromeSide {
+    Left,
+    #[default]
+    Right,
+}
+
+/// The live style and side for the fallback titlebar, seeded at startup
+/// and flipped from the Appearance page. Statics like the decorations
+/// flag above, since the titlebar draws in every window and none of them
+/// hold a settings entity.
+static CHROME_STYLE: AtomicU8 = AtomicU8::new(ChromeStyle::Icons as u8);
+static CHROME_SIDE: AtomicU8 = AtomicU8::new(ChromeSide::Right as u8);
+
+pub fn chrome_style() -> ChromeStyle {
+    match CHROME_STYLE.load(Ordering::Relaxed) {
+        1 => ChromeStyle::Traffic,
+        _ => ChromeStyle::Icons,
+    }
+}
+
+pub fn set_chrome_style(style: ChromeStyle) {
+    CHROME_STYLE.store(style as u8, Ordering::Relaxed);
+}
+
+pub fn chrome_side() -> ChromeSide {
+    match CHROME_SIDE.load(Ordering::Relaxed) {
+        0 => ChromeSide::Left,
+        _ => ChromeSide::Right,
+    }
+}
+
+pub fn set_chrome_side(side: ChromeSide) {
+    CHROME_SIDE.store(side as u8, Ordering::Relaxed);
+}
+
 /// The live resize-border flag, the decorations flag's twin. Windows only:
 /// everywhere else the edges of a borderless window already do nothing, so
 /// there's no border to take away and the flag is never applied to a window.
@@ -1644,10 +1696,15 @@ pub const STEP_PREVIEW_MS_MIN: f32 = 10.0;
 pub const STEP_PREVIEW_MS_MAX: f32 = STEP_MS_MAX;
 
 /// How much of a live stream is buffered behind the playhead out of the
-/// box: ten minutes. Long enough to take a call and come back to the song
-/// that was playing, and about 24 MB on the fattest stream anyone
+/// box: fifteen minutes. Long enough to take a call and come back to the
+/// song that was playing, to step back to the song before it, and to hold
+/// all but the longest thing a station puts on, which is what saving songs
+/// off the air is sliced out of. About 36 MB on the fattest stream anyone
 /// broadcasts.
-pub const DEFAULT_LIVE_BUFFER_SECS: u32 = 600;
+///
+/// It doubles as the mark the Capture section warns under, since a buffer
+/// below what a station plays is capture quietly doing nothing.
+pub const DEFAULT_LIVE_BUFFER_SECS: u32 = 900;
 
 /// The band that buffer is held to. The floor is the shortest window that
 /// still survives a pause worth taking. The ceiling is twelve hours, which
@@ -1655,6 +1712,12 @@ pub const DEFAULT_LIVE_BUFFER_SECS: u32 = 600;
 /// in one sitting, so a buffer set here never rolls over and a pause is
 /// always resumable. It costs about 1.7 GB on a 320 kbps stream, which is
 /// the honest price of asking for that and the reason it isn't the default.
+///
+/// A ceiling in bytes sits under the whole band, since seconds are only
+/// half of what a buffer costs and the other half is a bitrate nobody
+/// knows when they set it: past
+/// [`rox_playback::memory::live_buffer_cap`] the window comes up short of
+/// the length rather than taking the machine's memory.
 pub const LIVE_BUFFER_SECS_MIN: u32 = 30;
 pub const LIVE_BUFFER_SECS_MAX: u32 = 43200;
 
@@ -3091,6 +3154,11 @@ pub const DEFAULT_PRESENCE_FIRST_LINE: &str = "%artist% - %title%";
 /// carried in the artwork's hover text.
 pub const DEFAULT_PRESENCE_SECOND_LINE: &str = "%album%";
 
+/// The artwork's hover text. The quality, which is the one thing about a
+/// track the card has nowhere else to say: the album is a line of its
+/// own now, and having it here too said it twice.
+pub const DEFAULT_PRESENCE_HOVER: &str = "%format%";
+
 /// Which of the presence card's lines Discord repeats beside your name in
 /// the member list.
 ///
@@ -3128,6 +3196,9 @@ pub struct DiscordSettings {
     pub first_line: String,
     /// The card's second line, same rules.
     pub second_line: String,
+    /// The text behind the artwork, on hover. A pattern like the two
+    /// lines, and empty leaves the artwork without a tooltip.
+    pub hover_line: String,
     /// Which line the member list shows beside your name.
     #[serde(deserialize_with = "lenient::or_default")]
     pub status_line: DiscordStatusLine,
@@ -3141,6 +3212,7 @@ impl Default for DiscordSettings {
             show_youtube_button: true,
             first_line: DEFAULT_PRESENCE_FIRST_LINE.to_string(),
             second_line: DEFAULT_PRESENCE_SECOND_LINE.to_string(),
+            hover_line: DEFAULT_PRESENCE_HOVER.to_string(),
             status_line: DiscordStatusLine::First,
         }
     }
@@ -3502,9 +3574,18 @@ pub struct AppearanceBundle {
     /// Whether the main workspace windows get the OS's own decorations
     /// (titlebar, borders). Off asks the compositor for a bare
     /// client-drawn window; the window controls panel stands in for the
-    /// missing buttons. Child windows (settings, popouts, editors) keep
-    /// the OS chrome either way.
+    /// missing buttons. Child windows (settings, popouts, editors) always
+    /// ask for the OS chrome, and draw the fallback titlebar below when
+    /// the compositor can't give it.
     pub os_decorations: bool,
+    /// How the fallback titlebar's buttons draw: flat icons, or the macOS
+    /// traffic lights. Only ever seen on a Wayland compositor with no
+    /// xdg-decoration support, where nothing else supplies a close button.
+    #[serde(deserialize_with = "lenient::or_default")]
+    pub chrome_style: ChromeStyle,
+    /// Which end of the fallback titlebar those buttons sit at.
+    #[serde(deserialize_with = "lenient::or_default")]
+    pub chrome_side: ChromeSide,
     /// Whether the main windows resize by dragging their edges. Windows
     /// only, and only once the OS decorations are off: with them on the OS
     /// owns the frame and its border. Off keeps the frame itself, so the
@@ -3531,6 +3612,8 @@ impl Default for AppearanceBundle {
             hide_menubar: false,
             menubar_buttons: MenubarButtons::default(),
             os_decorations: true,
+            chrome_style: ChromeStyle::default(),
+            chrome_side: ChromeSide::default(),
             resize_border: true,
         }
     }
@@ -6308,6 +6391,7 @@ mod tests {
             enabled: true,
             first_line: "%title%".to_string(),
             second_line: String::new(),
+            hover_line: "%genre%".to_string(),
             status_line: DiscordStatusLine::Second,
             ..DiscordSettings::default()
         };
@@ -6315,6 +6399,7 @@ mod tests {
         let read: DiscordSettings = serde_json::from_str(&text).unwrap();
         assert_eq!(read.first_line, "%title%");
         assert!(read.second_line.is_empty());
+        assert_eq!(read.hover_line, "%genre%");
         assert_eq!(read.status_line, DiscordStatusLine::Second);
 
         let old: DiscordSettings = serde_json::from_value(serde_json::json!({
@@ -6324,6 +6409,7 @@ mod tests {
         .unwrap();
         assert_eq!(old.first_line, DEFAULT_PRESENCE_FIRST_LINE);
         assert_eq!(old.second_line, DEFAULT_PRESENCE_SECOND_LINE);
+        assert_eq!(old.hover_line, DEFAULT_PRESENCE_HOVER);
         assert_eq!(old.status_line, DiscordStatusLine::First);
         assert!(old.enabled);
         assert!(!old.show_lastfm_button);

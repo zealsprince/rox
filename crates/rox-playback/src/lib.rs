@@ -17,6 +17,7 @@ pub mod gain;
 pub mod http;
 pub mod icy;
 pub mod latency;
+pub mod memory;
 pub mod opus;
 pub mod output;
 pub mod resample;

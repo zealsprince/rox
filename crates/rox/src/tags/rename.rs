@@ -35,7 +35,7 @@ use gpui::{
     App, Bounds, Context, Div, Entity, Focusable as _, Global, KeyBinding, ScrollHandle,
     SharedString, Subscription, Window, WindowHandle, actions, div, prelude::*, px, size,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::{Root, Sizable, Size};
@@ -45,7 +45,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_library::lyrics;
 use rox_library::writer::{CLONE_SUFFIX, Field};
-use rox_panel_api::panel::AppState;
+use rox_panel_api::panel::{self, AppState};
 use rox_panel_kit::ui::{self as settings_ui, Seg, kbd_line, section, small_button};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
@@ -779,35 +779,23 @@ impl RenameFiles {
                     this.replan(cx);
                 }))
         });
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_XS)
-            .child(Input::new(&self.pattern).small())
-            .child(
+        panel::pattern_input(
+            "rename-pattern",
+            &self.pattern,
+            guess::PLACEHOLDERS,
+            vec![rox_i18n::t!("tags-rename-pattern-help")],
+            None,
+        )
+        .when(!self.remembered.is_empty(), |d| {
+            d.child(
                 div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(rox_i18n::t!(
-                        "tags-rename-pattern-help",
-                        placeholders = guess::PLACEHOLDERS
-                            .iter()
-                            .filter(|p| **p != "%skip%")
-                            .copied()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    )),
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(tokens::SPACE_XS)
+                    .children(chips),
             )
-            .when(!self.remembered.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap(tokens::SPACE_XS)
-                        .children(chips),
-                )
-            })
+        })
     }
 
     /// The dialog's actions, and the shortcut for them. A run in flight,

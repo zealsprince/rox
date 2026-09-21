@@ -1,0 +1,21 @@
+--- a/src/platform/linux/wayland/window.rs
++++ b/src/platform/linux/wayland/window.rs
+@@ -1111,7 +1111,17 @@
+ 
+     fn request_decorations(&self, decorations: WindowDecorations) {
+         let mut state = self.borrow_mut();
+-        state.decorations = decorations;
++        // rox patch: a compositor with no zxdg-decoration global (GNOME's
++        // mutter is the one that matters) can never draw a titlebar, so
++        // recording the ask as granted leaves window_decorations() promising
++        // chrome that isn't there and the app drawing no stand-in for it.
++        // Record what the window actually has. X11 already does the mirror
++        // of this, downgrading a Client ask to Server with no compositor.
++        state.decorations = if state.decoration.is_some() {
++            decorations
++        } else {
++            WindowDecorations::Client
++        };
+         if let Some(decoration) = state.decoration.as_ref() {
+             decoration.set_mode(decorations.to_xdg());
+             update_window(state);

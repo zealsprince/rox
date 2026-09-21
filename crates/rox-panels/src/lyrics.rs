@@ -97,6 +97,12 @@ const WORD_FADE: f32 = 0.5;
 /// text size.
 const WORD_RISE: f32 = 0.35;
 
+/// How far past each edge of the viewport the synced sheet still builds
+/// real rows, as a fraction of the viewport. Enough that the follow's
+/// glide never lands on a row that was a spacer a frame ago, small enough
+/// that an animating sheet lays out a screenful and not the whole song.
+const OVERSCAN: f32 = 0.5;
+
 /// The wheel delta one lyric-line step costs when scrolling the followed
 /// sheet. A wheel notch arrives as three lines, so one notch steps to the
 /// next sung line; a trackpad accumulates smoothly toward the same.
@@ -382,6 +388,15 @@ pub struct LyricsPanel {
     /// The synced sheet's own scroll once rows wrap and stop being a
     /// uniform height, so the glide can center a row off its real bounds.
     wrap_scroll: ScrollHandle,
+    /// Every line's height as the last layout measured it, and the
+    /// signature of what those heights were measured under. An off-screen
+    /// row holds its space with a bare spacer of its remembered height
+    /// instead of laying its words out again, which is what keeps an
+    /// animating sheet from rebuilding the whole thing sixty times a
+    /// second. The signature drops the lot when a resize or a size knob
+    /// makes them wrong.
+    heights: Vec<Pixels>,
+    heights_key: Option<u64>,
     /// The line the follow glide is easing toward; None once arrived.
     glide_to: Option<usize>,
     /// Last frame's clock, for the glide's per-frame step.
@@ -469,6 +484,8 @@ impl LyricsPanel {
             positioned: false,
             pad: px(0.),
             wrap_scroll: ScrollHandle::new(),
+            heights: Vec::new(),
+            heights_key: None,
             glide_to: None,
             last_tick: Instant::now(),
             scroll_accum: 0.0,
@@ -1944,14 +1961,20 @@ impl LyricsPanel {
     /// first layout, and while the row hasn't been measured.
     ///
     /// Rows wrap, so one line can be twice another's height and a stride
-    /// estimate would put the active line off center or off screen. The
-    /// handle records every child's bounds in window space; the content
-    /// offset is that minus where the viewport starts, minus how far it is
-    /// already scrolled.
+    /// estimate would put the active line off center or off screen.
+    ///
+    /// The handle records a child's bounds during prepaint, straight off
+    /// the layout tree and before the scroll offset is applied to paint
+    /// it, so what it holds is where the row sits in the content and not
+    /// where it ended up on screen. gpui reads them the same way: its own
+    /// `logical_scroll_top` adds the offset back to get a visible
+    /// position. Taking the offset off here as well subtracts it twice,
+    /// which feeds the glide its own output and sends the sheet off the
+    /// end instead of converging on the line.
     fn center_target(&self, ix: usize) -> Option<Pixels> {
         let view = self.wrap_scroll.bounds();
         let item = self.wrap_scroll.bounds_for_item(ix + 1)?;
-        let origin = item.top() - view.top() - self.wrap_scroll.offset().y;
+        let origin = item.top() - view.top();
 
         panel::glide_target_at(&self.wrap_scroll, Axis::Vertical, origin, item.size.height)
     }
@@ -1974,19 +1997,99 @@ impl LyricsPanel {
         }
     }
 
+    /// Refresh the remembered row heights off the last layout, dropping
+    /// the lot when something that changes them has moved. The signature
+    /// covers what a row's height depends on: the sheet itself, the two
+    /// size knobs, whether rows wrap, and the width they wrap inside.
+    ///
+    /// Reading bounds back is a vector index per line and costs nothing;
+    /// it is laying the words out that is expensive, which is what the
+    /// heights let an off-screen row skip.
+    fn measure_rows(&mut self, lyrics: &Arc<Lyrics>) {
+        let key = {
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{Hash, Hasher};
+            (Arc::as_ptr(lyrics) as usize).hash(&mut hash);
+            self.config.font_size.to_bits().hash(&mut hash);
+            self.config.line_spacing.to_bits().hash(&mut hash);
+            self.config.wrap_lines.hash(&mut hash);
+            f32::from(self.wrap_scroll.bounds().size.width)
+                .to_bits()
+                .hash(&mut hash);
+            hash.finish()
+        };
+        if self.heights_key != Some(key) {
+            self.heights_key = Some(key);
+            self.heights.clear();
+        }
+
+        // The pads are children 0 and last, so line ix is child ix + 1.
+        let count = lyrics.lines.len();
+        if self.heights.len() < count {
+            self.heights.resize(count, px(0.));
+        }
+        for ix in 0..count {
+            if let Some(bounds) = self.wrap_scroll.bounds_for_item(ix + 1) {
+                self.heights[ix] = bounds.size.height;
+            }
+        }
+    }
+
+    /// The lines worth building for real this frame: the ones the scroll
+    /// is showing, widened by a viewport either side so a row is already
+    /// laid out before it is scrolled onto. Everything outside becomes a
+    /// spacer.
+    ///
+    /// None asks for the whole sheet, which is the measuring pass: before
+    /// the first layout, or after the heights were dropped, there is
+    /// nothing to place the rows by and every one has to be real once to
+    /// earn a height.
+    fn visible_lines(&self, count: usize) -> Option<Range<usize>> {
+        let viewport = self.wrap_scroll.bounds().size.height;
+        if viewport <= px(0.) || self.heights.len() < count {
+            return None;
+        }
+        if self.heights.iter().take(count).any(|h| *h <= px(0.)) {
+            return None;
+        }
+
+        // Content space, the same frame of reference the cached heights
+        // and the glide target are in.
+        let scrolled = -self.wrap_scroll.offset().y;
+        let from = scrolled - viewport * OVERSCAN;
+        let to = scrolled + viewport * (1.0 + OVERSCAN);
+
+        let mut first = count;
+        let mut last = 0;
+        let mut top = self.pad;
+        for (ix, height) in self.heights.iter().take(count).enumerate() {
+            if top + *height >= from && top <= to {
+                first = first.min(ix);
+                last = ix;
+            }
+            top += *height;
+        }
+
+        (first <= last).then_some(first..last + 1)
+    }
+
     /// The synced sheet's rows: each timed line, the one under the
     /// playhead lit and the rest muted and clickable to seek. Full width,
     /// so the alignment knob actually centers the text.
     ///
-    /// Every line is built, not a window of them. A sheet is a few dozen
-    /// lines and rows wrap to as many visual lines as they need, so
-    /// there's no stride to virtualize against; the scroll measures what
-    /// it laid out and the glide centers off those real bounds.
+    /// Every line gets a child either way, so a row's index never moves
+    /// and the glide can keep centering off [`Self::center_target`]. Only
+    /// the ones near the viewport are built with their words; the rest are
+    /// bare spacers holding the height the last layout measured. Rows wrap
+    /// to as many visual lines as the words need, so there's no uniform
+    /// stride to hand a virtual list instead.
     fn line_rows(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         // The woven sheet synced_face built this frame, rests and all.
         let Some(lyrics) = self.display_arc().cloned() else {
             return Vec::new();
         };
+        self.measure_rows(&lyrics);
+        let built = self.visible_lines(lyrics.lines.len());
         let active = self.active_line;
         let align = self.config.align;
         let text_align = text_align(align);
@@ -2022,8 +2125,19 @@ impl LyricsPanel {
             })
         });
 
-        (0..lyrics.lines.len())
+        let heights = std::mem::take(&mut self.heights);
+        let rows = (0..lyrics.lines.len())
             .map(|ix| {
+                // Far from the viewport a row only has to hold its space.
+                // No words to lay out and no click listener to allocate,
+                // which is the whole point: an animating sheet rebuilds a
+                // screenful, not all of it.
+                if built.as_ref().is_some_and(|built| !built.contains(&ix)) {
+                    return div()
+                        .flex_none()
+                        .h(heights.get(ix).copied().unwrap_or(px(line_h)))
+                        .into_any_element();
+                }
                 let line = &lyrics.lines[ix];
                 let at = line.at;
                 let is_active = Some(ix) == active;
@@ -2142,7 +2256,10 @@ impl LyricsPanel {
                 });
                 row.into_any_element()
             })
-            .collect()
+            .collect();
+        self.heights = heights;
+
+        rows
     }
 
     /// The plain face: the whole sheet as wrapped text on its own scroll,

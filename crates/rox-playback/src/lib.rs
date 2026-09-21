@@ -50,6 +50,11 @@ pub use shared::LiveMark;
 // where a reconnect spliced two connections and nothing plays across.
 pub use shared::LiveGap;
 
+// And how close to the live edge still counts as standing on it. A caller
+// stepping through a buffer needs it for the same reason the tape does:
+// under this distance there's no spot for a cursor to move to.
+pub use tape::LIVE_EDGE_SNAP_SECS;
+
 // Embedders hold the output stream and the tap consumer, so the types those
 // come in need to be nameable without taking on the deps directly.
 pub use cpal;

@@ -200,20 +200,14 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
                     false => player.seek_to(to),
                 }
             } else if let Some(by) = params.get("by").and_then(Value::as_f64) {
-                match live {
-                    // Off the tape's own reading rather than a remembered
-                    // one: a pause keeps taping, so the distance to live
-                    // grows under a caller that stepped back a minute ago.
-                    true => {
-                        let behind = now
-                            .as_ref()
-                            .and_then(|now| now.shift)
-                            .map(|shift| shift.behind_secs)
-                            .unwrap_or(0.0);
-                        player.seek_live(behind - by);
-                    }
-                    false => player.seek_by(by),
-                }
+                // One call for both timelines: the step is the same verb
+                // either way and the player is what knows which one is
+                // playing. It reads the distance off the tape rather than
+                // off anything remembered here, which is what a pause needs
+                // (it keeps taping, so the distance grows under a caller
+                // that stepped back a minute ago), and it holds the step
+                // inside the buffer at both ends.
+                player.seek_by(by);
             } else {
                 return Err(RpcError::invalid_params(
                     "seek takes {\"to\": seconds}, {\"by\": seconds}, or \

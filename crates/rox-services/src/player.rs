@@ -801,6 +801,29 @@ pub fn song_clock(position_secs: f64, song_start_secs: Option<f64>) -> f64 {
     }
 }
 
+/// Where a relative seek of `delta` seconds lands in a station's buffer,
+/// as a distance behind the live edge. Positive `delta` is forward, which
+/// on this timeline means closing the distance.
+///
+/// The ends are the whole point. Forward stops at the live edge, since the
+/// broadcast hasn't sent what's past it, and backward stops at the oldest
+/// second the tape still holds. Both hold rather than wrapping or running
+/// off, so leaning on an arrow key parks the listener at the end it points
+/// at.
+///
+/// None where the step wouldn't move the cursor anywhere the tape can tell
+/// apart, which is what pressing against either end comes to. A live seek
+/// costs a rebuilt decoder and a cut in the audio, so sending those would
+/// be one hole in the broadcast per press, every one of them landing back
+/// where the listener already was. The edge snap is the threshold because
+/// it's already the closest the tape will put a cursor to the edge.
+fn live_step_target(delta: f64, shift: &Shift) -> Option<f64> {
+    let behind = shift.behind_secs;
+    let target = (behind - delta).clamp(0.0, shift.window_secs.max(0.0));
+
+    ((target - behind).abs() >= rox_playback::LIVE_EDGE_SNAP_SECS).then_some(target)
+}
+
 /// When the audible station last moved to a new song, as the pump saw it.
 ///
 /// The title is here beside the revision because the revision is global:
@@ -3563,13 +3586,42 @@ impl Player {
         self.settings.session.loop_mode()
     }
 
-    /// Relative seek within the playing track.
+    /// Relative seek, the five seconds either way the arrow keys send.
+    ///
+    /// Two timelines behind the one step. A file has a position and the
+    /// step moves along it. A station has none: its clock counts the
+    /// listen, and the only thing a seek can move is the cursor through
+    /// the buffer. So on a live entry the step keeps its direction and
+    /// changes timeline, forward closing the distance to live and backward
+    /// opening it, held between the live edge and the oldest second still
+    /// held. Past either end there's nothing to play, either because the
+    /// broadcast hasn't sent it or because the tape has dropped it.
+    ///
+    /// The distance is read off the buffer every time rather than
+    /// remembered: a pause keeps taping, so it grows under a listener who
+    /// isn't pressing anything.
     pub fn seek_by(&self, delta: f64) {
-        if let Some(session) = &self.session
-            && let Some((_, secs)) = session.shared.position(session.device_rate)
-        {
-            let _ = session.tx.send(Cmd::Seek((secs + delta).max(0.0)));
+        let Some(session) = &self.session else {
+            return;
+        };
+        let Some((track, secs)) = session.shared.position(session.device_rate) else {
+            return;
+        };
+
+        if session.live.get(track).copied().unwrap_or(false) {
+            // A station whose tape hasn't taken a byte yet publishes no
+            // shift, and there's nothing to step through until it does.
+            if let Some(target) = session
+                .shared
+                .shift(track)
+                .and_then(|shift| live_step_target(delta, &shift))
+            {
+                self.seek_live(target);
+            }
+            return;
         }
+
+        let _ = session.tx.send(Cmd::Seek((secs + delta).max(0.0)));
     }
 
     /// Walk the playhead one step, `back` for the other direction. The
@@ -5254,6 +5306,41 @@ mod tests {
 
         // Neither, which is a file or a station that has said nothing.
         assert_eq!(song_start_of(930.0, None, None), None);
+    }
+
+    /// The arrow keys on a station. A five second step walks the buffer,
+    /// and both ends of it hold: the live edge is as far forward as a
+    /// broadcast goes, and the oldest second held is as far back as the
+    /// tape does.
+    #[test]
+    fn a_step_through_a_station_stays_inside_its_buffer() {
+        let at = |behind_secs| Shift {
+            behind_secs,
+            window_secs: 600.0,
+            cap_secs: 600.0,
+            bytes_per_sec: 16_000.0,
+            song_secs: None,
+            song_len_secs: None,
+        };
+
+        // Mid-buffer, where the step is just the step.
+        assert_eq!(live_step_target(5.0, &at(300.0)), Some(295.0));
+        assert_eq!(live_step_target(-5.0, &at(300.0)), Some(305.0));
+
+        // Forward from closer than the step: live, not past it.
+        assert_eq!(live_step_target(5.0, &at(3.0)), Some(0.0));
+
+        // Back from deeper than the tape holds: the oldest second in it.
+        assert_eq!(live_step_target(-5.0, &at(597.0)), Some(600.0));
+
+        // Standing on either end, pressing into it. Nothing to send: the
+        // cursor is already where the step points.
+        assert_eq!(live_step_target(5.0, &at(0.0)), None);
+        assert_eq!(live_step_target(-5.0, &at(600.0)), None);
+
+        // And a step too small for the tape to land anywhere different,
+        // which is what the fine step keys come to on a broadcast.
+        assert_eq!(live_step_target(-0.025, &at(300.0)), None);
     }
 
     /// What the pump asks on a title it just read. The rejoin case is the

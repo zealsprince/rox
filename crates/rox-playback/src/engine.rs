@@ -726,7 +726,17 @@ impl Engine {
                         // this seek is leaving. An Audition sent right
                         // behind this one re-arms it for the new one.
                         self.cancel_audition();
-                        flush_to = Some(FlushAction::Seek(secs.max(0.0)));
+                        // A broadcast has no timeline to land in, and its
+                        // tape isn't seekable, so symphonia would read this
+                        // as a scan forward through the buffer: past the
+                        // live edge and into bytes the station hasn't sent.
+                        // The one seek a station has is `SeekLive`, and
+                        // this is dropped rather than approximated. Dropped
+                        // here rather than at the flush, because a flush
+                        // that does nothing still cuts the ring and still
+                        // ends the hung-up state a paused station holds.
+                        flush_to = (!self.live_at(self.audible_pos()))
+                            .then_some(FlushAction::Seek(secs.max(0.0)));
                         nav_pos = None;
                         nav_at = None;
                     }

@@ -61,6 +61,21 @@ jobs:
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Every package installs the metainfo as committed, and Flathub builds
+      # it from the tag, so a stable version has to be the newest entry in its
+      # release list before anything is built. scripts/bump-version.sh adds
+      # it. A candidate needs nothing: it never gets an entry.
+      - name: Check the metainfo lists this version
+        if: steps.version.outputs.release == 'true' && steps.version.outputs.prerelease == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          newest=$(grep -m1 -o '<release version="[^"]*"' crates/rox/assets/app/rox.metainfo.xml | cut -d '"' -f2)
+          if [ "$newest" != "$VERSION" ]; then
+            echo "::error::the metainfo's newest release is ${newest:-none}, not $VERSION; run scripts/bump-version.sh $VERSION"
+            exit 1
+          fi
+
   build:
     needs: check
     if: needs.check.outputs.release == 'true'
@@ -101,8 +116,7 @@ jobs:
     steps:
       # Before the checkout, because the bookworm image is bare: without git
       # in it actions/checkout falls back to a REST tarball with no .git,
-      # and the metainfo fill and the projectM vendoring both need a real
-      # clone. We're root in the container, so no sudo. git and curl serve
+      # and the projectM vendoring needs a real clone. We're root in the container, so no sudo. git and curl serve
       # checkout, the toolchain installer and install-action; dpkg-dev is
       # dpkg-shlibdeps for cargo-deb's $auto; file is for appimagetool;
       # cmake is for rox-milkdrop-sys, which builds libprojectM from source;
@@ -175,15 +189,6 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$pass" "$keychain" >/dev/null
           security list-keychain -d user -s "$keychain" login.keychain-db
-
-      # The metainfo in the tree carries a marker where its release history
-      # goes; the script swaps in one entry per stable tag so the tarball,
-      # the deb and the AppImage all ship the filled file. The checkout has
-      # no tags, so the script fetches them itself, and this version's tag
-      # doesn't exist until the release job cuts it, so it goes in by name.
-      - name: Fill metainfo releases
-        if: runner.os == 'Linux'
-        run: scripts/metainfo-releases.sh crates/rox/assets/app/rox.metainfo.xml "$VERSION"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'

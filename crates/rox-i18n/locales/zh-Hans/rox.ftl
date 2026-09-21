@@ -1201,6 +1201,8 @@ settings-storage-catalog = 目录
     .description = 扫描建起来的曲目索引：一行一首曲目，带它的标签、文件细节和任何 cue 区段，存在 library.db 里
 settings-storage-cover-thumbnails = 封面缩略图
     .description = 首次渲染后留下的小封面（thumbs.db）；清掉的会在滚动到时重建
+settings-storage-listening-history = 收听历史
+    .description = 库里记下的每一次播放，rox 自己的和 Last.fm 导入带来的都在内。播放次数列、统计窗口、历史面板，以及任何按播放次数排序的智能播放列表都由它而来
 settings-storage-logs = 日志
     .description = 每次运行为错误报告写下的内容（logs/rox.log），按大小上限滚动，不会长得太大
 settings-storage-looks-layouts = 外观和布局
@@ -1564,6 +1566,18 @@ stats-show-number = 显示数字
 stats-title = 统计部件
 stats-tooltip-listens = 收听
 stats-window-title = rox - 统计
+
+## 清除收听记录：统计窗口和存储页面都会弹出的确认框，以及其中的条数。
+
+listens-clear-body = { $total } 条收听记录里有 { $imported } 条来自 Last.fm 导入：知道时间的按原本的秒记下，只剩播放次数的则分散到各个年份。只清除导入的记录会留下 rox 亲眼看到的播放；全部清除则库里不会留下任何记录。
+listens-clear-body-plain = { $listens }，没有一条来自导入，全是 rox 亲眼看到的播放。清除后库里不会留下任何记录。
+listens-clear-button = 清除历史
+listens-clear-everything = 全部清除
+listens-clear-imported = 清除导入的
+listens-clear-title = 清除收听历史吗？
+listens-count = { $count ->
+   *[other] { $count } 条收听记录
+}
 
 ## Library health window
 

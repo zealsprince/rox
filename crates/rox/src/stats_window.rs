@@ -19,9 +19,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, FontWeight, Global, Image, ObjectFit, ScrollHandle,
-    SharedString, Stateful, Subscription, Window, WindowHandle, div, img, linear_color_stop,
-    linear_gradient, prelude::*, px, relative, size, svg,
+    AnyElement, App, Bounds, Context, Div, FocusHandle, FontWeight, Global, Image, ObjectFit,
+    ScrollHandle, SharedString, Stateful, Subscription, Window, WindowHandle, div, img,
+    linear_color_stop, linear_gradient, prelude::*, px, relative, size, svg,
 };
 use gpui_component::Root;
 use gpui_component::scroll::Scrollbar;
@@ -29,7 +29,7 @@ use gpui_component::tooltip::Tooltip;
 
 use rox_core::QUEUE_CAP;
 use rox_core::fmt::{fmt_ago, fmt_date};
-use rox_library::listens::{NamePlays, Rollup, TrackPlays};
+use rox_library::listens::{self, NamePlays, Rollup, TrackPlays};
 use rox_panel_kit::motif;
 use rox_playback::engine::shuffle_slice;
 
@@ -38,7 +38,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::charts;
 use rox_panel_api::panel::{self, AppState};
-use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, section};
+use rox_panel_kit::ui::{self as settings_ui, SECTION_GAP, dialog_button, section};
 use rox_services::backdrop::WindowBackdrop;
 use rox_services::catalog::{LibraryEvent, LocalCopy};
 use rox_services::history::HistoryEvent;
@@ -251,6 +251,10 @@ struct StatsData {
     total: u64,
     /// Listens inside the picked range, the page's own whole.
     range_total: u64,
+    /// How many of the whole record a Last.fm import wrote, the number
+    /// the clear confirm reads out. Range-independent like the counts
+    /// above it: what the clear takes doesn't care what the knob says.
+    imported: u64,
     /// The chart's buckets over the range, oldest first, and the span
     /// they were cut from, so the hover readout can name a bucket's
     /// time.
@@ -285,6 +289,13 @@ struct StatsWindow {
     data: StatsData,
     /// The bar chart's hover pick, shared with its paint and handlers.
     bar_hover: charts::BarHover,
+    /// Whether the clear confirm is up. The record is the one thing this
+    /// window can destroy, so the button only raises the question and the
+    /// dialog does the deleting.
+    clearing: bool,
+    /// The keyboard's home while that dialog is up, so Escape reaches it
+    /// from wherever focus was, the settings window's arrangement.
+    dialog_focus: FocusHandle,
     /// The page's scroll position, shared with the scrollbar.
     scroll: ScrollHandle,
     backdrop: WindowBackdrop,
@@ -343,6 +354,8 @@ impl StatsWindow {
             range,
             data: StatsData::default(),
             bar_hover: charts::BarHover::default(),
+            clearing: false,
+            dialog_focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             backdrop: WindowBackdrop::default(),
             _history_changed,
@@ -406,6 +419,7 @@ impl StatsWindow {
             year: library.listens_since(now - 365 * DAY),
             total: library.listens_since(0),
             range_total: library.listens_between(since, until),
+            imported: library.listens_tally().imported,
             bars: library.listen_histogram(chart_since, bucket, chart_end, until),
             chart_since,
             bucket,
@@ -440,6 +454,130 @@ impl StatsWindow {
             });
         }
         self.refresh(cx);
+    }
+
+    /// Throw the listening record away, the confirm's yes: either the rows
+    /// an import wrote or all of them. The library emits its update when
+    /// the delete finishes, which walks every number on this page again.
+    fn clear_listens(&mut self, what: listens::Clear, cx: &mut Context<Self>) {
+        self.clearing = false;
+        self.state
+            .library
+            .update(cx, |library, cx| library.clear_listens(what, cx));
+        cx.notify();
+    }
+
+    /// The clear confirm, up while the button beside the range knob waits
+    /// on an answer. A scrim occludes the page under it, Escape backs out,
+    /// and the yes stays a click: one button takes what a Last.fm import
+    /// wrote and the other takes the whole record, which is the question
+    /// itself rather than a step on the way to one.
+    fn clear_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        if !self.clearing {
+            return None;
+        }
+        // The dialog takes the keyboard while it's up, unless focus is
+        // already inside it: pulling it back every frame would hold it on
+        // the scrim instead of letting Tab reach the buttons.
+        if !self.dialog_focus.contains_focused(window, cx) {
+            window.focus(&self.dialog_focus);
+        }
+        // Whether there are two answers to give. A library nothing has
+        // been imported into has one kind of listen in it, so the split
+        // would be offering to clear none of them and then all of them.
+        let split = self.data.imported > 0;
+        let body = if split {
+            rox_i18n::t!(
+                "listens-clear-body",
+                imported = self.data.imported,
+                total = self.data.total
+            )
+        } else {
+            rox_i18n::t!(
+                "listens-clear-body-plain",
+                listens = rox_i18n::t!("listens-count", count = self.data.total).to_string()
+            )
+        };
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .track_focus(&self.dialog_focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.modifiers.modified() {
+                        return;
+                    }
+                    if event.keystroke.key == "escape" {
+                        this.clearing = false;
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }))
+                .bg(gpui::rgba(0x00000066))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_MD)
+                        .w(px(380.))
+                        .p(tokens::SPACE_MD)
+                        .rounded(tokens::RADIUS)
+                        .bg(palette::bg_menu_opaque())
+                        .border_1()
+                        .border_color(palette::border_light())
+                        .shadow_md()
+                        .child(div().child(rox_i18n::t!("listens-clear-title")))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(body),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .justify_end()
+                                .gap(tokens::SPACE_SM)
+                                .child(dialog_button(
+                                    rox_i18n::t!("settings-common-cancel"),
+                                    false,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.clearing = false;
+                                        cx.notify();
+                                    }),
+                                ))
+                                .children(split.then(|| {
+                                    dialog_button(
+                                        rox_i18n::t!("listens-clear-imported"),
+                                        false,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.clear_listens(listens::Clear::Imported, cx)
+                                        }),
+                                    )
+                                }))
+                                .child(dialog_button(
+                                    if split {
+                                        rox_i18n::t!("listens-clear-everything")
+                                    } else {
+                                        rox_i18n::t!("settings-confirm-clear")
+                                    },
+                                    true,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.clear_listens(listens::Clear::Everything, cx)
+                                    }),
+                                )),
+                        ),
+                ),
+        )
     }
 
     /// Scope the page to a clicked bar: the calendar day it fell on when
@@ -1267,6 +1405,43 @@ fn play_button(
         .into_any_element()
 }
 
+/// The clear beside the range knob: a broom and nothing else, filled so
+/// it reads as a control against the segments rather than as a mark on
+/// the bar, with the tooltip carrying what a label would have said.
+///
+/// Stretched rather than sized. The lane and the segmented knob are both
+/// children of the range bar, so `align-self: stretch` gives the lane the
+/// bar's content height, which is the knob's own height however the text
+/// inside it measures out, and the button takes the lane. A number here
+/// would be that height copied by hand, and wrong the first time a font
+/// or a scale moved under it.
+fn clear_button(inert: bool, cx: &mut Context<StatsWindow>) -> Stateful<Div> {
+    let mut button = settings_ui::icon_button(
+        icons::BROOM,
+        inert,
+        cx.listener(|this: &mut StatsWindow, _, _, cx| {
+            this.clearing = true;
+            cx.notify();
+        }),
+    )
+    .filled()
+    .flex()
+    .items_center()
+    .justify_center()
+    .px(tokens::SPACE_SM);
+    button.style().align_self = Some(gpui::AlignSelf::Stretch);
+    let label = rox_i18n::t!("listens-clear-button");
+    let mut lane = div()
+        .id("stats-clear-history")
+        .flex()
+        .flex_none()
+        .pl(tokens::SPACE_SM)
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+        .child(button);
+    lane.style().align_self = Some(gpui::AlignSelf::Stretch);
+    lane
+}
+
 /// What a section shows before any listen lands inside the range.
 fn empty_note(range: StatsRange) -> Div {
     div()
@@ -1288,8 +1463,9 @@ impl Render for StatsWindow {
         panel::window_body(player, || {
             // The range scopes every section under it, so it holds its own
             // bar at the top rather than scrolling away with the first one.
-            // The right inset matches the page's scrollbar lane, so the
-            // picker lines up with the sections beneath it.
+            // Both insets are the page's own: nothing in this bar scrolls,
+            // so the scrollbar's lane isn't its to leave open, and the
+            // clear sitting a whole lane off the edge just reads as a gap.
             // A chart pick joins the knob as its own segment, the one
             // place the page names what it's scoped to.
             let mut options = vec![
@@ -1307,7 +1483,7 @@ impl Render for StatsWindow {
                 .items_center()
                 .flex_none()
                 .pl(tokens::SPACE_MD)
-                .pr(tokens::SPACE_MD + px(16.))
+                .pr(tokens::SPACE_MD)
                 .py(tokens::SPACE_SM)
                 .border_b_1()
                 .border_color(palette::border())
@@ -1324,7 +1500,11 @@ impl Render for StatsWindow {
                     )
                     .flex_1()
                     .min_w_0(),
-                );
+                )
+                // The record's own delete, beside the knob that scopes
+                // every reading of it. Inert with nothing to take, and it
+                // asks before it takes anything.
+                .child(clear_button(self.data.total == 0, cx));
             let page = div()
                 .flex()
                 .flex_col()
@@ -1395,6 +1575,9 @@ impl Render for StatsWindow {
                                 ),
                         ),
                 )
+                // The clear confirm floats over the whole window on its own
+                // occluding layer, last so it paints on top of the page.
+                .children(self.clear_overlay(window, cx))
                 .into_any_element()
         })
     }

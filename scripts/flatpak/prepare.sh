@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Writes the tree Flathub builds one release from: the manifest with the rox
 # source pinned to the release tag and commit, flathub.json, the crate list
-# flatpak-cargo-generator derives from that commit's Cargo.lock, and the
-# metainfo with its release history filled in. The checked-in manifest is
+# flatpak-cargo-generator derives from that commit's Cargo.lock. The
+# metainfo isn't part of it: the build installs the one in the rox source,
+# which Flathub requires, with its release list committed at each version
+# bump. The checked-in manifest is
 # never touched; it keeps pointing at the newest published tag so it builds
 # as committed.
 #
@@ -21,8 +23,7 @@
 # carry a newer lock than the version being rebuilt.
 #
 # Usage: scripts/flatpak/prepare.sh <version> <commit> <out-dir>
-# Needs python3 with aiohttp and tomlkit, and a checkout whose origin has the
-# tags (the metainfo script fetches them).
+# Needs python3 with aiohttp and tomlkit.
 set -euo pipefail
 
 version=${1:?usage: $0 <version> <commit> <out-dir>}
@@ -30,7 +31,6 @@ commit=${2:?usage: $0 <version> <commit> <out-dir>}
 out=${3:?usage: $0 <version> <commit> <out-dir>}
 
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
 manifest=com.zealsprince.rox.yml
 
 # flatpak/flatpak-builder-tools has no tags; master as of 2026-09-12. The
@@ -60,10 +60,5 @@ sed -e "$rox{s|tag: .*|tag: v$version|;s|commit: .*|commit: $commit|;}" \
     "$here/$manifest" > "$out/$manifest"
 sed -e "$rox{/tag: /d;}" "$out/$manifest" > "$out/build/$manifest"
 
-# The metainfo script fills in place and reads tags through the checkout.
-cp "$root/crates/rox/assets/app/rox.metainfo.xml" "$out/rox.metainfo.xml"
-(cd "$root" && scripts/metainfo-releases.sh "$out/rox.metainfo.xml" "$version")
-
-# The manifest's file source resolves beside the manifest, so the build copy
-# needs the side files too.
-cp "$out/flathub.json" "$out/cargo-sources.json" "$out/rox.metainfo.xml" "$out/build/"
+# The crate list resolves beside the manifest, so the build copy needs it too.
+cp "$out/flathub.json" "$out/cargo-sources.json" "$out/build/"

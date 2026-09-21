@@ -10,9 +10,8 @@
 
 # Generated at release time by .github/workflows/flatpak.yml, beside the
 # Flatpak manifest: the crate list flatpak-cargo-generator derives from
-# Cargo.lock, and the metainfo with its release history filled in
+# Cargo.lock
 /scripts/flatpak/cargo-sources.json
-/scripts/flatpak/rox.metainfo.xml
 
 # flatpak-builder's state dir (checkouts, build trees, ccache) from a local
 # build or lint of the manifest

@@ -2,8 +2,9 @@
 # rebuilds from it, once that repo exists. The tree it pushes is written by
 # scripts/flatpak/prepare.sh, the script the Flatpak build leg ran against
 # the same commit, so nothing is handed between the two jobs: the manifest
-# with the rox source pinned to the release tag and commit, flathub.json, the
-# generated crate list, and the release-filled metainfo.
+# with the rox source pinned to the release tag and commit, flathub.json, and
+# the generated crate list. The metainfo isn't among them: Flathub takes it
+# from the rox source, where each version bump commits its release entry.
 #
 # A release candidate never reaches Flathub, which tracks stable. Without
 # FLATHUB_TOKEN the run warns and keeps the tree as a run artifact instead,
@@ -96,7 +97,6 @@ jobs:
             ${{ runner.temp }}/flathub/com.zealsprince.rox.yml
             ${{ runner.temp }}/flathub/flathub.json
             ${{ runner.temp }}/flathub/cargo-sources.json
-            ${{ runner.temp }}/flathub/rox.metainfo.xml
           if-no-files-found: error
 
       # Flathub builds each app from its own repo, so the release lands there
@@ -112,9 +112,9 @@ jobs:
           git clone "https://x-access-token:$FLATHUB_TOKEN@github.com/flathub/com.zealsprince.rox" \
             "$RUNNER_TEMP/flathub-repo"
           cd "$RUNNER_TEMP/flathub"
-          cp "$MANIFEST" flathub.json cargo-sources.json rox.metainfo.xml "$RUNNER_TEMP/flathub-repo/"
+          cp "$MANIFEST" flathub.json cargo-sources.json "$RUNNER_TEMP/flathub-repo/"
           cd "$RUNNER_TEMP/flathub-repo"
-          git add "$MANIFEST" flathub.json cargo-sources.json rox.metainfo.xml
+          git add "$MANIFEST" flathub.json cargo-sources.json
           if git diff --cached --quiet; then
             echo "Flathub is already at v$VERSION"
           else

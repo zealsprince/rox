@@ -1220,6 +1220,8 @@ settings-storage-catalog = Catálogo
     .description = O índice de faixas que as varreduras constroem: uma linha por faixa com as tags, os detalhes do arquivo e os trechos de cue, dentro de library.db
 settings-storage-cover-thumbnails = Miniaturas de capas
     .description = Capas pequenas guardadas depois da primeira renderização (thumbs.db); as que forem limpas se refazem conforme entram na tela
+settings-storage-listening-history = Histórico de audição
+    .description = Toda reprodução de que a biblioteca tem registro, as próprias e o que uma importação do Last.fm trouxe. É o que alimenta a coluna de reproduções, a janela de estatísticas, o painel de histórico e qualquer playlist inteligente que ordene por reproduções
 settings-storage-logs = Logs
     .description = O que cada execução escreve para relatórios de bug (logs/rox.log), rotacionado num limite de tamanho para nunca crescer demais
 settings-storage-looks-layouts = Visuais e layouts
@@ -1602,6 +1604,20 @@ stats-show-number = Mostrar o número
 stats-title = Widget de estatísticas
 stats-tooltip-listens = Audições
 stats-window-title = rox - Estatísticas
+
+## Limpar o histórico de audição: a confirmação que a janela de
+## estatísticas e a página de armazenamento levantam.
+
+listens-clear-body = { $imported } de { $total } audições vieram de uma importação do Last.fm: com data onde a conta sabia quando, espalhadas pelos anos onde só sobrou uma contagem. Limpar só essas mantém as audições que o rox viu acontecer; limpar tudo deixa a biblioteca sem registro nenhum.
+listens-clear-body-plain = { $listens }, nenhuma vinda de importação: o rox viu todas elas acontecerem. Limpar deixa a biblioteca sem registro nenhum.
+listens-clear-button = Limpar histórico
+listens-clear-everything = Limpar tudo
+listens-clear-imported = Limpar importadas
+listens-clear-title = Limpar o histórico de audição?
+listens-count = { $count ->
+    [one] { $count } audição
+   *[other] { $count } audições
+}
 
 ## Library health window
 

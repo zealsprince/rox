@@ -9,9 +9,9 @@
 #
 # The manifest builds offline from pinned sources. scripts/flatpak/prepare.sh
 # writes the tree for the version being built under $RUNNER_TEMP: the
-# manifest with the rox source pinned to the release commit, the crate list
-# flatpak-cargo-generator derives from that commit's Cargo.lock, and the
-# metainfo with its release history filled in. The checked-in manifest stays
+# manifest with the rox source pinned to the release commit and the crate
+# list flatpak-cargo-generator derives from that commit's Cargo.lock. The
+# metainfo is the rox source's own. The checked-in manifest stays
 # untouched and keeps pointing at the newest published tag, so it builds as
 # committed.
 #
@@ -101,12 +101,17 @@ jobs:
 
       # The checks Flathub runs on a submission, before half an hour goes
       # into the build, on the copy Flathub would get. The linter is on the
-      # image's PATH; the appstream check runs on the filled metainfo, the
-      # copy that ships.
+      # image's PATH. The appstream check runs on the metainfo at the commit
+      # being built, which is the file the build installs; on a dispatch the
+      # checkout can be a newer ref, so it's fetched rather than read.
       - name: Lint manifest and metainfo
+        env:
+          COMMIT: ${{ steps.commit.outputs.commit }}
         run: |
           flatpak-builder-lint manifest "$RUNNER_TEMP/flathub/$MANIFEST"
-          flatpak-builder-lint appstream "$RUNNER_TEMP/flathub/rox.metainfo.xml"
+          curl -fsSLo "$RUNNER_TEMP/rox.metainfo.xml" \
+            "https://raw.githubusercontent.com/zealsprince/rox/$COMMIT/crates/rox/assets/app/rox.metainfo.xml"
+          flatpak-builder-lint appstream "$RUNNER_TEMP/rox.metainfo.xml"
 
       # v6.8, master as of 2026-08-25. The upstream flatpak/ action, not the
       # flathub-infra fork: that fork closed in 2025-04 and never learned

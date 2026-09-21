@@ -311,6 +311,9 @@ struct StorageInfo {
     /// Every acoustic model with vectors in the database, including ones
     /// this build doesn't recognize.
     models: Vec<rox_library::embeddings::ModelRows>,
+    /// How many listens the library holds and how many of them an import
+    /// wrote, the two numbers the history row and its confirm read out.
+    listens: rox_library::listens::Tally,
     /// thumbs.db with its WAL sidecars.
     thumbs: u64,
     /// Everything under waveforms/.
@@ -343,11 +346,12 @@ impl StorageInfo {
             .exists()
             .then(|| rox_library::store::open(db).ok())
             .flatten();
-        let (music, breakdown, models) = match &conn {
+        let (music, breakdown, models, listens) = match &conn {
             Some(conn) => (
                 rox_library::store::stats(conn).unwrap_or_default(),
                 rox_library::store::storage_breakdown(conn).unwrap_or_default(),
                 rox_library::embeddings::models(conn).unwrap_or_default(),
+                rox_library::listens::tally(conn).unwrap_or_default(),
             ),
             None => Default::default(),
         };
@@ -355,6 +359,7 @@ impl StorageInfo {
             music,
             breakdown,
             models,
+            listens,
             thumbs: db_size(&data.join("thumbs.db")),
             waveforms: dir_size(&rox_services::peaks::cache_dir()),
             lyrics: dir_size(&settings::lyrics_dir()),
@@ -408,6 +413,15 @@ enum Pending {
     /// the pass only ever measures tracks with no tempo, so clearing is how
     /// improved beat counting gets applied to numbers already written.
     ClearMeasuredBpm,
+    /// Throw the listening record away. The dialog this raises splits its
+    /// yes the way the workspace apply does: one for the rows an import
+    /// wrote, one for the whole table.
+    ///
+    /// Asked for like the two above, and for a reason neither of them
+    /// has: there's nothing to run again afterwards. A play rox watched
+    /// happen is gone, and what an import placed comes back only as far
+    /// as Last.fm still remembers it.
+    ClearListens,
 }
 
 struct SettingsWindow {
@@ -7858,6 +7872,15 @@ impl SettingsWindow {
             .update(cx, |library, cx| library.clear_measured_bpm(cx));
     }
 
+    /// The listening history's clear, either of the dialog's two yeses.
+    /// The library emits Updated when the delete finishes, which walks
+    /// the storage numbers again and brings the row's count back to what
+    /// survived.
+    fn clear_listens(&mut self, what: rox_library::listens::Clear, cx: &mut Context<Self>) {
+        self.library
+            .update(cx, |library, cx| library.clear_listens(what, cx));
+    }
+
     /// A row per acoustic model with vectors in the library: what it
     /// described, and the clear that drops it. Built here rather than inside
     /// the page's section closure because the model id is the row's label,
@@ -7956,6 +7979,7 @@ impl SettingsWindow {
         // clear can't gate the tempo pass, which opens the database by path
         // on its own, so the button goes inert while one runs, the same
         // arrangement as the model rows above a running analysis.
+        let listens = info.listens;
         let measured_tempos = self.bpm_coverage.measured;
         let tempos_inert = measured_tempos == 0
             || self.tempo_job.is_some()
@@ -7981,6 +8005,34 @@ impl SettingsWindow {
                         "settings-storage-playlists-history",
                         &["playlists", "history", "listens", "genres", "size"],
                         readout(human_size(store.playlists + store.history + store.genres)),
+                    )
+                    .keyed(
+                        "settings-storage-listening-history",
+                        &[
+                            "listens",
+                            "plays",
+                            "history",
+                            "scrobbles",
+                            "import",
+                            "clear",
+                        ],
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_SM)
+                            .child(readout(
+                                rox_i18n::t!("listens-count", count = listens.total).to_string(),
+                            ))
+                            .child(small_button(
+                                rox_i18n::t!("settings-common-clear"),
+                                icons::TRASH,
+                                listens.total == 0,
+                                cx.listener(|this, _, _, cx| {
+                                    this.pending = Some(Pending::ClearListens);
+                                    cx.notify();
+                                }),
+                            )),
                     )
                     .when(reclaimable, |rows| {
                         rows.keyed(

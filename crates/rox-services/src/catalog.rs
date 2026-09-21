@@ -909,6 +909,48 @@ impl Library {
         cx.notify();
     }
 
+    /// Throw listening history away: everything an import wrote, or the
+    /// whole record. The listens table is append-only by design, so this
+    /// is the one path that removes an event, and it only runs behind a
+    /// confirm the caller put up.
+    ///
+    /// Same busy gate and background connection as
+    /// [`Library::clear_measured_bpm`]. The plays column reloads after,
+    /// since every count on screen came out of the rows just deleted, and
+    /// the Last.fm import bounds go with them: they say how far each
+    /// account has been read, and a bound pointing past a history that
+    /// no longer exists would make the next import fetch nothing.
+    pub fn clear_listens(&mut self, what: listens::Clear, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        self.busy = Some("clearing listens...".into());
+        let db_path = self.db_path.clone();
+        cx.spawn(async move |this, cx| {
+            let cleared = cx
+                .background_executor()
+                .spawn(async move {
+                    let conn = store::open(&db_path)?;
+                    listens::clear(&conn, what)
+                })
+                .await;
+            rox_core::settings::Settings::update(|s| s.accounts.lastfm.forget_imports());
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                this.status = match cleared {
+                    Ok(n) => format!("cleared {n} listens").into(),
+                    Err(e) => format!("library: {e}").into(),
+                };
+                this.reload_plays(cx);
+                cx.emit(LibraryEvent::Updated);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// The library database, for a background pass that opens its own
     /// connection to it (the ReplayGain measurement job).
     pub fn db_path(&self) -> PathBuf {
@@ -1471,6 +1513,15 @@ impl Library {
         self.conn
             .as_ref()
             .and_then(|conn| listens::count_between(conn, since, until).ok())
+            .unwrap_or_default()
+    }
+
+    /// How many listens the library holds and how many of them an import
+    /// wrote, the numbers the clear confirm reads out before it takes any.
+    pub fn listens_tally(&self) -> listens::Tally {
+        self.conn
+            .as_ref()
+            .and_then(|conn| listens::tally(conn).ok())
             .unwrap_or_default()
     }
 

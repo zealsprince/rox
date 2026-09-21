@@ -1255,6 +1255,8 @@ settings-storage-catalog = Catalogue
     .description = L'index de pistes que construisent les analyses : une ligne par piste avec ses tags, les détails de son fichier et ses plages cue, dans library.db
 settings-storage-cover-thumbnails = Vignettes de pochettes
     .description = Petites pochettes gardées après leur premier rendu (thumbs.db) ; celles qu'on efface se reconstruisent quand elles reviennent à l'écran
+settings-storage-listening-history = Historique d'écoute
+    .description = Chaque lecture dont la bibliothèque garde trace, les siennes et tout ce qu'un import Last.fm a ramené. C'est ce qui alimente la colonne des lectures, la fenêtre des statistiques, le panneau d'historique et toute playlist intelligente triée sur les lectures
 settings-storage-logs = Journaux
     .description = Ce que chaque session écrit pour les rapports de bug (logs/rox.log), avec rotation à une taille plafond pour qu'il ne grossisse jamais
 settings-storage-looks-layouts = Habillages et dispositions
@@ -1656,6 +1658,20 @@ stats-show-number = Afficher le nombre
 stats-title = Widget Stats
 stats-tooltip-listens = Écoutes
 stats-window-title = rox - Statistiques
+
+## Effacer l'historique d'écoute : la confirmation que posent la fenêtre
+## des statistiques et la page de stockage, et le compte de leurs lignes.
+
+listens-clear-body = { $imported } écoutes sur { $total } viennent d'un import Last.fm : datées là où le compte savait quand, réparties sur les années là où il ne restait qu'un compteur. N'effacer que celles-là garde les écoutes que rox a vues passer ; tout effacer laisse la bibliothèque sans aucun historique.
+listens-clear-body-plain = { $listens }, aucune venue d'un import : rox les a toutes vues passer. Effacer laisse la bibliothèque sans aucun historique.
+listens-clear-button = Effacer l'historique
+listens-clear-everything = Tout effacer
+listens-clear-imported = Effacer les imports
+listens-clear-title = Effacer l'historique d'écoute ?
+listens-count = { $count ->
+    [one] { $count } écoute
+   *[other] { $count } écoutes
+}
 
 ## Library health window
 

@@ -22,7 +22,10 @@
 //! seconds or minutes rather than afternoons, and there's nothing to say
 //! about them before someone sets one going. Those rows appear when one
 //! runs and stay for the session to report what it did, rather than
-//! standing in the list saying nothing for the rest of the time.
+//! standing in the list saying nothing for the rest of the time. They sit
+//! above the standing rows: a row that's only there because something is
+//! happening is the reason the window got opened, and six fixed rows ahead
+//! of it would push it off the bottom.
 //!
 //! The scan keeps its menubar badge exactly as it was. The badge is a glance
 //! and this is the detail: the same walk with the estimate and the file under
@@ -194,14 +197,14 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
         0 => None,
         1 => live.pop(),
         several => Some((
-            icons::CLOCK,
+            icons::LIST_CHECKS,
             rox_i18n::t!("tasks-chip-count", count = several as u64).to_string(),
         )),
     };
     let open = cx.listener(|_, _, _, cx| open(cx));
-    // Idle the glyph is a clock and nothing else, so the tip is the only
-    // thing that says what it opens. Running, the chip has the count and
-    // the tip stays on the click.
+    // Idle the glyph is the checklist and nothing else, so the tip is the
+    // only thing that says what it opens. Running, the chip has the count
+    // and the tip stays on the click.
     let tip = panel::Tip::keyed("tasks", rox_i18n::t!("tasks-tip"));
     let Some((path, label)) = running else {
         return tip.apply(
@@ -211,7 +214,7 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
                 .rounded(tokens::RADIUS)
                 .hover(|d| d.bg(palette::bg_control()))
                 .cursor_pointer()
-                .child(icon(icons::CLOCK))
+                .child(icon(icons::LIST_CHECKS))
                 .on_mouse_down(gpui::MouseButton::Left, open),
         );
     };
@@ -306,7 +309,7 @@ fn open_now(cx: &mut App) {
         .tasks
         .filter(|s| s.width >= f32::from(MIN.width) && s.height >= f32::from(MIN.height))
         .map(|s| (s.width, s.height))
-        // Room for the standing rows and a dynamic one under them without a
+        // Room for the standing rows and a dynamic one above them without a
         // scroll on first open.
         .unwrap_or((640., 480.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
@@ -1074,7 +1077,7 @@ impl TasksWindow {
     /// elsewhere, so there's nothing to say about one before it runs and no
     /// row for it either; once it has run, its row stays for the session
     /// with what it did, the same as the standing rows report their last
-    /// pass.
+    /// pass. Drawn at the top of the list, ahead of the standing rows.
     fn dynamic(&self, cx: &App) -> Vec<Job> {
         let import = import::progress(cx).is_some() || import::last(cx).is_some();
         let plays_import = plays_import::progress(cx).is_some() || plays_import::last(cx).is_some();
@@ -1629,13 +1632,16 @@ impl TasksWindow {
             // a resize down, shouldn't clip the bottom off the window.
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .children(JOBS.map(|job| self.row(job, cx)))
-            // The rule says these last ones are a different kind of thing:
+            // Dynamic rows first. They're the ones someone opens this window
+            // to check on, and below the six standing rows they'd be under
+            // the fold on a small window.
+            .children(dynamic.iter().map(|job| self.row(*job, cx)))
+            // The rule says the ones above are a different kind of thing:
             // what happened, rather than what this window can set going.
             .when(!dynamic.is_empty(), |d| {
                 d.child(div().flex_none().h(px(1.)).bg(palette::border()))
             })
-            .children(dynamic.into_iter().map(|job| self.row(job, cx)))
+            .children(JOBS.map(|job| self.row(job, cx)))
             // Without a library there's nothing to drive: the workspace this
             // window opened over is gone, and the rows are reading its last
             // word rather than anything live.

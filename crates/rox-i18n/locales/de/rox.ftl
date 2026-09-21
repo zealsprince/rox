@@ -1214,6 +1214,8 @@ settings-storage-catalog = Katalog
     .description = Der Titelindex, den Scans aufbauen: eine Zeile je Titel mit seinen Tags, seinen Dateiangaben und etwaigen CUE-Spannen, in library.db
 settings-storage-cover-thumbnails = Cover-Miniaturen
     .description = Kleine Cover, die nach ihrer ersten Darstellung bleiben (thumbs.db); geleerte bauen sich neu auf, sobald sie ins Bild scrollen
+settings-storage-listening-history = Hörverlauf
+    .description = Jede Wiedergabe, von der die Bibliothek weiß, die eigenen und alles, was ein Last.fm-Import mitgebracht hat. Daraus leben die Wiedergabespalte, das Statistikfenster, das Verlaufspanel und jede smarte Playlist, die nach Wiedergaben sortiert
 settings-storage-logs = Protokolle
     .description = Was jeder Lauf für Fehlerberichte schreibt (logs/rox.log), bei einer Größengrenze rotiert, damit es nie groß wird
 settings-storage-looks-layouts = Erscheinungsbilder und Layouts
@@ -1593,6 +1595,20 @@ stats-show-number = Zahl anzeigen
 stats-title = Statistik-Widget
 stats-tooltip-listens = Hörvorgänge
 stats-window-title = rox - Statistik
+
+## Den Hörverlauf leeren: die Rückfrage, die sowohl das Statistikfenster
+## als auch die Speicherseite stellen, und die Zahl in ihren Zeilen.
+
+listens-clear-body = { $imported } von { $total } Hörvorgängen stammen aus einem Last.fm-Import: mit Datum, wo das Konto eines wusste, über die Jahre verteilt, wo nur eine Wiedergabezahl übrig war. Nur diese zu leeren behält, was rox selbst mitbekommen hat; alles zu leeren lässt die Bibliothek ohne jede Aufzeichnung zurück.
+listens-clear-body-plain = { $listens }, keiner davon aus einem Import: rox hat jeden einzelnen selbst mitbekommen. Leeren lässt die Bibliothek ohne jede Aufzeichnung zurück.
+listens-clear-button = Verlauf leeren
+listens-clear-everything = Alles leeren
+listens-clear-imported = Importierte leeren
+listens-clear-title = Den Hörverlauf leeren?
+listens-count = { $count ->
+    [one] { $count } Hörvorgang
+   *[other] { $count } Hörvorgänge
+}
 
 ## Library health window
 

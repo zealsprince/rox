@@ -1201,6 +1201,8 @@ settings-storage-catalog = カタログ
     .description = スキャンが作るトラックの索引。1 行が 1 トラックで、タグ・ファイル情報・CUE の区間が入る。library.db の中
 settings-storage-cover-thumbnails = カバーのサムネイル
     .description = 一度描いたあと取っておく小さなカバー (thumbs.db)。消しても、スクロールして見えたときに作り直される
+settings-storage-listening-history = 再生履歴
+    .description = ライブラリが記録している再生すべて。rox 自身の分と、Last.fm の取り込みが持ってきた分を含む。再生回数の列、統計ウィンドウ、履歴パネル、再生回数で並べるスマートプレイリストはここから来ている
 settings-storage-logs = ログ
     .description = 不具合報告のために各実行が書き出すもの (logs/rox.log)。サイズ上限で切り替えるので大きくならない
 settings-storage-looks-layouts = 見た目とレイアウト
@@ -1564,6 +1566,19 @@ stats-show-number = 数字を表示
 stats-title = 統計ウィジェット
 stats-tooltip-listens = 再生数
 stats-window-title = rox - 統計
+
+## 再生履歴のクリア。統計ウィンドウとストレージページの両方が出す確認
+## ダイアログと、その行に出る件数。
+
+listens-clear-body = { $total } 件のうち { $imported } 件は Last.fm からの取り込みです。日時が分かるものはその秒に、再生回数しか残っていないものは年月に散らして置かれています。取り込んだ分だけクリアすれば rox 自身が見た再生は残り、すべてクリアするとライブラリに記録は何も残りません。
+listens-clear-body-plain = { $listens }。取り込みは一件もなく、すべて rox 自身が見た再生です。クリアするとライブラリに記録は何も残りません。
+listens-clear-button = 履歴をクリア
+listens-clear-everything = すべてクリア
+listens-clear-imported = 取り込み分をクリア
+listens-clear-title = 再生履歴をクリアしますか?
+listens-count = { $count ->
+   *[other] { $count } 件の再生
+}
 
 ## Library health window
 

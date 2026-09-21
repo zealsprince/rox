@@ -2465,6 +2465,19 @@ pub struct Lastfm {
     /// to claims it on the first call that succeeds ([`Self::attribute`]);
     /// every other build files its own refusal and stops trying it.
     pub sessions: BTreeMap<String, LastfmSession>,
+    /// How far the play-history import has read each account, by
+    /// lowercased username: the second of the newest scrobble it took.
+    /// The next run asks Last.fm for what arrived after it, which is the
+    /// difference between a re-import costing one page and costing a
+    /// decade of them.
+    ///
+    /// Filed per account rather than read off the listens table, which
+    /// records that a row came from Last.fm and not which account sent
+    /// it. One global bound meant connecting a second account and
+    /// importing it asked for "scrobbles since the first account's
+    /// newest", got nothing back, and filed that account's whole history
+    /// as dateless estimates.
+    pub imported: BTreeMap<String, i64>,
     /// The session a pre-`sessions` file held, with nothing recording
     /// which api key minted it. Read once on load into the unattributed
     /// slot, never written back.
@@ -2572,6 +2585,29 @@ impl Lastfm {
         };
         self.sessions.insert(api_key.to_string(), session);
         true
+    }
+
+    /// How far `user`'s history has been imported, or None for an account
+    /// nothing has read yet, which asks for the whole thing.
+    pub fn imported_through(&self, user: &str) -> Option<i64> {
+        self.imported.get(&user.to_lowercase()).copied()
+    }
+
+    /// Record how far a run got. Never moves the bound backwards: a run
+    /// stopped partway holds the older end of what it asked for, and
+    /// lowering the bound to its newest second would step over everything
+    /// above it.
+    pub fn note_import(&mut self, user: &str, through: i64) {
+        let slot = self.imported.entry(user.to_lowercase()).or_default();
+        *slot = (*slot).max(through);
+    }
+
+    /// Forget where every account's import got to, what clearing the
+    /// listens out of the library leaves behind. Without it a re-import
+    /// asks for what arrived since a history that isn't there any more
+    /// and comes back with nothing.
+    pub fn forget_imports(&mut self) {
+        self.imported.clear();
     }
 
     /// Fold a pre-`sessions` file's flat session into the unattributed
@@ -4604,6 +4640,40 @@ mod tests {
             lastfm.session("release-key").map(|s| s.key.as_str()),
             Some("sk-release")
         );
+    }
+
+    /// The import bound belongs to the account, not to the library. One
+    /// bound for all of them is what made connecting a second account and
+    /// importing it ask Last.fm for "anything since the first account's
+    /// newest scrobble", come back with nothing, and file the whole
+    /// history as dateless estimates instead.
+    #[test]
+    fn each_account_carries_its_own_import_bound() {
+        let mut lastfm = Lastfm::default();
+        assert_eq!(lastfm.imported_through("catlinman"), None);
+
+        lastfm.note_import("zealsprince", 1_700_000_000);
+        assert_eq!(
+            lastfm.imported_through("catlinman"),
+            None,
+            "one account's history says nothing about another's"
+        );
+        assert_eq!(lastfm.imported_through("zealsprince"), Some(1_700_000_000));
+        assert_eq!(
+            lastfm.imported_through("ZealSprince"),
+            Some(1_700_000_000),
+            "and Last.fm's own casing of a name is the same account"
+        );
+
+        // A stopped run holds the older end of what it asked for, so its
+        // newest second can't pull the bound back down over the rest.
+        lastfm.note_import("zealsprince", 1_600_000_000);
+        assert_eq!(lastfm.imported_through("zealsprince"), Some(1_700_000_000));
+
+        // Clearing the listens out of the library leaves nothing for a
+        // bound to stand on.
+        lastfm.forget_imports();
+        assert_eq!(lastfm.imported_through("zealsprince"), None);
     }
 
     /// A file from before the split holds one session with nothing

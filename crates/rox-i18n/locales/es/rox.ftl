@@ -1243,6 +1243,8 @@ settings-storage-catalog = Catálogo
     .description = El índice de pistas que construyen los escaneos: una fila por pista con sus etiquetas, los datos de su archivo y cualquier tramo de cue, dentro de library.db
 settings-storage-cover-thumbnails = Miniaturas de carátula
     .description = Carátulas pequeñas guardadas tras su primer dibujado (thumbs.db); las que borres se rehacen según entran en pantalla
+settings-storage-listening-history = Historial de escucha
+    .description = Cada reproducción de la que la biblioteca guarda constancia, las suyas y todo lo que haya traído una importación de Last.fm. De ahí salen la columna de reproducciones, la ventana de estadísticas, el panel de historial y cualquier lista inteligente que ordene por reproducciones
 settings-storage-logs = Registros
     .description = Lo que escribe cada ejecución para informes de fallos (logs/rox.log), rotado con un límite de tamaño para que nunca crezca mucho
 settings-storage-looks-layouts = Aspectos y disposiciones
@@ -1644,6 +1646,20 @@ stats-show-number = Mostrar el número
 stats-title = Widget de estadísticas
 stats-tooltip-listens = Escuchas
 stats-window-title = rox - Estadísticas
+
+## Borrar el historial de escucha: la confirmación que levantan la
+## ventana de estadísticas y la página de almacenamiento.
+
+listens-clear-body = { $imported } de { $total } escuchas vienen de una importación de Last.fm: con fecha donde la cuenta sabía cuándo, repartidas por los años donde solo quedaba un recuento. Borrar solo esas mantiene las escuchas que rox vio ocurrir; borrarlo todo deja la biblioteca sin ningún historial.
+listens-clear-body-plain = { $listens }, ninguna de una importación: rox las vio ocurrir todas. Borrar deja la biblioteca sin ningún historial.
+listens-clear-button = Borrar historial
+listens-clear-everything = Borrarlo todo
+listens-clear-imported = Borrar importadas
+listens-clear-title = ¿Borrar el historial de escucha?
+listens-count = { $count ->
+    [one] { $count } escucha
+   *[other] { $count } escuchas
+}
 
 ## Library health window
 

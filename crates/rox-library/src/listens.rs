@@ -272,12 +272,35 @@ impl Ladder {
     }
 }
 
-/// The gap between two rungs: the span divided by one more than the rows
-/// in it, so the oldest row still lands above the floor. At least a
-/// second, which is what keeps every rung its own moment.
+/// The gap between two rungs: the span divided by the rows standing in
+/// it. At least a second, which is what keeps every rung its own moment.
 fn ladder_step(anchor: i64, floor: i64, needed: usize) -> i64 {
     let span = anchor.saturating_sub(floor).max(needed as i64);
-    (span / (needed as i64 + 1)).max(1)
+    (span / needed as i64).max(1)
+}
+
+/// How far into its first step a track's ladder starts, a second to a
+/// whole step, fixed by the track's own id.
+///
+/// Every ladder in an import hangs from the same anchor down to the same
+/// floor, so without this the rungs line up across tracks: every track
+/// short exactly one play lands on the same second, every track short two
+/// on the same two. That is what put twenty thousand invented listens on
+/// one afternoon in October 2020 in a library whose owner was nowhere
+/// near a stereo that day. A phase off the id spreads them, and keeping
+/// it derived rather than random means a re-import places a track where
+/// the last one did.
+fn ladder_phase(track_id: i64, step: i64) -> i64 {
+    // splitmix64's finalizer. Ids are handed out in a run, and their low
+    // bits are what a modulo reads, so they need mixing before they mean
+    // anything; this is the cheapest mix that passes for random.
+    let mut z = (track_id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    // One step's worth, never zero: a rung on the anchor itself would
+    // claim to be as recent as the real play the ladder hangs under.
+    1 + (z % step as u64) as i64
 }
 
 /// A play count folded to what a backfill will actually insert, and
@@ -379,19 +402,6 @@ where
     Ok(added)
 }
 
-/// The newest scrobble this library has already imported, or None when
-/// none has been. The bound a re-import asks Last.fm to start after, so a
-/// second run reads what arrived since instead of the whole history
-/// again. Imported rows only: a play rox watched happen says nothing
-/// about how far the import got.
-pub fn latest_scrobble(conn: &Connection) -> rusqlite::Result<Option<i64>> {
-    conn.query_row(
-        "SELECT MAX(played_at) FROM listens WHERE origin = ?1",
-        [ORIGIN_SCROBBLE],
-        |row| row.get(0),
-    )
-}
-
 /// Backfill play history for multiple tracks up to their target play counts.
 /// For each `(track_id, target_plays)`, if the track currently has fewer listens
 /// than `target_plays`, inserts the missing listens anchored before the earliest
@@ -402,8 +412,11 @@ pub fn latest_scrobble(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 /// the fallback for what it couldn't answer for. So the ladder spreads
 /// evenly down `ladder`'s span instead of stepping back an hour at a
 /// time, which is what kept a whole import inside one bar of a weekly
-/// chart. The rows are tagged [`ORIGIN_ESTIMATE`], because an even spread
-/// is still a guess and anything reading them should be able to tell.
+/// chart, and each track's rungs start at their own offset inside the
+/// first step ([`ladder_phase`]), which is what keeps every track's
+/// ladder off every other track's seconds. The rows are tagged
+/// [`ORIGIN_ESTIMATE`], because an even spread is still a guess and
+/// anything reading them should be able to tell.
 ///
 /// `on_progress` is called with `(processed_tracks, total_tracks)` and returns
 /// `false` if the operation was cancelled/stopped.
@@ -477,8 +490,9 @@ where
             min_played.unwrap_or_else(|| ladder.now.saturating_sub(UNPLAYED_ANCHOR_OFFSET_SECS));
         let floor = ladder.floor(anchor, needed);
         let step = ladder_step(anchor, floor, needed);
+        let phase = ladder_phase(track_id, step);
         for i in 0..needed {
-            let played_at = anchor.saturating_sub((i as i64 + 1) * step);
+            let played_at = anchor.saturating_sub(i as i64 * step).saturating_sub(phase);
             insert_stmt.execute(rusqlite::params![
                 track_id,
                 played_at,
@@ -1010,6 +1024,60 @@ pub fn count_between(conn: &Connection, since: i64, until: i64) -> rusqlite::Res
         |row| row.get::<_, i64>(0),
     )
     .map(|n| n as u64)
+}
+
+/// What a clear is allowed to take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clear {
+    /// Rows an import wrote: Last.fm's dated scrobbles and the ladder's
+    /// invented ones. A play rox watched happen stays, so throwing away a
+    /// bad import doesn't cost the record it was added to.
+    Imported,
+    /// The whole table, back to a library that has never been played.
+    Everything,
+}
+
+/// How many listens there are and how many of them came out of an
+/// import, the numbers the clear asks about before it takes any.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub total: u64,
+    pub imported: u64,
+}
+
+/// Count the table both ways in one pass.
+///
+/// Rows from before origins were recorded at all count as rox's own,
+/// which is what the empty origin means: the build that wrote them said
+/// nothing about where they came from, and calling those imported would
+/// delete history on a guess.
+pub fn tally(conn: &Connection) -> rusqlite::Result<Tally> {
+    conn.query_row(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE origin <> ?1) FROM listens",
+        [ORIGIN_LOCAL],
+        |row| {
+            Ok(Tally {
+                total: row.get::<_, i64>(0)? as u64,
+                imported: row.get::<_, i64>(1)? as u64,
+            })
+        },
+    )
+}
+
+/// Throw listens away, and hand back how many rows went.
+///
+/// The one delete in a module whose whole premise is append-only, so it
+/// only ever runs behind a confirm someone clicked. Nothing else here
+/// removes an event: a prune leaves the history it can no longer name,
+/// and [`reattach`] puts the names back when the file returns.
+pub fn clear(conn: &Connection, what: Clear) -> rusqlite::Result<usize> {
+    let gone = match what {
+        Clear::Imported => {
+            conn.execute("DELETE FROM listens WHERE origin <> ?1", [ORIGIN_LOCAL])?
+        }
+        Clear::Everything => conn.execute("DELETE FROM listens", [])?,
+    };
+    Ok(gone)
 }
 
 #[cfg(test)]
@@ -1762,9 +1830,9 @@ mod tests {
         let next = [(one, 1_700_000_000), (two, 1_710_000_000)];
         assert_eq!(import_scrobbles(&mut conn, &next, |_, _| true).unwrap(), 1);
         assert_eq!(
-            latest_scrobble(&conn).unwrap(),
-            Some(1_710_000_000),
-            "the bound a re-import starts after"
+            counts(&conn).unwrap().get(&two).copied(),
+            Some(2),
+            "the second it hadn't seen lands beside the one it had"
         );
     }
 
@@ -1783,20 +1851,6 @@ mod tests {
         let added = import_scrobbles(&mut conn, &history, |done, _| done < 2).unwrap();
         assert_eq!(added, 2, "what it got through is kept");
         assert_eq!(counts(&conn).unwrap().get(&one).copied(), Some(2));
-    }
-
-    #[test]
-    fn a_local_play_is_not_the_import_bound() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        store::init_schema(&conn).unwrap();
-        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
-        listen(&conn, "/m/1.mp3", 1_800_000_000);
-
-        assert_eq!(
-            latest_scrobble(&conn).unwrap(),
-            None,
-            "rox watching a play says nothing about how far the import got"
-        );
     }
 
     #[test]
@@ -1903,6 +1957,106 @@ mod tests {
             )
             .unwrap();
         assert_eq!(distinct, 10, "no two rungs share a second");
+    }
+
+    #[test]
+    fn ladders_from_one_import_dont_stack_on_the_same_seconds() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let rows: Vec<TrackRow> = (0..300)
+            .map(|n| track(&format!("/m/{n}.mp3"), "Song", "A", "Alb", "pop"))
+            .collect();
+        store::insert_batch(&mut conn, &rows).unwrap();
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM tracks ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+
+        // The shape that made the bar: hundreds of tracks the history
+        // couldn't date, every one of them short the same single play, all
+        // placed in the same run against the same anchor and floor.
+        let now = 1_700_000_000i64;
+        let ladder = Ladder {
+            now,
+            since: Some(now - 10 * 365 * 86_400),
+        };
+        let targets: Vec<(i64, u32)> = ids.iter().map(|&id| (id, 1)).collect();
+        assert_eq!(
+            backfill_plays_batch(&mut conn, &targets, ladder, |_, _| true).unwrap(),
+            300
+        );
+
+        let distinct: i64 = conn
+            .query_row("SELECT COUNT(DISTINCT played_at) FROM listens", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(
+            distinct > 290,
+            "the ladders lined up again: 300 plays on {distinct} seconds"
+        );
+        // And they're spread over the account's years rather than pooling
+        // in one corner of it: no day carries a crowd, and the ladder
+        // reaches most of the way down the decade it was given.
+        let busiest: i64 = conn
+            .query_row(
+                "SELECT MAX(n) FROM (SELECT COUNT(*) n FROM listens GROUP BY played_at / 86400)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(busiest <= 3, "one day took {busiest} of the 300");
+        let spread: i64 = conn
+            .query_row(
+                "SELECT MAX(played_at) - MIN(played_at) FROM listens",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            spread > 9 * 365 * 86_400,
+            "a decade of account collapsed to {spread} seconds"
+        );
+    }
+
+    #[test]
+    fn a_clear_can_take_the_imported_rows_alone() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        let one: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", ["/m/1.mp3"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        // One of each origin: a play rox watched, a dated scrobble, and a
+        // rung the ladder invented.
+        listen(&conn, "/m/1.mp3", 1_700_000_000);
+        import_scrobbles(&mut conn, &[(one, 1_600_000_000)], |_, _| true).unwrap();
+        backfill_plays_batch(&mut conn, &[(one, 8)], Ladder::at(1_700_000_000), |_, _| {
+            true
+        })
+        .unwrap();
+
+        let before = tally(&conn).unwrap();
+        assert_eq!(before.total, 8);
+        assert_eq!(before.imported, 7, "only the watched play is rox's own");
+
+        assert_eq!(clear(&conn, Clear::Imported).unwrap(), 7);
+        let after = tally(&conn).unwrap();
+        assert_eq!((after.total, after.imported), (1, 0));
+        assert_eq!(
+            last_played(&conn).unwrap().get(&one).copied(),
+            Some(1_700_000_000),
+            "the play that survived is the one rox saw"
+        );
+
+        assert_eq!(clear(&conn, Clear::Everything).unwrap(), 1);
+        assert_eq!(tally(&conn).unwrap(), Tally::default());
     }
 
     #[test]

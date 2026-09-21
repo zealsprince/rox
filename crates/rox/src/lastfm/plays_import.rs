@@ -32,6 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{App, Entity, Global, SharedString};
 
+use rox_core::settings::Settings;
 use rox_library::listens::{self, Ladder};
 use rox_library::store;
 use rox_net::lastfm::user::{self, Scrobble};
@@ -267,10 +268,13 @@ fn run(
     progress: &Progress,
 ) -> Result<Summary, String> {
     let mut conn = store::open(db_path).map_err(|e| e.to_string())?;
-    // Where the last run got to. Asking for what arrived after it is the
-    // difference between a re-import costing one page and costing a
-    // decade of them.
-    let since = listens::latest_scrobble(&conn).ok().flatten();
+    // Where the last run on this account got to. Asking for what arrived
+    // after it is the difference between a re-import costing one page and
+    // costing a decade of them. Per account, because the listens table
+    // records that a row came from Last.fm and not who scrobbled it: one
+    // bound across all of them meant a second account's whole history
+    // read as "nothing new".
+    let since = Settings::load().accounts.lastfm.imported_through(user);
 
     progress.pace.begin();
     progress.say(rox_i18n::t!("lastfm-import-history"));
@@ -370,6 +374,17 @@ fn run(
         report(progress, done, total)
     })
     .map_err(|e| e.to_string())?;
+    // How far this account has been read now, which is where the next run
+    // starts. The whole history this run saw, not just the rows that
+    // landed: a scrobble of a track this library doesn't hold has nowhere
+    // to go and won't on the next run either, and the count half below is
+    // what covers it. Only once the writing is done, so a run that failed
+    // to write doesn't leave a bound standing over scrobbles that never
+    // made it in.
+    if let Some(through) = history.iter().filter_map(|s| s.played_at).max() {
+        let user = user.to_string();
+        Settings::update(move |s| s.accounts.lastfm.note_import(&user, through));
+    }
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

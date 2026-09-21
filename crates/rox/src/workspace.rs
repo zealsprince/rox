@@ -2532,7 +2532,7 @@ pub(crate) const MENUS: &[Menu] = &[
             MenuEntry::Section("menu-section-app"),
             MenuEntry::Item(MenuItem {
                 label: "menu-tasks",
-                icon: icons::CLOCK,
+                icon: icons::LIST_CHECKS,
                 action: MenuAction::OpenTasks,
             }),
             MenuEntry::Item(MenuItem {

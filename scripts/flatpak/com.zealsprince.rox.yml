@@ -9,13 +9,14 @@
 #   submodule included, with patches/projectm on top.
 # Bump all three places together.
 #
-# Two files beside this one are generated, never committed (see .gitignore):
+# One file beside this one is generated, never committed (see .gitignore):
 # cargo-sources.json, the crate list flatpak-cargo-generator derives from
-# Cargo.lock, and rox.metainfo.xml, the tree's metainfo with its release
-# history filled in by scripts/metainfo-releases.sh. scripts/flatpak/prepare.sh
-# writes both for one version, plus a copy of this file with the rox source
-# below pinned to that version's tag and commit. As committed the source
-# points at the newest published tag, so the file builds as is.
+# Cargo.lock. scripts/flatpak/prepare.sh writes it for one version, plus a
+# copy of this file with the rox source below pinned to that version's tag
+# and commit. As committed the source points at the newest published tag, so
+# the file builds as is. The metainfo comes from the rox source itself, with
+# its release list committed at each version bump (scripts/bump-version.sh):
+# Flathub requires it to come from upstream, not from beside the manifest.
 
 app-id: com.zealsprince.rox
 runtime: org.freedesktop.Platform
@@ -154,9 +155,7 @@ modules:
       - install -Dm755 target/release/rox-mcp /app/bin/rox-mcp
       - install -Dm644 crates/rox/assets/app/rox.desktop /app/share/applications/rox.desktop
       - install -Dm644 crates/rox/assets/app/rox-music.svg /app/share/icons/hicolor/scalable/apps/rox.svg
-      # The filled copy beside this manifest, not the tarball's, which still
-      # carries the marker where the release history goes.
-      - install -Dm644 rox.metainfo.xml /app/share/metainfo/rox.metainfo.xml
+      - install -Dm644 crates/rox/assets/app/rox.metainfo.xml /app/share/metainfo/rox.metainfo.xml
     sources:
       # The release as its tag and the commit the tag points at; Flathub
       # wants both. scripts/flatpak/prepare.sh rewrites the two lines for the
@@ -189,6 +188,3 @@ modules:
         url: https://github.com/projectM-visualizer/projectm.git
         commit: 88f23c76743a38c6d8456a8c354c62186270f661
         dest: vendor/projectm
-      - type: file
-        path: rox.metainfo.xml
-        dest-filename: rox.metainfo.xml

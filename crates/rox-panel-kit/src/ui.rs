@@ -1202,8 +1202,10 @@ impl RenderOnce for SelectField {
     }
 }
 
-/// A flat icon-only button for table rows: the glyph alone at rest, a
-/// soft pill behind it on hover, dimmed and inert like the text buttons.
+/// An icon-only button for table rows: the glyph alone at rest, a soft
+/// pill behind it on hover, dimmed and inert like the text buttons.
+/// [`IconButton::filled`] gives it a resting fill where a flat glyph
+/// would read as decoration.
 pub fn icon_button(
     icon: &'static str,
     inert: bool,
@@ -1220,6 +1222,7 @@ pub fn icon_button(
             .when(inert, |d| d.opacity(0.5)),
         icon,
         inert,
+        filled: false,
         on_click: Rc::new(on_click),
     }
 }
@@ -1231,6 +1234,7 @@ pub struct IconButton {
     base: Div,
     icon: &'static str,
     inert: bool,
+    filled: bool,
     on_click: OnPress,
 }
 
@@ -1238,6 +1242,16 @@ impl IconButton {
     /// Name this button; see [`SmallButton::keyed`].
     pub fn keyed(mut self, id: impl Into<ElementId>) -> Self {
         self.id = id.into();
+        self
+    }
+
+    /// Give the button a resting fill, [`small_button`]'s chrome without
+    /// its label. For one standing beside filled controls, where a glyph
+    /// on bare background reads as decoration rather than something to
+    /// press. The hover moves up a step to match.
+    pub fn filled(mut self) -> Self {
+        self.filled = true;
+        self.base = self.base.bg(palette::bg_control());
         self
     }
 }
@@ -1259,6 +1273,13 @@ impl RenderOnce for IconButton {
         let focus = control_focus(self.id.clone(), window, cx);
         let focused = focus.is_focused(window);
         let inert = self.inert;
+        // A flat button's hover is the fill arriving; a filled one already
+        // has it, so its hover is the next step up.
+        let hover = if self.filled {
+            palette::bg_control_hover()
+        } else {
+            palette::bg_control()
+        };
         self.base
             .key_context(CONTROL_CONTEXT)
             .map(|d| {
@@ -1267,7 +1288,7 @@ impl RenderOnce for IconButton {
                 } else {
                     pressable(
                         d.track_focus(&focus.tab_index(0).tab_stop(true))
-                            .hover(|d| d.bg(palette::bg_control()))
+                            .hover(move |d| d.bg(hover))
                             .cursor_pointer(),
                         self.on_click,
                     )

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Wraps the release binaries into a single-file AppImage. The release
 # workflow's "Package (Linux AppImage)" step calls this after `cargo build
-# --release` and the metainfo fill; run it by hand from the repo root to
+# --release`; run it by hand from the repo root to
 # reproduce that locally. Nothing gets bundled beyond rox itself: every
 # library rox links is on the AppImage excludelist or is glibc, so the host
 # supplies Vulkan, ALSA, fontconfig and the rest.
@@ -83,8 +83,8 @@ fi
 cp "$png" "$APPDIR/$APP_ID.png"
 ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
 
-# Metainfo: the release-filled file from scripts/metainfo-releases.sh. The
-# id is already right; only the launchable has to follow the desktop file's
+# Metainfo: the committed file, release list and all. The id is already
+# right; only the launchable has to follow the desktop file's
 # new name, and only in this copy.
 mkdir -p "$APPDIR/usr/share/metainfo"
 sed "s|rox\.desktop</launchable>|$APP_ID.desktop</launchable>|" \

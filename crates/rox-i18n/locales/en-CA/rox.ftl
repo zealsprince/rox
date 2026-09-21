@@ -1274,6 +1274,8 @@ settings-storage-catalog = Catalog
     .description = The track index scans build: a row a track with its tags, its file details and any cue spans, inside library.db
 settings-storage-cover-thumbnails = Cover Thumbnails
     .description = Small covers kept after their first render (thumbs.db); cleared ones rebuild as they scroll into view
+settings-storage-listening-history = Listening History
+    .description = Every play the library has a record of, rox's own and whatever a Last.fm import brought in. It feeds the plays column, the stats window, the history panel, and any smart playlist that sorts on plays
 settings-storage-logs = Logs
     .description = What each run writes for bug reports (logs/rox.log), rolled at a size cap so it never grows large
 settings-storage-looks-layouts = Looks and Layouts
@@ -1673,6 +1675,20 @@ stats-show-number = Show the Number
 stats-title = Stats Widget
 stats-tooltip-listens = Listens
 stats-window-title = rox - Stats
+
+## Clearing the listening record: the confirm the stats window and the
+## storage page both raise, and the count their rows read out.
+
+listens-clear-body = { $imported } of { $total } listens came from a Last.fm import: dated where the account knew when, spread down the years where only a play count survived. Clearing those keeps the plays rox watched happen; clearing everything leaves the library with no record at all.
+listens-clear-body-plain = { $listens }, none of them from an import: rox watched every one of them happen. Clearing leaves the library with no record at all.
+listens-clear-button = Clear History
+listens-clear-everything = Clear Everything
+listens-clear-imported = Clear Imported
+listens-clear-title = Clear the listening history?
+listens-count = { $count ->
+    [one] { $count } listen
+   *[other] { $count } listens
+}
 
 ## Library health window
 

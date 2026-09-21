@@ -1227,6 +1227,8 @@ settings-storage-catalog = Catalogo
     .description = L'indice delle tracce che costruiscono le scansioni: una riga una traccia con i suoi tag, i dettagli del file e gli eventuali intervalli cue, dentro library.db
 settings-storage-cover-thumbnails = Miniature delle copertine
     .description = Copertine piccole tenute dopo il primo rendering (thumbs.db); quelle cancellate si ricostruiscono quando rientrano in vista
+settings-storage-listening-history = Cronologia di ascolto
+    .description = Ogni riproduzione di cui la libreria ha traccia, le sue e tutto quello che un'importazione Last.fm ha portato. È quello che alimenta la colonna delle riproduzioni, la finestra delle statistiche, il pannello cronologia e ogni playlist intelligente che ordina sulle riproduzioni
 settings-storage-logs = Log
     .description = Cosa scrive ogni esecuzione per le segnalazioni di bug (logs/rox.log), ruotato a un tetto di dimensione così non cresce mai troppo
 settings-storage-looks-layouts = Look e layout
@@ -1613,6 +1615,20 @@ stats-show-number = Mostra il numero
 stats-title = Widget statistiche
 stats-tooltip-listens = Ascolti
 stats-window-title = rox - Statistiche
+
+## Cancellare la cronologia di ascolto: la conferma che alzano sia la
+## finestra delle statistiche sia la pagina di archiviazione.
+
+listens-clear-body = { $imported } ascolti su { $total } vengono da un'importazione Last.fm: con la data dove l'account la sapeva, distribuiti negli anni dove restava solo un conteggio. Cancellare solo quelli tiene gli ascolti che rox ha visto accadere; cancellare tutto lascia la libreria senza alcuno storico.
+listens-clear-body-plain = { $listens }, nessuno da un'importazione: rox li ha visti accadere tutti. Cancellare lascia la libreria senza alcuno storico.
+listens-clear-button = Cancella cronologia
+listens-clear-everything = Cancella tutto
+listens-clear-imported = Cancella importati
+listens-clear-title = Cancellare la cronologia di ascolto?
+listens-count = { $count ->
+    [one] { $count } ascolto
+   *[other] { $count } ascolti
+}
 
 ## Library health window
 

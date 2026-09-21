@@ -68,6 +68,38 @@ const CARD_FIELDS: [CardField; 5] = [
 /// soft: it's a note in the log, never a refusal.
 const EXPORT_SIZE_WARN: usize = 4 * 1024 * 1024;
 
+/// Which of a confirm dialog's yes buttons was pressed. Most dialogs have
+/// one and only ever see `First`; the two that split it read `Second` as
+/// the wider of the two answers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Yes {
+    First,
+    Second,
+}
+
+/// An apply's first yes: the plain one, or the one that leaves the
+/// bundle's shaders out where the dialog offers both.
+fn apply_yes(split: bool) -> SharedString {
+    if split {
+        rox_i18n::t!("workspace-dialog-without-shaders")
+    } else {
+        rox_i18n::t!("workspace-dialog-apply")
+    }
+}
+
+/// An apply's second yes, the one that runs the shaders. Shaders this
+/// machine has never approved make it say so; a look whose code is
+/// already approved just names what it does.
+fn apply_second_yes(split: bool, unapproved: bool) -> Option<SharedString> {
+    split.then(|| {
+        if unapproved {
+            rox_i18n::t!("workspace-dialog-approve-apply")
+        } else {
+            rox_i18n::t!("workspace-dialog-with-shaders")
+        }
+    })
+}
+
 impl CardEditor {
     /// What's typed in, as a card. The dates pass through untouched: they
     /// belong to the bundle's history, not to this form.
@@ -887,10 +919,35 @@ impl SettingsWindow {
         }
     }
 
+    /// Whether a dialog's yes splits in two, which is also what takes
+    /// Enter away from it: a split is a question, and a question gets a
+    /// click.
+    fn splits_yes(&self, pending: &Pending) -> bool {
+        match pending {
+            // Code nobody has approved splits an apply, and so does a look
+            // that uses shaders at all, however many times it's been
+            // applied before.
+            Pending::ApplyWorkspace { card, .. } => card.splits_apply(),
+            // The imported rows or all of them, where there are imported
+            // rows to tell apart. Otherwise the two answers are "none of
+            // them" and "all of them", which is one answer.
+            Pending::ClearListens => self.listens().imported > 0,
+            _ => false,
+        }
+    }
+
+    /// The listening record's two numbers, off the walk the storage page
+    /// already took: every path that reads them is reachable only from a
+    /// row that walk drew, so there's nothing to measure here.
+    fn listens(&self) -> rox_library::listens::Tally {
+        self.storage.as_ref().map(|s| s.listens).unwrap_or_default()
+    }
+
     /// Enter and Escape on the confirm dialog, and whether the key was the
-    /// dialog's. Escape backs out; Enter takes the yes, except on an apply
-    /// that splits its yes in two, where choosing between running a look's
-    /// shaders and leaving them out is the whole question and so gets a click.
+    /// dialog's. Escape backs out; Enter takes the yes, except where the
+    /// yes splits in two. Choosing between running a look's shaders and
+    /// leaving them out, or between clearing an import and clearing the
+    /// whole record, is the question itself, so it gets a click.
     fn confirm_key(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -914,10 +971,10 @@ impl SettingsWindow {
             // focus Enter belongs to it: a yes on a focused Cancel is the
             // opposite of what was asked for.
             "enter" if self.dialog_focus.is_focused(window) => {
-                if matches!(pending, Pending::ApplyWorkspace { card, .. } if card.splits_apply()) {
+                if self.splits_yes(pending) {
                     return false;
                 }
-                self.confirm_pending(ApplyShaders::Skip, window, cx);
+                self.confirm_pending(Yes::First, window, cx);
                 true
             }
             _ => false,
@@ -946,49 +1003,81 @@ impl SettingsWindow {
         // Whether the yes splits in two. Code nobody has approved splits it,
         // and so does a look that uses shaders at all, however many times
         // it's been applied before.
-        let split = card.is_some_and(|card| card.splits_apply());
-        let (title, body, confirm): (SharedString, SharedString, SharedString) =
-            match self.pending.as_ref()? {
-                Pending::OverwritePreset(name) => (
-                    rox_i18n::t!("workspace-dialog-overwrite-title", name = name.as_str()),
-                    rox_i18n::t!("workspace-layout-overwrite-body"),
-                    rox_i18n::t!("workspace-dialog-overwrite"),
+        let split = self.splits_yes(self.pending.as_ref()?);
+        let listens = self.listens();
+        // Title, body, the first yes, and the second where there is one.
+        let (title, body, confirm, second): (
+            SharedString,
+            SharedString,
+            SharedString,
+            Option<SharedString>,
+        ) = match self.pending.as_ref()? {
+            Pending::OverwritePreset(name) => (
+                rox_i18n::t!("workspace-dialog-overwrite-title", name = name.as_str()),
+                rox_i18n::t!("workspace-layout-overwrite-body"),
+                rox_i18n::t!("workspace-dialog-overwrite"),
+                None,
+            ),
+            Pending::OverwriteWorkspace(name) => (
+                rox_i18n::t!(
+                    "settings-confirm-overwrite-workspace-title",
+                    name = name.as_str()
                 ),
-                Pending::OverwriteWorkspace(name) => (
-                    rox_i18n::t!(
-                        "settings-confirm-overwrite-workspace-title",
-                        name = name.as_str()
-                    ),
-                    rox_i18n::t!("settings-confirm-overwrite-workspace-body"),
-                    rox_i18n::t!("workspace-dialog-overwrite"),
+                rox_i18n::t!("settings-confirm-overwrite-workspace-body"),
+                rox_i18n::t!("workspace-dialog-overwrite"),
+                None,
+            ),
+            Pending::ApplyWorkspace {
+                card,
+                imported: true,
+            } => (
+                rox_i18n::t!("workspace-apply-imported-title", name = card.name.as_str()),
+                rox_i18n::t!("settings-confirm-apply-imported-body"),
+                apply_yes(split),
+                apply_second_yes(split, shaders.is_some()),
+            ),
+            Pending::ApplyWorkspace { card, .. } => (
+                rox_i18n::t!("workspace-dialog-apply-title", name = card.name.as_str()),
+                rox_i18n::t!("settings-confirm-apply-body"),
+                apply_yes(split),
+                apply_second_yes(split, shaders.is_some()),
+            ),
+            Pending::ClearEmbeddings(model) => (
+                rox_i18n::t!(
+                    "settings-confirm-clear-embeddings-title",
+                    model = model.as_str()
                 ),
-                Pending::ApplyWorkspace {
-                    card,
-                    imported: true,
-                } => (
-                    rox_i18n::t!("workspace-apply-imported-title", name = card.name.as_str()),
-                    rox_i18n::t!("settings-confirm-apply-imported-body"),
-                    rox_i18n::t!("workspace-dialog-apply"),
+                rox_i18n::t!("settings-confirm-clear-embeddings-body"),
+                rox_i18n::t!("settings-confirm-clear"),
+                None,
+            ),
+            Pending::ClearMeasuredBpm => (
+                rox_i18n::t!("settings-confirm-clear-measured-bpm-title"),
+                rox_i18n::t!("settings-confirm-clear-measured-bpm-body"),
+                rox_i18n::t!("settings-confirm-clear"),
+                None,
+            ),
+            Pending::ClearListens if split => (
+                rox_i18n::t!("listens-clear-title"),
+                rox_i18n::t!(
+                    "listens-clear-body",
+                    imported = listens.imported,
+                    total = listens.total
                 ),
-                Pending::ApplyWorkspace { card, .. } => (
-                    rox_i18n::t!("workspace-dialog-apply-title", name = card.name.as_str()),
-                    rox_i18n::t!("settings-confirm-apply-body"),
-                    rox_i18n::t!("workspace-dialog-apply"),
+                rox_i18n::t!("listens-clear-imported"),
+                Some(rox_i18n::t!("listens-clear-everything")),
+            ),
+            // Nothing imported: one yes, and it takes the whole record.
+            Pending::ClearListens => (
+                rox_i18n::t!("listens-clear-title"),
+                rox_i18n::t!(
+                    "listens-clear-body-plain",
+                    listens = rox_i18n::t!("listens-count", count = listens.total).to_string()
                 ),
-                Pending::ClearEmbeddings(model) => (
-                    rox_i18n::t!(
-                        "settings-confirm-clear-embeddings-title",
-                        model = model.as_str()
-                    ),
-                    rox_i18n::t!("settings-confirm-clear-embeddings-body"),
-                    rox_i18n::t!("settings-confirm-clear"),
-                ),
-                Pending::ClearMeasuredBpm => (
-                    rox_i18n::t!("settings-confirm-clear-measured-bpm-title"),
-                    rox_i18n::t!("settings-confirm-clear-measured-bpm-body"),
-                    rox_i18n::t!("settings-confirm-clear"),
-                ),
-            };
+                rox_i18n::t!("settings-confirm-clear"),
+                None,
+            ),
+        };
         let line = |text: SharedString| {
             div()
                 .text_xs()
@@ -1083,26 +1172,18 @@ impl SettingsWindow {
                                     }),
                                 ))
                                 .child(dialog_button(
-                                    if split {
-                                        rox_i18n::t!("workspace-dialog-without-shaders")
-                                    } else {
-                                        confirm
-                                    },
+                                    confirm,
                                     !split,
                                     cx.listener(|this, _, window, cx| {
-                                        this.confirm_pending(ApplyShaders::Skip, window, cx)
+                                        this.confirm_pending(Yes::First, window, cx)
                                     }),
                                 ))
-                                .children(split.then(|| {
+                                .children(second.map(|label| {
                                     dialog_button(
-                                        if shaders.is_some() {
-                                            rox_i18n::t!("workspace-dialog-approve-apply")
-                                        } else {
-                                            rox_i18n::t!("workspace-dialog-with-shaders")
-                                        },
+                                        label,
                                         true,
                                         cx.listener(|this, _, window, cx| {
-                                            this.confirm_pending(ApplyShaders::Wear, window, cx)
+                                            this.confirm_pending(Yes::Second, window, cx)
                                         }),
                                     )
                                 })),
@@ -1112,19 +1193,20 @@ impl SettingsWindow {
     }
 
     /// Carry out the pending action, the confirm dialog's yes, and clear it.
-    /// `shaders` separates the apply dialog's two yes buttons: the `Wear` one
-    /// approves the shaders the bundle brought, and it's the only thing on
-    /// this path that ever writes the approved list.
-    fn confirm_pending(
-        &mut self,
-        shaders: ApplyShaders,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// `yes` says which of the two buttons a split dialog was answered
+    /// with: on an apply the second one approves the shaders the bundle
+    /// brought, which is the only thing on this path that ever writes the
+    /// approved list, and on a listens clear it widens the delete from the
+    /// imported rows to the whole record.
+    fn confirm_pending(&mut self, yes: Yes, window: &mut Window, cx: &mut Context<Self>) {
         match self.pending.take() {
             Some(Pending::OverwritePreset(name)) => self.overwrite_preset(name, window, cx),
             Some(Pending::OverwriteWorkspace(name)) => self.overwrite_workspace(name, window, cx),
             Some(Pending::ApplyWorkspace { card, .. }) => {
+                let shaders = match yes {
+                    Yes::Second => ApplyShaders::Wear,
+                    Yes::First => ApplyShaders::Skip,
+                };
                 if shaders == ApplyShaders::Wear {
                     card.approve_shaders();
                 }
@@ -1132,6 +1214,19 @@ impl SettingsWindow {
             }
             Some(Pending::ClearEmbeddings(model)) => self.clear_embeddings(&model, cx),
             Some(Pending::ClearMeasuredBpm) => self.clear_measured_bpm(cx),
+            Some(Pending::ClearListens) => {
+                // The first yes is the imported half only where the dialog
+                // offered both; on the single-yes dialog it's everything,
+                // which is all there was to take.
+                let split = self.listens().imported > 0;
+                self.clear_listens(
+                    match yes {
+                        Yes::First if split => rox_library::listens::Clear::Imported,
+                        _ => rox_library::listens::Clear::Everything,
+                    },
+                    cx,
+                );
+            }
             None => {}
         }
     }

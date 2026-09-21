@@ -87,6 +87,10 @@ pub mod icons {
     pub const DOWNLOAD: &str = "icons/download.svg";
     pub const UPLOAD: &str = "icons/upload.svg";
     pub const TRASH: &str = "icons/trash-2.svg";
+    /// Sweeping a record away rather than deleting a thing: the stats
+    /// window's clear, where the trash beside it would read as throwing
+    /// out whatever row the pointer is near.
+    pub const BROOM: &str = "icons/brush-cleaning.svg";
     pub const PENCIL: &str = "icons/pencil.svg";
     /// The bookmarks panel and the bookmark commands.
     pub const BOOKMARK: &str = "icons/bookmark.svg";
@@ -104,6 +108,10 @@ pub mod icons {
     pub const RADIO: &str = "icons/radio.svg";
     pub const DATABASE: &str = "icons/database.svg";
     pub const CLOCK: &str = "icons/clock.svg";
+    /// The tasks window and its status bar control: a checklist of jobs,
+    /// ticked or waiting. A clock read as any of the other time surfaces,
+    /// and the window is as much "what can I set going" as "what's running".
+    pub const LIST_CHECKS: &str = "icons/list-checks.svg";
     /// The sleep timer once it's armed, since a plain clock would read as
     /// any of the other time surfaces.
     pub const BED: &str = "icons/bed.svg";
@@ -291,6 +299,7 @@ pub mod icons {
         RADIO,
         DATABASE,
         CLOCK,
+        LIST_CHECKS,
         BED,
         CALENDAR,
         TAG,

@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, Entity, FocusHandle, Focusable as _, Global,
+    AnyElement, App, Bounds, Context, Div, Entity, EntityId, FocusHandle, Focusable as _, Global,
     PathPromptOptions, SharedString, Subscription, Window, WindowHandle, div, prelude::*, px, size,
 };
 use gpui_component::button::Button;
@@ -25,6 +25,7 @@ use rox_core::settings;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_net::sources::autoeq::{self, AutoEqEntry, BandSetting};
+use rox_panel_api::panel;
 use rox_services::player;
 
 use crate::eq_presets;
@@ -64,7 +65,15 @@ struct OpenAutoEq(WindowHandle<Root>);
 impl Global for OpenAutoEq {}
 
 /// Open the AutoEq browser window, or raise the open one to the front.
+///
+/// Deferred like the equalizer and the console are: the action that opens it
+/// runs inside another window's update, and reading the front workspace for
+/// the tint mid-update would panic.
 pub fn open(cx: &mut App) {
+    cx.defer(open_now);
+}
+
+fn open_now(cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenAutoEq>() {
         let handle = open.0;
         if handle
@@ -75,19 +84,27 @@ pub fn open(cx: &mut App) {
         }
     }
 
+    // Theme to the front workspace's player if one is up. The browser is a
+    // global window like the console, so it borrows whatever song tint is
+    // showing rather than owning one.
+    let player =
+        rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state.player.entity_id());
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
         rox_i18n::t!("autoeq-window-title"),
         bounds,
         Some(MIN_SIZE),
-        move |window, cx| cx.new(|cx| AutoEqWindow::new(window, cx)),
+        move |window, cx| cx.new(|cx| AutoEqWindow::new(player, window, cx)),
     );
 
     cx.set_global(OpenAutoEq(handle));
 }
 
 struct AutoEqWindow {
+    /// The workspace player the window themes to, if one was up when it
+    /// opened.
+    player: Option<EntityId>,
     find: Entity<InputState>,
     entries: Arc<Vec<AutoEqEntry>>,
     filtered: Vec<usize>,
@@ -112,7 +129,7 @@ struct AutoEqWindow {
 }
 
 impl AutoEqWindow {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(player: Option<EntityId>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let find = cx
             .new(|cx| InputState::new(window, cx).placeholder(rox_i18n::t!("autoeq-placeholder")));
         window.focus(&find.focus_handle(cx));
@@ -128,6 +145,7 @@ impl AutoEqWindow {
         );
 
         let mut this = AutoEqWindow {
+            player,
             find,
             entries: Arc::new(Vec::new()),
             filtered: Vec::new(),
@@ -654,19 +672,30 @@ impl AutoEqWindow {
 }
 
 impl gpui::Render for AutoEqWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut base = div()
-            .track_focus(&self.focus)
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(palette::bg_root())
-            .child(self.search_row(cx));
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // With no workspace player to theme to, tint to this window's own id,
+        // which the palette map doesn't know, so it reads the base palette.
+        let player = self.player.unwrap_or_else(|| cx.entity().entity_id());
+        palette::note_focus(player, window.is_window_active(), cx);
+        // The whole tree builds inside the closure: a row or a button made
+        // outside it reads the palette before the tint is in place and paints
+        // untinted.
+        panel::window_body(player, || {
+            let mut base = div()
+                .track_focus(&self.focus)
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(palette::bg_root())
+                .text_color(palette::text())
+                .text_sm()
+                .child(self.search_row(cx));
 
-        if let Some(status) = self.status_row() {
-            base = base.child(status);
-        }
+            if let Some(status) = self.status_row() {
+                base = base.child(status);
+            }
 
-        base.child(self.results(cx))
+            base.child(self.results(cx)).into_any_element()
+        })
     }
 }

@@ -45,9 +45,10 @@ use crate::tempo_job;
 use crate::workspace::{ApplyShaders, Workspace};
 use rox_core::settings::layouts::Preset;
 use rox_core::settings::{
-    self, AcousticSave, BORDER_MAX, Frame, GainModeSetting, LayoutSize, LyricsSave, MARGIN_MAX,
-    NamedLayout, PADDING_MAX, Providers, ROUNDING_MAX, RatingStyle, ReplayGainSave, Settings,
-    ShuffleMode, Theme, WorkspaceMeta, data_dir, settings_path,
+    self, AcousticSave, BORDER_MAX, DEFAULT_PRESENCE_FIRST_LINE, DEFAULT_PRESENCE_SECOND_LINE,
+    DiscordStatusLine, Frame, GainModeSetting, LayoutSize, LyricsSave, MARGIN_MAX, NamedLayout,
+    PADDING_MAX, Providers, ROUNDING_MAX, RatingStyle, ReplayGainSave, Settings, ShuffleMode,
+    Theme, WorkspaceMeta, data_dir, settings_path,
 };
 use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, ROLES, Role, Side, Sides};
@@ -593,6 +594,12 @@ struct SettingsWindow {
     discord_enabled: bool,
     discord_show_lastfm_button: bool,
     discord_show_youtube_button: bool,
+    discord_status_line: DiscordStatusLine,
+    /// The two card lines, written through per keystroke like the capture
+    /// pattern, with presence re-reading them on every write so the card
+    /// follows the typing.
+    discord_first_line: Entity<InputState>,
+    discord_second_line: Entity<InputState>,
     /// The api credential inputs; edits write through to the scrobbler per
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
@@ -920,6 +927,7 @@ struct SettingsWindow {
     _subsonic_changes: Vec<Subscription>,
     _ffmpeg_changed: Subscription,
     _capture_pattern_changed: Subscription,
+    _discord_line_changes: Vec<Subscription>,
     _capture_album_changed: Subscription,
     _acoustid_key_changed: Subscription,
     /// The connect flow's phases arrive through here, so the page's status
@@ -1389,6 +1397,43 @@ impl SettingsWindow {
                 cx.notify();
             }
         });
+        // The Discord card's two lines, write-through per keystroke like
+        // the capture pattern below, plus a reload so the card on someone
+        // else's screen follows the typing rather than the next track.
+        let discord_first_line = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(DEFAULT_PRESENCE_FIRST_LINE)
+                .default_value(settings.accounts.discord.first_line.clone())
+        });
+        let discord_second_line = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(DEFAULT_PRESENCE_SECOND_LINE)
+                .default_value(settings.accounts.discord.second_line.clone())
+        });
+        let _discord_line_changes = vec![
+            cx.subscribe(
+                &discord_first_line,
+                |this: &mut Self, input, event: &InputEvent, cx| {
+                    if let InputEvent::Change = event {
+                        let value = input.read(cx).value().trim().to_string();
+                        Settings::update(move |s| s.accounts.discord.first_line = value);
+                        this.discord.update(cx, |d, cx| d.reload_config(cx));
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.subscribe(
+                &discord_second_line,
+                |this: &mut Self, input, event: &InputEvent, cx| {
+                    if let InputEvent::Change = event {
+                        let value = input.read(cx).value().trim().to_string();
+                        Settings::update(move |s| s.accounts.discord.second_line = value);
+                        this.discord.update(cx, |d, cx| d.reload_config(cx));
+                        cx.notify();
+                    }
+                },
+            ),
+        ];
         // The capture pattern writes through the same way. Nothing
         // re-applies on it: the service reads the pattern when a song
         // finishes, so the next one saved is already named by whatever is
@@ -1553,6 +1598,9 @@ impl SettingsWindow {
             discord_enabled: settings.accounts.discord.enabled,
             discord_show_lastfm_button: settings.accounts.discord.show_lastfm_button,
             discord_show_youtube_button: settings.accounts.discord.show_youtube_button,
+            discord_status_line: settings.accounts.discord.status_line,
+            discord_first_line,
+            discord_second_line,
             lastfm_key,
             lastfm_secret,
             listenbrainz_token,
@@ -1679,6 +1727,7 @@ impl SettingsWindow {
             _subsonic_changes,
             _ffmpeg_changed,
             _capture_pattern_changed,
+            _discord_line_changes,
             _capture_album_changed,
             _acoustid_key_changed,
             _scrobbler_changed,
@@ -1906,6 +1955,13 @@ impl SettingsWindow {
     fn set_discord_show_youtube_button(&mut self, on: bool, cx: &mut Context<Self>) {
         self.discord_show_youtube_button = on;
         Settings::update(move |s| s.accounts.discord.show_youtube_button = on);
+        self.discord.update(cx, |d, cx| d.reload_config(cx));
+        cx.notify();
+    }
+
+    fn set_discord_status_line(&mut self, line: DiscordStatusLine, cx: &mut Context<Self>) {
+        self.discord_status_line = line;
+        Settings::update(move |s| s.accounts.discord.status_line = line);
         self.discord.update(cx, |d, cx| d.reload_config(cx));
         cx.notify();
     }
@@ -5593,9 +5649,83 @@ impl SettingsWindow {
                         &["status", "now playing"],
                         panel::toggle(self.discord_enabled, Self::set_discord_enabled, cx),
                     )
-                    // The buttons live on a presence that's being shown.
+                    // The card's own contents live on a presence that's
+                    // being shown.
                     .when(self.discord_enabled, |rows| {
-                        rows.keyed(
+                        // The vocabulary is the renamer's, minus what a
+                        // playing track has nothing for, plus the format.
+                        let placeholders = SharedString::from(
+                            rox_services::discord_presence::PRESENCE_PLACEHOLDERS.join(" "),
+                        );
+                        let first = self.discord_first_line.clone();
+                        let second = self.discord_second_line.clone();
+                        let presence = self.discord.read(cx);
+                        let first_preview = presence.preview_line(first.read(cx).value().trim());
+                        let second_preview = presence.preview_line(second.read(cx).value().trim());
+
+                        rows.custom(
+                            &["discord", "line", "pattern", "title", "artist", "template"],
+                            {
+                                let placeholders = placeholders.clone();
+                                move || {
+                                    presence_line_block(
+                                        rox_i18n::t!("settings-integrations-discord-first-line"),
+                                        rox_i18n::t!(
+                                            "settings-integrations-discord-first-line.description"
+                                        ),
+                                        first,
+                                        placeholders,
+                                        first_preview,
+                                    )
+                                }
+                            },
+                        )
+                        .custom(
+                            &["discord", "line", "pattern", "album", "template"],
+                            move || {
+                                presence_line_block(
+                                    rox_i18n::t!("settings-integrations-discord-second-line"),
+                                    rox_i18n::t!(
+                                        "settings-integrations-discord-second-line.description"
+                                    ),
+                                    second,
+                                    placeholders,
+                                    second_preview,
+                                )
+                            },
+                        )
+                        .keyed(
+                            "settings-integrations-discord-status-line",
+                            &["member list", "name", "status", "beside"],
+                            panel::picker(
+                                "discord-status-line",
+                                self.discord_status_line,
+                                vec![
+                                    (
+                                        DiscordStatusLine::App,
+                                        rox_i18n::t!(
+                                            "settings-integrations-discord-status-line-app"
+                                        ),
+                                    ),
+                                    (
+                                        DiscordStatusLine::First,
+                                        rox_i18n::t!(
+                                            "settings-integrations-discord-status-line-first"
+                                        ),
+                                    ),
+                                    (
+                                        DiscordStatusLine::Second,
+                                        rox_i18n::t!(
+                                            "settings-integrations-discord-status-line-second"
+                                        ),
+                                    ),
+                                ],
+                                false,
+                                Self::set_discord_status_line,
+                                cx,
+                            ),
+                        )
+                        .keyed(
                             "settings-integrations-discord-show-lastfm",
                             &["link", "profile"],
                             panel::toggle(
@@ -6609,14 +6739,13 @@ impl SettingsWindow {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    // Fill the block instead of shrinking to
-                                    // the placeholder line: the block's control
-                                    // slot is a row, so a column in it is
-                                    // content-sized unless it grows.
-                                    .flex_1()
-                                    .min_w_0()
                                     .gap(tokens::SPACE_XS)
-                                    .child(Input::new(&pattern_input).small())
+                                    // The input carries its width as 100% and
+                                    // has no size of its own, so as a flex item
+                                    // it shrinks to its padding. A plain div
+                                    // around it is the slot Capture Album's
+                                    // input sits in directly.
+                                    .child(div().child(Input::new(&pattern_input).small()))
                                     .child(
                                         div()
                                             .text_xs()
@@ -10057,6 +10186,63 @@ fn coverage_note(text: String) -> Div {
         .text_xs()
         .text_color(palette::text_muted())
         .child(text)
+}
+
+/// One Discord card line's block: the pattern input, the placeholders it
+/// may name, and what the line reads as right now. Both lines take the
+/// same shape, so they share the builder, and it mirrors the capture
+/// pattern's block because a pattern row is a pattern row.
+fn presence_line_block(
+    title: SharedString,
+    description: SharedString,
+    input: Entity<InputState>,
+    placeholders: SharedString,
+    preview: Result<String, String>,
+) -> AnyElement {
+    let readout = match preview {
+        // A line that renders to nothing isn't an error, but it does need
+        // saying: the card goes out without it.
+        Ok(line) if line.is_empty() => div()
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child(rox_i18n::t!("settings-integrations-discord-line-off")),
+
+        Ok(line) => div()
+            .text_xs()
+            .text_color(palette::text_bright())
+            .child(rox_i18n::t!(
+                "settings-integrations-discord-line-preview",
+                line = line
+            )),
+
+        Err(e) => div()
+            .text_xs()
+            .text_color(palette::tone_warn())
+            .child(SharedString::from(e)),
+    };
+
+    panel::setting_block(
+        title,
+        Some(description),
+        None,
+        div()
+            .flex()
+            .flex_col()
+            // Fill the block rather than shrinking to the placeholder
+            // line, the same as the capture pattern's column.
+            .flex_1()
+            .min_w_0()
+            .gap(tokens::SPACE_XS)
+            .child(Input::new(&input).small())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(placeholders),
+            )
+            .child(readout),
+    )
+    .into_any_element()
 }
 
 /// A setting row's value in place of a control.

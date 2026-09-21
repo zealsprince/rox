@@ -3083,6 +3083,35 @@ pub fn default_capture_folder() -> PathBuf {
         .unwrap_or_else(|| data_dir().join("captures"))
 }
 
+/// The card's first text line, under the app name. A pattern in the
+/// renamer's grammar, rendered against the playing track.
+pub const DEFAULT_PRESENCE_FIRST_LINE: &str = "%artist% - %title%";
+
+/// The card's second line. The album, which the card otherwise only
+/// carried in the artwork's hover text.
+pub const DEFAULT_PRESENCE_SECOND_LINE: &str = "%album%";
+
+/// Which of the presence card's lines Discord repeats beside your name in
+/// the member list.
+///
+/// Discord picks that line from a field the card already carries rather
+/// than taking text of its own. The app name is the Discord application's
+/// name and a client can't override it over IPC, so the pick is between
+/// the card's three fields rather than a line of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiscordStatusLine {
+    /// "Listening to rox", the application name.
+    App,
+    /// The first line, "Listening to Aphex Twin - Xtal" by default. The
+    /// default pick: the member list is where everyone else reads the
+    /// status, and the app name says nothing about what's playing.
+    #[default]
+    First,
+    /// The second line, the album by default.
+    Second,
+}
+
 /// Discord Rich Presence settings: enable toggle and metadata options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -3093,6 +3122,15 @@ pub struct DiscordSettings {
     pub show_lastfm_button: bool,
     /// Whether "Search on YouTube" button is shown.
     pub show_youtube_button: bool,
+    /// The card's first text line as a pattern. Empty leaves the line
+    /// off the card; a pattern that no longer parses renders as the
+    /// default rather than blanking the card.
+    pub first_line: String,
+    /// The card's second line, same rules.
+    pub second_line: String,
+    /// Which line the member list shows beside your name.
+    #[serde(deserialize_with = "lenient::or_default")]
+    pub status_line: DiscordStatusLine,
 }
 
 impl Default for DiscordSettings {
@@ -3101,6 +3139,9 @@ impl Default for DiscordSettings {
             enabled: false,
             show_lastfm_button: true,
             show_youtube_button: true,
+            first_line: DEFAULT_PRESENCE_FIRST_LINE.to_string(),
+            second_line: DEFAULT_PRESENCE_SECOND_LINE.to_string(),
+            status_line: DiscordStatusLine::First,
         }
     }
 }
@@ -6255,6 +6296,45 @@ mod tests {
         assert!(old.acoustid);
         assert!(old.acoustid_key.is_empty());
         assert!(!old.musicbrainz);
+    }
+
+    /// The card's lines and the status pick round-trip, an accounts file
+    /// written before either existed reads at the defaults, and a word this
+    /// build doesn't know reads as the default pick rather than failing the
+    /// accounts shard.
+    #[test]
+    fn the_discord_card_lines_round_trip_and_default() {
+        let discord = DiscordSettings {
+            enabled: true,
+            first_line: "%title%".to_string(),
+            second_line: String::new(),
+            status_line: DiscordStatusLine::Second,
+            ..DiscordSettings::default()
+        };
+        let text = serde_json::to_string(&discord).unwrap();
+        let read: DiscordSettings = serde_json::from_str(&text).unwrap();
+        assert_eq!(read.first_line, "%title%");
+        assert!(read.second_line.is_empty());
+        assert_eq!(read.status_line, DiscordStatusLine::Second);
+
+        let old: DiscordSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "show_lastfm_button": false,
+        }))
+        .unwrap();
+        assert_eq!(old.first_line, DEFAULT_PRESENCE_FIRST_LINE);
+        assert_eq!(old.second_line, DEFAULT_PRESENCE_SECOND_LINE);
+        assert_eq!(old.status_line, DiscordStatusLine::First);
+        assert!(old.enabled);
+        assert!(!old.show_lastfm_button);
+
+        let newer: DiscordSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "status_line": "third",
+        }))
+        .unwrap();
+        assert_eq!(newer.status_line, DiscordStatusLine::First);
+        assert!(newer.enabled);
     }
 
     /// A window shape that no longer parses costs that window's remembered

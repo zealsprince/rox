@@ -93,32 +93,7 @@ pub fn parse<F: PatternField>(text: &str) -> Result<Pattern<F>, String> {
     let mut components = Vec::new();
 
     for part in text.split('/') {
-        let mut tokens: Vec<Token<F>> = Vec::new();
-        let mut rest = part;
-
-        while let Some(start) = rest.find('%') {
-            if !rest[..start].is_empty() {
-                tokens.push(Token::Literal(rest[..start].to_owned()));
-            }
-
-            let after = &rest[start + 1..];
-            let Some(end) = after.find('%') else {
-                return Err(rox_i18n::t!("tags-guess-unclosed").to_string());
-            };
-
-            match F::from_placeholder(&after[..end])? {
-                Some(field) => tokens.push(Token::Capture(field)),
-                None => tokens.push(Token::Skip),
-            }
-
-            rest = &after[end + 1..];
-        }
-
-        if !rest.is_empty() {
-            tokens.push(Token::Literal(rest.to_owned()));
-        }
-
-        components.push(tokens);
+        components.push(tokenize(part)?);
     }
 
     let captures = components
@@ -130,6 +105,52 @@ pub fn parse<F: PatternField>(text: &str) -> Result<Pattern<F>, String> {
     }
 
     Ok(Pattern { components })
+}
+
+/// Parse `text` as one line of prose rather than a path: "/" is literal
+/// text, and a line with no placeholder in it at all is a pattern that
+/// renders itself. Both are wrong for a file name, which is why [`parse`]
+/// refuses them, and both are ordinary in a line someone reads.
+///
+/// Renders through [`Pattern::render_line`]. The grammar and the
+/// placeholder names are the same ones the renamer uses, so a pattern
+/// learned there reads the same here.
+pub fn parse_line<F: PatternField>(text: &str) -> Result<Pattern<F>, String> {
+    Ok(Pattern {
+        components: vec![tokenize(text)?],
+    })
+}
+
+/// One component's tokens: literal runs and the `%field%` placeholders
+/// between them. Shared by both parses, since what differs between a path
+/// and a line is the rules around the grammar rather than the grammar.
+fn tokenize<F: PatternField>(part: &str) -> Result<Vec<Token<F>>, String> {
+    let mut tokens: Vec<Token<F>> = Vec::new();
+    let mut rest = part;
+
+    while let Some(start) = rest.find('%') {
+        if !rest[..start].is_empty() {
+            tokens.push(Token::Literal(rest[..start].to_owned()));
+        }
+
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            return Err(rox_i18n::t!("tags-guess-unclosed").to_string());
+        };
+
+        match F::from_placeholder(&after[..end])? {
+            Some(field) => tokens.push(Token::Capture(field)),
+            None => tokens.push(Token::Skip),
+        }
+
+        rest = &after[end + 1..];
+    }
+
+    if !rest.is_empty() {
+        tokens.push(Token::Literal(rest.to_owned()));
+    }
+
+    Ok(tokens)
 }
 
 /// Clean up an assembled segment's edges: the literal text around a value
@@ -244,6 +265,55 @@ impl<F: PatternField> Pattern<F> {
 
         Ok(path)
     }
+
+    /// Render `values` into one line of text: the same holes-close rule as
+    /// [`render`], none of the file-name rules. A value keeps its own
+    /// punctuation because nothing here becomes a path, "/" stays where
+    /// the pattern put it, and a line that comes out empty comes back
+    /// empty rather than as an error, since a line with nothing in it is
+    /// a line its surface leaves off.
+    ///
+    /// %skip% drops out for the same reason it's an error in [`render`]:
+    /// it swallows text while matching and has nothing to swallow while
+    /// emitting. A line is prose, so the pattern still renders without it
+    /// instead of refusing.
+    pub fn render_line(&self, values: &[(F, String)]) -> String {
+        let mut components = Vec::with_capacity(self.components.len());
+
+        for tokens in &self.components {
+            let mut pieces: Vec<Piece> = Vec::with_capacity(tokens.len());
+
+            for token in tokens {
+                match token {
+                    Token::Literal(lit) => pieces.push(Piece::Literal(lit.clone())),
+
+                    Token::Skip => {}
+
+                    Token::Capture(field) => {
+                        let raw = values
+                            .iter()
+                            .find(|(f, _)| f == field)
+                            .map(|(_, v)| v.as_str())
+                            .unwrap_or_default();
+                        let value = field.value(raw);
+                        let value = if value.is_empty() {
+                            field.fallback().to_owned()
+                        } else {
+                            value
+                        };
+
+                        pieces.push(Piece::Value(value));
+                    }
+                }
+            }
+
+            collapse(&mut pieces);
+
+            components.push(pieces.iter().map(Piece::text).collect::<String>());
+        }
+
+        components.join("/").trim().to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -291,6 +361,47 @@ mod tests {
             .unwrap()
             .render(&values)
             .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn render_line(pattern: &str, values: &[(Name, &str)]) -> String {
+        let values: Vec<(Name, String)> = values
+            .iter()
+            .map(|(f, v)| (f.clone(), (*v).to_owned()))
+            .collect();
+
+        parse_line::<Name>(pattern).unwrap().render_line(&values)
+    }
+
+    /// A line keeps what a file name can't: the slash the pattern wrote,
+    /// the punctuation inside a value, and a literal-only line with no
+    /// placeholder to render.
+    #[test]
+    fn a_line_keeps_what_a_file_name_cannot() {
+        assert_eq!(
+            render_line(
+                "%artist% / %title%",
+                &[(Name::Artist, "AC/DC"), (Name::Title, "T.N.T.")]
+            ),
+            "AC/DC / T.N.T."
+        );
+        assert_eq!(render_line("Listening", &[]), "Listening");
+    }
+
+    /// The holes-close rule carries over: a value that's allowed to
+    /// vanish takes its separator with it rather than leaving the line
+    /// opening on a dash.
+    #[test]
+    fn an_empty_value_takes_its_separator_along() {
+        assert_eq!(
+            render_line(
+                "%maybe% - %title%",
+                &[(Name::Maybe, ""), (Name::Title, "Xtal")]
+            ),
+            "Xtal"
+        );
+        // Nothing to render at all is an empty line, not an error: the
+        // surface leaves the line off.
+        assert_eq!(render_line("%maybe%", &[(Name::Maybe, "")]), "");
     }
 
     #[test]

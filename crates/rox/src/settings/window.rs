@@ -424,6 +424,11 @@ enum Pending {
     /// happen is gone, and what an import placed comes back only as far
     /// as Last.fm still remembers it.
     ClearListens,
+    /// Forget the Subsonic account and delete every track it filed. Asked
+    /// for because the catalog only comes back by connecting and syncing
+    /// again, and because the switch beside it is the non-destructive way
+    /// to stop using a server; the dialog says so.
+    RemoveSubsonic,
 }
 
 struct SettingsWindow {
@@ -6485,8 +6490,63 @@ impl SettingsWindow {
                         self.subsonic_sync_row(cx).into_any_element()
                     })
                 })
+                // Past the switch's gate: a server that's off is the one
+                // most likely to be on its way out, and its tracks are
+                // exactly what's left to remove.
+                .when(self.subsonic_removable(cx), |rows| {
+                    rows.keyed(
+                        "settings-integrations-subsonic-remove",
+                        &["subsonic", "remove", "delete", "forget", "server"],
+                        small_button(
+                            rox_i18n::t!("settings-common-remove"),
+                            icons::TRASH,
+                            self.subsonic_syncing,
+                            cx.listener(|this, _, _, cx| {
+                                this.pending = Some(Pending::RemoveSubsonic);
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                })
             },
         )
+    }
+
+    /// Whether there's a server to remove: an address typed in, or tracks
+    /// still filed under the one configured.
+    fn subsonic_removable(&self, cx: &App) -> bool {
+        !self.subsonic_url.read(cx).value().trim().is_empty() || self.subsonic_rows > 0
+    }
+
+    /// Remove Server's yes: the account and its tracks go, and the fields
+    /// empty to match. The switch goes off with them, since there's nothing
+    /// left for it to turn on.
+    fn remove_subsonic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let removed = rox_services::sources::remove(self.library.clone(), cx);
+
+        for input in [
+            &self.subsonic_url,
+            &self.subsonic_user,
+            &self.subsonic_password,
+        ] {
+            input.update(cx, |input, cx| input.set_value("", window, cx));
+        }
+
+        self.subsonic_enabled = false;
+        self.subsonic_status = None;
+        self.subsonic_last_sync = 0;
+
+        self.subsonic_follow = Some(cx.spawn(async move |this, cx| {
+            removed.await;
+
+            this.update(cx, |this, cx| {
+                this.subsonic_rows = subsonic_row_count(&this.library, cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+
+        cx.notify();
     }
 
     /// The connect strip, shaped like the scrobble destinations': what the
@@ -6550,10 +6610,14 @@ impl SettingsWindow {
     /// The Subsonic switch. The header table follows it, so a server
     /// pointed somewhere else and turned back on can authorize a stream
     /// without a restart.
+    ///
+    /// The library follows too: off takes the server's tracks out of every
+    /// list without deleting them, on brings them back.
     fn set_subsonic_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         self.subsonic_enabled = on;
         Settings::update(move |s| s.accounts.subsonic.enabled = on);
         rox_services::sources::install_registry();
+        rox_services::sources::follow_account(self.library.clone(), cx).detach();
         cx.notify();
     }
 
@@ -6609,7 +6673,7 @@ impl SettingsWindow {
         // id without a restart.
         rox_services::sources::install_registry();
 
-        let prune = rox_services::sources::prune_departed(self.library.clone(), cx);
+        let prune = rox_services::sources::follow_account(self.library.clone(), cx);
 
         Some(cx.spawn(async move |cx| {
             // Nothing moves on the overwhelming majority of these, which is

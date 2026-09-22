@@ -128,6 +128,17 @@ pub fn server() -> Option<Server> {
     Some(Server::new(&account.url, &account.user, &account.password))
 }
 
+/// The configured server while its switch is on: the one whose rows browse,
+/// play and have covers fetched. Off means the server isn't used for any of
+/// that, so everything that reaches it on the library's behalf asks here
+/// rather than [`server`].
+fn live_server() -> Option<Server> {
+    let account = Settings::load().accounts.subsonic;
+    live_source(&account)?;
+
+    Some(Server::new(&account.url, &account.user, &account.password))
+}
+
 /// Put the Subsonic server in the registry, under the source id its rows
 /// are keyed by. Called at startup, before anything can resolve a row, so a
 /// locator built during the first frame already has somewhere to ask. Safe
@@ -150,9 +161,11 @@ pub fn install_registry() {
         // a changed password takes effect without reinstalling the row.
         // The id check is what keeps a row left behind by a re-pointed
         // account from signing its old server's URLs with the new
-        // account's password.
+        // account's password, and a switched-off account signs nothing: a
+        // queued or playlisted row of it goes out bare and the server
+        // refuses it.
         Box::new(move |remote| {
-            let Some(server) = server().filter(|s| s.source_id() == mine) else {
+            let Some(server) = live_server().filter(|s| s.source_id() == mine) else {
                 return;
             };
 
@@ -171,7 +184,9 @@ pub fn install_registry() {
 ///
 /// None deliberately doesn't mean "drop everything". A switched-off account
 /// keeps its catalog by design, and an empty address is what a half-finished
-/// edit looks like, so both answer None and the prune below never runs.
+/// edit looks like, so both answer None and the prune below never runs. The
+/// rows stay, hidden: see [`hidden_sources`]. Dropping them is
+/// [`remove`]'s job, asked for by name.
 fn live_source(account: &SubsonicAccount) -> Option<String> {
     if !account.enabled || account.url.trim().is_empty() {
         return None;
@@ -189,12 +204,15 @@ fn live_source(account: &SubsonicAccount) -> Option<String> {
 /// entry, a listen and a thumbnail all outlive the track they name, and
 /// teaching this path to chase them would make a re-pointed server tidier
 /// than a server that dropped a track.
-fn drop_departed(conn: &mut Connection, live: &str) -> usize {
+///
+/// `live` None keeps nothing, which is a removed server: every Subsonic
+/// row goes.
+fn drop_departed(conn: &mut Connection, live: Option<&str>) -> usize {
     let departed: Vec<String> = store::sources(conn)
         .unwrap_or_default()
         .into_iter()
         .map(|(source, _)| source)
-        .filter(|source| source.starts_with(SOURCE_PREFIX) && source != live)
+        .filter(|source| source.starts_with(SOURCE_PREFIX) && Some(source.as_str()) != live)
         .collect();
 
     let nothing = HashSet::new();
@@ -211,29 +229,28 @@ fn prune_for(conn: &mut Connection, account: &SubsonicAccount) -> usize {
         return 0;
     };
 
-    drop_departed(conn, &live)
+    drop_departed(conn, Some(&live))
 }
 
-/// Run that prune on its own, without a sync around it. What the settings
-/// page calls when the address it just wrote has been committed, so the
-/// rows the old address left behind go then rather than whenever somebody
-/// next presses Sync Now.
+/// Bring the library in line with the account the settings now describe.
+/// What the settings page calls when an address or login it just wrote has
+/// been committed, and when the switch flips. The rows the old address left
+/// behind go now rather than whenever somebody next presses Sync Now, and
+/// the catalog is rebuilt either way: a switch or an address decides which
+/// server's rows browse, see [`hidden_sources`], and the projection only
+/// learns that on a load.
 ///
 /// Answers how many rows went, which is zero on every call but the one
 /// right after an account moves.
-pub fn prune_departed(library: Entity<Library>, cx: &mut App) -> Task<usize> {
+pub fn follow_account(library: Entity<Library>, cx: &mut App) -> Task<usize> {
     // A sync is already doing this at the end of its own reconcile, and two
     // writers on one database is a busy error rather than a race worth
-    // handling.
+    // handling. Its own reload reads the switch as it stands by then.
     if syncing() {
         return Task::ready(0);
     }
 
     let account = Settings::load().accounts.subsonic;
-    if live_source(&account).is_none() {
-        return Task::ready(0);
-    }
-
     let db_path = library.read(cx).db_path();
 
     cx.spawn(async move |cx| {
@@ -250,16 +267,76 @@ pub fn prune_departed(library: Entity<Library>, cx: &mut App) -> Task<usize> {
             })
             .await;
 
-        // Rows left, so the in-memory projection is stale until it's
-        // rebuilt from SQLite and swapped whole.
-        if gone > 0 {
-            library
-                .update(cx, |library, cx| library.reload_projection(cx))
-                .ok();
-        }
+        // The projection is never patched in place: rebuilt from SQLite
+        // and swapped whole, which is also where the hidden rows are
+        // decided.
+        library
+            .update(cx, |library, cx| library.reload_projection(cx))
+            .ok();
 
         gone
     })
+}
+
+/// Take the server out of rox: forget the account and delete every row any
+/// Subsonic address ever filed. What Remove Server runs, once its confirm
+/// is answered. The switch is the way to keep a catalog while not using
+/// it; this is the way to be rid of one.
+///
+/// The rows go the way a prune takes them, so a playlist entry, a listen
+/// and a stored cover outlive them the same as they outlive a track the
+/// server dropped. Answers how many rows went.
+pub fn remove(library: Entity<Library>, cx: &mut App) -> Task<usize> {
+    // The same reason the prune above waits: a sync is writing, and the
+    // rows it's writing would land after the delete.
+    if syncing() {
+        return Task::ready(0);
+    }
+
+    if let Some(server) = server() {
+        sources_registry::forget(&server.source_id());
+    }
+
+    Settings::update(|s| s.accounts.subsonic = SubsonicAccount::default());
+
+    let db_path = library.read(cx).db_path();
+
+    cx.spawn(async move |cx| {
+        let gone = cx
+            .background_executor()
+            .spawn(async move {
+                match store::open(&db_path) {
+                    Ok(mut conn) => drop_departed(&mut conn, None),
+                    Err(e) => {
+                        log::warn!("subsonic: removing the server's rows failed: {e}");
+                        0
+                    }
+                }
+            })
+            .await;
+
+        library
+            .update(cx, |library, cx| library.reload_projection(cx))
+            .ok();
+
+        gone
+    })
+}
+
+/// Which sources the catalog leaves out, as the projection load asks it:
+/// every Subsonic id but the live account's. That covers a switched-off
+/// server, whose rows are kept and not used, and the rows of an address
+/// the account has half left, an empty one mid-edit, which nothing could
+/// sign anyway. The settings are read once here, not per source asked.
+pub fn hidden_sources() -> impl Fn(&str) -> bool {
+    let live = live_source(&Settings::load().accounts.subsonic);
+
+    move |source| hides(live.as_deref(), source)
+}
+
+/// [`hidden_sources`]'s rule with the live id handed in.
+fn hides(live: Option<&str>, source: &str) -> bool {
+    source.starts_with(SOURCE_PREFIX) && Some(source) != live
 }
 
 /// Reach the server and report what it says about itself. What the Connect
@@ -373,7 +450,7 @@ fn reconcile(
     store::upsert_source_rows(conn, source, rows).map_err(|e| e.to_string())?;
 
     let pruned = store::prune_source(conn, source, keep).map_err(|e| e.to_string())?;
-    let departed = drop_departed(conn, source);
+    let departed = drop_departed(conn, Some(source));
 
     Ok((pruned, departed))
 }
@@ -528,7 +605,7 @@ pub fn cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
 /// song is asked for it again. That's one small reply per cover, paid once:
 /// after it, the store answers.
 fn fetch_cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
-    let server = server()?;
+    let server = live_server()?;
 
     let library = store::open(&rox_core::settings::data_dir().join("library.db")).ok()?;
     store::id_for_path(&library, &server.source_id(), key).ok()??;
@@ -812,7 +889,7 @@ mod tests {
         station.id = "ir-1".into();
         store::upsert_source_rows(&mut conn, "radio", &[row_for(&station, 0)]).unwrap();
 
-        assert_eq!(drop_departed(&mut conn, "subsonic:live"), 2);
+        assert_eq!(drop_departed(&mut conn, Some("subsonic:live")), 2);
 
         assert_eq!(count(&conn, "radio"), 1);
         assert_eq!(count(&conn, "local"), 1);
@@ -856,6 +933,41 @@ mod tests {
 
         assert_eq!(count(&conn, &live), 2);
         assert_eq!(count(&conn, "subsonic:old"), 0);
+    }
+
+    /// A removed server keeps nothing: every Subsonic id goes, the live one
+    /// with the rest, and nothing outside the namespace moves.
+    #[test]
+    fn a_removed_server_takes_every_subsonic_row() {
+        let mut conn = library("subsonic:live", "subsonic:old");
+
+        assert_eq!(drop_departed(&mut conn, None), 4);
+
+        assert_eq!(count(&conn, "subsonic:live"), 0);
+        assert_eq!(count(&conn, "subsonic:old"), 0);
+        assert_eq!(count(&conn, "local"), 1);
+    }
+
+    /// Only the live account's id browses. A switched-off account, or one
+    /// with no address, has no live id, so every Subsonic id hides and the
+    /// other sources never do.
+    #[test]
+    fn only_the_live_server_browses() {
+        assert!(!hides(Some("subsonic:live"), "subsonic:live"));
+        assert!(hides(Some("subsonic:live"), "subsonic:old"));
+        assert!(hides(None, "subsonic:live"));
+
+        for source in ["local", "radio"] {
+            assert!(!hides(None, source));
+            assert!(!hides(Some("subsonic:live"), source));
+        }
+
+        let off = account(false, "https://live.example.com");
+        let on = account(true, "https://live.example.com");
+        let id = Server::new("https://live.example.com", "andrew", "pw").source_id();
+
+        assert!(hides(live_source(&off).as_deref(), &id));
+        assert!(!hides(live_source(&on).as_deref(), &id));
     }
 
     #[test]

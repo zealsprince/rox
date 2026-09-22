@@ -1067,6 +1067,12 @@ impl SettingsWindow {
                 rox_i18n::t!("listens-clear-imported"),
                 Some(rox_i18n::t!("listens-clear-everything")),
             ),
+            Pending::RemoveSubsonic => (
+                rox_i18n::t!("settings-confirm-remove-subsonic-title"),
+                rox_i18n::t!("settings-confirm-remove-subsonic-body"),
+                rox_i18n::t!("settings-common-remove"),
+                None,
+            ),
             // Nothing imported: one yes, and it takes the whole record.
             Pending::ClearListens => (
                 rox_i18n::t!("listens-clear-title"),
@@ -1214,6 +1220,7 @@ impl SettingsWindow {
             }
             Some(Pending::ClearEmbeddings(model)) => self.clear_embeddings(&model, cx),
             Some(Pending::ClearMeasuredBpm) => self.clear_measured_bpm(cx),
+            Some(Pending::RemoveSubsonic) => self.remove_subsonic(window, cx),
             Some(Pending::ClearListens) => {
                 // The first yes is the imported half only where the dialog
                 // offered both; on the single-yes dialog it's everything,

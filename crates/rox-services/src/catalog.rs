@@ -2870,7 +2870,11 @@ fn load_projection(
     let shards = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let projection = Projection::load_parallel(db_path, shards, rox_core::settings::fold_case())?;
+    let mut projection =
+        Projection::load_parallel(db_path, shards, rox_core::settings::fold_case())?;
+    // Before the order is taken, since the order is built off the browse
+    // mask this rewrites.
+    projection.hide_sources(crate::sources::hidden_sources());
     let order = projection.sort_canonical();
     let row_by_id = projection
         .db_id

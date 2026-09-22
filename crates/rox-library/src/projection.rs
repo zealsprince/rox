@@ -1034,6 +1034,10 @@ pub struct Projection {
     /// than per row per paint, and the one answer every browse surface
     /// shares so none of them has to know what a station is.
     browsable: Vec<bool>,
+    /// Which source symbols are hidden, see [`Projection::hide_sources`].
+    /// Indexed by symbol and empty when nothing is, which is every library
+    /// without a switched-off server; a symbol past the end is visible.
+    hidden: Vec<bool>,
     /// Value to symbol per table, built the first time the projection is
     /// patched and kept warm after: the finalized tables are vectors, so
     /// without this an append would scan a hundred thousand strings to ask
@@ -1182,7 +1186,8 @@ pub struct AlbumHit {
 pub enum SearchScope {
     /// Browsable rows only: tombstones and stations are out.
     Browse,
-    /// Every live row, stations included.
+    /// Every live row, stations included. A hidden source's rows are out
+    /// here too.
     All,
 }
 
@@ -1888,6 +1893,49 @@ impl Projection {
             && self.browsable.get(i).copied().unwrap_or(false)
     }
 
+    /// Take every row filed under a source `hide` picks out of the catalog:
+    /// off the browse surfaces the way a station is, and out of the general
+    /// search a station stays in. What a switched-off server's rows get.
+    /// They stay in the projection, so a playlist or the history that
+    /// holds one still resolves its tags.
+    ///
+    /// Asked once per source symbol, a handful of calls however big the
+    /// library, then read onto the browse mask. Run on a fresh load before
+    /// the canonical order is taken, since that order is built off the
+    /// mask. A source a later patch brings in is visible, which is right
+    /// for the only thing that brings one: a sync of the server that's on.
+    pub fn hide_sources(&mut self, hide: impl Fn(&str) -> bool) {
+        let hidden: Vec<bool> = self.sources.strings.iter().map(|s| hide(s)).collect();
+        self.hidden = if hidden.contains(&true) {
+            hidden
+        } else {
+            Vec::new()
+        };
+
+        for (row, &sym) in self.source.iter().enumerate() {
+            let source = &self.sources.strings[sym as usize];
+            self.browsable[row] = source_browsable(source) && !self.source_hidden(sym);
+        }
+    }
+
+    /// Whether a source symbol is one [`Projection::hide_sources`] took out.
+    fn source_hidden(&self, sym: u32) -> bool {
+        self.hidden.get(sym as usize).copied().unwrap_or(false)
+    }
+
+    /// Whether a row is anywhere a search can reach: alive, and not under a
+    /// hidden source. The general search's answer, where the browse
+    /// surfaces ask [`Projection::is_browsable`].
+    fn is_listed(&self, row: u32) -> bool {
+        if self.is_dead(row) {
+            return false;
+        }
+
+        // Nearly every library hides nothing, and then there's no source
+        // column to read.
+        self.hidden.is_empty() || !self.source_hidden(self.source[row as usize])
+    }
+
     pub fn dead_rows(&self) -> usize {
         self.dead_rows
     }
@@ -1913,12 +1961,13 @@ impl Projection {
             .collect()
     }
 
-    /// Every row a tombstone hasn't taken, in row order. What a search
-    /// widened to [`SearchScope::All`] falls back to when nothing is
-    /// typed, where the browse passes take [`Projection::browse_rows`].
+    /// Every row a tombstone or a hidden source hasn't taken, in row
+    /// order. What a search widened to [`SearchScope::All`] falls back to
+    /// when nothing is typed, where the browse passes take
+    /// [`Projection::browse_rows`].
     fn live_rows(&self) -> Vec<u32> {
         (0..self.len() as u32)
-            .filter(|&row| !self.is_dead(row))
+            .filter(|&row| self.is_listed(row))
             .collect()
     }
 
@@ -2274,6 +2323,7 @@ impl Projection {
             dead: vec![false; rows],
             dead_rows: 0,
             browsable,
+            hidden: Vec::new(),
             sym_index: None,
         }
     }
@@ -2973,7 +3023,7 @@ impl Projection {
         // stations are the only things standing between a scan and a row.
         let live = |i: usize| match scope {
             SearchScope::Browse => self.is_browsable(i as u32),
-            SearchScope::All => !self.is_dead(i as u32),
+            SearchScope::All => self.is_listed(i as u32),
         };
         let chunks = n.div_ceil(CHUNK);
         let per: Vec<Vec<u32>> = (0..chunks)
@@ -3532,8 +3582,10 @@ impl Projection {
             // Read off the source string rather than carried in the shard:
             // a patch is a handful of rows, so the check costs nothing
             // here and there is one place that decides what browses.
-            self.browsable
-                .push(source_browsable(&self.sources.strings[source as usize]));
+            self.browsable.push(
+                source_browsable(&self.sources.strings[source as usize])
+                    && !self.source_hidden(source),
+            );
             if let Some(&span) = spans.get(&id) {
                 self.spans.insert(row, span);
             }
@@ -3731,6 +3783,7 @@ impl Projection {
             + self.sources.heap_bytes()
             + self.dead.capacity()
             + self.browsable.capacity()
+            + self.hidden.capacity()
             + self.sym_index.as_ref().map_or(0, |i| i.heap_bytes())
     }
 }
@@ -4399,6 +4452,50 @@ mod tests {
         store::init_schema(&conn).unwrap();
         store::insert_batch(&mut conn, rows).unwrap();
         (db, conn)
+    }
+
+    /// A switched-off server's rows leave the catalog whole: no list, no
+    /// order, no search, general or not. They stay loaded, so a playlist
+    /// holding one still resolves its tags, and the local rows and the
+    /// server that's still on are untouched.
+    #[test]
+    fn a_hidden_source_leaves_browse_and_search() {
+        let (_db, mut conn) = sorted_library(
+            "hidden-source",
+            &[track("/m/one.flac", "So What", "Miles Davis", 1959)],
+        );
+
+        let mut off = track("sg-9", "So What", "Miles Davis", 1959);
+        off.remote_url = "https://off/stream/9".into();
+        store::upsert_source_rows(&mut conn, "subsonic:off", &[off]).unwrap();
+
+        let mut on = track("sg-4", "So What", "Miles Davis", 1959);
+        on.remote_url = "https://on/stream/4".into();
+        store::upsert_source_rows(&mut conn, "subsonic:on", &[on]).unwrap();
+
+        let mut p = Projection::load_serial(&conn, false).unwrap();
+        p.hide_sources(|source| source == "subsonic:off");
+
+        let source_of =
+            |p: &Projection, row: u32| p.sources.strings[p.source[row as usize] as usize].clone();
+        let hidden = (0..p.len() as u32)
+            .find(|&row| source_of(&p, row) == "subsonic:off")
+            .expect("the hidden row is still loaded");
+
+        assert!(!p.is_browsable(hidden));
+        assert_eq!(p.resolve(hidden).title, "So What");
+
+        let sources = |rows: Vec<u32>| -> Vec<String> {
+            let mut out: Vec<String> = rows.into_iter().map(|row| source_of(&p, row)).collect();
+            out.sort();
+            out
+        };
+        let expected = ["local", "subsonic:on"];
+
+        assert_eq!(sources(p.sort_canonical()), expected);
+        assert_eq!(sources(p.search("so what")), expected);
+        assert_eq!(sources(p.search_all("so what")), expected);
+        assert_eq!(sources(p.search_all("")), expected);
     }
 
     /// The radio listen's way home: a song's two names find the local file

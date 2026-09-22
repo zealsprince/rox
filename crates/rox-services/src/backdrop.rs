@@ -18,7 +18,7 @@
 //! [`crate::radio_art`]'s half; this is where that picture is held and
 //! what decides which of the two is showing.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -251,7 +251,9 @@ impl NowPlayingArt {
             }
 
             // No file to read, so the picture is whatever the pool holds
-            // under the row's own key. A station may replace it a moment
+            // under the row's own key, or for a server row one fetched now,
+            // since a track played from the queue may never have been on
+            // screen for a list to ask. A station may replace it a moment
             // later with the song it announces.
             Some(Playing::Row(key)) => {
                 let Some(conn) = self.thumbs.read(cx).store_conn() else {
@@ -262,9 +264,7 @@ impl NowPlayingArt {
                 cx.spawn(async move |this, cx| {
                     let bytes = cx
                         .background_executor()
-                        .spawn(
-                            async move { rox_library::thumbs::thumbnail(&conn, Path::new(&key)) },
-                        )
+                        .spawn(async move { crate::sources::art(&conn, &key) })
                         .await;
                     this.update(cx, |this, cx| {
                         if this.generation != generation {

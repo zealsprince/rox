@@ -1159,17 +1159,29 @@ impl MetadataPanel {
 
     /// Make sure the background art for `path` is cached or on its way:
     /// read the file off the UI thread through the shared loader, which
-    /// swaps the result in and retires the previous decode.
-    fn ensure_art(&mut self, path: &Path, cx: &mut Context<Self>) {
+    /// swaps the result in and retires the previous decode. A `remote` row
+    /// has no file, so its picture comes out of the thumbnail store under
+    /// the same key, fetched from its server the first time.
+    fn ensure_art(&mut self, path: &Path, remote: bool, cx: &mut Context<Self>) {
         let read = path.to_path_buf();
+        let thumbs = remote
+            .then(|| self.state.thumbs.read(cx).store_conn())
+            .flatten();
         self.art.ensure(
             path,
             |this: &mut Self| &mut this.art,
             move || {
-                rox_library::art::cover_art(&read).and_then(|(bytes, mime)| {
-                    let format = ImageFormat::from_mime_type(&mime)?;
-                    Some(Arc::new(Image::from_bytes(format, bytes)))
-                })
+                if !remote {
+                    return rox_library::art::cover_art(&read).and_then(|(bytes, mime)| {
+                        let format = ImageFormat::from_mime_type(&mime)?;
+                        Some(Arc::new(Image::from_bytes(format, bytes)))
+                    });
+                }
+
+                // The store holds JPEG thumbnails and nothing else.
+                let thumbs = thumbs?;
+                let bytes = rox_services::sources::art(&thumbs, &read.to_string_lossy())?;
+                Some(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)))
             },
             cx,
         );
@@ -2642,7 +2654,7 @@ impl MetadataPanel {
         // the cache stays keyed on the path.
         let path = key.path.clone();
         if self.config.cover {
-            self.ensure_art(&path, cx);
+            self.ensure_art(&path, !key.is_local(), cx);
         }
         let backdrop = self.config.cover.then(|| self.art.get(&path)).flatten();
         let cover_opacity = (self.config.cover_opacity / 100.).clamp(0., 1.);

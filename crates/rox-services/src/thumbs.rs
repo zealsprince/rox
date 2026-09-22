@@ -238,7 +238,17 @@ impl Thumbs {
                 .background_executor()
                 .spawn({
                     let path = path.clone();
-                    async move { rox_library::thumbs::thumbnail(&conn, &path) }
+                    // A server row the store has nothing for yet gets its
+                    // cover from the server here, on the first paint that
+                    // wants it. The sweep never goes this way, since that
+                    // would download art for the whole wall. The store gets
+                    // the path itself rather than its string form, because
+                    // a local name that isn't UTF-8 would read as another
+                    // file after the lossy round trip.
+                    async move {
+                        rox_library::thumbs::thumbnail(&conn, &path)
+                            .or_else(|| crate::sources::cover(&conn, &path.to_string_lossy()))
+                    }
                 })
                 .await;
             this.update(cx, |this, cx| {

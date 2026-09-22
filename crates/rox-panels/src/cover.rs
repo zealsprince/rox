@@ -21,7 +21,7 @@ use gpui::{
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use image::Frame;
 use rox_dock::{Panel, PanelEvent, TabPanel};
-use rox_library::cue::TrackKey;
+use rox_library::cue::{Origin, TrackKey};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
@@ -320,15 +320,15 @@ impl CoverArtPanel {
         }
     }
 
-    /// Whether this key is the remote row that's playing, and whether it's
-    /// a live stream: the rows whose cover comes from the shared art
-    /// entity rather than off a file. None for a local track and for a
-    /// remote row nobody is playing, which has no picture anyone has
-    /// fetched and so keeps the file read's answer.
-    fn remote_playing(&self, key: &TrackKey, cx: &App) -> Option<bool> {
-        let now = self.state.player.read(cx).now_playing()?;
+    /// Whether this key is a station that's on air right now: the one row
+    /// whose cover comes from the shared art entity, since the song playing
+    /// on it changes under the same key and only that entity follows it.
+    fn on_air(&self, key: &TrackKey, cx: &App) -> bool {
+        let Some(now) = self.state.player.read(cx).now_playing() else {
+            return false;
+        };
 
-        (!key.is_local() && now.key == *key).then_some(now.live)
+        !key.is_local() && now.live && now.key == *key
     }
 
     /// A station picture's width over height, read off the header and kept
@@ -352,8 +352,10 @@ impl CoverArtPanel {
     }
 
     /// Make sure the art for `path` is cached or on its way: read the file
-    /// off the UI thread and swap the result in when done.
-    fn ensure_art(&mut self, path: &Path, cx: &mut Context<Self>) {
+    /// off the UI thread and swap the result in when done. A `remote` row
+    /// has no file and no picture slots, so it reads the one picture the
+    /// thumbnail store holds for it whichever slot the panel shows.
+    fn ensure_art(&mut self, path: &Path, remote: bool, cx: &mut Context<Self>) {
         if self.art.as_ref().map(|(p, _)| p.as_path()) == Some(path)
             || self.pending.as_deref() == Some(path)
         {
@@ -365,13 +367,25 @@ impl CoverArtPanel {
         let path = path.to_path_buf();
         let kind = self.config.art.kind();
         let disc = self.disc_mode();
+        let thumbs = remote
+            .then(|| self.state.thumbs.read(cx).store_conn())
+            .flatten();
         cx.spawn(async move |this, cx| {
             let loaded = cx
                 .background_executor()
                 .spawn({
                     let path = path.clone();
                     async move {
-                        rox_library::art::cover_art_of(&path, kind).and_then(|(bytes, mime)| {
+                        let art = match thumbs {
+                            // The store holds JPEG thumbnails and nothing else.
+                            Some(thumbs) => {
+                                rox_services::sources::art(&thumbs, &path.to_string_lossy())
+                                    .map(|bytes| (bytes, "image/jpeg".to_string()))
+                            }
+                            None if remote => None,
+                            None => rox_library::art::cover_art_of(&path, kind),
+                        };
+                        art.and_then(|(bytes, mime)| {
                             let format = ImageFormat::from_mime_type(&mime)?;
                             // The shape off the header alone, no decode:
                             // the art layer sizes itself by it so alignment
@@ -1045,27 +1059,17 @@ impl CoverArtPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         match self.resolved.get(self.config.source, &self.state, cx) {
             None => self.retarget(Slide::Empty, cx),
-            // A remote row has no file to read a cover out of, so the
-            // picture is the one the backdrop is already following: for a
-            // station the song on air where the lookup found a cover and
-            // the station's logo behind that, for a server row the cover
-            // the sync stored. Only for the row that's playing, since
-            // nothing has fetched a picture for any other. The stand-in
-            // follows the kind of row: a station never had a disc.
-            Some(key) if !key.is_local() => {
-                let live = self.remote_playing(&key, cx);
-                let art = live
-                    .is_some()
-                    .then(|| self.state.now_art.read(cx).live_art())
-                    .flatten();
-                let target = match art {
+            // A station on air shows what the backdrop is following: the
+            // song on air where the lookup found a cover, and the station's
+            // logo behind that.
+            Some(key) if self.on_air(&key, cx) => {
+                let target = match self.state.now_art.read(cx).live_art() {
                     Some(image) => {
                         let ratio = self.live_ratio(&image);
                         Slide::Live(image, ratio)
                     }
 
-                    None if live == Some(true) => Slide::Radio,
-                    None => Slide::Disc,
+                    None => Slide::Radio,
                 };
                 self.retarget(target, cx);
             }
@@ -1073,15 +1077,25 @@ impl CoverArtPanel {
                 // Art is a property of the file, not the track: every cue
                 // track of one image shares its cover, so the cache stays
                 // keyed on the path and a boundary between two of them
-                // reloads nothing.
+                // reloads nothing. A row with no file (a server's song, a
+                // station off the air) reads its picture out of the
+                // thumbnail store under the same key instead, and its
+                // stand-in follows the kind of row: a station never had a
+                // disc.
+                let remote = !key.is_local();
+                let stand_in = if key.origin() == Origin::Radio {
+                    Slide::Radio
+                } else {
+                    Slide::Disc
+                };
                 let path = key.path;
-                self.ensure_art(&path, cx);
+                self.ensure_art(&path, remote, cx);
                 let target = match &self.art {
                     Some((cached, art)) if *cached == path => Some(match art {
                         Some((image, ratio, base)) => {
                             Slide::Art(image.clone(), *ratio, base.clone())
                         }
-                        None => Slide::Disc,
+                        None => stand_in,
                     }),
                     // A load is still on its way; the current slide stays up
                     // and the next one fades in when it arrives.

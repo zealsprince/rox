@@ -180,6 +180,16 @@ impl Server {
         Ok(radio_stations_of(&body))
     }
 
+    /// The art id one song's cover is filed under, off `getSong`. The spec
+    /// leaves the id's shape to the server and doesn't promise the song's
+    /// own id works in its place, so the song is asked which. Empty when
+    /// the server lists no cover for it.
+    pub fn cover_id(&self, song_id: &str) -> Result<String, String> {
+        let body = self.get("getSong", &[("id", song_id.to_string())])?;
+
+        Ok(song_cover_id(&body))
+    }
+
     /// Cover art bytes for an art id, at a requested size. The server
     /// scales, so asking for what the thumbnail cache wants avoids pulling
     /// a full-resolution scan down for a list row.
@@ -497,6 +507,14 @@ fn playlist_entries(body: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The cover's art id on a `getSong` reply, empty when there's no song or
+/// no cover on it.
+fn song_cover_id(body: &Value) -> String {
+    body.get("song")
+        .map(|song| text(song, "coverArt"))
+        .unwrap_or_default()
+}
+
 /// The container name for a song, which servers report as either a file
 /// suffix or a MIME type and sometimes both.
 fn codec_of(song: &Value) -> String {
@@ -682,6 +700,28 @@ mod tests {
         // off the MIME type when there's no suffix.
         assert_eq!(song.album_artist, "Unknown");
         assert_eq!(song.codec, "mpeg");
+    }
+
+    #[test]
+    fn a_song_reply_names_its_cover() {
+        let body = parse_response(
+            r#"{"subsonic-response":{"status":"ok","version":"1.16.1","song":{
+               "id":"sg-1","title":"Jynweythek","coverArt":"mf-sg-1_65f1a0c2"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(song_cover_id(&body), "mf-sg-1_65f1a0c2");
+
+        // No cover on the song, and no song at all, both come back empty.
+        let bare = parse_response(
+            r#"{"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"sg-9"}}}"#,
+        )
+        .unwrap();
+        let empty =
+            parse_response(r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#).unwrap();
+
+        assert_eq!(song_cover_id(&bare), "");
+        assert_eq!(song_cover_id(&empty), "");
     }
 
     #[test]

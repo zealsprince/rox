@@ -361,17 +361,34 @@ impl MediaSession {
     /// needs no further work. The result is dropped when the track has moved
     /// on by the time the read finishes, so a late cover is never attached to
     /// the wrong track.
+    ///
+    /// A row with no file (a server's song, a station) has its picture in
+    /// the thumbnail store under its key, the same one the app's own
+    /// surfaces draw, fetched from the server the first time. A station's
+    /// song on air isn't followed here: the widget gets the station's logo.
     fn publish_cover(&mut self, track: Option<TrackKey>, cx: &mut Context<Self>) {
         let Some(track) = track else {
             return;
         };
+        let remote = !track.is_local();
+        let thumbs = remote
+            .then(|| self.state.thumbs.read(cx).store_conn())
+            .flatten();
         cx.spawn(async move |this, cx| {
             let resolved = track.path.clone();
             let cover = cx
                 .background_executor()
                 .spawn(async move {
-                    rox_library::art::cover_art(&resolved)
-                        .and_then(|(bytes, mime)| cache_now_playing_art(&resolved, &bytes, &mime))
+                    let art = match thumbs {
+                        // The store holds JPEG thumbnails and nothing else.
+                        Some(thumbs) => {
+                            rox_services::sources::art(&thumbs, &resolved.to_string_lossy())
+                                .map(|bytes| (bytes, "image/jpeg".to_string()))
+                        }
+                        None if remote => None,
+                        None => rox_library::art::cover_art(&resolved),
+                    };
+                    art.and_then(|(bytes, mime)| cache_now_playing_art(&resolved, &bytes, &mime))
                 })
                 .await;
             this.update(cx, |this, _| {

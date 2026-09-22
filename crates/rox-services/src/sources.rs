@@ -26,9 +26,11 @@
 //! it adds is a fresh salt and token on the URL and no headers at all; the
 //! table still takes headers because the next source will have some.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{App, Entity, Task};
 
@@ -49,6 +51,15 @@ use crate::sources_registry;
 /// downscales again on the way in, so this only has to beat a grid tile
 /// and stay well short of pulling a full-resolution scan down.
 const COVER_SIZE: u32 = 512;
+
+/// How long a cover that came back empty is left alone before a paint may
+/// ask the server again. Long enough that a server that's down isn't
+/// hammered by every repaint, short enough that one back up shows its art
+/// within the session.
+const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// How many remembered misses before the expired ones are swept out.
+const MISSES_SWEEP: usize = 4096;
 
 /// What every Subsonic source id starts with, and the whole namespace this
 /// module answers for. Checked against [`Server::source_id`] by a test, so
@@ -456,20 +467,112 @@ fn station_for(station: &SourceStation) -> Station {
     }
 }
 
-/// One remote track's cover, fetched from the server and stored on the way
-/// through so the next ask is a lookup. Blocking, and deliberately not
-/// part of the sync: a library's worth of art is a download nobody asked
-/// for, and the row that needs a picture is the one on screen.
+/// The picture for a row with no file behind it, by the string that stands
+/// in for its path: a station's logo out of the thumbnail store, and a
+/// server row's cover, fetched and filed the first time it's asked for.
+/// Every surface that draws a remote row's art comes through here, so a
+/// list tile, the cover panel and the OS media widget agree on the picture.
 ///
-/// `thumbs` is the thumbnail database, not the library one.
-pub fn cover(thumbs: &Connection, song_id: &str, cover_id: &str) -> Option<Vec<u8>> {
+/// Blocking. Background executor only.
+pub fn art(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
+    rox_library::thumbs::thumbnail(thumbs, Path::new(key)).or_else(|| cover(thumbs, key))
+}
+
+/// One remote track's cover, fetched from the server and filed in the
+/// thumbnail store under the song id, so the next ask is a lookup.
+/// Deliberately not part of the sync: a library's worth of art is a
+/// download nobody asked for, and the row that needs a picture is the one
+/// on screen.
+///
+/// `key` is whatever the surface asked art by, which for a server row is
+/// the song id standing in for a path. Only a key the live account has a
+/// row under goes anywhere near the server. Everything else that reaches
+/// here (a station's URL, a local file deleted since its row was read) is
+/// some other source's miss, and handing a local path to a server as a
+/// song id would be telling it about the user's disk.
+///
+/// A key that came back with nothing is left alone for [`RETRY_AFTER`].
+/// Every visible row re-asks each time the catalog moves, and without the
+/// wait a server that's down would cost a timeout per row per change.
+///
+/// Blocking, and the store lock is only taken for the write, never across
+/// the requests. Background executor only.
+pub fn cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
+    // A key that stats is a file, and a file's cover is the file's own
+    // business, already answered by the store.
+    if std::fs::metadata(key).is_ok() {
+        return None;
+    }
+
+    let now = Instant::now();
+    if MISSES.lock().ok()?.recent(key, now) {
+        return None;
+    }
+
+    let found = fetch_cover(thumbs, key);
+
+    if let Ok(mut misses) = MISSES.lock() {
+        match found {
+            Some(_) => misses.forget(key),
+            None => misses.note(key, now),
+        }
+    }
+
+    found
+}
+
+/// [`cover`]'s network half: is the key the live account's, which art id
+/// does the song name, and the image under it into the store.
+///
+/// The library has no column for the art id the catalog walk saw, so the
+/// song is asked for it again. That's one small reply per cover, paid once:
+/// after it, the store answers.
+fn fetch_cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
+    let server = server()?;
+
+    let library = store::open(&rox_core::settings::data_dir().join("library.db")).ok()?;
+    store::id_for_path(&library, &server.source_id(), key).ok()??;
+
+    let cover_id = server.cover_id(key).ok()?;
     if cover_id.is_empty() {
         return None;
     }
 
-    let bytes = server()?.cover(cover_id, COVER_SIZE).ok()?;
+    let bytes = server.cover(&cover_id, COVER_SIZE).ok()?;
+    let thumbs = thumbs.lock().ok()?;
 
-    rox_library::thumbs::store_bytes(thumbs, &bytes, song_id)
+    rox_library::thumbs::store_bytes(&thumbs, &bytes, key)
+}
+
+/// The keys [`cover`] asked about recently and got nothing for, and when.
+/// In memory only: a restart is a fair moment to try again, and a stored
+/// miss would outlive the server outage that caused it.
+struct Misses(HashMap<String, Instant>);
+
+static MISSES: LazyLock<Mutex<Misses>> = LazyLock::new(|| Mutex::new(Misses(HashMap::new())));
+
+impl Misses {
+    /// Whether `key` came back empty inside the retry window.
+    fn recent(&self, key: &str, now: Instant) -> bool {
+        self.0
+            .get(key)
+            .is_some_and(|at| now.saturating_duration_since(*at) < RETRY_AFTER)
+    }
+
+    fn note(&mut self, key: &str, now: Instant) {
+        // Long sessions scroll past a lot of rows. Past a few thousand the
+        // expired entries go, so the map holds the window and not the day.
+        if self.0.len() >= MISSES_SWEEP {
+            self.0
+                .retain(|_, at| now.saturating_duration_since(*at) < RETRY_AFTER);
+        }
+
+        self.0.insert(key.to_string(), now);
+    }
+
+    fn forget(&mut self, key: &str) {
+        self.0.remove(key);
+    }
 }
 
 /// One song from the server as a library row. The empty fields are the
@@ -753,5 +856,41 @@ mod tests {
 
         assert_eq!(count(&conn, &live), 2);
         assert_eq!(count(&conn, "subsonic:old"), 0);
+    }
+
+    #[test]
+    fn a_missed_cover_waits_out_the_retry_window() {
+        let mut misses = Misses(HashMap::new());
+        let then = Instant::now();
+
+        assert!(!misses.recent("sg-1", then));
+
+        misses.note("sg-1", then);
+
+        assert!(misses.recent("sg-1", then + Duration::from_secs(30)));
+        assert!(!misses.recent("sg-2", then));
+
+        // Past the window the key is worth asking about again, and a cover
+        // that did land clears the mark at once.
+        assert!(!misses.recent("sg-1", then + RETRY_AFTER));
+
+        misses.forget("sg-1");
+        assert!(!misses.recent("sg-1", then));
+    }
+
+    #[test]
+    fn a_crowded_miss_list_sheds_only_what_expired() {
+        let mut misses = Misses(HashMap::new());
+        let then = Instant::now();
+
+        for n in 0..MISSES_SWEEP {
+            misses.note(&format!("old-{n}"), then);
+        }
+
+        let later = then + RETRY_AFTER;
+        misses.note("fresh", later);
+
+        assert_eq!(misses.0.len(), 1);
+        assert!(misses.recent("fresh", later));
     }
 }

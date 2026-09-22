@@ -3334,29 +3334,35 @@ impl ArtPanel {
                                 }),
                         );
                         // The primary editing flow: the album into the tag
-                        // editor window.
+                        // editor window. Like the track menu, the file
+                        // actions take only the tracks that are files, and a
+                        // server's album offers none of them.
                         let state = this.read(cx).state.clone();
-                        let reveal = ids.first().copied();
-                        let convert_state = state.clone();
-                        let convert_ids = ids.clone();
                         let copy_ids = ids.clone();
-                        let menu = menu.item(
-                            PopupMenuItem::new(rox_i18n::t!("art-edit-tags"))
-                                .icon(Icon::default().path(icons::PENCIL))
-                                .on_click(move |_, _, cx| {
-                                    rox_panel_api::openers::tags_editor(
-                                        state.clone(),
-                                        ids.clone(),
-                                        cx,
-                                    );
-                                }),
-                        );
+                        let files = state.library.read(cx).local_ids(&ids);
+                        let has_files = !files.is_empty();
+                        let reveal = files.first().copied();
+                        let convert_state = state.clone();
+                        let convert_ids = files.clone();
+                        let menu = menu.when(has_files, |menu| {
+                            menu.item(
+                                PopupMenuItem::new(rox_i18n::t!("art-edit-tags"))
+                                    .icon(Icon::default().path(icons::PENCIL))
+                                    .on_click(move |_, _, cx| {
+                                        rox_panel_api::openers::tags_editor(
+                                            state.clone(),
+                                            files.clone(),
+                                            cx,
+                                        );
+                                    }),
+                            )
+                        });
                         // The whole album out to another format, the shelf's
                         // own door to it: this menu is built here rather than
                         // through `track_actions`, so the row has to be added
                         // twice. Gated on ffmpeg being installed, same as the
                         // track menu's.
-                        let menu = if rox_panel_api::openers::convert_available() {
+                        let menu = if has_files && rox_panel_api::openers::convert_available() {
                             menu.item(
                                 PopupMenuItem::new(rox_i18n::t!("art-convert"))
                                     .icon(Icon::default().path(icons::AUDIO_LINES))

@@ -879,6 +879,13 @@ impl MetadataPanel {
         self.resolved.get(source, &self.state, cx)
     }
 
+    /// The shown track when it's a file, the one kind of track the edit
+    /// face, the online lookup and the romanize pass can write back to. A
+    /// server's song or a station answers None, which folds all three away.
+    fn editable_track(&mut self, cx: &App) -> Option<TrackKey> {
+        self.resolved_track(cx).filter(TrackKey::is_local)
+    }
+
     /// The shown track's row, from the cache or one projection scan on a
     /// miss. None for a track the library does not know or while the
     /// projection is still loading.
@@ -1273,7 +1280,7 @@ impl MetadataPanel {
         if self.edit.is_some() {
             return;
         }
-        let Some(key) = self.resolved_track(cx) else {
+        let Some(key) = self.editable_track(cx) else {
             return;
         };
         // IPADIC is forty megabytes of mapped tables and the first caller
@@ -1921,14 +1928,14 @@ impl Panel for MetadataPanel {
     }
 
     /// The edit toggle shares the title bar row, the library's move.
-    /// Hidden while the panel shows no track; lit while an edit is open.
+    /// Hidden while the panel shows no file; lit while an edit is open.
     fn title_suffix(
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         let editing = self.edit.is_some();
-        if !editing && self.resolved_track(cx).is_none() {
+        if !editing && self.editable_track(cx).is_none() {
             return None;
         }
         let weak = cx.entity().downgrade();
@@ -2008,7 +2015,7 @@ impl Panel for MetadataPanel {
         // The online lookup, gated with the provider toggle so the menu
         // never offers a search that can't run. Opens the compare window;
         // the write waits for a confirmed, field-by-field pick.
-        let menu = match (providers::metadata_online(), self.resolved_track(cx)) {
+        let menu = match (providers::metadata_online(), self.editable_track(cx)) {
             (true, Some(key)) => {
                 let library = self.state.library.clone();
                 let now_art = self.state.now_art.clone();
@@ -2031,8 +2038,8 @@ impl Panel for MetadataPanel {
         // on the one track the sheet has pinned. It opens the edit face
         // and fills the empty sort inputs; the file is only touched when
         // Save is pressed, so this is a proposal like every other
-        // enrichment path. No track, nothing to read.
-        let menu = match self.resolved_track(cx) {
+        // enrichment path. No file, nothing to write the names into.
+        let menu = match self.editable_track(cx) {
             Some(_) => {
                 let weak = cx.entity().downgrade();
                 // The online lookup above draws the separator when it's
@@ -2474,12 +2481,12 @@ impl MetadataPanel {
             .and_then(|tabs| tabs.upgrade())
             .is_none_or(|tabs| tabs.read(cx).panels_count() < 2);
         // Same show rule as the suffix: hidden while the panel shows no
-        // track, unless an edit is already open. The chrome's finished-
+        // file, unless an edit is already open. The chrome's finished-
         // furniture flag drops it too, for a slot in a shipped layout.
         // Deliberately the panel's own flag rather than `controls_hidden`:
         // this one edits tags, not the layout, so design mode leaves it be.
         let show_toggle = !self.config.chrome.hide_controls
-            && (self.edit.is_some() || self.resolved_track(cx).is_some());
+            && (self.edit.is_some() || self.editable_track(cx).is_some());
         // A right press arrives here in the capture phase, before any
         // row's own handler records itself, so a press off the rows
         // leaves no target and the menu below falls back to the panel's

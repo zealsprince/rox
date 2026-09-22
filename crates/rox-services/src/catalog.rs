@@ -1374,6 +1374,34 @@ impl Library {
         projection.sub.get(row as usize).copied().unwrap_or(0)
     }
 
+    /// The ids of `ids` that are files on disk, in the order given. What
+    /// the actions that open or rewrite a file (the tag and cover editors,
+    /// rename, convert, reveal) take instead of the whole selection, since
+    /// a server's song or a station has no file for any of them to touch.
+    ///
+    /// Off the projection's source column through the id -> row index, so
+    /// a menu over ten thousand tracks costs no queries to open. An id the
+    /// projection has no row for yet stays in: mid-load every id is one,
+    /// and the editors already skip what they can't resolve.
+    pub fn local_ids(&self, ids: &[i64]) -> Vec<i64> {
+        let Some(projection) = &self.projection else {
+            return ids.to_vec();
+        };
+
+        ids.iter()
+            .copied()
+            .filter(|id| {
+                let Some(&row) = self.row_by_id.get(id) else {
+                    return true;
+                };
+
+                projection.source.get(row as usize).is_none_or(|&sym| {
+                    projection.sources.strings[sym as usize] == rox_library::cue::LOCAL
+                })
+            })
+            .collect()
+    }
+
     /// A track's three sort names, for the panels that draw their rows
     /// off the store's tags rather than a projection row: the queue, the
     /// history and the playlists all hold a track id and want the reading

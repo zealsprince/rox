@@ -790,8 +790,11 @@ pub fn playlist_item(
 /// view from a row, the highlighted set, whole albums), so the caller
 /// hands the click over; everything after acts on the ids, resolved at
 /// build time so the editors get this set even if another panel
-/// publishes over the shared selection before the click lands. Reveal
-/// follows the first id; empty ids appends no Reveal.
+/// publishes over the shared selection before the click lands. The
+/// actions that work on files (the editors, rename, convert, reveal) take
+/// only the ids that are files and hide when there are none, so a server's
+/// song or a station never lands in an editor that can't open it. Reveal
+/// follows the first of those.
 pub fn track_actions(
     menu: PopupMenu,
     state: AppState,
@@ -801,16 +804,17 @@ pub fn track_actions(
     cx: &mut App,
     on_play: impl Fn(&mut Window, &mut App) + 'static,
 ) -> PopupMenu {
-    let reveal = ids.first().copied();
+    let files = state.library.read(cx).local_ids(&ids);
+    let reveal = files.first().copied();
     let mark_ids = ids.clone();
     let mark_state = state.clone();
-    let tag_ids = ids.clone();
+    let tag_ids = files.clone();
     let tag_state = state.clone();
     let cover_state = state.clone();
-    let cover_ids = ids.clone();
-    let rename_ids = ids.clone();
+    let cover_ids = files.clone();
+    let rename_ids = files.clone();
     let rename_state = state.clone();
-    let convert_ids = ids.clone();
+    let convert_ids = files.clone();
     let convert_state = state.clone();
     let next_state = state.clone();
     let next_ids = ids.clone();
@@ -880,38 +884,41 @@ pub fn track_actions(
                 }),
         )
     });
-    let menu = menu
-        // The primary editing flow: the selection into the tag editor
-        // window; the metadata panel's inline pencil stays the quick path.
-        .item(
-            PopupMenuItem::new(rox_i18n::t!("panel-edit-tags"))
-                .icon(Icon::default().path(icons::PENCIL))
-                .on_click(move |_, _, cx| {
-                    crate::openers::tags_editor(tag_state.clone(), tag_ids.clone(), cx);
-                }),
-        )
-        // Covers get their own window: the tag editor edits text per
-        // track, this stamps one image across the selection.
-        .item(
-            PopupMenuItem::new(rox_i18n::t!("panel-edit-cover"))
-                .icon(Icon::default().path(icons::IMAGE))
-                .on_click(move |_, _, cx| {
-                    crate::openers::cover_editor(cover_state.clone(), cover_ids.clone(), cx);
-                }),
-        )
-        // The other direction: tags into filenames. Renaming is a disk
-        // change rather than a tag edit, so it gets its own dialog with
-        // the whole plan on screen before anything moves.
-        .item(
-            PopupMenuItem::new(rox_i18n::t!("panel-rename-files"))
-                .icon(Icon::default().path(icons::FOLDER))
-                .on_click(move |_, _, cx| {
-                    crate::openers::rename_dialog(rename_state.clone(), rename_ids.clone(), cx);
-                }),
-        );
+    let has_files = !files.is_empty();
+    let menu = menu.when(has_files, |menu| {
+        menu
+            // The primary editing flow: the selection into the tag editor
+            // window; the metadata panel's inline pencil stays the quick path.
+            .item(
+                PopupMenuItem::new(rox_i18n::t!("panel-edit-tags"))
+                    .icon(Icon::default().path(icons::PENCIL))
+                    .on_click(move |_, _, cx| {
+                        crate::openers::tags_editor(tag_state.clone(), tag_ids.clone(), cx);
+                    }),
+            )
+            // Covers get their own window: the tag editor edits text per
+            // track, this stamps one image across the selection.
+            .item(
+                PopupMenuItem::new(rox_i18n::t!("panel-edit-cover"))
+                    .icon(Icon::default().path(icons::IMAGE))
+                    .on_click(move |_, _, cx| {
+                        crate::openers::cover_editor(cover_state.clone(), cover_ids.clone(), cx);
+                    }),
+            )
+            // The other direction: tags into filenames. Renaming is a disk
+            // change rather than a tag edit, so it gets its own dialog with
+            // the whole plan on screen before anything moves.
+            .item(
+                PopupMenuItem::new(rox_i18n::t!("panel-rename-files"))
+                    .icon(Icon::default().path(icons::FOLDER))
+                    .on_click(move |_, _, cx| {
+                        crate::openers::rename_dialog(rename_state.clone(), rename_ids.clone(), cx);
+                    }),
+            )
+    });
     // Converting writes new files somewhere else entirely, so it only shows
     // up where the encoder to write them exists. No ffmpeg, no row.
-    let menu = if crate::openers::convert_available() {
+    let menu = if has_files && crate::openers::convert_available() {
         menu.item(
             PopupMenuItem::new(rox_i18n::t!("panel-convert"))
                 .icon(Icon::default().path(icons::AUDIO_LINES))

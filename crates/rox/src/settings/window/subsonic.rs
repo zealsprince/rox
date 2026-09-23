@@ -404,7 +404,23 @@ impl SettingsWindow {
                         .border_1()
                         .border_color(palette::border_light())
                         .shadow_md()
-                        .child(div().child(title))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(tokens::SPACE_XS)
+                                .child(title)
+                                // "Subsonic" names the API rather than a
+                                // server most people run, so the add dialog
+                                // says which servers it means.
+                                .when(form.fresh, |d| {
+                                    d.child(
+                                        div().text_xs().text_color(palette::text_muted()).child(
+                                            rox_i18n::t!("settings-library-subsonic-add-note"),
+                                        ),
+                                    )
+                                }),
+                        )
                         .child(self.subsonic_fields(ix, cx))
                         .child(buttons),
                 ),

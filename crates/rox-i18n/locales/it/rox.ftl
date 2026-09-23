@@ -1075,6 +1075,7 @@ settings-library-source-off = Spento
 settings-library-source-synced = Sincronizzato il { $date }
 settings-library-split-genres = Dividi i generi su virgole e barre
     .description = "Dubstep, Trap" e "Drum & Bass / Neurofunk" contano ogni valore come genere a sé; i punti e virgola dividono sempre. Off tiene interi i nomi con barra per i tag dove significano un genere solo. I file tengono i tag come sono scritti
+settings-library-subsonic-add-note = Funziona con Navidrome, Airsonic, gonic e qualsiasi altro server che parli l'API Subsonic
 settings-library-subsonic-add-title = Aggiungi un server Subsonic
 settings-library-tempo-auto = Cronometra i nuovi file
     .description = Conta i battiti nei file nuovi appena la sorveglianza li rileva, una volta che la sincronizzazione si è assestata, così una libreria che cresce tiene i suoi tempi senza dover tornare qui. Off, i nuovi file aspettano il pulsante Analizza i mancanti. Attivarlo propone di cronometrare prima ciò che già manca; dopo vede solo i file appena arrivati

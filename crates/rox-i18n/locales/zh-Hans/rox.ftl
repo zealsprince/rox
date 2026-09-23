@@ -1058,6 +1058,7 @@ settings-library-source-off = 已关闭
 settings-library-source-synced = 同步于 { $date }
 settings-library-split-genres = 按逗号和斜杠拆分流派
     .description = “Dubstep, Trap”和“Drum & Bass / Neurofunk”里的每个值各算一个流派；分号一律拆分。关掉则保留带斜杠的完整名称，适合那些斜杠本就属于一个流派名的标签。文件里的标签保持原样
+settings-library-subsonic-add-note = 支持 Navidrome、Airsonic、gonic 以及任何兼容 Subsonic API 的服务器
 settings-library-subsonic-add-title = 添加 Subsonic 服务器
 settings-library-tempo-auto = 给新文件测速
     .description = 同步稳定之后，监视器带进来什么就数它的拍子，媒体库不断增长也不用再回这里一趟。关掉则新文件等着“分析缺失项”按钮。打开这一项时会先问要不要把已经缺失的补上；之后它只处理新加进来的文件

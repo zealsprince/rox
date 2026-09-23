@@ -1113,6 +1113,7 @@ settings-library-source-off = Off
 settings-library-source-synced = Synced { $date }
 settings-library-split-genres = Split genres on commas and slashes
     .description = "Dubstep, Trap" and "Drum & Bass / Neurofunk" count each value as its own genre; semicolons always split. Off keeps slashed names whole for tags where they mean one genre. Files keep their tags as written
+settings-library-subsonic-add-note = Works with Navidrome, Airsonic, gonic and any other server that speaks the Subsonic API
 settings-library-subsonic-add-title = Add a Subsonic Server
 settings-library-tempo-auto = Time New Files
     .description = Count the beats in what the watcher brings in as it arrives, once the sync has settled, so a library that grows keeps its tempos without a trip back here. Off, new files wait for the Analyze Missing button. Turning this on offers to time what's already missing first; after that it only ever sees files that just arrived

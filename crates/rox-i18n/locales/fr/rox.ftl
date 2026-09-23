@@ -1096,6 +1096,7 @@ settings-library-source-off = Désactivé
 settings-library-source-synced = Synchronisé le { $date }
 settings-library-split-genres = Séparer les genres aux virgules et aux barres obliques
     .description = « Dubstep, Trap » et « Drum & Bass / Neurofunk » comptent chaque valeur comme un genre à part ; les points-virgules séparent toujours. Désactivé, les noms à barre restent entiers pour les tags où ils désignent un seul genre. Les fichiers gardent leurs tags tels qu'ils sont écrits
+settings-library-subsonic-add-note = Fonctionne avec Navidrome, Airsonic, gonic et tout autre serveur qui parle l'API Subsonic
 settings-library-subsonic-add-title = Ajouter un serveur Subsonic
 settings-library-tempo-auto = Chronométrer les nouveaux fichiers
     .description = Compter les temps dans ce que la surveillance ramène au fur et à mesure, une fois la synchro stabilisée, pour qu'une bibliothèque qui grandit garde ses tempos sans repasser par ici. Désactivé, les nouveaux fichiers attendent le bouton Analyser les manquants. L'activer propose d'abord de chronométrer ce qui manque déjà ; ensuite il ne voit plus que les fichiers qui viennent d'arriver

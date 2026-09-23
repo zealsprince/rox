@@ -1058,6 +1058,7 @@ settings-library-source-off = オフ
 settings-library-source-synced = { $date } に同期
 settings-library-split-genres = カンマとスラッシュでジャンルを分ける
     .description = "Dubstep, Trap" や "Drum & Bass / Neurofunk" をそれぞれ別のジャンルとして数える。セミコロンは常に分割する。オフなら、スラッシュ入りで一つのジャンルを表すタグをそのまま残す。ファイルのタグは書かれたまま
+settings-library-subsonic-add-note = Navidrome、Airsonic、gonic など、Subsonic API に対応したサーバーならどれでも使えます
 settings-library-subsonic-add-title = Subsonic サーバーを追加
 settings-library-tempo-auto = 新しいファイルのテンポを測る
     .description = 監視が拾ってきたもののビートを、同期が落ち着いた時点で数える。ライブラリが増えてもここに戻らずテンポが揃う。オフだと新しいファイルは「未処理を解析」を待つ。これをオンにすると、まず未処理のものを測るか尋ねる。その後は新しく入ったファイルだけを見る

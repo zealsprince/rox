@@ -1065,6 +1065,7 @@ settings-library-source-off = Aus
 settings-library-source-synced = Abgeglichen am { $date }
 settings-library-split-genres = Genres an Kommas und Schrägstrichen trennen
     .description = "Dubstep, Trap" und "Drum & Bass / Neurofunk" zählen jeden Wert als eigenes Genre; Semikolons trennen immer. Ausgeschaltet bleiben Namen mit Schrägstrich ganz, für Tags, in denen sie ein Genre meinen. Dateien behalten ihre Tags, wie sie geschrieben sind
+settings-library-subsonic-add-note = Funktioniert mit Navidrome, Airsonic, gonic und jedem anderen Server, der die Subsonic-API spricht
 settings-library-subsonic-add-title = Subsonic-Server hinzufügen
 settings-library-tempo-auto = Neue Dateien zählen
     .description = Die Beats in dem zählen, was die Ordnerüberwachung hereinholt, sobald es ankommt und der Abgleich zur Ruhe gekommen ist; so behält eine wachsende Bibliothek ihre Tempi, ohne dass du hierher zurückmusst. Ausgeschaltet warten neue Dateien auf die Schaltfläche Fehlende analysieren. Beim Einschalten wird angeboten, zuerst das bereits Fehlende zu zählen; danach sieht es nur noch gerade erst hinzugekommene Dateien

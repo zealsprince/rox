@@ -161,6 +161,16 @@ pub fn columns() -> &'static [ColumnDef] {
             sort: SortKey::Codec,
         },
         ColumnDef {
+            // Where the track comes from, by name: "Local" for a file, a
+            // server by the name it was given or its host.
+            key: "source",
+            label: rox_i18n::t_static("columns-source"),
+            default_width: 140.,
+            right: false,
+            default_on: false,
+            sort: SortKey::Source,
+        },
+        ColumnDef {
             key: "bitrate",
             label: rox_i18n::t_static("columns-kbps"),
             default_width: 64.,

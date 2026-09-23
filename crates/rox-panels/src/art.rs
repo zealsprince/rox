@@ -3060,6 +3060,8 @@ impl ArtPanel {
                 .flex()
                 .items_center()
                 .justify_center()
+                .p(tokens::SPACE_MD)
+                .text_center()
                 .text_color(palette::text_muted())
                 .child(
                     if self.effective_query(cx).is_empty() && self.effective_filter(cx).is_empty() {

@@ -107,6 +107,7 @@ fn field_label(field: FilterField) -> gpui::SharedString {
         FilterField::Genre => rox_i18n::t!("filter-field-genre"),
         FilterField::Year => rox_i18n::t!("filter-field-year"),
         FilterField::Folder => rox_i18n::t!("filter-field-folder"),
+        FilterField::Source => rox_i18n::t!("filter-field-source"),
     }
 }
 
@@ -115,6 +116,8 @@ fn field_label(field: FilterField) -> gpui::SharedString {
 fn value_label(field: FilterField, value: &str) -> String {
     match field {
         FilterField::Year if value == "0" => rox_i18n::t!("filter-unknown").to_string(),
+        // A pick holds the stored source string, a digest for a server.
+        FilterField::Source => rox_library::cue::source_label(value),
         _ if value.is_empty() => rox_i18n::t!("filter-unknown").to_string(),
         _ => value.to_string(),
     }

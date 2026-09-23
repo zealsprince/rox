@@ -1151,6 +1151,7 @@ impl TrackTable {
             QueryField::Album => "album",
             QueryField::Genre => "genre",
             QueryField::Codec => "codec",
+            QueryField::Source => "source",
             QueryField::Year
             | QueryField::Folder
             | QueryField::Rating
@@ -1202,12 +1203,19 @@ impl TrackTable {
             let v = projection.resolve(row);
             match pin {
                 Some((field, needle)) => {
+                    // A source jumps by the name it shows under, since the
+                    // stored string of a server is a digest.
+                    let source;
                     let text = match field {
                         "title" => v.title,
                         "artist" => v.artist,
                         "album_artist" => v.album_artist,
                         "album" => v.album,
                         "genre" => v.genre,
+                        "source" => {
+                            source = rox_library::cue::source_label(v.source);
+                            source.as_str()
+                        }
                         _ => v.codec,
                     };
                     panel::type_ahead_hit(text, needle)
@@ -1782,6 +1790,11 @@ impl TableDelegate for TrackTable {
             "codec" => cell
                 .text_color(palette::text_muted())
                 .child(SharedString::from(v.codec.to_string())),
+            // By the name the source shows under: "Local", a server's name
+            // or host. The stored string of a server is a digest.
+            "source" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(rox_library::cue::source_label(v.source))),
             "bitrate" => cell
                 .text_color(palette::text_muted())
                 .child(fmt_num(v.bitrate_kbps)),
@@ -3974,6 +3987,8 @@ impl LibraryPanel {
             .items_center()
             .justify_center()
             .gap(tokens::SPACE_SM)
+            .p(tokens::SPACE_MD)
+            .text_center()
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| this.browse(cx)))
             .child(div().text_lg().child(rox_i18n::t!("library-empty-title")))

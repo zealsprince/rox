@@ -72,16 +72,20 @@ pub enum ColumnKind {
     Album,
     Genre,
     Year,
+    /// Where tracks come from: the folders on disk as one value, and each
+    /// server as its own.
+    Source,
 }
 
 impl ColumnKind {
     /// Every pickable kind, in the menus' order.
-    pub const ALL: [ColumnKind; 5] = [
+    pub const ALL: [ColumnKind; 6] = [
         ColumnKind::Artist,
         ColumnKind::AlbumArtist,
         ColumnKind::Album,
         ColumnKind::Genre,
         ColumnKind::Year,
+        ColumnKind::Source,
     ];
 
     fn label(self) -> &'static str {
@@ -91,6 +95,7 @@ impl ColumnKind {
             ColumnKind::Album => rox_i18n::t_static("filter-field-album"),
             ColumnKind::Genre => rox_i18n::t_static("filter-field-genre"),
             ColumnKind::Year => rox_i18n::t_static("filter-field-year"),
+            ColumnKind::Source => rox_i18n::t_static("filter-field-source"),
         }
     }
 
@@ -101,6 +106,7 @@ impl ColumnKind {
             ColumnKind::Album => FilterField::Album,
             ColumnKind::Genre => FilterField::Genre,
             ColumnKind::Year => FilterField::Year,
+            ColumnKind::Source => FilterField::Source,
         }
     }
 }
@@ -1181,6 +1187,8 @@ impl FilterPanel {
                     .items_center()
                     .justify_center()
                     .gap(tokens::SPACE_MD)
+                    .p(tokens::SPACE_MD)
+                    .text_center()
                     .child(
                         div()
                             .text_color(palette::text_faint())
@@ -1458,6 +1466,31 @@ fn column_values(
                 })
                 .collect()
         }
+        // Listed by the name each source shows under and picked by its
+        // stored string, which for a server is a digest nobody would
+        // recognize, so the order and the labels both come off the name.
+        ColumnKind::Source => {
+            let (column, table) = sym_source(projection, kind);
+            let counts = rows.count_with(table.strings.len(), |i| column[i] as usize);
+            let mut values: Vec<(String, String, u32)> = (0..counts.len())
+                .filter(|&sym| counts[sym] > 0)
+                .map(|sym| {
+                    let value = table.strings[sym].clone();
+                    let label = rox_library::cue::source_label(&value);
+                    (value, label, counts[sym])
+                })
+                .collect();
+            values.sort_unstable_by_key(|(_, label, _)| label.to_lowercase());
+            values
+                .into_iter()
+                .map(|(value, label, count)| Value {
+                    label: SharedString::from(label),
+                    selected: picks.iter().any(|p| p == &value),
+                    value,
+                    count,
+                })
+                .collect()
+        }
         _ => {
             let (column, table) = sym_source(projection, kind);
             let counts = rows.count_with(table.strings.len(), |i| column[i] as usize);
@@ -1486,6 +1519,7 @@ fn column_values(
                     .parse::<u16>()
                     .map(year_label)
                     .unwrap_or_else(|_| SharedString::from(pick.clone())),
+                ColumnKind::Source => SharedString::from(rox_library::cue::source_label(pick)),
                 _ => sym_label(pick),
             };
             out.push(Value {
@@ -1527,6 +1561,7 @@ fn sym_source(projection: &Projection, kind: ColumnKind) -> (&[u32], &SymTable) 
         ColumnKind::AlbumArtist => (&projection.album_artist, &projection.album_artists),
         ColumnKind::Album => (&projection.album, &projection.albums),
         ColumnKind::Genre => (&projection.genre, &projection.genres),
+        ColumnKind::Source => (&projection.source, &projection.sources),
         ColumnKind::Year => unreachable!("years don't intern"),
     }
 }

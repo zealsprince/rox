@@ -347,6 +347,12 @@ pub struct Library {
     /// waits, and two loads racing only means the older one's work is thrown
     /// away after it has already competed for cores with the scan.
     interim_loading: bool,
+    /// A projection load asked for while another job held the library,
+    /// owed once it lets go. Without it the ask was dropped: a server's
+    /// sync that finished while the catalog was still reloading for the
+    /// settings edit before it left its rows in SQLite and out of every
+    /// list until something else reloaded.
+    load_owed: bool,
     /// The running scan's progress, while one runs; the handle abort
     /// goes through.
     scan: Option<Arc<ScanProgress>>,
@@ -450,6 +456,7 @@ impl Library {
             scan_roots,
             busy: None,
             interim_loading: false,
+            load_owed: false,
             scan: None,
             pending_ratings: HashMap::new(),
             rating_write_running: false,
@@ -655,11 +662,28 @@ impl Library {
         cx.notify();
     }
 
-    /// Reload the projection off the unchanged database, for a setting
-    /// that changes how it interns (the case-fold toggle); a no-op while
-    /// another refresh runs.
+    /// Reload the projection off the database, for a setting that changes
+    /// how it interns (the case-fold toggle) or a write that went past the
+    /// scanner (a server's sync). While another job holds the library the
+    /// load is owed rather than dropped, and runs as soon as that job lets
+    /// go: the database may have moved after the running load read it.
     pub fn reload_projection(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            self.load_owed = true;
+            return;
+        }
+
+        // This load is the one anything owed was waiting for.
+        self.load_owed = false;
         self.reload(Refresh::Load, cx);
+    }
+
+    /// Run the load [`Library::reload_projection`] held back while the
+    /// library was busy, now that it isn't.
+    fn settle_owed_load(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.load_owed) {
+            self.reload(Refresh::Load, cx);
+        }
     }
 
     /// Merge genre values: each source counts as `target` everywhere from
@@ -847,6 +871,7 @@ impl Library {
                 .await;
             this.update(cx, |this, cx| {
                 this.busy = None;
+                this.settle_owed_load(cx);
                 this.status = match dropped {
                     Ok(n) => format!("cleared {n} vectors").into(),
                     Err(e) => format!("library: {e}").into(),
@@ -937,6 +962,7 @@ impl Library {
             rox_core::settings::Settings::update(|s| s.accounts.lastfm.forget_imports());
             this.update(cx, |this, cx| {
                 this.busy = None;
+                this.settle_owed_load(cx);
                 this.status = match cleared {
                     Ok(n) => format!("cleared {n} listens").into(),
                     Err(e) => format!("library: {e}").into(),
@@ -1734,6 +1760,7 @@ impl Library {
                     bit_depth: view.bit_depth,
                     rating: view.rating,
                     path,
+                    source: view.source.to_string(),
                 })
             })
             .collect()
@@ -2416,6 +2443,7 @@ impl Library {
                 if owed {
                     this.reload(Refresh::Load, cx);
                 }
+                this.settle_owed_load(cx);
                 if ok {
                     this.pump_watch(cx);
                 }
@@ -2873,7 +2901,9 @@ fn load_projection(
     let mut projection =
         Projection::load_parallel(db_path, shards, rox_core::settings::fold_case())?;
     // Before the order is taken, since the order is built off the browse
-    // mask this rewrites.
+    // mask this rewrites. The names first, so a search or a sort run the
+    // moment the projection lands already reads them.
+    crate::sources::publish_labels();
     projection.hide_sources(crate::sources::hidden_sources());
     let order = projection.sort_canonical();
     let row_by_id = projection

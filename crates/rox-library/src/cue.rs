@@ -6,9 +6,9 @@
 //! plain file and the 1-based cue track number for a span, and the source
 //! is "local" for everything that came off disk.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, RwLock};
 
 /// A cue track's slice of its image file, in milliseconds from the start.
 /// `end_ms` is None on the last track of an image, which runs to the end of
@@ -56,6 +56,36 @@ pub fn source_id(source: &str) -> SourceId {
     } else {
         Arc::from(source)
     }
+}
+
+/// What each source is called where a person reads it: "Local", a
+/// server's own name or host, "Radio". The source string is a storage key,
+/// and a Subsonic one is a digest nobody would recognize, so every surface
+/// that shows a source or matches one typed by hand asks here.
+///
+/// The names live in settings, which this crate sits below, so the layer
+/// that reads them fills the table: the catalog, each time it loads a
+/// projection. Held process-wide rather than on the projection because
+/// the queue, the history and the playlists match `source:` over rows the
+/// projection never sees.
+static SOURCE_LABELS: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
+
+/// Replace the whole name table.
+pub fn set_source_labels(labels: HashMap<String, String>) {
+    if let Ok(mut table) = SOURCE_LABELS.write() {
+        *table = Some(labels);
+    }
+}
+
+/// What a source is called: its name from the table, or the source string
+/// itself for one the table doesn't know, which is still better than
+/// nothing and is what a source added before the next load shows.
+pub fn source_label(source: &str) -> String {
+    SOURCE_LABELS
+        .read()
+        .ok()
+        .and_then(|table| table.as_ref()?.get(source).cloned())
+        .unwrap_or_else(|| source.to_string())
 }
 
 /// The prefix every Subsonic source string carries, one source per

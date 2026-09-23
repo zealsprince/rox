@@ -70,6 +70,53 @@ fn ranked<'a>(table: &'a SymTable, typed: &str) -> Vec<&'a String> {
     prefixed
 }
 
+/// [`ranked`]'s order over a plain list of values rather than a symbol
+/// table: prefix matches first, then the rest that contain `typed`, at
+/// most [`CAP`]. `lower` is how a value reads for the comparison.
+fn ranked_values<'a>(
+    values: Vec<&'a String>,
+    lower: impl Fn(&str) -> String,
+    typed: &str,
+) -> Vec<&'a String> {
+    let mut prefixed = Vec::new();
+    let mut contained = Vec::new();
+    for value in values {
+        let folded = lower(value);
+        if folded.starts_with(typed) {
+            prefixed.push(value);
+        } else if folded.contains(typed) {
+            contained.push(value);
+        }
+    }
+    prefixed.extend(contained);
+    prefixed.truncate(CAP);
+    prefixed
+}
+
+/// The completions for a field's values: each one rewrites the whole value
+/// span, quoted when it has spaces so the tokenizer keeps it in one piece.
+fn value_items(values: Vec<&String>, typed: &str, span: lsp_types::Range) -> Vec<CompletionItem> {
+    values
+        .into_iter()
+        .map(|value| {
+            let quoted = if value.chars().any(char::is_whitespace) {
+                format!("\"{value}\"")
+            } else {
+                value.clone()
+            };
+            CompletionItem {
+                label: value.clone(),
+                filter_text: Some(value[..matched_prefix_len(value, typed)].to_string()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: span,
+                    new_text: quoted,
+                })),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 /// Distinct years matching `typed`, prefix matches first, at most [`CAP`].
 /// The year column has no symbol table, so its completions rank a plain
 /// year list the way [`ranked`] ranks a table. An empty `typed` lists the
@@ -357,6 +404,23 @@ impl CompletionProvider for QuerySuggestions {
                 QueryField::Genre => projection.genre_terms(),
                 QueryField::Folder => &projection.folders,
                 QueryField::Codec => &projection.codecs,
+                // Sources by the name they show under, which is what anyone
+                // types: a server's stored string is a digest. Only the ones
+                // that browse, since radio and a switched-off server have
+                // nothing here to narrow to.
+                QueryField::Source => {
+                    let names: Vec<String> = projection
+                        .browse_sources()
+                        .map(rox_library::cue::source_label)
+                        .collect();
+                    let names: Vec<&String> = names.iter().collect();
+
+                    return Task::ready(Ok(CompletionResponse::Array(value_items(
+                        ranked_values(names, |name| name.to_lowercase(), &typed),
+                        &typed,
+                        span,
+                    ))));
+                }
                 // The year column has no symbol table; suggest from the
                 // distinct year list instead. Years never contain spaces, so
                 // they need no quoting.
@@ -404,25 +468,7 @@ impl CompletionProvider for QuerySuggestions {
                 // Free text has nothing to suggest from.
                 QueryField::Title => return none(),
             };
-            ranked(table, &typed)
-                .into_iter()
-                .map(|value| {
-                    let quoted = if value.chars().any(char::is_whitespace) {
-                        format!("\"{value}\"")
-                    } else {
-                        value.clone()
-                    };
-                    CompletionItem {
-                        label: value.clone(),
-                        filter_text: Some(value[..matched_prefix_len(value, &typed)].to_string()),
-                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range: span,
-                            new_text: quoted,
-                        })),
-                        ..Default::default()
-                    }
-                })
-                .collect()
+            value_items(ranked(table, &typed), &typed, span)
         } else {
             // A bare word offers the field terms themselves, teaching the
             // syntax in place: a colon here means an unknown field, which

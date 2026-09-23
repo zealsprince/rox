@@ -808,6 +808,17 @@ pub fn stats_under(conn: &Connection, root: &Path) -> rusqlite::Result<Stats> {
     )
 }
 
+/// The rollup for every row one source filed, a Subsonic server's the way
+/// [`stats_under`] is a folder's. Its `dirs` is zero: the column counts
+/// local folders only, and a server has none to watch.
+pub fn stats_for_source(conn: &Connection, source: &str) -> rusqlite::Result<Stats> {
+    conn.query_row(
+        &format!("SELECT {STATS_COLUMNS} FROM tracks WHERE source = ?1"),
+        [source],
+        stats_row,
+    )
+}
+
 /// The library's ReplayGain coverage split three ways. Every track counts in
 /// exactly one bucket, so the three sum to the track count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2729,6 +2740,18 @@ mod tests {
         assert_eq!(
             (under.tracks, under.albums, under.bytes, under.dirs),
             (4, 2, 650, 3)
+        );
+
+        // A server's rows roll up by source and count no folders; the local
+        // rows are none of its business.
+        let mut remote = row("sg-1", "V", "Remote", 700);
+        remote.remote_url = "https://host/stream/1".into();
+        upsert_source_rows(&mut conn, "subsonic:home", &[remote]).unwrap();
+
+        let server = stats_for_source(&conn, "subsonic:home").unwrap();
+        assert_eq!(
+            (server.tracks, server.albums, server.bytes, server.dirs),
+            (1, 1, 700, 0)
         );
     }
 

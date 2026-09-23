@@ -2455,6 +2455,8 @@ impl FolderTreePanel {
                     .flex()
                     .items_center()
                     .justify_center()
+                    .p(tokens::SPACE_MD)
+                    .text_center()
                     .text_color(palette::text_faint())
                     .child(message),
             );

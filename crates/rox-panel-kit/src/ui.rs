@@ -1202,6 +1202,110 @@ impl RenderOnce for SelectField {
     }
 }
 
+/// A button that drops a menu: [`small_button`]'s look with a caret after
+/// the label, for an action with kinds to pick between, like adding a
+/// source that can be a folder or a server. Attach the list with
+/// gpui-component's `DropdownMenu::dropdown_menu`, the way [`select_field`]
+/// takes one. An empty label draws the glyph and the caret alone, for the
+/// add slot at the foot of a table.
+///
+/// There's no inert state: the popover owns the click. An action that can't
+/// run right now disables its menu items instead, which also says which
+/// kind is blocked.
+pub fn menu_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: &'static str,
+) -> MenuButton {
+    MenuButton {
+        base: div()
+            .id(id)
+            .flex()
+            .flex_row()
+            .flex_none()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .px(tokens::SPACE_SM)
+            .py(px(2.))
+            .text_xs()
+            .rounded(tokens::RADIUS)
+            .bg(palette::bg_control())
+            .cursor_pointer(),
+        label: label.into(),
+        icon,
+        open: false,
+    }
+}
+
+/// [`menu_button`]'s element. Styles applied to it go to the button.
+#[derive(IntoElement)]
+pub struct MenuButton {
+    base: Stateful<Div>,
+    label: SharedString,
+    icon: &'static str,
+    open: bool,
+}
+
+impl Styled for MenuButton {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for MenuButton {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+/// What the popover uses to tell the button its menu is open, so the caret
+/// lights with it.
+impl Selectable for MenuButton {
+    fn selected(mut self, selected: bool) -> Self {
+        self.open = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.open
+    }
+}
+
+impl gpui_component::menu::DropdownMenu for MenuButton {}
+
+impl RenderOnce for MenuButton {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let MenuButton {
+            base,
+            label,
+            icon,
+            open,
+        } = self;
+
+        base.hover(|d| d.bg(palette::bg_control_hover()))
+            .when(open, |d| d.bg(palette::bg_control_active()))
+            .child(
+                svg()
+                    .path(icon)
+                    .size(px(14.))
+                    .flex_none()
+                    .text_color(palette::text()),
+            )
+            .when(!label.is_empty(), |d| d.child(label))
+            .child(
+                svg()
+                    .path(icons::CHEVRON_DOWN)
+                    .size(px(10.))
+                    .flex_none()
+                    .text_color(if open {
+                        palette::accent()
+                    } else {
+                        palette::text_muted()
+                    }),
+            )
+    }
+}
+
 /// An icon-only button for table rows: the glyph alone at rest, a soft
 /// pill behind it on hover, dimmed and inert like the text buttons.
 /// [`IconButton::filled`] gives it a resting fill where a flat glyph

@@ -9,14 +9,18 @@
 //! are scoped to the source string, so a sync can never reach a local row
 //! no matter what the server sends back.
 //!
+//! There can be several servers, each an account in settings with its own
+//! switch, and each digests to its own source id, so two servers' catalogs
+//! never share a row.
+//!
 //! The same scoping is what lets a re-pointed account clean up after
 //! itself. This module owns every `subsonic:` id there is, so a row under
-//! one that isn't the one the account digests to now can only have come
-//! from a server the account has since left, and it goes. Nothing else
-//! could play it: the authorizer below refuses to sign for a source id the
-//! live account doesn't match, so those rows sit in the library looking
-//! playable and skip with the server's complaint about a password that was
-//! never the problem.
+//! one that no configured account digests to now can only have come from
+//! an address an account has since left, and it goes. Nothing else could
+//! play it: the authorizer below refuses to sign for a source id no
+//! switched-on account matches, so those rows would sit in the library
+//! looking playable and skip with the server's complaint about a password
+//! that was never the problem.
 //!
 //! The other half is the authorize table. A remote row stores its stream
 //! URL and nothing else, because a credential stored in SQLite is a
@@ -98,6 +102,11 @@ pub struct SyncOutcome {
     pub stations: usize,
 }
 
+/// Which server the running sync is walking, by source id. None when no
+/// sync is running. The settings page reads it to put the album count on
+/// the right server's line.
+static SYNCING: Mutex<Option<String>> = Mutex::new(None);
+
 /// Albums walked and albums to walk, while a sync runs. None when none is.
 pub fn progress() -> Option<(usize, usize)> {
     if !PROGRESS.running.load(Ordering::Relaxed) {
@@ -111,16 +120,25 @@ pub fn progress() -> Option<(usize, usize)> {
 }
 
 /// Whether a sync is in flight, so a second Sync Now doesn't start one on
-/// top of the first.
+/// top of the first. One at a time across every server: two would race
+/// each other's prune.
 pub fn syncing() -> bool {
     PROGRESS.running.load(Ordering::Relaxed)
 }
 
-/// The configured Subsonic server, or None when there isn't one worth
-/// talking to. A disabled account still answers here, because Connect in
-/// the settings row has to work before the switch goes on.
-pub fn server() -> Option<Server> {
-    let account = Settings::load().accounts.subsonic;
+/// The source id of the server a sync is walking right now.
+pub fn syncing_source() -> Option<String> {
+    SYNCING.lock().ok()?.clone()
+}
+
+/// The configured servers, in the order the settings page lists them.
+fn accounts() -> Vec<SubsonicAccount> {
+    Settings::load().accounts.subsonic_servers
+}
+
+/// An account as the server it describes, switched on or not. None while
+/// it names no address, which is a server that isn't set up yet.
+fn server_of(account: &SubsonicAccount) -> Option<Server> {
     if account.url.trim().is_empty() {
         return None;
     }
@@ -128,74 +146,134 @@ pub fn server() -> Option<Server> {
     Some(Server::new(&account.url, &account.user, &account.password))
 }
 
-/// The configured server while its switch is on: the one whose rows browse,
-/// play and have covers fetched. Off means the server isn't used for any of
-/// that, so everything that reaches it on the library's behalf asks here
-/// rather than [`server`].
-fn live_server() -> Option<Server> {
-    let account = Settings::load().accounts.subsonic;
-    live_source(&account)?;
-
-    Some(Server::new(&account.url, &account.user, &account.password))
+/// The source id an account's rows are filed under, None while it names no
+/// address. What the settings page counts a server's rows by.
+pub fn source_of(account: &SubsonicAccount) -> Option<String> {
+    server_of(account).map(|server| server.source_id())
 }
 
-/// Put the Subsonic server in the registry, under the source id its rows
-/// are keyed by. Called at startup, before anything can resolve a row, so a
-/// locator built during the first frame already has somewhere to ask. Safe
-/// to call again after the settings change, which is how a re-pointed
-/// server swaps its row.
-pub fn install_registry() {
-    let Some(configured) = server() else {
-        // Nothing configured, so there's no source id to file under. A
-        // locator resolved before a server exists goes out bare, which is
-        // the right answer.
-        return;
-    };
+/// The server at `index` in the settings list. A switched-off account
+/// still answers here, because Connect has to work before the switch goes
+/// on.
+pub fn server(index: usize) -> Option<Server> {
+    server_of(accounts().get(index)?)
+}
 
-    let source = configured.source_id();
-    let mine = source.clone();
+/// The switched-on servers: the ones whose rows browse, play and have
+/// covers fetched. Off means a server isn't used for any of that, so
+/// everything that reaches one on the library's behalf asks here rather
+/// than [`server`].
+fn live_servers() -> Vec<Server> {
+    accounts()
+        .iter()
+        .filter(|account| account.enabled)
+        .filter_map(server_of)
+        .collect()
+}
 
-    sources_registry::install(
-        &source,
-        // Rebuilt from settings on each call rather than captured here, so
-        // a changed password takes effect without reinstalling the row.
-        // The id check is what keeps a row left behind by a re-pointed
-        // account from signing its old server's URLs with the new
-        // account's password, and a switched-off account signs nothing: a
-        // queued or playlisted row of it goes out bare and the server
-        // refuses it.
-        Box::new(move |remote| {
-            let Some(server) = live_server().filter(|s| s.source_id() == mine) else {
-                return;
-            };
+/// The switched-on server whose rows are filed under `source`.
+fn live_server(source: &str) -> Option<Server> {
+    live_servers()
+        .into_iter()
+        .find(|server| server.source_id() == source)
+}
 
-            remote.headers = server.stream_headers();
-            // The salt is fresh per request, so the token can only go on
-            // here. A row that stored one would be a replayable credential
-            // sitting in the database, which is the whole reason the stored
-            // URL stops short of it.
-            remote.url = server.sign(&remote.url);
-        }),
+/// Fill the library's source-name table from the accounts: "Local" for
+/// the files, "Radio" for the stations, and each server by the name it was
+/// given or its host. What every surface that shows or matches a source by
+/// name reads, see [`rox_library::cue::source_label`]. Run on every
+/// projection load, which is also when a renamed or added server would
+/// first show up anywhere, and reads the settings once.
+pub fn publish_labels() {
+    let mut labels = HashMap::new();
+    labels.insert(
+        rox_library::cue::LOCAL.to_string(),
+        rox_i18n::t!("metadata-source-local").to_string(),
     );
+    labels.insert(
+        stations::SOURCE.to_string(),
+        rox_i18n::t!("metadata-source-radio").to_string(),
+    );
+
+    for account in accounts() {
+        let Some(source) = source_of(&account) else {
+            continue;
+        };
+
+        let label = account.label();
+        if !label.is_empty() {
+            labels.insert(source, label);
+        }
+    }
+
+    rox_library::cue::set_source_labels(labels);
 }
 
-/// The source id rows belong under while this account is the live one, or
-/// None when there's nothing to keep rows by.
+/// Put every configured server in the registry, under the source id its
+/// rows are keyed by. Called at startup, before anything can resolve a row,
+/// so a locator built during the first frame already has somewhere to ask.
+/// Safe to call again after the settings change, which is how a re-pointed
+/// or newly added server gets its row.
 ///
-/// None deliberately doesn't mean "drop everything". A switched-off account
-/// keeps its catalog by design, and an empty address is what a half-finished
-/// edit looks like, so both answer None and the prune below never runs. The
-/// rows stay, hidden: see [`hidden_sources`]. Dropping them is
-/// [`remove`]'s job, asked for by name.
-fn live_source(account: &SubsonicAccount) -> Option<String> {
-    if !account.enabled || account.url.trim().is_empty() {
+/// A server with no address has no source id to file under, and a locator
+/// resolved for a row nobody signs for goes out bare, which is the right
+/// answer.
+pub fn install_registry() {
+    for server in accounts().iter().filter_map(server_of) {
+        let source = server.source_id();
+        let mine = source.clone();
+
+        sources_registry::install(
+            &source,
+            // Rebuilt from settings on each call rather than captured here,
+            // so a changed password takes effect without reinstalling the
+            // row. Only a switched-on account with this very id signs: a row
+            // left behind by a re-pointed account, or one of a server that's
+            // switched off, goes out bare and the server refuses it.
+            Box::new(move |remote| {
+                let Some(server) = live_server(&mine) else {
+                    return;
+                };
+
+                remote.headers = server.stream_headers();
+                // The salt is fresh per request, so the token can only go
+                // on here. A row that stored one would be a replayable
+                // credential sitting in the database, which is the whole
+                // reason the stored URL stops short of it.
+                remote.url = server.sign(&remote.url);
+            }),
+        );
+    }
+}
+
+/// The source ids whose rows browse: every switched-on account's.
+fn live_ids(accounts: &[SubsonicAccount]) -> HashSet<String> {
+    accounts
+        .iter()
+        .filter(|account| account.enabled)
+        .filter_map(source_of)
+        .collect()
+}
+
+/// The source ids whose rows a prune keeps: every account's that names an
+/// address, switched on or not, since a switched-off account keeps its
+/// catalog by design.
+///
+/// None when the prune shouldn't run at all. An account with an empty
+/// address is a half-finished edit or one somebody cleared, and either way
+/// there's no telling which rows were its. No accounts at all is the same
+/// answer: the one way to arrive there on purpose is [`remove`], which
+/// takes its own rows, so a list that reads empty anywhere else is more
+/// likely a file that didn't load than an instruction.
+fn kept_ids(accounts: &[SubsonicAccount]) -> Option<HashSet<String>> {
+    if accounts.is_empty() {
         return None;
     }
 
-    Some(Server::new(&account.url, &account.user, &account.password).source_id())
+    accounts.iter().map(source_of).collect()
 }
 
-/// Drop every row filed under a Subsonic source id other than `live`, and
+/// Drop every row filed under a Subsonic source id outside `kept`, and
 /// answer how many went.
 ///
 /// Each id goes through [`store::prune_source`] with nothing to keep, which
@@ -204,15 +282,12 @@ fn live_source(account: &SubsonicAccount) -> Option<String> {
 /// entry, a listen and a thumbnail all outlive the track they name, and
 /// teaching this path to chase them would make a re-pointed server tidier
 /// than a server that dropped a track.
-///
-/// `live` None keeps nothing, which is a removed server: every Subsonic
-/// row goes.
-fn drop_departed(conn: &mut Connection, live: Option<&str>) -> usize {
+fn drop_departed(conn: &mut Connection, kept: &HashSet<String>) -> usize {
     let departed: Vec<String> = store::sources(conn)
         .unwrap_or_default()
         .into_iter()
         .map(|(source, _)| source)
-        .filter(|source| source.starts_with(SOURCE_PREFIX) && Some(source.as_str()) != live)
+        .filter(|source| source.starts_with(SOURCE_PREFIX) && !kept.contains(source))
         .collect();
 
     let nothing = HashSet::new();
@@ -222,35 +297,36 @@ fn drop_departed(conn: &mut Connection, live: Option<&str>) -> usize {
         .sum()
 }
 
-/// The prune as the account decides it: the live id if there is one, and
-/// otherwise nothing at all.
-fn prune_for(conn: &mut Connection, account: &SubsonicAccount) -> usize {
-    let Some(live) = live_source(account) else {
+/// The prune as the accounts decide it: everything no account names any
+/// more, when [`kept_ids`] says the list can be trusted, and otherwise
+/// nothing at all.
+fn prune_for(conn: &mut Connection, accounts: &[SubsonicAccount]) -> usize {
+    let Some(kept) = kept_ids(accounts) else {
         return 0;
     };
 
-    drop_departed(conn, Some(&live))
+    drop_departed(conn, &kept)
 }
 
-/// Bring the library in line with the account the settings now describe.
+/// Bring the library in line with the accounts the settings now describe.
 /// What the settings page calls when an address or login it just wrote has
-/// been committed, and when the switch flips. The rows the old address left
+/// been committed, and when a switch flips. The rows an old address left
 /// behind go now rather than whenever somebody next presses Sync Now, and
-/// the catalog is rebuilt either way: a switch or an address decides which
-/// server's rows browse, see [`hidden_sources`], and the projection only
-/// learns that on a load.
+/// the catalog is rebuilt either way: the switches and the addresses decide
+/// which servers' rows browse, see [`hidden_sources`], and the projection
+/// only learns that on a load.
 ///
 /// Answers how many rows went, which is zero on every call but the one
 /// right after an account moves.
-pub fn follow_account(library: Entity<Library>, cx: &mut App) -> Task<usize> {
+pub fn follow_accounts(library: Entity<Library>, cx: &mut App) -> Task<usize> {
     // A sync is already doing this at the end of its own reconcile, and two
     // writers on one database is a busy error rather than a race worth
-    // handling. Its own reload reads the switch as it stands by then.
+    // handling. Its own reload reads the switches as they stand by then.
     if syncing() {
         return Task::ready(0);
     }
 
-    let account = Settings::load().accounts.subsonic;
+    let accounts = accounts();
     let db_path = library.read(cx).db_path();
 
     cx.spawn(async move |cx| {
@@ -258,7 +334,7 @@ pub fn follow_account(library: Entity<Library>, cx: &mut App) -> Task<usize> {
             .background_executor()
             .spawn(async move {
                 match store::open(&db_path) {
-                    Ok(mut conn) => prune_for(&mut conn, &account),
+                    Ok(mut conn) => prune_for(&mut conn, &accounts),
                     Err(e) => {
                         log::warn!("subsonic: pruning departed rows failed: {e}");
                         0
@@ -278,26 +354,41 @@ pub fn follow_account(library: Entity<Library>, cx: &mut App) -> Task<usize> {
     })
 }
 
-/// Take the server out of rox: forget the account and delete every row any
-/// Subsonic address ever filed. What Remove Server runs, once its confirm
-/// is answered. The switch is the way to keep a catalog while not using
-/// it; this is the way to be rid of one.
+/// Take one server out of rox: drop its account from the list and delete
+/// every row it filed. What Remove Server runs, once its confirm is
+/// answered. The switch is the way to keep a catalog while not using it;
+/// this is the way to be rid of one.
 ///
-/// The rows go the way a prune takes them, so a playlist entry, a listen
-/// and a stored cover outlive them the same as they outlive a track the
-/// server dropped. Answers how many rows went.
-pub fn remove(library: Entity<Library>, cx: &mut App) -> Task<usize> {
+/// Rows under an address the removed account had since left go too, as
+/// long as the accounts that stay all name one, so a server removed after a
+/// re-point doesn't leave its old catalog hidden forever. The rows go the
+/// way a prune takes them: a playlist entry, a listen and a stored cover
+/// outlive them the same as they outlive a track the server dropped.
+/// Answers how many rows went.
+pub fn remove(index: usize, library: Entity<Library>, cx: &mut App) -> Task<usize> {
     // The same reason the prune above waits: a sync is writing, and the
     // rows it's writing would land after the delete.
     if syncing() {
         return Task::ready(0);
     }
 
-    if let Some(server) = server() {
-        sources_registry::forget(&server.source_id());
+    let mut accounts = accounts();
+    if index >= accounts.len() {
+        return Task::ready(0);
     }
 
-    Settings::update(|s| s.accounts.subsonic = SubsonicAccount::default());
+    let removed = accounts.remove(index);
+    let gone_source = source_of(&removed);
+
+    if let Some(source) = &gone_source {
+        sources_registry::forget(source);
+    }
+
+    Settings::update(move |s| {
+        if index < s.accounts.subsonic_servers.len() {
+            s.accounts.subsonic_servers.remove(index);
+        }
+    });
 
     let db_path = library.read(cx).db_path();
 
@@ -305,13 +396,15 @@ pub fn remove(library: Entity<Library>, cx: &mut App) -> Task<usize> {
         let gone = cx
             .background_executor()
             .spawn(async move {
-                match store::open(&db_path) {
-                    Ok(mut conn) => drop_departed(&mut conn, None),
+                let mut conn = match store::open(&db_path) {
+                    Ok(conn) => conn,
                     Err(e) => {
-                        log::warn!("subsonic: removing the server's rows failed: {e}");
-                        0
+                        log::warn!("subsonic: removing a server's rows failed: {e}");
+                        return 0;
                     }
-                }
+                };
+
+                remove_rows(&mut conn, gone_source.as_deref(), &accounts)
             })
             .await;
 
@@ -323,26 +416,43 @@ pub fn remove(library: Entity<Library>, cx: &mut App) -> Task<usize> {
     })
 }
 
+/// [`remove`]'s database half: the removed account's own rows, then what no
+/// account left in the list names, if they can all be trusted to. Unlike
+/// the everyday prune an empty list is trusted here, because it's empty
+/// because somebody just asked for exactly that.
+fn remove_rows(conn: &mut Connection, source: Option<&str>, left: &[SubsonicAccount]) -> usize {
+    let nothing = HashSet::new();
+    let own = source
+        .and_then(|source| store::prune_source(conn, source, &nothing).ok())
+        .unwrap_or(0);
+
+    let kept: Option<HashSet<String>> = left.iter().map(source_of).collect();
+    let departed = kept.map_or(0, |kept| drop_departed(conn, &kept));
+
+    own + departed
+}
+
 /// Which sources the catalog leaves out, as the projection load asks it:
-/// every Subsonic id but the live account's. That covers a switched-off
-/// server, whose rows are kept and not used, and the rows of an address
-/// the account has half left, an empty one mid-edit, which nothing could
-/// sign anyway. The settings are read once here, not per source asked.
+/// every Subsonic id that isn't a switched-on account's. That covers a
+/// server that's switched off, whose rows are kept and not used, and the
+/// rows of an address an account has half left, an empty one mid-edit,
+/// which nothing could sign anyway. The settings are read once here, not
+/// per source asked.
 pub fn hidden_sources() -> impl Fn(&str) -> bool {
-    let live = live_source(&Settings::load().accounts.subsonic);
+    let live = live_ids(&accounts());
 
-    move |source| hides(live.as_deref(), source)
+    move |source| hides(&live, source)
 }
 
-/// [`hidden_sources`]'s rule with the live id handed in.
-fn hides(live: Option<&str>, source: &str) -> bool {
-    source.starts_with(SOURCE_PREFIX) && Some(source) != live
+/// [`hidden_sources`]'s rule with the live ids handed in.
+fn hides(live: &HashSet<String>, source: &str) -> bool {
+    source.starts_with(SOURCE_PREFIX) && !live.contains(source)
 }
 
-/// Reach the server and report what it says about itself. What the Connect
-/// button runs, off the UI thread.
-pub fn ping(cx: &App) -> Task<Result<ServerInfo, String>> {
-    let server = server();
+/// Reach the server at `index` and report what it says about itself. What
+/// its Connect button runs, off the UI thread.
+pub fn ping(index: usize, cx: &App) -> Task<Result<ServerInfo, String>> {
+    let server = server(index);
 
     cx.background_executor().spawn(async move {
         let server = server.ok_or_else(|| "no server configured".to_string())?;
@@ -351,11 +461,19 @@ pub fn ping(cx: &App) -> Task<Result<ServerInfo, String>> {
     })
 }
 
-/// Pull the whole catalog in and reconcile the library against it. The
-/// work runs on the background executor on a connection of its own, the
-/// way every other pass that writes the database does, and the projection
-/// reloads once at the end rather than per album.
-pub fn sync(library: Entity<Library>, cx: &mut App) -> Task<Result<SyncOutcome, String>> {
+/// Pull one server's whole catalog in and reconcile the library against
+/// it. The work runs on the background executor on a connection of its
+/// own, the way every other pass that writes the database does, and the
+/// projection reloads once at the end rather than per album.
+pub fn sync(
+    index: usize,
+    library: Entity<Library>,
+    cx: &mut App,
+) -> Task<Result<SyncOutcome, String>> {
+    let Some(server) = server(index) else {
+        return Task::ready(Err("no server configured".to_string()));
+    };
+
     // One sync at a time. Two would race each other's prune, and the loser
     // would delete what the winner had just written.
     if PROGRESS.running.swap(true, Ordering::SeqCst) {
@@ -365,34 +483,52 @@ pub fn sync(library: Entity<Library>, cx: &mut App) -> Task<Result<SyncOutcome, 
     PROGRESS.done.store(0, Ordering::Relaxed);
     PROGRESS.total.store(0, Ordering::Relaxed);
 
+    let source = server.source_id();
+    if let Ok(mut syncing) = SYNCING.lock() {
+        *syncing = Some(source.clone());
+    }
+
     // The rows this writes land under whatever source id the account now
     // digests to, and the registry is otherwise only filled at startup and
-    // when the switch is flipped. A server re-pointed at another URL would
+    // when the settings change. A server re-pointed at another URL would
     // sync a catalog nothing knew how to authorize until the next launch,
-    // so the table gets the current account before the rows do.
+    // so the table gets the current accounts before the rows do.
     install_registry();
 
     let db_path = library.read(cx).db_path();
-    let server = server();
+    let accounts = accounts();
 
     cx.spawn(async move |cx| {
         let outcome = cx
             .background_executor()
             .spawn(async move {
-                let server = server.ok_or_else(|| "no server configured".to_string())?;
                 let mut conn = store::open(&db_path).map_err(|e| e.to_string())?;
 
-                run(&server, &mut conn)
+                run(&server, &accounts, &mut conn)
             })
             .await;
 
         PROGRESS.running.store(false, Ordering::Relaxed);
+        if let Ok(mut syncing) = SYNCING.lock() {
+            *syncing = None;
+        }
 
         // Rows moved, so the in-memory projection is stale until it's
         // rebuilt from SQLite and swapped whole.
         if outcome.is_ok() {
+            // Stamped by source id rather than by position, since the list
+            // can change under a sync that takes minutes.
             let now = now_secs();
-            Settings::update(move |s| s.accounts.subsonic.last_sync = now);
+            Settings::update(move |s| {
+                if let Some(account) = s
+                    .accounts
+                    .subsonic_servers
+                    .iter_mut()
+                    .find(|account| source_of(account).as_deref() == Some(source.as_str()))
+                {
+                    account.last_sync = now;
+                }
+            });
 
             library
                 .update(cx, |library, cx| library.reload_projection(cx))
@@ -405,7 +541,13 @@ pub fn sync(library: Entity<Library>, cx: &mut App) -> Task<Result<SyncOutcome, 
 
 /// The sync itself: blocking, and off any gpui context so it reads as one
 /// piece. Fetch the catalog, write it, drop what's gone, then playlists.
-fn run(server: &Server, conn: &mut Connection) -> Result<SyncOutcome, String> {
+/// `accounts` is the list as it stood when the sync started, which is what
+/// decides which other servers' rows are still somebody's.
+fn run(
+    server: &Server,
+    accounts: &[SubsonicAccount],
+    conn: &mut Connection,
+) -> Result<SyncOutcome, String> {
     let source = server.source_id();
 
     let tracks = server.catalog(|done, total| {
@@ -419,7 +561,7 @@ fn run(server: &Server, conn: &mut Connection) -> Result<SyncOutcome, String> {
     // What the server still lists is what survives. Everything else under
     // this source id went away on the server's side, so it goes here too.
     let keep: HashSet<String> = tracks.iter().map(|track| track.id.clone()).collect();
-    let (pruned, departed) = reconcile(conn, &source, &rows, &keep)?;
+    let (pruned, departed) = reconcile(conn, &source, &rows, &keep, accounts)?;
 
     let playlists = sync_playlists(server, conn, &source, now);
     let stations = sync_stations(server, conn);
@@ -435,8 +577,9 @@ fn run(server: &Server, conn: &mut Connection) -> Result<SyncOutcome, String> {
 
 /// The database half of a sync, so a test can run it without a server:
 /// write what the catalog holds, drop what it stopped holding, then drop
-/// what belongs to an address this account has left. Answers the two
-/// counts in that order.
+/// what belongs to an address no account names any more. Answers the two
+/// counts in that order. The other servers' rows are left alone: each is
+/// still some account's.
 ///
 /// The departed pass runs here rather than only on the settings page
 /// because an account can move without the settings window being open at
@@ -446,11 +589,12 @@ fn reconcile(
     source: &str,
     rows: &[TrackRow],
     keep: &HashSet<String>,
+    accounts: &[SubsonicAccount],
 ) -> Result<(usize, usize), String> {
     store::upsert_source_rows(conn, source, rows).map_err(|e| e.to_string())?;
 
     let pruned = store::prune_source(conn, source, keep).map_err(|e| e.to_string())?;
-    let departed = drop_departed(conn, Some(source));
+    let departed = prune_for(conn, accounts);
 
     Ok((pruned, departed))
 }
@@ -562,7 +706,7 @@ pub fn art(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
 /// on screen.
 ///
 /// `key` is whatever the surface asked art by, which for a server row is
-/// the song id standing in for a path. Only a key the live account has a
+/// the song id standing in for a path. Only a key a switched-on server has a
 /// row under goes anywhere near the server. Everything else that reaches
 /// here (a station's URL, a local file deleted since its row was read) is
 /// some other source's miss, and handing a local path to a server as a
@@ -598,17 +742,28 @@ pub fn cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
     found
 }
 
-/// [`cover`]'s network half: is the key the live account's, which art id
-/// does the song name, and the image under it into the store.
+/// [`cover`]'s network half: which switched-on server has a row under the
+/// key, which art id the song names there, and the image under it into the
+/// store. The first server holding the key answers; two servers handing out
+/// the same song id is a collision the thumbnail store, keyed on the id
+/// alone, couldn't tell apart anyway.
 ///
 /// The library has no column for the art id the catalog walk saw, so the
 /// song is asked for it again. That's one small reply per cover, paid once:
 /// after it, the store answers.
 fn fetch_cover(thumbs: &Mutex<Connection>, key: &str) -> Option<Vec<u8>> {
-    let server = live_server()?;
+    let servers = live_servers();
+    if servers.is_empty() {
+        return None;
+    }
 
     let library = store::open(&rox_core::settings::data_dir().join("library.db")).ok()?;
-    store::id_for_path(&library, &server.source_id(), key).ok()??;
+    let server = servers.into_iter().find(|server| {
+        matches!(
+            store::id_for_path(&library, &server.source_id(), key),
+            Ok(Some(_))
+        )
+    })?;
 
     let cover_id = server.cover_id(key).ok()?;
     if cover_id.is_empty() {
@@ -823,14 +978,21 @@ mod tests {
             url: url.to_string(),
             user: "andrew".into(),
             password: "pw".into(),
-            last_sync: 0,
+            ..SubsonicAccount::default()
         }
     }
 
-    /// An in-memory library holding one local row, one row under the
-    /// server the account points at now, and one under the server it used
-    /// to point at.
-    fn library(live: &str, old: &str) -> Connection {
+    /// The source id the account at `url` files its rows under.
+    fn id(url: &str) -> String {
+        source_of(&account(true, url)).expect("an address")
+    }
+
+    const HOME: &str = "https://home.example.com";
+    const WORK: &str = "https://work.example.com";
+
+    /// An in-memory library holding one local row and two rows under each
+    /// of `sources`.
+    fn library(sources: &[&str]) -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
 
@@ -840,7 +1002,7 @@ mod tests {
         local.remote_url = String::new();
         store::upsert_source_rows(&mut conn, "local", &[local]).unwrap();
 
-        for source in [live, old] {
+        for source in sources {
             let rows = ["sg-1", "sg-2"].map(|id| {
                 let mut song = track();
                 song.id = id.into();
@@ -858,116 +1020,137 @@ mod tests {
 
     /// The finding this prune exists for: after the address changes, the
     /// rows under the old id can't be signed by anybody, so a sync drops
-    /// them. The live id reconciles the way it always has, and neither
+    /// them. The synced id reconciles the way it always has, and neither
     /// half reaches a local row.
     #[test]
     fn a_sync_drops_the_rows_the_old_address_left_behind() {
-        let mut conn = library("subsonic:live", "subsonic:old");
+        let home = id(HOME);
+        let mut conn = library(&[&home, "subsonic:old"]);
 
-        // The live server still lists one of its two songs.
+        // The server still lists one of its two songs.
         let mut kept = track();
         kept.id = "sg-1".into();
         let rows = [row_for(&kept, 1_700_000_100)];
         let keep = HashSet::from(["sg-1".to_string()]);
 
-        let (pruned, departed) = reconcile(&mut conn, "subsonic:live", &rows, &keep).unwrap();
+        let (pruned, departed) =
+            reconcile(&mut conn, &home, &rows, &keep, &[account(true, HOME)]).unwrap();
 
         assert_eq!(pruned, 1, "the song the server stopped listing");
         assert_eq!(departed, 2, "both rows of the address the account left");
 
-        assert_eq!(count(&conn, "subsonic:live"), 1);
+        assert_eq!(count(&conn, &home), 1);
         assert_eq!(count(&conn, "subsonic:old"), 0);
         assert_eq!(count(&conn, "local"), 1, "a sync never reaches a local row");
+    }
+
+    /// Syncing one server leaves every other configured server's rows be,
+    /// switched on or off: each is still somebody's catalog.
+    #[test]
+    fn a_sync_leaves_the_other_servers_alone() {
+        let (home, work) = (id(HOME), id(WORK));
+        let mut conn = library(&[&home, &work]);
+        let accounts = [account(true, HOME), account(false, WORK)];
+
+        let rows = [row_for(&track(), 1_700_000_100)];
+        let keep = HashSet::from(["sg-1".to_string()]);
+        let (_, departed) = reconcile(&mut conn, &home, &rows, &keep, &accounts).unwrap();
+
+        assert_eq!(departed, 0);
+        assert_eq!(count(&conn, &work), 2);
     }
 
     /// Pruning is scoped to this module's own namespace. Another source's
     /// rows look exactly as stale from here and are none of its business.
     #[test]
     fn another_source_is_left_alone() {
-        let mut conn = library("subsonic:live", "subsonic:old");
+        let home = id(HOME);
+        let mut conn = library(&[&home, "subsonic:old"]);
         let mut station = track();
         station.id = "ir-1".into();
         store::upsert_source_rows(&mut conn, "radio", &[row_for(&station, 0)]).unwrap();
 
-        assert_eq!(drop_departed(&mut conn, Some("subsonic:live")), 2);
+        assert_eq!(drop_departed(&mut conn, &HashSet::from([home.clone()])), 2);
 
         assert_eq!(count(&conn, "radio"), 1);
         assert_eq!(count(&conn, "local"), 1);
-        assert_eq!(count(&conn, "subsonic:live"), 2);
+        assert_eq!(count(&conn, &home), 2);
     }
 
-    /// The switch off leaves the catalog where it is, which is what the
-    /// switch has always promised. Nothing under any Subsonic id moves,
-    /// including the ids a live account would have dropped.
+    /// The switch off keeps the server's catalog, which is what the switch
+    /// promises. What its account left behind at an older address still
+    /// goes, since no account names that one.
     #[test]
-    fn a_switched_off_account_prunes_nothing() {
-        let mut conn = library("subsonic:live", "subsonic:old");
+    fn a_switched_off_server_keeps_its_rows() {
+        let home = id(HOME);
+        let mut conn = library(&[&home, "subsonic:old"]);
 
-        assert_eq!(prune_for(&mut conn, &account(false, "https://live")), 0);
+        assert_eq!(prune_for(&mut conn, &[account(false, HOME)]), 2);
 
-        assert_eq!(count(&conn, "subsonic:live"), 2);
-        assert_eq!(count(&conn, "subsonic:old"), 2);
-    }
-
-    /// A half-typed address is not an instruction to empty the library.
-    #[test]
-    fn an_account_with_no_address_prunes_nothing() {
-        let mut conn = library("subsonic:live", "subsonic:old");
-
-        assert_eq!(prune_for(&mut conn, &account(true, "   ")), 0);
-
-        assert_eq!(count(&conn, "subsonic:old"), 2);
-    }
-
-    /// The live id the prune keeps by is the account's own digest, so an
-    /// enabled account drops everything filed under any other one.
-    #[test]
-    fn an_enabled_account_keeps_only_its_own_id() {
-        let live = Server::new("https://live.example.com", "andrew", "pw").source_id();
-        let mut conn = library(&live, "subsonic:old");
-
-        assert_eq!(
-            prune_for(&mut conn, &account(true, "https://live.example.com")),
-            2
-        );
-
-        assert_eq!(count(&conn, &live), 2);
+        assert_eq!(count(&conn, &home), 2);
         assert_eq!(count(&conn, "subsonic:old"), 0);
     }
 
-    /// A removed server keeps nothing: every Subsonic id goes, the live one
-    /// with the rest, and nothing outside the namespace moves.
+    /// A half-typed address is not an instruction to empty the library,
+    /// and neither is a list that reads empty.
     #[test]
-    fn a_removed_server_takes_every_subsonic_row() {
-        let mut conn = library("subsonic:live", "subsonic:old");
+    fn an_unsure_list_prunes_nothing() {
+        let mut conn = library(&[&id(HOME), "subsonic:old"]);
 
-        assert_eq!(drop_departed(&mut conn, None), 4);
+        assert_eq!(
+            prune_for(&mut conn, &[account(true, HOME), account(true, "   ")]),
+            0
+        );
+        assert_eq!(prune_for(&mut conn, &[]), 0);
 
-        assert_eq!(count(&conn, "subsonic:live"), 0);
+        assert_eq!(count(&conn, "subsonic:old"), 2);
+    }
+
+    /// Removing a server takes its rows and whatever no remaining account
+    /// names, and never another server's.
+    #[test]
+    fn removing_a_server_takes_its_rows_and_only_its() {
+        let (home, work) = (id(HOME), id(WORK));
+        let mut conn = library(&[&home, &work, "subsonic:old"]);
+
+        let gone = remove_rows(&mut conn, Some(&home), &[account(false, WORK)]);
+
+        assert_eq!(gone, 4, "its own two and the two nobody names");
+        assert_eq!(count(&conn, &home), 0);
+        assert_eq!(count(&conn, "subsonic:old"), 0);
+        assert_eq!(count(&conn, &work), 2);
+        assert_eq!(count(&conn, "local"), 1);
+    }
+
+    /// The last server removed takes every Subsonic row with it: the empty
+    /// list is trusted here, because it's what was asked for.
+    #[test]
+    fn removing_the_last_server_takes_every_subsonic_row() {
+        let home = id(HOME);
+        let mut conn = library(&[&home, "subsonic:old"]);
+
+        assert_eq!(remove_rows(&mut conn, Some(&home), &[]), 4);
+
+        assert_eq!(count(&conn, &home), 0);
         assert_eq!(count(&conn, "subsonic:old"), 0);
         assert_eq!(count(&conn, "local"), 1);
     }
 
-    /// Only the live account's id browses. A switched-off account, or one
-    /// with no address, has no live id, so every Subsonic id hides and the
-    /// other sources never do.
+    /// Only a switched-on server's rows browse. One that's off, and an
+    /// address nobody names, hide; the other sources never do.
     #[test]
-    fn only_the_live_server_browses() {
-        assert!(!hides(Some("subsonic:live"), "subsonic:live"));
-        assert!(hides(Some("subsonic:live"), "subsonic:old"));
-        assert!(hides(None, "subsonic:live"));
+    fn only_switched_on_servers_browse() {
+        let (home, work) = (id(HOME), id(WORK));
+        let live = live_ids(&[account(true, HOME), account(false, WORK)]);
+
+        assert!(!hides(&live, &home));
+        assert!(hides(&live, &work));
+        assert!(hides(&live, "subsonic:old"));
 
         for source in ["local", "radio"] {
-            assert!(!hides(None, source));
-            assert!(!hides(Some("subsonic:live"), source));
+            assert!(!hides(&live, source));
+            assert!(!hides(&HashSet::new(), source));
         }
-
-        let off = account(false, "https://live.example.com");
-        let on = account(true, "https://live.example.com");
-        let id = Server::new("https://live.example.com", "andrew", "pw").source_id();
-
-        assert!(hides(live_source(&off).as_deref(), &id));
-        assert!(!hides(live_source(&on).as_deref(), &id));
     }
 
     #[test]

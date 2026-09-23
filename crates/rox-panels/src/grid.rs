@@ -2803,6 +2803,8 @@ impl GridPanel {
                 .items_center()
                 .justify_center()
                 .gap(tokens::SPACE_SM)
+                .p(tokens::SPACE_MD)
+                .text_center()
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {
                     crate::catalog::browse(&this.state.library, cx);
@@ -2820,6 +2822,8 @@ impl GridPanel {
                 .flex()
                 .items_center()
                 .justify_center()
+                .p(tokens::SPACE_MD)
+                .text_center()
                 .text_color(palette::text_muted())
                 .child(
                     if self.effective_query(cx).is_empty() && self.effective_filter(cx).is_empty() {

@@ -198,11 +198,11 @@ impl Global for RequestedAppPage {}
 pub const SETTINGS_ACTION: &str = "rox::OpenSettings";
 
 /// Open the app's settings window on the page `key` names, the nav key in
-/// the window's own page table ("settings-page-sources" and its
+/// the window's own page table ("settings-page-radio" and its
 /// neighbours). What a panel points at when the thing it lists is
 /// configured somewhere else entirely: the stations panel's Manage
-/// Stations lands on Sources rather than on Appearance, where a plain
-/// open starts.
+/// Stations lands on Radio rather than on Appearance, where a plain open
+/// starts.
 ///
 /// The window lives up in the binary, so this leaves the page behind and
 /// fires the action that opens it, built by name the way the keymap's own

@@ -1020,10 +1020,30 @@ pub struct AccountsState {
     /// Discord Rich Presence options (enable toggle, the Last.fm and
     /// YouTube buttons).
     pub discord: DiscordSettings,
-    /// The Subsonic server, on the same Integrations page. An account and
-    /// a server like the three connections above, and a library source on
-    /// top of that.
-    pub subsonic: SubsonicAccount,
+    /// The Subsonic servers, on the same Integrations page. Each is an
+    /// account and a server like the three connections above, and a
+    /// library source on top of that, with rows filed under its own id.
+    pub subsonic_servers: Vec<SubsonicAccount>,
+    /// The one server a file from before there could be several held.
+    /// Read once on load into [`AccountsState::subsonic_servers`], never
+    /// written back.
+    #[serde(skip_serializing)]
+    subsonic: Option<SubsonicAccount>,
+}
+
+impl AccountsState {
+    /// Fold a single-server file's account into the list. A list that's
+    /// already there wins, since only this build writes one, and an
+    /// account that never named an address has nothing worth keeping.
+    fn fold_legacy_subsonic(&mut self) {
+        let Some(legacy) = self.subsonic.take() else {
+            return;
+        };
+
+        if self.subsonic_servers.is_empty() && !legacy.url.trim().is_empty() {
+            self.subsonic_servers.push(legacy);
+        }
+    }
 }
 
 impl Default for SessionState {
@@ -2721,8 +2741,7 @@ pub struct LibreFm {
 /// A Subsonic or OpenSubsonic server rox reads a catalog off. Unlike the
 /// three above it this isn't a scrobble destination, it's a library: the
 /// sync pulls rows in under its own source id and playback streams from
-/// it. One server for now, since two would want a list and a picker and
-/// nobody has asked for that yet.
+/// it. There can be several, each with its own switch and its own rows.
 ///
 /// The password sits here rather than in `settings.json` because it's a
 /// real account credential, not the shared-secret plumbing an icecast
@@ -2736,6 +2755,10 @@ pub struct SubsonicAccount {
     /// Off leaves the rows in the library, since pruning someone's whole
     /// catalog because they flipped a switch would be a surprise.
     pub enabled: bool,
+    /// What the server is called where rox names it: the settings block,
+    /// the metadata panel's Source row, a playlist that has to tell two
+    /// servers' lists apart. Empty lets the address's host stand in.
+    pub name: String,
     /// Base URL with scheme, no `/rest` on the end. Empty means not
     /// configured.
     pub url: String,
@@ -2745,6 +2768,27 @@ pub struct SubsonicAccount {
     /// settings row reads it, and nothing else does: a sync is always
     /// asked for, never scheduled off this.
     pub last_sync: i64,
+}
+
+impl SubsonicAccount {
+    /// The name this server goes by: the one typed for it, or the host of
+    /// its address when there isn't one. The scheme and the path are the
+    /// machine's business, and anywhere this shows has one line for it.
+    /// Empty when there's neither.
+    pub fn label(&self) -> String {
+        let name = self.name.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+
+        let url = self.url.trim();
+        let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+
+        rest.split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
 }
 
 /// Where a fetched lyrics sheet saves: the embedded tag through the
@@ -4401,6 +4445,10 @@ impl Settings {
         // flat session; it reads in unattributed here and the next save
         // drops the flat pair.
         settings.accounts.lastfm.fold_legacy_session();
+        // A file from before there could be several Subsonic servers holds
+        // one; it becomes the first of the list and the next save drops
+        // the old key.
+        settings.accounts.fold_legacy_subsonic();
         // The restored frame reads straight into window Bounds on open: a
         // non-finite field drops back to the centered default, and the size
         // floors at the window minimum so a zero or negative frame can't
@@ -4872,6 +4920,78 @@ mod tests {
         lastfm.connect("release-key", "sk-release".into(), "zealsprince".into());
         lastfm.clear_session("release-key");
         assert!(lastfm.session("release-key").is_none());
+    }
+
+    /// A single-server accounts file carries its server into the list,
+    /// and the old key doesn't come back out on the next write.
+    #[test]
+    fn a_single_subsonic_server_becomes_the_first_of_the_list() {
+        let mut accounts: AccountsState = serde_json::from_value(serde_json::json!({
+            "subsonic": {
+                "enabled": true,
+                "url": "https://music.example.com",
+                "user": "andrew",
+                "password": "pw",
+                "last_sync": 1_700_000_000,
+            },
+        }))
+        .unwrap();
+        accounts.fold_legacy_subsonic();
+
+        assert_eq!(accounts.subsonic_servers.len(), 1);
+        let server = &accounts.subsonic_servers[0];
+        assert!(server.enabled);
+        assert_eq!(server.url, "https://music.example.com");
+        assert_eq!(server.password, "pw");
+        assert_eq!(server.last_sync, 1_700_000_000);
+
+        let json = serde_json::to_value(&accounts).unwrap();
+        assert!(json.get("subsonic").is_none());
+        assert!(json.get("subsonic_servers").is_some());
+    }
+
+    /// A list already on file is this build's own and wins, and a legacy
+    /// account that never named an address isn't a server to carry.
+    #[test]
+    fn the_legacy_subsonic_server_never_overrides_a_list() {
+        let mut listed: AccountsState = serde_json::from_value(serde_json::json!({
+            "subsonic": { "url": "https://old.example.com" },
+            "subsonic_servers": [{ "url": "https://new.example.com" }],
+        }))
+        .unwrap();
+        listed.fold_legacy_subsonic();
+
+        assert_eq!(listed.subsonic_servers.len(), 1);
+        assert_eq!(listed.subsonic_servers[0].url, "https://new.example.com");
+
+        let mut blank: AccountsState = serde_json::from_value(serde_json::json!({
+            "subsonic": { "enabled": true, "url": "  " },
+        }))
+        .unwrap();
+        blank.fold_legacy_subsonic();
+
+        assert!(blank.subsonic_servers.is_empty());
+    }
+
+    /// A server goes by its own name when it has one and by its host when
+    /// it doesn't: the host and its port, without the scheme or the path.
+    #[test]
+    fn a_subsonic_server_is_labelled_by_name_then_host() {
+        let mut account = SubsonicAccount {
+            url: "https://music.example.com:4533/navidrome/".into(),
+            ..SubsonicAccount::default()
+        };
+        assert_eq!(account.label(), "music.example.com:4533");
+
+        account.name = "  Home  ".into();
+        assert_eq!(account.label(), "Home");
+
+        let bare = SubsonicAccount {
+            url: "music.example.com/rest".into(),
+            ..SubsonicAccount::default()
+        };
+        assert_eq!(bare.label(), "music.example.com");
+        assert_eq!(SubsonicAccount::default().label(), "");
     }
 
     /// A build with no identity of its own can't sign anything, so it

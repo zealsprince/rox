@@ -333,6 +333,10 @@ pub struct PlaylistTrack {
     /// while the track exists, the snapshot's once it is gone, so a pruned
     /// file whose bytes are still on disk keeps its cover.
     pub path: String,
+    /// Where the track comes from, for the `source:` pin and the source
+    /// filter. Empty once the track is gone from the catalog: the snapshot
+    /// never kept it.
+    pub source: String,
 }
 
 impl Filterable for PlaylistTrack {
@@ -347,6 +351,7 @@ impl Filterable for PlaylistTrack {
             year: self.year,
             codec: &self.codec,
             path: &self.path,
+            source: &self.source,
         }
     }
 }
@@ -851,7 +856,8 @@ pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<Playl
                 COALESCE(t.sample_rate, 0),
                 COALESCE(t.bit_depth, 0),
                 COALESCE(t.rating, 0),
-                COALESCE(t.path, m.path)
+                COALESCE(t.path, m.path),
+                COALESCE(t.source, '')
          FROM playlist_tracks m LEFT JOIN tracks t ON t.id = m.track_id
          WHERE m.playlist_id = ?1
          ORDER BY m.position, m.id",
@@ -873,6 +879,7 @@ pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<Playl
             bit_depth: row.get(12)?,
             rating: row.get(13)?,
             path: row.get(14)?,
+            source: row.get(15)?,
         })
     })?;
     rows.collect()

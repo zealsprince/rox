@@ -2784,6 +2784,8 @@ impl PlaylistsPanel {
                     .items_center()
                     .justify_center()
                     .gap(tokens::SPACE_SM)
+                    .p(tokens::SPACE_MD)
+                    .text_center()
                     .text_color(palette::text_faint())
                     .child(message)
                     // Import is the tab bar's button, and the tab bar isn't

@@ -550,6 +550,10 @@ pub struct TrackPlays {
     /// like a file's. False for a listen whose track is gone, since the
     /// flag lives on the row.
     pub live: bool,
+    /// Where the track comes from, for the `source:` pin and the source
+    /// filter. Empty for a listen whose track is gone: the snapshot never
+    /// kept it.
+    pub source: String,
 }
 
 fn track_plays_row(row: &rusqlite::Row) -> rusqlite::Result<TrackPlays> {
@@ -571,6 +575,7 @@ fn track_plays_row(row: &rusqlite::Row) -> rusqlite::Result<TrackPlays> {
         rating: row.get(14)?,
         path: row.get(15)?,
         live: row.get(16)?,
+        source: row.get(17)?,
     })
 }
 
@@ -598,7 +603,7 @@ const SNAPSHOT_COLUMNS: &str = "CASE WHEN t.remote_live THEN l.title
      COALESCE(t.duration_ms, 0), COALESCE(t.codec, ''), COALESCE(t.bitrate, 0),
      COALESCE(t.sample_rate, 0), COALESCE(t.bit_depth, 0),
      COALESCE(t.rating, 0), COALESCE(t.path, l.path),
-     COALESCE(t.remote_live, 0)";
+     COALESCE(t.remote_live, 0), COALESCE(t.source, '')";
 
 /// The newest events at or after `since` and before `until` first, one
 /// row per event; 0 and i64::MAX read them all.
@@ -694,7 +699,7 @@ pub fn never_played(
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT id, 0, 0, title, artist, album,
                 album_artist, year, genre, duration_ms, codec, bitrate,
-                sample_rate, bit_depth, rating, path, 0
+                sample_rate, bit_depth, rating, path, 0, source
          FROM tracks
          WHERE source = 'local' AND id NOT IN (SELECT track_id FROM listens)
          ORDER BY {by} LIMIT ?1"

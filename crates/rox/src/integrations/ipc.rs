@@ -912,7 +912,7 @@ enum AddTarget {
     /// `radio|<url>`. What `library.search` hands back as `key`.
     Row(TrackKey),
     /// A bare stream URL, which is a station row's own identity: the
-    /// stations panel and the Sources page both file one under its URL, so
+    /// stations panel and the Radio page both file one under its URL, so
     /// pasting that URL is the obvious thing to try and it should work.
     Station(TrackKey),
     /// A cue track, `path#N`: a slice of a file rather than a file.

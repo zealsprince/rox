@@ -8,7 +8,7 @@
 //! Listing and playing is the whole of it. This panel used to carry an add
 //! row, a directory search, and a results view standing in for the list,
 //! which is three forms wedged into a surface people keep open to press
-//! play. The directory window finds stations now, and the Sources page in
+//! play. The directory window finds stations now, and the Radio page in
 //! settings keeps the list. What's left here is the list, a double click
 //! to play, and two ways over to the surfaces that own the rest.
 //!
@@ -17,7 +17,7 @@
 //! last part is what makes the panel stop lying. Before it, a pick made in
 //! the library went on standing in the status bar while you worked in here,
 //! so the strip read somebody else's tracks over a list of stations. Play
-//! and Remove act on the whole set; Remove is the Sources page's delete,
+//! and Remove act on the whole set; Remove is the Radio page's delete,
 //! run once per row, and it asks nothing first because that one doesn't
 //! either.
 //!
@@ -63,7 +63,7 @@ use crate::thumbs::Thumb;
 /// The settings page the list is kept on, named by the key the settings
 /// window lists it under. The panels are a crate below that window, so a
 /// jump to one of its pages travels as its nav key.
-const SOURCES_PAGE: &str = "settings-page-sources";
+const RADIO_PAGE: &str = "settings-page-radio";
 
 /// The logo square on the left of a row. One size for every row, which is
 /// also what every row is: two lines, whether the second one carries the
@@ -241,7 +241,7 @@ impl StationsPanel {
             })
             .collect();
 
-        // A station removed here or on the Sources page takes its mark
+        // A station removed here or on the Radio page takes its mark
         // with it, so the set never names a row that isn't in the list.
         self.selected.retain(|url| self.ids.contains_key(url));
         self.anchor = self.anchor.take().filter(|url| self.ids.contains_key(url));
@@ -491,7 +491,7 @@ impl StationsPanel {
 
     /// Drop stations, then rebuild the projection the way a write does:
     /// the rows have to leave the library everywhere, not only this list.
-    /// The same delete the Sources page makes, which asks nothing first,
+    /// The same delete the Radio page makes, which asks nothing first,
     /// so neither does this.
     fn remove(&mut self, urls: &[String], cx: &mut Context<Self>) {
         if urls.is_empty() {
@@ -961,10 +961,9 @@ impl StationsPanel {
     }
 }
 
-/// The settings window on its Sources page, where the list is kept along
-/// with the folders and the Subsonic server.
+/// The settings window on its Radio page, where the list is kept.
 fn manage(window: &mut Window, cx: &mut App) {
-    panel_settings::open_app_page(SOURCES_PAGE, window, cx);
+    panel_settings::open_app_page(RADIO_PAGE, window, cx);
 }
 
 /// The key a station plays under: the radio source, the stream URL as the

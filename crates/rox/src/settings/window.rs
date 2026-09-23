@@ -28,9 +28,10 @@ use gpui::{
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::text::TextView;
-use gpui_component::{Root, Sizable as _};
+use gpui_component::{Icon, Root, Sizable as _};
 
 use crate::backdrop_visual::BackdropRotation;
 use crate::convert;
@@ -84,6 +85,7 @@ use rox_services::thumbs::Thumbs;
 use rox_viz::signal::Route;
 
 mod keymap_page;
+mod subsonic;
 mod workspace_page;
 
 // The folder table's fixed columns: the rollup numbers and the remove
@@ -92,7 +94,9 @@ mod workspace_page;
 const TRACKS_COL_W: Pixels = px(56.);
 const ALBUMS_COL_W: Pixels = px(56.);
 const SIZE_COL_W: Pixels = px(72.);
-const ACTION_COL_W: Pixels = px(22.);
+/// Room for two row actions: a server row edits and removes, a folder row
+/// only removes, and both line their numbers up against the same edge.
+const ACTION_COL_W: Pixels = px(48.);
 
 /// The rates the exclusive picker offers: the two base clocks and their
 /// doubles and quadruples, which is every rate consumer hardware actually
@@ -183,8 +187,8 @@ enum Page {
     MlModels,
     Playback,
     Providers,
+    Radio,
     Shader,
-    Sources,
     Storage,
     Workspace,
     Development,
@@ -211,7 +215,7 @@ const PAGES: &[(Page, &str, &str)] = &[
     (
         Page::Integrations,
         "settings-page-integrations",
-        icons::RADIO,
+        icons::GLOBE,
     ),
     (Page::Keymap, "settings-page-keymap", icons::KEYBOARD),
     (Page::Library, "settings-page-library", icons::LIST_MUSIC),
@@ -219,8 +223,8 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::MlModels, "settings-page-ml-models", icons::LAYERS),
     (Page::Playback, "settings-page-playback", icons::PLAY),
     (Page::Providers, "settings-page-providers", icons::DOWNLOAD),
+    (Page::Radio, "settings-page-radio", icons::RADIO),
     (Page::Shader, "settings-page-shader", icons::BLEND),
-    (Page::Sources, "settings-page-sources", icons::MUSIC),
     (Page::Storage, "settings-page-storage", icons::DATABASE),
     (
         Page::Workspace,
@@ -424,11 +428,11 @@ enum Pending {
     /// happen is gone, and what an import placed comes back only as far
     /// as Last.fm still remembers it.
     ClearListens,
-    /// Forget the Subsonic account and delete every track it filed. Asked
-    /// for because the catalog only comes back by connecting and syncing
-    /// again, and because the switch beside it is the non-destructive way
-    /// to stop using a server; the dialog says so.
-    RemoveSubsonic,
+    /// Forget one Subsonic server, by its block's id, and delete every
+    /// track it filed. Asked for because the catalog only comes back by
+    /// connecting and syncing again, and because the switch beside it is the
+    /// non-destructive way to stop using a server; the dialog says so.
+    RemoveSubsonic(u64),
 }
 
 struct SettingsWindow {
@@ -635,41 +639,31 @@ struct SettingsWindow {
     /// down a live connection.
     broadcast_dirty: bool,
     /// The capture switch and the folder it writes into, copied from
-    /// settings so the Sources page renders without re-reading the file.
+    /// settings so the Playback page renders without re-reading the file.
     capture_enabled: bool,
     capture_folder: PathBuf,
     /// The pattern a saved song is named by, written through per
     /// keystroke like the fields above it.
     capture_pattern: Entity<InputState>,
     capture_album: Entity<InputState>,
-    /// The Subsonic server's fields, seeded from accounts.json and written
-    /// through per keystroke like the icecast pair. Nothing reaches the
-    /// server on a keystroke: Connect and Sync Now are both deliberate.
-    subsonic_url: Entity<InputState>,
-    subsonic_user: Entity<InputState>,
-    subsonic_password: Entity<InputState>,
-    /// The switch, copied from the file so the section renders without
-    /// re-reading it.
-    subsonic_enabled: bool,
-    /// What the last Connect or Sync in this window said, already
-    /// localized. None until one has run.
-    subsonic_status: Option<SharedString>,
-    /// Rows the library holds under this server, and when it last synced.
-    /// Read once at open and again after a sync, never per frame.
-    subsonic_rows: usize,
-    subsonic_last_sync: i64,
-    /// Whether a sync is in flight. The button reads as busy while it is,
-    /// and a poll keeps the album count on the status line moving.
+    /// One block per Subsonic server, in the order accounts.json lists
+    /// them, so a block's position is its account's index there. Seeded at
+    /// open and changed only by Add Server and Remove Server.
+    subsonic: Vec<subsonic::SubsonicForm>,
+    /// The id the next block gets, see [`subsonic::SubsonicForm`].
+    subsonic_next_id: u64,
+    /// Whether a sync is in flight on any server. One runs at a time, so
+    /// every Sync Now reads as busy while it does, and a poll keeps the
+    /// album count on the syncing server's line moving.
     subsonic_syncing: bool,
-    /// The prune the fields above kick off when one is left. Held so the
-    /// work survives the callback that started it, and so leaving a second
-    /// field replaces the first one's pass rather than racing it.
+    /// The server whose setup dialog is open, by its block's id.
+    subsonic_editing: Option<u64>,
+    /// The prune and rebuild a left field, a switch or a removal kicks off.
+    /// Held so the work survives the callback that started it, and so a
+    /// second one replaces the first rather than racing it.
     subsonic_follow: Option<Task<()>>,
-    /// The same flag for the Subsonic fields: whether one has moved since
-    /// the library last followed the account.
-    subsonic_dirty: bool,
     /// The radio stations the library holds, re-read at open and on every
-    /// catalog write rather than per frame. The Sources page lists them
+    /// catalog write rather than per frame. The Radio page lists them
     /// and is where they're added, imported and removed.
     stations: Vec<Station>,
     /// The two fields of the station add row. The URL is the identity, so
@@ -931,7 +925,6 @@ struct SettingsWindow {
     _picker_changes: Vec<Subscription>,
     _lastfm_changes: Vec<Subscription>,
     _broadcast_changes: Vec<Subscription>,
-    _subsonic_changes: Vec<Subscription>,
     _ffmpeg_changed: Subscription,
     _capture_pattern_changed: Subscription,
     _discord_line_changes: Vec<Subscription>,
@@ -1304,76 +1297,21 @@ impl SettingsWindow {
                 }
             }));
         }
-        // The Subsonic fields write through the same way, into
+        // One block per Subsonic server, its fields writing through into
         // accounts.json rather than the settings file, since a server
         // password is a real credential. Nothing dials on a keystroke:
         // Connect and Sync Now are both a round trip to someone's server,
         // so both wait to be asked.
-        let subsonic_url = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rox_i18n::t!(
-                    "settings-integrations-subsonic-url-placeholder"
-                ))
-                .default_value(settings.accounts.subsonic.url.clone())
-        });
-        let subsonic_user = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rox_i18n::t!(
-                    "settings-integrations-subsonic-user-placeholder"
-                ))
-                .default_value(settings.accounts.subsonic.user.clone())
-        });
-        let subsonic_password = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rox_i18n::t!(
-                    "settings-integrations-subsonic-password-placeholder"
-                ))
-                .masked(true)
-                .default_value(settings.accounts.subsonic.password.clone())
-        });
-        let mut _subsonic_changes = Vec::with_capacity(3);
-        for (input, write) in [
-            (
-                &subsonic_url,
-                (|s: &mut Settings, value: String| {
-                    s.accounts.subsonic.url = value.trim().to_string()
-                }) as fn(&mut Settings, String),
-            ),
-            (&subsonic_user, |s, value| {
-                s.accounts.subsonic.user = value.trim().to_string()
-            }),
-            // The password is stored exactly as typed. Trimming it the way
-            // the two above are would quietly break a login on a password
-            // that really does end in a space.
-            (&subsonic_password, |s, value| {
-                s.accounts.subsonic.password = value
-            }),
-        ] {
-            _subsonic_changes.push(cx.subscribe(input, {
-                move |this: &mut Self, input, event: &InputEvent, cx| match event {
-                    InputEvent::Change => {
-                        let value = input.read(cx).value().to_string();
-                        Settings::update(move |s| write(s, value));
-                        this.subsonic_dirty = true;
-
-                        // Whatever the last Connect said was about the old
-                        // server, so it stops standing for this one.
-                        this.subsonic_status = None;
-                        cx.notify();
-                    }
-
-                    // The account may have moved, which the library has to
-                    // follow. On the way out of the field rather than on
-                    // the keystroke: see `subsonic_moved`.
-                    InputEvent::Blur | InputEvent::PressEnter { .. } => this.subsonic_moved(cx),
-
-                    InputEvent::Focus => {}
-                }
-            }));
-        }
-        // One count on the way in, so the sync row has a number before
-        // anything has been asked of the server.
-        let subsonic_rows = subsonic_row_count(&library, cx);
+        let subsonic: Vec<subsonic::SubsonicForm> = settings
+            .accounts
+            .subsonic_servers
+            .iter()
+            .enumerate()
+            .map(|(id, account)| {
+                subsonic::SubsonicForm::new(id as u64, account, &library, window, cx)
+            })
+            .collect();
+        let subsonic_next_id = subsonic.len() as u64;
 
         // The station add row. Nothing writes through on a keystroke here:
         // a station lands in the library on the Add press, so a half-typed
@@ -1641,16 +1579,11 @@ impl SettingsWindow {
             capture_folder: settings.capture.folder.clone(),
             capture_pattern,
             capture_album,
-            subsonic_url,
-            subsonic_user,
-            subsonic_password,
-            subsonic_enabled: settings.accounts.subsonic.enabled,
-            subsonic_status: None,
-            subsonic_rows,
-            subsonic_last_sync: settings.accounts.subsonic.last_sync,
+            subsonic,
+            subsonic_next_id,
             subsonic_syncing: rox_services::sources::syncing(),
+            subsonic_editing: None,
             subsonic_follow: None,
-            subsonic_dirty: false,
             stations,
             station_url,
             station_name,
@@ -1748,7 +1681,6 @@ impl SettingsWindow {
             _picker_changes,
             _lastfm_changes,
             _broadcast_changes,
-            _subsonic_changes,
             _ffmpeg_changed,
             _capture_pattern_changed,
             _discord_line_changes,
@@ -6433,212 +6365,6 @@ impl SettingsWindow {
         )
     }
 
-    /// The Subsonic section: a server rox reads a library off, rather than
-    /// one it sends listens to. It renders on the Sources page, with the
-    /// folders and the stations, since what it is to rox is another place
-    /// tracks come from. The credentials it holds are what kept it beside
-    /// the other accounts for a while.
-    ///
-    /// The switch gates the rest the way the icecast one does. A URL, a
-    /// login, a connection test and a sync button are four rows of setup
-    /// for something most people never turn on.
-    fn subsonic_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
-        Section::new(
-            q,
-            icons::DATABASE,
-            rox_i18n::t!("settings-integrations-section-subsonic"),
-            None,
-            |rows| {
-                rows.keyed(
-                    "settings-integrations-subsonic-enable",
-                    &[
-                        "subsonic",
-                        "opensubsonic",
-                        "navidrome",
-                        "airsonic",
-                        "gonic",
-                        "server",
-                        "library",
-                    ],
-                    panel::toggle(self.subsonic_enabled, Self::set_subsonic_enabled, cx),
-                )
-                .when(self.subsonic_enabled, |rows| {
-                    rows.keyed(
-                        "settings-integrations-subsonic-server",
-                        &["subsonic", "url", "host", "server", "address"],
-                        Input::new(&self.subsonic_url).w(px(260.)),
-                    )
-                    .keyed(
-                        "settings-integrations-subsonic-credentials",
-                        &["subsonic", "user", "password", "login", "credentials"],
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_SM)
-                            .child(Input::new(&self.subsonic_user).w(px(120.)))
-                            .child(
-                                Input::new(&self.subsonic_password)
-                                    .mask_toggle()
-                                    .w(px(140.)),
-                            ),
-                    )
-                    .custom(&["subsonic", "connect", "test", "ping"], || {
-                        self.subsonic_connect_row(cx).into_any_element()
-                    })
-                    .custom(&["subsonic", "sync", "catalog", "refresh"], || {
-                        self.subsonic_sync_row(cx).into_any_element()
-                    })
-                })
-                // Past the switch's gate: a server that's off is the one
-                // most likely to be on its way out, and its tracks are
-                // exactly what's left to remove.
-                .when(self.subsonic_removable(cx), |rows| {
-                    rows.keyed(
-                        "settings-integrations-subsonic-remove",
-                        &["subsonic", "remove", "delete", "forget", "server"],
-                        small_button(
-                            rox_i18n::t!("settings-common-remove"),
-                            icons::TRASH,
-                            self.subsonic_syncing,
-                            cx.listener(|this, _, _, cx| {
-                                this.pending = Some(Pending::RemoveSubsonic);
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                })
-            },
-        )
-    }
-
-    /// Whether there's a server to remove: an address typed in, or tracks
-    /// still filed under the one configured.
-    fn subsonic_removable(&self, cx: &App) -> bool {
-        !self.subsonic_url.read(cx).value().trim().is_empty() || self.subsonic_rows > 0
-    }
-
-    /// Remove Server's yes: the account and its tracks go, and the fields
-    /// empty to match. The switch goes off with them, since there's nothing
-    /// left for it to turn on.
-    fn remove_subsonic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let removed = rox_services::sources::remove(self.library.clone(), cx);
-
-        for input in [
-            &self.subsonic_url,
-            &self.subsonic_user,
-            &self.subsonic_password,
-        ] {
-            input.update(cx, |input, cx| input.set_value("", window, cx));
-        }
-
-        self.subsonic_enabled = false;
-        self.subsonic_status = None;
-        self.subsonic_last_sync = 0;
-
-        self.subsonic_follow = Some(cx.spawn(async move |this, cx| {
-            removed.await;
-
-            this.update(cx, |this, cx| {
-                this.subsonic_rows = subsonic_row_count(&this.library, cx);
-                cx.notify();
-            })
-            .ok();
-        }));
-
-        cx.notify();
-    }
-
-    /// The connect strip, shaped like the scrobble destinations': what the
-    /// last attempt said stands as the label, the button is the control.
-    /// Connect with no URL typed would only ever fail, so it stays inert
-    /// until there's a server to reach.
-    fn subsonic_connect_row(&self, cx: &mut Context<Self>) -> Div {
-        let status = self
-            .subsonic_status
-            .clone()
-            .unwrap_or_else(|| rox_i18n::t!("settings-integrations-scrobble-status-not-connected"));
-        let empty = self.subsonic_url.read(cx).value().trim().is_empty();
-
-        panel::setting_row(
-            status,
-            None,
-            small_button(
-                rox_i18n::t!("settings-integrations-subsonic-connect"),
-                icons::LINK,
-                empty,
-                cx.listener(|this, _, _, cx| this.subsonic_connect(cx)),
-            ),
-        )
-    }
-
-    /// The sync strip: where the library stands against this server on the
-    /// left, the button that moves it on the right.
-    fn subsonic_sync_row(&self, cx: &mut Context<Self>) -> Div {
-        let state: SharedString = match rox_services::sources::progress() {
-            Some((done, total)) => rox_i18n::t!(
-                "settings-integrations-subsonic-syncing",
-                done = done as i64,
-                total = total as i64
-            ),
-
-            None if self.subsonic_last_sync == 0 => {
-                rox_i18n::t!("settings-integrations-subsonic-sync-never")
-            }
-
-            None => rox_i18n::t!(
-                "settings-integrations-subsonic-sync-count",
-                n = self.subsonic_rows as i64,
-                date = rox_core::fmt::fmt_date(self.subsonic_last_sync)
-            ),
-        };
-
-        panel::setting_row(
-            state,
-            Some(rox_i18n::t!(
-                "settings-integrations-subsonic-sync-now.description"
-            )),
-            small_button(
-                rox_i18n::t!("settings-integrations-subsonic-sync-now"),
-                icons::REFRESH_CW,
-                self.subsonic_syncing,
-                cx.listener(|this, _, _, cx| this.subsonic_sync(cx)),
-            ),
-        )
-    }
-
-    /// The Subsonic switch. The header table follows it, so a server
-    /// pointed somewhere else and turned back on can authorize a stream
-    /// without a restart.
-    ///
-    /// The library follows too: off takes the server's tracks out of every
-    /// list without deleting them, on brings them back.
-    fn set_subsonic_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.subsonic_enabled = on;
-        Settings::update(move |s| s.accounts.subsonic.enabled = on);
-        rox_services::sources::install_registry();
-        rox_services::sources::follow_account(self.library.clone(), cx).detach();
-        cx.notify();
-    }
-
-    /// A field was left, so follow the account with the authorize table and
-    /// the library. The rows filed under the address the account has left
-    /// can't be signed by anybody any more, so leaving them would show a
-    /// shelf of tracks that skip themselves and blame the password.
-    ///
-    /// Leaving the field is the commit, the same one the broadcast rows
-    /// take three hundred lines up. Hanging this off the keystroke instead
-    /// would drop the catalog on the first character typed, since mid-edit
-    /// every character is its own source id, and pay for a projection
-    /// rebuild on each one after it.
-    ///
-    /// Nothing here dials the server. A finished field is still just a
-    /// field; Connect and Sync Now are the round trips.
-    fn subsonic_moved(&mut self, cx: &mut Context<Self>) {
-        let this = cx.weak_entity();
-        self.subsonic_follow = self.subsonic_commit(this, cx);
-    }
-
     /// The Icecast half of the same idea: re-dial the sink on whatever the
     /// fields now say. Gated on the flag so a blur that passed through an
     /// untouched field doesn't drop a live connection and build it again.
@@ -6652,42 +6378,6 @@ impl SettingsWindow {
         if self.broadcast_enabled {
             crate::integrations::broadcast::apply();
         }
-    }
-
-    /// Follow the account the Subsonic fields now describe, if one of them
-    /// has moved. `None` when none has, so a caller can tell a real pass
-    /// from nothing to do.
-    ///
-    /// The window handle comes in weak and separate rather than off `cx`
-    /// because the flush runs this while the entity is already on its way
-    /// out; the row count it would refresh has nowhere to land then, and
-    /// the prune underneath it still has to happen.
-    fn subsonic_commit(&mut self, this: WeakEntity<Self>, cx: &mut App) -> Option<Task<()>> {
-        if !self.subsonic_dirty {
-            return None;
-        }
-
-        self.subsonic_dirty = false;
-
-        // The table first, so a stream can be signed under the new source
-        // id without a restart.
-        rox_services::sources::install_registry();
-
-        let prune = rox_services::sources::follow_account(self.library.clone(), cx);
-
-        Some(cx.spawn(async move |cx| {
-            // Nothing moves on the overwhelming majority of these, which is
-            // every edit that didn't change where the account points.
-            if prune.await == 0 {
-                return;
-            }
-
-            this.update(cx, |this, cx| {
-                this.subsonic_rows = subsonic_row_count(&this.library, cx);
-                cx.notify();
-            })
-            .ok();
-        }))
     }
 
     /// Run the commit every dirty field would have run on its way out.
@@ -6712,104 +6402,12 @@ impl SettingsWindow {
         self.subsonic_commit(this, cx).unwrap_or(Task::ready(()))
     }
 
-    /// Ping the server and keep what it answered for the status line. Off
-    /// the UI thread, since it's a round trip to somebody's machine.
-    fn subsonic_connect(&mut self, cx: &mut Context<Self>) {
-        let ping = rox_services::sources::ping(cx);
-
-        cx.spawn(async move |this, cx| {
-            let answer = ping.await;
-
-            this.update(cx, |this, cx| {
-                this.subsonic_status = Some(match answer {
-                    // A plain Subsonic server reports no name, so its
-                    // protocol version is the most it can be called.
-                    Ok(info) if info.server_type.is_empty() => rox_i18n::t!(
-                        "settings-integrations-subsonic-status-ok",
-                        server = info.version
-                    ),
-
-                    Ok(info) => rox_i18n::t!(
-                        "settings-integrations-subsonic-status-ok",
-                        server = format!("{} {}", info.server_type, info.server_version)
-                    ),
-
-                    Err(e) => {
-                        rox_i18n::t!("settings-integrations-subsonic-status-failed", error = e)
-                    }
-                });
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-
-        cx.notify();
-    }
-
-    /// Ask the server for its catalog and reconcile the library against
-    /// it. Two tasks: one waits on the sync, the other keeps the line's
-    /// album count moving while it walks.
-    fn subsonic_sync(&mut self, cx: &mut Context<Self>) {
-        if self.subsonic_syncing {
-            return;
-        }
-
-        self.subsonic_syncing = true;
-        self.subsonic_status = None;
-
-        let sync = rox_services::sources::sync(self.library.clone(), cx);
-
-        cx.spawn(async move |this, cx| {
-            let outcome = sync.await;
-
-            this.update(cx, |this, cx| {
-                this.subsonic_syncing = false;
-                this.subsonic_last_sync = Settings::load().accounts.subsonic.last_sync;
-                this.subsonic_rows = subsonic_row_count(&this.library, cx);
-
-                if let Err(e) = outcome {
-                    this.subsonic_status = Some(rox_i18n::t!(
-                        "settings-integrations-subsonic-sync-failed",
-                        error = e
-                    ));
-                }
-
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-
-        // A big library is walked album by album, so without this the line
-        // would sit still for minutes and read as hung.
-        cx.spawn(async move |this, cx| {
-            while rox_services::sources::syncing() {
-                cx.background_executor().timer(SUBSONIC_SYNC_POLL).await;
-
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
-                    return;
-                }
-            }
-        })
-        .detach();
-
-        cx.notify();
-    }
-
-    /// The Sources page: everywhere rox gets music from, in the order a
-    /// library grows. Folders on this machine first, then a server it
-    /// reads someone else's library off, then the streams that have no
-    /// library at all.
-    ///
-    /// The page exists because a source is configured once and listed
-    /// forever, and the listing panels were carrying both jobs. A station
-    /// is added here and played there.
-    fn sources_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
-        PageBody::new()
-            .section(self.folders_section(q, cx))
-            .section(self.subsonic_section(q, cx))
-            .section(self.stations_section(q, cx))
+    /// The Radio page: the stations the library holds. A station is a
+    /// stream with no catalog behind it, so it isn't one of the Library
+    /// page's sources, the folders and servers a library is browsed out of.
+    /// It's configured here and played from its own panel.
+    fn radio_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new().section(self.stations_section(q, cx))
     }
 
     /// Saving songs off a stream. Two controls and one warning, because the
@@ -7007,38 +6605,6 @@ impl SettingsWindow {
             .ok();
         })
         .detach();
-    }
-
-    /// Local folders, as a line and the way over to them. The table itself
-    /// stays on the Library page: it's woven into the watch limit, the
-    /// scan badge and the genre rules that read the same roots, and two
-    /// tables editing one set of folders is worse than one table a click
-    /// away.
-    fn folders_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
-        let open = small_button(
-            rox_i18n::t!("settings-sources-folders-open"),
-            icons::LIST_MUSIC,
-            false,
-            cx.listener(|this, _, window, cx| this.open_page(Page::Library, window, cx)),
-        )
-        .into_any_element();
-        let note = div()
-            .text_xs()
-            .text_color(palette::text_muted())
-            .child(rox_i18n::t!("settings-sources-folders-note"));
-
-        Section::new(
-            q,
-            icons::FOLDER,
-            rox_i18n::t!("settings-sources-section-folders"),
-            Some(open),
-            |rows| {
-                rows.custom(
-                    &["scan", "music", "folder", "local", "disk", "library"],
-                    || note.into_any_element(),
-                )
-            },
-        )
     }
 
     /// The stations section: what the library holds, a row to add one by
@@ -7753,7 +7319,7 @@ impl SettingsWindow {
             .child(number_cell(TRACKS_COL_W, stats.tracks.to_string()))
             .child(number_cell(ALBUMS_COL_W, stats.albums.to_string()))
             .child(number_cell(SIZE_COL_W, human_size(stats.bytes)))
-            .child(remove)
+            .child(action_cell(remove))
     }
 
     fn library_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
@@ -7780,8 +7346,10 @@ impl SettingsWindow {
             .text_xs()
             .text_color(palette::text_muted())
             .child(rox_i18n::t!("settings-library-genre-separator-nudge"));
-        // The folder table: a column header line, then a hairlined row
-        // per folder.
+        // The sources table: a column header line, then a hairlined row per
+        // folder and per server. One list for every kind, so a source that
+        // arrives later as an extension takes a row here rather than a
+        // section of its own.
         let mut table = div().flex().flex_col().child(
             div()
                 .flex()
@@ -7796,7 +7364,7 @@ impl SettingsWindow {
                 .child(
                     div()
                         .flex_1()
-                        .child(rox_i18n::t!("settings-library-folder-col-folder")),
+                        .child(rox_i18n::t!("settings-library-col-source")),
                 )
                 .child(
                     div()
@@ -7821,12 +7389,13 @@ impl SettingsWindow {
                 )
                 .child(div().w(ACTION_COL_W).flex_none()),
         );
-        if self.root_stats.is_empty() {
+        let servers = self.subsonic_rows(cx);
+        if self.root_stats.is_empty() && servers.is_empty() {
             table = table.child(
                 div()
                     .py(tokens::SPACE_XS)
                     .text_color(palette::text_muted())
-                    .child(rox_i18n::t!("settings-library-no-folders")),
+                    .child(rox_i18n::t!("settings-library-no-sources")),
             );
         }
         for (root, stats) in &self.root_stats {
@@ -7840,15 +7409,21 @@ impl SettingsWindow {
                 table = table.child(portal_banner(root));
             }
         }
+        table = table.children(servers);
         // An add slot at the foot of the list, where the eye lands after
-        // reading it. Same browse the header's Add Folder opens.
-        table = table.child(div().flex().flex_row().items_center().child(icon_button(
-            icons::PLUS,
-            scanning,
-            cx.listener(|this, _, _, cx| {
-                rox_services::catalog::browse(&this.library, cx);
-            }),
-        )));
+        // reading it. Same menu the header's Add opens.
+        let this = cx.entity().downgrade();
+        table = table.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .pt(tokens::SPACE_XS)
+                .child(
+                    settings_ui::menu_button("add-source-foot", "", icons::PLUS)
+                        .dropdown_menu(move |menu, _, _| add_source_menu(menu, &this, scanning)),
+                ),
+        );
         // The library's badge and the file under the scan cursor, or the
         // resting status, under the table.
         let note: Option<SharedString> = busy.or_else(|| {
@@ -7875,21 +7450,23 @@ impl SettingsWindow {
                 )
             });
 
-        // Add folder and rescan are in the section header like the colors
-        // controls.
+        // Add and rescan are in the section header like the colors
+        // controls. Add drops the kinds of source; rescan walks the folders,
+        // since a server has its own Sync.
+        let this = cx.entity().downgrade();
         let controls = div()
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_XS)
-            .child(small_button(
-                rox_i18n::t!("settings-library-add-folder"),
-                icons::FOLDER_PLUS,
-                scanning,
-                cx.listener(|this, _, _, cx| {
-                    rox_services::catalog::browse(&this.library, cx);
-                }),
-            ))
+            .child(
+                settings_ui::menu_button(
+                    "add-source",
+                    rox_i18n::t!("settings-common-add"),
+                    icons::PLUS,
+                )
+                .dropdown_menu(move |menu, _, _| add_source_menu(menu, &this, scanning)),
+            )
             .child(small_button(
                 rox_i18n::t!("settings-common-rescan"),
                 icons::REFRESH_CW,
@@ -7928,7 +7505,10 @@ impl SettingsWindow {
         // and a search never turns up one without the other. The portal
         // callouts live inside the table, so it answers to their terms too,
         // but only while one is showing.
-        let mut folders = vec!["scan", "rescan", "music", "add", "remove"];
+        let mut folders = vec![
+            "scan", "rescan", "music", "add", "remove", "folder", "source",
+        ];
+        folders.extend_from_slice(subsonic::KEYWORDS);
         if self
             .root_stats
             .iter()
@@ -7940,7 +7520,7 @@ impl SettingsWindow {
             .section(Section::new(
                 q,
                 icons::FOLDER,
-                rox_i18n::t!("settings-library-section-folders"),
+                rox_i18n::t!("settings-library-section-sources"),
                 Some(controls.into_any_element()),
                 |rows| {
                     let rows = rows.custom(&folders, || lead_in.into_any_element());
@@ -10093,7 +9673,7 @@ impl SettingsWindow {
             Page::Playback => self.playback_page(q, cx),
             Page::Providers => self.providers_page(q, cx),
             Page::Shader => self.shader_page(q, window, cx),
-            Page::Sources => self.sources_page(q, cx),
+            Page::Radio => self.radio_page(q, cx),
             Page::Storage => self.storage_page(q, cx),
             Page::Workspace => self.workspace_page(q, cx),
             Page::Development => self.development_page(q, cx),
@@ -10344,6 +9924,52 @@ fn role_chip(
 }
 
 /// One right-aligned numeric cell of the folder table.
+/// The trailing column of a sources row: its actions, right-aligned in a
+/// fixed width so every row's numbers line up whatever it can do.
+fn action_cell(actions: impl IntoElement) -> Div {
+    div()
+        .w(ACTION_COL_W)
+        .flex_none()
+        .flex()
+        .flex_row()
+        .justify_end()
+        .child(actions)
+}
+
+/// The kinds of source the Add menu offers. A folder opens the file picker
+/// straight away, the way the add slot always has; a server opens its setup
+/// dialog. Scanning holds the folder back, since a new folder starts a
+/// scan of its own.
+fn add_source_menu(
+    menu: PopupMenu,
+    this: &WeakEntity<SettingsWindow>,
+    scanning: bool,
+) -> PopupMenu {
+    let folder = this.clone();
+    let server = this.clone();
+
+    menu.item(
+        PopupMenuItem::new(rox_i18n::t!("settings-library-add-folder"))
+            .icon(Icon::default().path(icons::FOLDER))
+            .disabled(scanning)
+            .on_click(move |_, _, cx| {
+                if let Some(this) = folder.upgrade() {
+                    let library = this.read(cx).library.clone();
+                    rox_services::catalog::browse(&library, cx);
+                }
+            }),
+    )
+    .item(
+        PopupMenuItem::new(rox_i18n::t!("settings-library-add-subsonic"))
+            .icon(Icon::default().path(icons::DATABASE))
+            .on_click(move |_, window, cx| {
+                if let Some(this) = server.upgrade() {
+                    this.update(cx, |this, cx| this.add_subsonic(window, cx));
+                }
+            }),
+    )
+}
+
 fn number_cell(width: Pixels, value: String) -> Div {
     div()
         .w(width)
@@ -10715,28 +10341,6 @@ fn seed_root_stats(library: &Entity<Library>, cx: &App) -> Vec<(PathBuf, Stats)>
         .into_iter()
         .map(|root| (root, Stats::default()))
         .collect()
-}
-
-/// How many rows the library holds under the configured Subsonic server.
-/// Zero when no server is set up, or when its rows have never synced. Its
-/// own connection rather than the catalog's, since the catalog's belongs
-/// to the UI thread and this is one count on the way into a window. A
-/// database that isn't there is left alone for [`StorageInfo::measure`]'s
-/// reason: opening one creates it.
-fn subsonic_row_count(library: &Entity<Library>, cx: &App) -> usize {
-    let Some(source) = rox_services::sources::server().map(|server| server.source_id()) else {
-        return 0;
-    };
-
-    let db = library.read(cx).db_path();
-    if !db.exists() {
-        return 0;
-    }
-
-    rox_library::store::open(&db)
-        .ok()
-        .map(|conn| rox_services::sources::row_count(&conn, &source))
-        .unwrap_or(0)
 }
 
 /// Every radio station the library holds. Its own connection, opened per
@@ -11130,6 +10734,9 @@ impl Render for SettingsWindow {
                                 .child(Scrollbar::vertical(&self.scroll)),
                         ),
                 )
+                // A Subsonic server's setup floats the same way, under the
+                // confirm so Remove Server's question lands on top of it.
+                .children(self.subsonic_dialog(window, cx))
                 // The overwrite confirm floats over the whole window on its own
                 // occluding layer, last so it paints on top of the page.
                 .children(self.confirm_overlay(window, cx))
@@ -11175,8 +10782,8 @@ mod tests {
             Page::MlModels => "settings-page-ml-models",
             Page::Playback => "settings-page-playback",
             Page::Providers => "settings-page-providers",
+            Page::Radio => "settings-page-radio",
             Page::Shader => "settings-page-shader",
-            Page::Sources => "settings-page-sources",
             Page::Storage => "settings-page-storage",
             Page::Workspace => "settings-page-workspace",
             Page::Development => "settings-page-development",
@@ -11194,8 +10801,8 @@ mod tests {
         Page::MlModels,
         Page::Playback,
         Page::Providers,
+        Page::Radio,
         Page::Shader,
-        Page::Sources,
         Page::Storage,
         Page::Workspace,
         Page::Development,

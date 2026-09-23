@@ -2562,10 +2562,10 @@ impl MetadataPanel {
     }
 
     /// What the Source row says for a remote track: the one word for a
-    /// station, the server's own address for a Subsonic row, since the
+    /// station, the server's name or host for a Subsonic row, since the
     /// source string it's filed under is a digest nobody would recognize.
-    /// Held against that source string, because the address comes out of
-    /// the settings file and the sheet redraws on the pump.
+    /// Held against that source string, since the sheet redraws on the
+    /// pump and a label is a lock and a clone either way.
     fn source_label(&mut self, key: &TrackKey) -> SharedString {
         let source = key.source.to_string();
         if let Some((held, label)) = &self.source_label
@@ -2577,24 +2577,14 @@ impl MetadataPanel {
         let label: SharedString = match key.origin() {
             Origin::Radio => rox_i18n::t!("metadata-source-radio"),
 
-            // The host alone: the scheme and the path under it are the
-            // machine's business, and the row has one line to say where
-            // this came from.
-            Origin::Subsonic => {
-                let url = rox_core::settings::Settings::load().accounts.subsonic.url;
-                let host = url
-                    .trim()
-                    .trim_start_matches("https://")
-                    .trim_start_matches("http://")
-                    .split('/')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                match host.is_empty() {
-                    true => rox_i18n::t!("metadata-source-subsonic"),
-                    false => SharedString::from(host),
-                }
-            }
+            // The server this row came from, by the name it was given or
+            // its host, since there can be several. A row no account
+            // claims any more has only its digest to show, and reads as
+            // plain Subsonic instead.
+            Origin::Subsonic => match rox_library::cue::source_label(&source) {
+                label if label == source => rox_i18n::t!("metadata-source-subsonic"),
+                label => SharedString::from(label),
+            },
 
             Origin::Local => SharedString::from(source.clone()),
         };

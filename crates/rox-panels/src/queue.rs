@@ -21,7 +21,7 @@ use gpui_component::scroll::Scrollbar;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use rox_library::cue::{Origin, TrackKey};
+use rox_library::cue::{Origin, SourceId, TrackKey};
 use rox_library::projection::{FilterSet, Filterable, TrackFields, parse_query};
 use rox_library::store::TrackMeta;
 
@@ -199,6 +199,10 @@ struct TrackRow {
     rating: u8,
     plays: u32,
     path: PathBuf,
+    /// Where the entry comes from, for the `source:` pin and the source
+    /// filter: the key's own, so a file dropped straight on the queue reads
+    /// as local like any other file.
+    source: SourceId,
 }
 
 impl Filterable for TrackRow {
@@ -213,6 +217,7 @@ impl Filterable for TrackRow {
             year: self.year,
             codec: &self.codec,
             path: self.path.to_str().unwrap_or_default(),
+            source: &self.source,
         }
     }
 }
@@ -686,6 +691,7 @@ impl QueuePanel {
                         rating: m.rating,
                         plays: count,
                         path: key.path.clone(),
+                        source: key.source.clone(),
                     },
                     // Out of library: draw the file's own tags, read off the
                     // disk and cached above. Fall back to just the file name
@@ -713,6 +719,7 @@ impl QueuePanel {
                             rating: 0,
                             plays: count,
                             path: key.path.clone(),
+                            source: key.source.clone(),
                         },
                         None => TrackRow {
                             entry_id: entry.id,
@@ -736,6 +743,7 @@ impl QueuePanel {
                             rating: 0,
                             plays: count,
                             path: key.path.clone(),
+                            source: key.source.clone(),
                         },
                     },
                 }
@@ -1820,6 +1828,8 @@ impl QueuePanel {
                     .flex()
                     .items_center()
                     .justify_center()
+                    .p(tokens::SPACE_MD)
+                    .text_center()
                     .text_color(palette::text_faint())
                     .child(message),
             )

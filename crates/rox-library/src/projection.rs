@@ -1202,6 +1202,10 @@ pub enum QueryField {
     Year,
     Folder,
     Codec,
+    /// Where the track comes from: "local", a server by its name or host,
+    /// matched on the name as well as the stored source string, since the
+    /// string of a server is a digest. Pin-only like codec.
+    Source,
     /// The three numeric pins, which take a comparison rather than a
     /// substring: `rating:>=4`, `plays:0`, `added:<90d`. Pin-only, like
     /// folder and codec: a bare number is a plausible title or year, and
@@ -1221,15 +1225,15 @@ impl QueryField {
     }
 
     /// Whether the field has an absent value a bare `-field` token can ask
-    /// for. A scanned row always has a folder and a codec, and an added
-    /// date is either a stamp or the epoch rather than a blank, so those
-    /// three have nothing to be missing and `-folder` stays free text.
+    /// for. A scanned row always has a folder, a codec and a source, and an
+    /// added date is either a stamp or the epoch rather than a blank, so
+    /// those four have nothing to be missing and `-folder` stays free text.
     /// What counts as absent per field: 0 for `year`, the empty string for
     /// the name fields, unrated for `rating`, and no plays for `plays`.
     pub fn absence(self) -> bool {
         !matches!(
             self,
-            QueryField::Folder | QueryField::Codec | QueryField::Added
+            QueryField::Folder | QueryField::Codec | QueryField::Source | QueryField::Added
         )
     }
 }
@@ -1245,6 +1249,7 @@ pub const QUERY_FIELDS: &[(&str, QueryField)] = &[
     ("year", QueryField::Year),
     ("folder", QueryField::Folder),
     ("codec", QueryField::Codec),
+    ("source", QueryField::Source),
     ("rating", QueryField::Rating),
     ("plays", QueryField::Plays),
     ("added", QueryField::Added),
@@ -1501,6 +1506,10 @@ pub enum FilterField {
     Genre,
     Year,
     Folder,
+    /// The stored source string, matched whole: "local", or a server's
+    /// "subsonic:<digest>". A pick names a source, not the name it shows
+    /// under, so renaming a server leaves its pick standing.
+    Source,
 }
 
 /// A structured filter over exact field values, the filter panel's state:
@@ -1621,6 +1630,7 @@ impl FilterSet {
                     values.iter().any(|v| folder_in_subtree(&folder, v))
                 }
                 FilterField::Year => values.contains(&fields.year.to_string()),
+                FilterField::Source => values.iter().any(|v| v == fields.source),
             }
         })
     }
@@ -1650,6 +1660,9 @@ pub struct TrackFields<'a> {
     /// empty when there is none. The folder itself is the parent directory,
     /// resolved the same way the projection interns it.
     pub path: &'a str,
+    /// The stored source string, for the `source:` pin and the source
+    /// filter; "local" for a file.
+    pub source: &'a str,
 }
 
 /// Whether a folder is at or under a picked one: the pick itself, or a
@@ -1708,6 +1721,14 @@ fn year_strings() -> &'static Arena {
 /// everything.
 fn contains_fold(haystack: &str, needle_folded: &str) -> bool {
     needle_folded.is_empty() || crate::fold::fold(haystack).contains(needle_folded)
+}
+
+/// Whether a `source:` needle names this source: on the name it shows
+/// under, which is what anyone types, or on the stored string, so
+/// `source:subsonic` takes every server and `source:local` every file.
+fn source_hit(source: &str, needle_folded: &str) -> bool {
+    contains_fold(source, needle_folded)
+        || contains_fold(&crate::cue::source_label(source), needle_folded)
 }
 
 /// A row a panel filters its own list with. The panels that hold their own
@@ -1778,6 +1799,7 @@ pub fn track_matches(terms: &[Term], fields: &TrackFields) -> bool {
             Some(QueryField::Genre) => contains_fold(fields.genre, &t.needle),
             Some(QueryField::Folder) => contains_fold(&fields.folder(), &t.needle),
             Some(QueryField::Codec) => contains_fold(fields.codec, &t.needle),
+            Some(QueryField::Source) => source_hit(fields.source, &t.needle),
             Some(QueryField::Year) => fields.year.to_string().contains(t.needle.as_str()),
             Some(QueryField::Rating | QueryField::Plays | QueryField::Added) => false,
         };
@@ -1821,6 +1843,8 @@ pub enum SortKey {
     AlbumGain,
     /// How fast the track runs, whichever source wrote the number.
     Bpm,
+    /// Where the track comes from, by the name the source shows under.
+    Source,
 }
 
 /// The leading half of a sort column's key, which decides only whether a
@@ -1916,6 +1940,18 @@ impl Projection {
             let source = &self.sources.strings[sym as usize];
             self.browsable[row] = source_browsable(source) && !self.source_hidden(sym);
         }
+    }
+
+    /// The stored strings of the sources whose rows browse: not radio, and
+    /// not one [`Projection::hide_sources`] took out. What `source:`
+    /// suggests and the source filter lists.
+    pub fn browse_sources(&self) -> impl Iterator<Item = &str> {
+        self.sources
+            .strings
+            .iter()
+            .enumerate()
+            .filter(|(sym, s)| source_browsable(s) && !self.source_hidden(*sym as u32))
+            .map(|(_, s)| s.as_str())
     }
 
     /// Whether a source symbol is one [`Projection::hide_sources`] took out.
@@ -2668,6 +2704,17 @@ impl Projection {
                             column: &self.codec,
                             mask: hit(&self.codecs, &t.needle),
                         },
+                        // A handful of symbols, each tested on its name and
+                        // its stored string; see [`source_hit`].
+                        Some(QueryField::Source) => Hits::Sym {
+                            column: &self.source,
+                            mask: self
+                                .sources
+                                .strings
+                                .iter()
+                                .map(|s| source_hit(s, &t.needle))
+                                .collect(),
+                        },
                         Some(QueryField::Title) => {
                             Hits::Title(memmem::Finder::new(t.needle.as_bytes()))
                         }
@@ -2946,6 +2993,15 @@ impl Projection {
                         .map(|s| values.iter().any(|v| folder_in_subtree(s, v)))
                         .collect(),
                 },
+                FilterField::Source => Check::Sym {
+                    column: &self.source,
+                    ok: self
+                        .sources
+                        .strings
+                        .iter()
+                        .map(|s| values.iter().any(|v| v == s))
+                        .collect(),
+                },
                 FilterField::Year => {
                     let mut ok = vec![false; usize::from(u16::MAX) + 1];
                     for v in values {
@@ -3111,6 +3167,29 @@ impl Projection {
     }
     fn codec_ranks(&self) -> &[u32] {
         self.codec_ranks.get_or_init(|| Self::ranks(&self.codecs))
+    }
+
+    /// Alphabetical rank of each source by the name it shows under. Worked
+    /// out per sort rather than cached: a library holds a handful of
+    /// sources, and a name can change under a standing projection when a
+    /// server is renamed.
+    fn source_ranks(&self) -> Vec<u32> {
+        let names: Vec<String> = self
+            .sources
+            .strings
+            .iter()
+            .map(|s| crate::fold::fold(&crate::cue::source_label(s)))
+            .collect();
+
+        let mut order: Vec<u32> = (0..names.len() as u32).collect();
+        order.sort_by(|&a, &b| names[a as usize].cmp(&names[b as usize]));
+
+        let mut rank = vec![0u32; order.len()];
+        for (pos, &sym) in order.iter().enumerate() {
+            rank[sym as usize] = pos as u32;
+        }
+
+        rank
     }
     fn artist_sort_ranks(&self) -> &[u32] {
         let cache = self.sort_ranks.get_or_init(Box::default);
@@ -3363,6 +3442,10 @@ impl Projection {
             SortKey::Codec => {
                 let rank = self.codec_ranks();
                 self.order_view(view, descending, move |i| rank[self.codec[i] as usize])
+            }
+            SortKey::Source => {
+                let rank = self.source_ranks();
+                self.order_view(view, descending, move |i| rank[self.source[i] as usize])
             }
             SortKey::Bitrate => self.order_view(view, descending, |i| self.bitrate_kbps[i]),
             SortKey::SampleRate => self.order_view(view, descending, |i| self.sample_rate_hz[i]),
@@ -4189,6 +4272,7 @@ mod tests {
                             year: r.5,
                             codec: "mp3",
                             path: "/m/x.mp3",
+                            source: "local",
                         },
                     )
                 })
@@ -4209,6 +4293,7 @@ mod tests {
             year: 0,
             codec: "mp3",
             path: "/m/x.mp3",
+            source: "local",
         };
         assert!(!track_matches(&parse_query("-rating:>=4"), &queue_row));
         assert!(!track_matches(&parse_query("-rating"), &queue_row));
@@ -4267,6 +4352,7 @@ mod tests {
                     year: 0,
                     codec: "flac",
                     path: "/m/x.flac",
+                    source: "local",
                 }
             }
         }
@@ -4310,6 +4396,7 @@ mod tests {
             year: 2001,
             codec: "flac",
             path: "/music/Discovery/1.mp3",
+            source: "local",
         };
         // Free text sweeps title, artist, album, genre; case-folded.
         assert!(track_matches(&parse_query("stronger"), &fields));
@@ -4452,6 +4539,68 @@ mod tests {
         store::init_schema(&conn).unwrap();
         store::insert_batch(&mut conn, rows).unwrap();
         (db, conn)
+    }
+
+    /// A source goes by its name wherever someone reaches for it: `source:`
+    /// finds a server by the name it shows under as well as by its stored
+    /// string, the filter picks by the stored string so a rename leaves a
+    /// pick standing, and the Source sort orders by name. The only test
+    /// that fills the name table, so the others read raw strings as before.
+    #[test]
+    fn a_source_is_searched_filtered_and_sorted_by_name() {
+        let (_db, mut conn) = sorted_library(
+            "by-source",
+            &[track("/m/one.flac", "So What", "Miles Davis", 1959)],
+        );
+        let mut remote = track("sg-4", "Blue in Green", "Miles Davis", 1959);
+        remote.remote_url = "https://home/stream/4".into();
+        store::upsert_source_rows(&mut conn, "subsonic:aaa", &[remote]).unwrap();
+
+        crate::cue::set_source_labels(HashMap::from([
+            ("local".to_string(), "Local".to_string()),
+            ("subsonic:aaa".to_string(), "Home".to_string()),
+        ]));
+        let p = Projection::load_serial(&conn, false).unwrap();
+
+        let titles = |rows: Vec<u32>| -> Vec<String> {
+            rows.into_iter()
+                .map(|row| p.resolve(row).title.to_string())
+                .collect()
+        };
+
+        assert_eq!(titles(p.search("source:home")), ["Blue in Green"]);
+        assert_eq!(titles(p.search("source:subsonic")), ["Blue in Green"]);
+        assert_eq!(titles(p.search("source:local")), ["So What"]);
+        assert!(p.search("home").is_empty(), "a pin, never a free term");
+
+        let mut filter = FilterSet::default();
+        filter.toggle(FilterField::Source, "subsonic:aaa");
+        let mask = p.filter_mask(&filter).expect("a live filter");
+        let picked: Vec<u32> = (0..p.len() as u32).filter(|&r| mask[r as usize]).collect();
+        assert_eq!(titles(picked), ["Blue in Green"]);
+
+        // Home before Local, whatever order the rows loaded in.
+        let all: Vec<u32> = (0..p.len() as u32).collect();
+        assert_eq!(
+            titles(p.sort_view(&all, SortKey::Source, false)),
+            ["Blue in Green", "So What"]
+        );
+
+        // The lists the projection never sees match the same way.
+        let fields = TrackFields {
+            db_id: None,
+            title: "Blue in Green",
+            artist: "Miles Davis",
+            album_artist: "",
+            album: "",
+            genre: "",
+            year: 1959,
+            codec: "",
+            path: "sg-4",
+            source: "subsonic:aaa",
+        };
+        assert!(track_matches(&parse_query("source:home"), &fields));
+        assert!(!track_matches(&parse_query("source:local"), &fields));
     }
 
     /// A switched-off server's rows leave the catalog whole: no list, no
@@ -4876,6 +5025,7 @@ mod tests {
             year: 2006,
             codec: "flac",
             path: "/music/B'Day/1.mp3",
+            source: "local",
         };
         assert!(track_matches(&parse_query("beyonce"), &fields));
         assert!(track_matches(&parse_query("artist:beyonce"), &fields));
@@ -5392,6 +5542,7 @@ mod tests {
             year: 0,
             codec: "",
             path,
+            source: "local",
         };
         assert!(filter.matches(&fields("/music/Air/Moon Safari/2.mp3"), false));
         assert!(!filter.matches(&fields("/music/Airborne/3.mp3"), false));
@@ -5450,6 +5601,7 @@ mod tests {
             year: 2000,
             codec: "mp3",
             path: "/m/1.mp3",
+            source: "local",
         };
         assert!(filter.matches(&fields, false));
         assert!(!unknown.matches(&fields, false));
@@ -5513,6 +5665,7 @@ mod tests {
             year: 2000,
             codec: "mp3",
             path: "/m/1.mp3",
+            source: "local",
         };
         assert!(filter.matches(&fields, true));
         assert!(!filter.matches(&fields, false));
@@ -5741,6 +5894,7 @@ mod tests {
             year: 2001,
             codec: "flac",
             path: "/tmp/bootleg.flac",
+            source: "local",
         };
         let catalogued = TrackFields {
             db_id: Some(7),
@@ -6278,7 +6432,7 @@ mod tests {
     }
 
     /// One local track and one radio station, the shape Andrew's library
-    /// has the moment he adds a stream on the sources page.
+    /// has the moment he adds a stream on the Radio page.
     fn library_and_station() -> Projection {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();

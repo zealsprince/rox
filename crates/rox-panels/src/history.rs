@@ -532,6 +532,7 @@ impl HistoryPanel {
             year: t.year,
             codec: &t.codec,
             path: &t.path,
+            source: &t.source,
         };
         track_matches(terms, &fields)
             && self

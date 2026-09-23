@@ -1466,27 +1466,47 @@ impl Player {
         self.seek_live(0.0);
     }
 
-    /// Replace whatever is playing with a fresh queue starting at its first
-    /// track; the old session quits on drop.
+    /// Replace the playing context with a fresh one starting at its first
+    /// track; the old session quits on drop. The up-next queue carries over,
+    /// see [`play_at`](Self::play_at).
     pub fn play(&mut self, queue: Vec<TrackKey>, cx: &mut Context<Self>) {
-        self.start_session(queue, 0, None, Vec::new(), false, cx);
+        self.play_at(queue, 0, cx);
     }
 
-    /// Replace the queue and start at `start`, so the tracks before it stay
-    /// behind the cursor as history and Prev goes back into them. What a
-    /// double click in a track list uses, seeding the whole list so Next and
+    /// Replace the playing context and start at `start`, so the tracks before
+    /// it stay behind the cursor as history and Prev goes back into them. What
+    /// a double click in a track list uses, seeding the whole list so Next and
     /// Prev continue through the surrounding album instead of dead-ending at
     /// the clicked track.
+    ///
+    /// The hand-picked queue survives the swap (ADR 16). A new context replaces
+    /// the album or library run playing around you, not the tracks you queued
+    /// on top of it, so they come back right after the track that starts.
     pub fn play_at(&mut self, queue: Vec<TrackKey>, start: usize, cx: &mut Context<Self>) {
+        if queue.is_empty() {
+            return;
+        }
+
+        let start = start.min(queue.len() - 1);
+        let queued: Vec<TrackKey> = self.queued().iter().map(|e| self.key_for(e)).collect();
         self.start_session(queue, start, None, Vec::new(), false, cx);
+
+        // Spliced in after the start rather than seeded into the session,
+        // because a fresh context takes the shuffle mode and the engine would
+        // scatter the queue through the tail with it. The shuffle is queued
+        // on the channel ahead of this insert, so it runs first. The engine
+        // numbers a fresh session's entries by their place in the starting
+        // queue, which makes the track that starts entry `start`.
+        if !queued.is_empty() && self.session.is_some() {
+            self.splice(Some(start as u64), queued, None, true, false, None, cx);
+        }
     }
 
     /// Replace whatever is playing with a fresh queue whose entries are all
     /// explicit, playing from the first. Unlike [`play`] and [`play_at`],
     /// which seed a context (an album or library run that plays on unlisted),
     /// these entries are the up-next queue, so the queue panel lists them.
-    /// Clicking an album in a browser calls this, so the album you played
-    /// shows in the queue.
+    /// The genre tagger's preview uses it.
     pub fn play_explicit(&mut self, queue: Vec<TrackKey>, cx: &mut Context<Self>) {
         let explicit = vec![true; queue.len()];
         self.start_session(queue, 0, None, explicit, false, cx);
@@ -2208,6 +2228,10 @@ impl Player {
                         return false;
                     }
                     this.drain_tap();
+                    // Stamp what's audible on the feed beside the samples, so
+                    // the signal hub sees a song change without holding the
+                    // player (it resets the aggregates that ask for it).
+                    this.feed.set_track(this.playing_entry());
                     // The sleep timer rides the same clock: one compare against
                     // an Instant, on a tick that already runs for every session.
                     this.tick_sleep(cx);

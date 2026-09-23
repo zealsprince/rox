@@ -1191,13 +1191,14 @@ impl ArtPanel {
             .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
-    /// Queue the album on the shared player.
+    /// Play the album on the shared player as the new context.
     fn play(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.play_many(vec![ix], cx);
     }
 
-    /// Queue several albums on the shared player, in view order under the
-    /// queue cap.
+    /// Play several albums on the shared player as one context, in view order
+    /// under the queue cap. Context like every other track list rather than
+    /// queued entries, so the queue keeps what was hand-picked (ADR 16).
     fn play_many(&mut self, ixs: Vec<usize>, cx: &mut Context<Self>) {
         let ids: Vec<i64> = ixs
             .iter()
@@ -1210,7 +1211,7 @@ impl ArtPanel {
                 self.error = None;
                 self.state
                     .player
-                    .update(cx, |player, cx| player.play_explicit(keys, cx));
+                    .update(cx, |player, cx| player.play(keys, cx));
             }
             Err(e) => {
                 self.error = Some(format!("library: {e}").into());

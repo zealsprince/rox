@@ -18,19 +18,18 @@ one exception is the border, which draws in the border role's color, and that ro
 already in the override map like any other.
 
 **How a panel's colors reach its drawing.** The read path stays the plain accessors of
-[ADR 10](10-adr-theming.md), with no signature changes anywhere. While a panel renders, a
-thread-local scope stack holds its resolved theme. Each accessor checks that scope first
-and returns the panel's value if the role is overridden there, and otherwise falls
+[ADR 10](10-adr-theming.md), with no signature changes anywhere. While a panel renders,
+a thread-local scope stack holds its resolved theme. Each accessor checks that scope
+first and returns the panel's value if the role is overridden there, and otherwise falls
 through to the process-global palette. A wrapper element pushes the scope for the render
 build and pushes it again for layout, prepaint, and paint, because that's when hover
 styles and canvas paint closures actually call the accessors, and the render build is
-long over by then. The result is that panel code keeps calling `palette::accent()` and
-gets its own accent, without a context parameter threaded through anything.
+long over by then. Panel code keeps calling `palette::accent()` and gets its own accent,
+without a context parameter threaded through anything.
 
 An overridden role reads exactly as it was written. Song theming and palette easing move
 right past it, so a pinned role stays where it was pinned. Every role the panel doesn't
-override keeps following the app palette, including live edits and cover-art tinting, so
-a partial override tracks the app for everything it didn't claim.
+override keeps following the app palette, including live edits and cover-art tinting.
 
 **Editing.** A panel gets its own settings window, built on the same sidebar-and-pages
 shape as the app settings window. The panel's old customize rows become pages of its
@@ -55,22 +54,22 @@ pin, where a full per-panel copy would freeze the panel against them the moment 
 made. What it gives up is that a panel theme isn't a standalone palette file someone
 can hand around on its own.
 
-Overridden roles beating song theming is the intended behavior rather than a
-consequence, since the reason to pin a role is to have it stay put while the rest of the
-app moves. Skipping derivation for those roles also keeps the scope a read-time lookup
-rather than a second derivation pipeline running beside the first.
+Overridden roles beat song theming because the reason to pin a role is to have it stay
+put while the rest of the app moves. Skipping derivation for those roles also keeps the
+scope a read-time lookup rather than a second derivation pipeline running beside the
+first.
 
-Two limits are worth naming. gpui-component's widget chrome, meaning table striping and
+gpui-component's widget chrome, meaning table striping and
 tab bars, projects from the global theme only, so a panel override recolors the panel's
-own drawing while the widget skeleton underneath stays on the app palette. And rounding
+own drawing while the widget skeleton underneath stays on the app palette. Rounding also
 styles the body's own background quad rather than clipping to it, because gpui's content
 masks are rectangular: content pushed hard into a rounded corner still paints square.
 Small radii keep that invisible. Covers are the exception, since they run edge to edge
 with nothing to hide behind, so the art surfaces round their images themselves.
 
 Two smaller things fell out along the way. The border's old per-side on/off mask folded
-into the widths, since a side set to zero draws nothing, so one control now says what two
-used to; configs holding the old mask still load, and it folds over whichever width wins
-until the border is next edited. And tokens stay ADR 12 consts, because the frame knobs
+into the widths, since a side set to zero draws nothing. One control now does what two
+used to. Configs holding the old mask still load, and the mask folds over whichever width
+wins until the border is next edited. And tokens stay ADR 12 consts, because the frame knobs
 shape the panel's outer edge while the tokens govern the spacing and radii of what's
 inside it, which are different questions with different owners.

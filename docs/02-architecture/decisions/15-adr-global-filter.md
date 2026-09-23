@@ -32,14 +32,14 @@ global query with each panel's local one; a fixed toolbar strip instead of a pan
 Also considered, and shipped before being revised: own-query as the default, which left a
 search panel doing nothing at all until each other panel was flipped over to follow it.
 
-Trade: making shared the default is what lets the search panel work with no setup, and it
+Trade: making shared the default lets the search panel work with no setup. It also
 inverts which case costs effort. Two grids scoped to different filters used to be the
 default arrangement and is now an opt-out, with each grid switched to its own query
 individually. That's the right way round once search is a first-class panel, because the
 common case is one query across the layout, and anyone who wants the other arrangement
 still has it.
 
-The `QueryFilter` trait is what keeps that default cheap. Three panels share one
+The `QueryFilter` trait keeps that default cheap. Three panels share one
 implementation, so the follow-and-mirror behavior can't drift into three
 slightly-different copies.
 

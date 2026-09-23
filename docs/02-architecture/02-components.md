@@ -25,19 +25,19 @@ open and says why.
 Processing ([ADR 19](decisions/19-adr-processing-chain.md)): per-source gain (ReplayGain,
 the crossfade curve) multiplies each decoded source on its own, then the chain of DSP
 nodes processes the mixed stream, both on the decode thread immediately before the ring.
-Crossfade is not a node, it's a second open source summed in the engine, so the ring
+Crossfade isn't a node. It's a second open source summed in the engine, so the ring
 keeps one producer. With the chain empty and volume at unity the device gets the
 decoder's samples unchanged, which makes bit-perfect a claim you can check.
 
 Output: one backend contract, a request in and what it negotiated back (mode, rate,
-format). cpal implements it for shared mode; exclusive is per-platform, ALSA `hw` direct,
-WASAPI exclusive, CoreAudio hog mode, and follows the source rate where the device
-allows. A claim that fails opens shared and reports the reason, never silence.
+format). cpal implements it for shared mode. Exclusive mode is per-platform (ALSA `hw`
+direct, WASAPI exclusive, CoreAudio hog mode) and follows the source rate where the
+device allows. A claim that fails opens shared and reports the reason, never silence.
 
 Contract to the UI:
 - In: `play`, `pause`, `seek(pos)`, `next`, `prev`, `enqueue(track)`, `set_volume`,
   `set_loop`, `set_shuffle`, `set_output_device`, `set_crossfade`, `set_gain_rule`, and
-  structural chain edits. Commands cross a channel, they don't call into the RT thread.
+  structural chain edits. Commands cross a channel rather than calling into the RT thread.
   Node parameters don't: a knob is an atomic shared with the UI, so turning one is a
   store the node reads on its next buffer.
 - Out: playback state (current track, position, playing/paused, device), emitted as the
@@ -50,10 +50,10 @@ Contract to the UI:
 Responsibility: hold the catalog, keep it fast, keep it current. SQLite is the durable
 source of truth and the write path. A full in-memory projection is the read path that
 makes browse, sort, and filter instant. Track identity is source-qualified: the key is
-(source, path, sub) and the id is the rowid behind it, with local files as the first
-source, so source extensions extend the catalog instead of forcing a migration (see
+(source, path, sub) and the id is the rowid behind it. Local files are the first source,
+so source extensions extend the catalog instead of forcing a migration (see
 [source extensibility](01-overview.md#source-extensibility) and
-[ADR 29](decisions/29-adr-source-contract.md)). The projection carries the source column
+[ADR 29](decisions/29-adr-source-contract.md)). The projection stores the source column
 too, so a view can filter on it without going back to SQLite.
 
 Boundary: browsing never touches SQLite. The UI reads the shared in-memory projection
@@ -72,9 +72,9 @@ Contract to the UI:
   derive from, and a change event per swap so open views refresh together.
 
 Contract to the metadata writer: after a successful tag write, the library applies the
-committed changes to its rows and reloads the projection, so a tag edit and the browse view
-converge without a full rescan. Fields the projection contains update at once; fields it
-doesn't (comment, composer) reflect on the next rescan.
+committed changes to its rows and reloads the projection, so a tag edit and the browse
+view converge without a full rescan. Fields the projection contains update at once;
+fields it doesn't (comment, composer) reflect on the next rescan.
 
 ## Play history
 
@@ -89,8 +89,8 @@ Boundary: nothing here touches the audio path. The playback engine already emits
 side, applies the listen rule, and appends to the store off the UI thread. The listen
 rule matches the scrobble standard, half the track or four minutes of it, whichever
 comes first. Storage is the library database per
-[ADR 11](decisions/11-adr-play-history.md); aggregates are derived from events, and
-stats read at open cadence, not per keystroke, so they stay in SQL rather than
+[ADR 11](decisions/11-adr-play-history.md). Aggregates are derived from events. Stats
+are read when a view opens rather than per keystroke, so they stay in SQL rather than
 the projection.
 
 Contract:
@@ -100,8 +100,8 @@ Contract:
   last-played, artist / album / genre rollups, recents), and a change event per append
   so open views refresh.
 - To enrichment: the scrobbler accrues played time off the same position clock, so
-  seeks and pauses don't count for either, but every scrobble destination (Last.fm,
-  Libre.fm, ListenBrainz) sends on one shared threshold, a user knob, rather than
+  seeks and pauses don't count for either. Every scrobble destination (Last.fm,
+  Libre.fm, ListenBrainz) sends on one shared threshold, a user knob, rather than on
   the listen rule.
 
 ## Metadata writer
@@ -140,8 +140,8 @@ Contract:
 - In: `thumbnail(key, size)` where key is content-addressed (path + mtime + size).
 - Out: a texture handle, or a placeholder plus a pending load. Off-screen requests cancel.
 - A catalog change marks the texture cache stale rather than clearing it. A stale entry
-  is still served while it re-reads in the background, and only a cover whose bytes
-  actually changed swaps, so a track added to a watched folder never blanks the wall.
+  is still served while it re-reads in the background. Only a cover whose bytes changed
+  swaps, so a track added to a watched folder never blanks the wall.
 
 ## Visualizer subsystem
 
@@ -160,8 +160,19 @@ Three rendering paths read from it, and they differ in what does the drawing:
   as a read-back buffer the panel uploads as a texture
   ([ADR 28](decisions/28-adr-milkdrop.md)).
 
-Boundary: analysis runs off the UI thread, and so does the projectM worker. A worker that
-can't get a GL context reports a failure status instead of taking the app down.
+Boundary: the real-time line is the tap ring. The callback pushes into it and never
+waits, a timer on the player service drains it into the shared feed rather than any
+render pass, and a slow consumer loses samples instead of slowing audio. Past the ring
+the work splits by what it reads. Windowed analysis (the spectrum's bars, the
+spectrogram's columns, the signal hub's bands) runs inline in the paint of the view that
+shows it. Its cost is bounded by the window size rather than the track, and a view that
+isn't painting costs nothing. The transform itself belongs to the feed: it runs once per
+window size each time the feed moves, and every view asking for that size gets the same
+spectrum. The signal hub is bound to its player's feed and advances when it's read, so
+whatever reads a signal also keeps the hub's clock running. Anything that reads a whole
+file, like the waveform peaks or the frame primed for a paused start, runs on the
+background executor. The projectM worker has a thread of its own, and one that can't get
+a GL context reports a failure status instead of taking the app down.
 
 Contract:
 - In: the PCM tap ring, plus the current track for waveform precompute.
@@ -187,9 +198,9 @@ Contract:
   per-panel customize window edits that panel's config. The app-wide half is split again
   on disk by what each file is for, so preferences travel between machines while window
   geometry, playback state, and credentials stay put
-  ([ADR 20](decisions/20-adr-settings-split.md)). Per-view state is stored in panel config: columns, sort, density,
-  theme overrides, and the search query, entered through one shared box component, so
-  duplicated panels diverge and a layout stores all of it.
+  ([ADR 20](decisions/20-adr-settings-split.md)). Per-view state is stored in panel
+  config: columns, sort, density, theme overrides, and the search query (entered through
+  one shared box component). Duplicated panels diverge, and a layout stores all of it.
 
 ## Network enrichment boundary
 
@@ -201,16 +212,14 @@ network never blocks the UI, the audio path, or a browse query.
 - **Offline-first.** Every enrichment feature degrades to nothing when there's no network.
   Playback, browse, search, and manual tagging never depend on it.
 - **Off the hot paths.** Enrichment runs on the background executor, off the UI and audio
-  threads. It never touches
-  the real-time audio callback, and it accesses the library and metadata writer through their
-  existing contracts (the scrobbler reads the same position clock the listen rule does, an
-  auto-tag result goes through the same atomic tag-write path as a manual edit).
+  threads. It never touches the real-time audio callback. It reaches the library and
+  metadata writer through their existing contracts: the scrobbler reads the same position
+  clock the listen rule does, and an auto-tag result goes through the same atomic
+  tag-write path as a manual edit.
 - **The pieces exist.** Last.fm scrobbling is a straightforward HTTP client. The rest are
-  per-domain providers per [ADR 14](decisions/14-adr-online-providers.md): lyrics, tag lookup,
-  and cover art, each matching the track's own tags against a service, ranking the results, and
-  writing the picked one through the existing paths. Fingerprint auto-tagging (`rusty-chromaprint`
-  plus an AcoustID call) is a possible future, not built. None of this is load-bearing for the
-  core, so it stays a thin, well-isolated domain rather than growing into the system.
-
-These are peripheral, so this section fixes the boundary and the offline-first rule, not the
-detail.
+  per-domain providers per [ADR 14](decisions/14-adr-online-providers.md): lyrics, tag
+  lookup, and cover art, each matching the track's own tags against a service, ranking
+  the results, and writing the picked one through the existing paths. Fingerprint
+  identification (`rusty-chromaprint` plus an AcoustID lookup) covers the files whose
+  tags are missing or wrong. None of this is load-bearing for the core, so it stays a
+  thin, isolated domain.

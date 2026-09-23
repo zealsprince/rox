@@ -3,11 +3,11 @@
 **Status:** Decided
 
 Decision: rox's machine interface is newline-delimited JSON-RPC over a local socket,
-which is a Unix domain socket on Linux and macOS and a named pipe on Windows, living in
-a `rox-ipc` crate. The protocol opens with a version handshake and then carries two kinds
-of traffic. Request/response covers transport, queue edits, library queries, and
-now-playing metadata. An event subscription pushes playback state, track changes, and
-queue revision bumps out to whoever is listening.
+which is a Unix domain socket on Linux and macOS and a named pipe on Windows,
+implemented in a `rox-ipc` crate. The protocol opens with a version handshake and then
+carries two kinds of traffic. Request/response covers transport, queue edits, library
+queries, and now-playing metadata. An event subscription pushes playback state, track
+changes, and queue revision bumps out to whoever is listening.
 
 MCP support is a separate thin stdio binary, `rox-mcp`, that proxies the socket, gated
 behind an opt-in "Enable AI features" setting. Workspace files gain a JSON Schema derived
@@ -29,7 +29,7 @@ A D-Bus extension was the other candidate, and it lost on platform reach. It's t
 idiomatic answer on Linux and a foreign one on Windows and macOS, and rox ships on all
 three, so choosing it would mean either a second mechanism for the other two platforms or
 treating them as second-class. MPRIS still exists as the standard desktop shim through
-souvlaki; the socket is the real surface sitting behind it.
+souvlaki; the socket is the real surface behind it.
 
 The socket authenticates through filesystem permissions, which is the same model mpv's
 JSON IPC and mpd's protocol use, so the prior art is well worn. Its one real cost is that
@@ -59,26 +59,24 @@ makes the MCP impossible to drift ahead of what the socket can do.
 
 The "Enable AI features" toggle is on the Application settings page, off by default, and
 reveals the MCP page and the ML models page. It gates what talks to AI tooling: the
-MCP, and any future LLM-facing feature. The built-in acoustic analysis stands on its
-own and keeps running either way; with the toggle off the user stays on the
-built-in version, and enablement only ever layers AI capability on top. Nothing an
-existing library depends on changes when the toggle moves.
+MCP, and any future LLM-facing feature. The built-in acoustic analysis keeps running
+either way, so nothing an existing library depends on changes when the toggle moves.
 
 The icecast sink is the audio half of the refused web server. rox connects out to an
 icecast server as a source client, encoding the processed stream beside ADR 19's
-output modes, and everything downstream, the mount, the listeners, the network face,
-belongs to icecast. Paired with the socket this completes the homegrown front end
+output modes. Everything downstream (the mount, the listeners, the network face) belongs
+to icecast. Paired with the socket this completes the homegrown front end
 story end to end: control over the socket, audio embedded from the stream, and rox
 still owning no HTTP surface. The trade against serving audio directly is a required
 external icecast instance, which is the point, since running one is a choice made
-by someone who wants to broadcast rather than a port every rox user carries.
+by someone who wants to broadcast rather than a port open on every rox install.
 
 Workspaces are already one JSON file each on disk, so machine-editability is a schema
 and a watch away. The schema is derived from the bundle types with schemars rather
 than written by hand, because a hand-written schema drifts and a derived one can be
 held to the types by a test comparing the committed file against the derive output.
-It describes the current write shape only; the read side's legacy folding accepts
-old shapes the writer never produces, and the schema owes them nothing. With
+It describes the current write shape only. The read side's legacy folding accepts old
+shapes the writer never produces, and the schema doesn't cover them. With
 `$schema` in every saved file, editors validate and autocomplete for free, and the
 same hinting makes agent edits reliable. The watch on the workspaces folder
 closes the loop: edit on disk, see it apply.

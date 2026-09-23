@@ -15,7 +15,7 @@ are lofty 0.24, the parallel scans are rayon, the title finder is memchr's memme
 ## The store
 
 One database at `data_dir/rox/library.db` (so `~/.local/share/rox/library.db` on
-Linux), opened in WAL mode with `synchronous = NORMAL`. WAL is load-bearing: it gives
+Linux), opened in WAL mode with `synchronous = NORMAL`. WAL matters here: it gives
 concurrent readers, which the sharded projection load depends on. The catalog is
 one table, with the listens (ADR 11), playlists (ADR 16), and genre opinions in the
 same database:
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS tracks (
 - `mtime` (seconds since epoch) and `size` are the scanner's change key, read back in
   one pass by `local_files` before a scan.
 - The read path is `scan_range`, which streams the projection columns for one rowid
-  range in id order. Everything the projection needs comes through it; paths don't,
+  range in id order. Everything the projection needs comes through it. Paths don't:
   they stay in SQLite until playback asks for them.
 - The four ReplayGain columns are nullable rather than defaulted (ADR 19): 0 dB is a
   real measurement, and a column that couldn't tell it from an untagged file would level
@@ -125,8 +125,9 @@ pub struct Projection {
   intern, so they get the arena instead of millions of heap `String`s. The lowercase
   copy is folded per character at build time so search never lowercases at query time.
 - **Interning**: artist, album artist, album, genre, codec, and folder all repeat
-  heavily, so each interns to a `u32` symbol through a hash map during load. The finished `SymTable` is the symbol table
-  plus a lowercase copy of every entry, built in parallel. Symbol tables run a
+  heavily, so each interns to a `u32` symbol through a hash map during load. The
+  finished `SymTable` is the symbol table plus a lowercase copy of every entry, built in
+  parallel. Symbol tables run a
   hundredth the row count or less, which makes search and sort cheap.
 - **ReplayGain**: the two gains are stored in the projection so the library's Gain
   column can draw and sort without a query per row, packed to hundredths of a dB in an
@@ -240,7 +241,7 @@ The sequence, driven by the library panel in `crates/rox-panels/src/library.rs`:
 1. The panel marks itself busy and spawns one background task.
 2. On the background executor: if a scan root was given, open a connection and run
    the scan to completion; then load the projection sharded and build the canonical
-   order. Scans and loads always open their own connections, the UI-side connection
+   order. Scans and loads always open their own connections; the UI-side connection
    is never lent out.
 3. Back on the UI thread, `Arc<Projection>`, the order, and the view swap in one
    update. The previous projection stays alive until the last in-flight render drops
@@ -248,8 +249,9 @@ The sequence, driven by the library panel in `crates/rox-panels/src/library.rs`:
 
 Because the swap is whole, the projection cannot half-reflect a scan. Because upserts
 keep rowids, identity is preserved across the swap: a queue built against the old
-projection still resolves. The view re-derives on every search keystroke, an empty
-query shares the canonical order's `Arc` and a non-empty one allocates a fresh hit vector.
+projection still resolves. The view re-derives on every search keystroke. An empty
+query shares the canonical order's `Arc`, and a non-empty one allocates a fresh hit
+vector.
 
 ## Watch patches
 
@@ -261,9 +263,9 @@ appends them to the live projection, and tombstones the rows they replace; a
 removal is a tombstone alone. The canonical order takes the new rows at their
 sorted position and drops the dead ones, and the id-to-row map is patched in
 place. Search, filter, sort, and every scan inside the projection skip
-tombstones, so a view never hands one out; code that walks a column by index
-checks `is_dead` itself, and `live_len` is the count a browse sees where `len`
-stays the physical row bound.
+tombstones, so a view never hands one out. Code that walks a column by index
+checks `is_dead` itself. `live_len` is the count a browse sees, while `len` stays
+the physical row bound.
 
 Tombstones accumulate until the next full rebuild. The catalog stops patching
 and rebuilds instead once dead rows pass a tenth of the projection, or when a
@@ -290,9 +292,8 @@ The service is in `crates/rox-library`: `store.rs` (schema, upsert, range reads)
 interning, search, sort, sharded load), `scanner.rs` (walk, change key, lofty),
 `genre.rs` and `genre_meta.rs` (the multi-value convention and the alias table behind
 it), `replaygain.rs` (the tag values and where they came from), `art.rs` (cover art off
-a track's tags, with a folder image as the fallback). The app wires it in `crates/rox-panels/src/library.rs`. The scale
-harness was `crates/rox-prototype-library` (git history, commit bd22dc1), which
-reuses these modules against a generated catalog: `cargo run -p
-rox-prototype-library --release -- --tracks 10_000_000` reproduces the
-measurements in
-[research 02](../0R-research/02-library-scale.md).
+a track's tags, with a folder image as the fallback). The app wires it in
+`crates/rox-panels/src/library.rs`. The scale harness was `crates/rox-prototype-library`
+(git history, commit bd22dc1), which reuses these modules against a generated catalog:
+`cargo run -p rox-prototype-library --release -- --tracks 10_000_000` reproduces the
+measurements in [research 02](../0R-research/02-library-scale.md).

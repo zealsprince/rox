@@ -23,7 +23,7 @@ alternative would need an if-chain written out at every call site.
 Service-shaped modules would model the APIs more faithfully, since a real service often
 spans domains: MusicBrainz serves metadata and, through the Cover Art Archive, art too.
 The cost is that it pushes the which-service question outward into every panel, which is
-exactly the decision panels shouldn't be making.
+the decision panels shouldn't be making.
 
 Hardcoding is fine while there's one service per domain, and Last.fm already showed
 where that ends. The moment a domain has a second service, you need either a trait or a
@@ -41,7 +41,7 @@ and every other service appreciates. An async client would mean a second runtime
 beside gpui's executor, and enrichment traffic is a handful of requests fired when a user
 asks for something, so there's nothing for that runtime to do.
 
-Rate limiting lives inside each service module rather than in the trait, so neither the
+Rate limiting goes inside each service module rather than in the trait, so neither the
 callers nor the trait ever see it. MusicBrainz's one-request-per-second limit is the case
 that forces it, and it's a fact about MusicBrainz rather than about enrichment, so it
 belongs where the other MusicBrainz facts are.
@@ -52,7 +52,7 @@ cache would need a schema and an invalidation story, and nothing needs one until
 operations exist.
 
 Enable state and credentials go in a providers section of the settings file, in the same
-shape and with the same exposure as the Last.fm keys already sitting there. The OS
+shape and with the same exposure as the Last.fm keys already stored there. The OS
 keyring would mean a per-platform dependency, and what it would be guarding is a set of
 API keys that these services hand out to anyone who asks.
 

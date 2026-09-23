@@ -22,7 +22,7 @@ it belonged to a different owner. Two saved workspaces, the live dock dump, and 
 preset pool made up most of the bytes, so the file someone might open to check a library
 path was 126k of dock dumps pretty-printed around it. But size was only the visible
 half. The same file also held window geometry that means nothing on another machine, a
-volume and a play position rewritten on every track, and a Last.fm session key sitting in
+volume and a play position rewritten on every track, and a Last.fm session key stored in
 the file the app itself offers to open in a text editor.
 
 Three properties fall out of splitting on what a file is *for* rather than on size.
@@ -59,10 +59,10 @@ which also takes the per-frame settings parse out of the workspace menu flyouts.
 
 `Settings` stays one object in memory with the four states nested under it, so callers
 still read and write through `Settings::update` and one lock still serializes the
-read-modify-write. The writes aren't atomic across files: a crash partway leaves one an
-edit behind the others, which costs a repaint's worth of drift and never a corrupt file,
-and each file individually still goes through the temp-then-rename that kept a truncated
-write from taking everything down.
+read-modify-write. The writes aren't atomic across files. A crash partway leaves one an
+edit behind the others, which costs a repaint's worth of drift and never a corrupt file.
+Each file still goes through the temp-then-rename that kept a truncated write from taking
+everything down.
 
 Nesting the live look in the same `WorkspaceBundle` the saved files hold collapses the
 two field-by-field transcriptions that used to run between them. Saving a workspace is
@@ -78,22 +78,24 @@ has no business moving, and an icon pack names a folder on one machine.
 **Amended 2026-09-15:** the icon pack is gone, and its setting with it. A pack was a
 folder of SVGs shadowing the built-in names, it only took effect on the next launch, and
 nothing suggested anyone had built one. The folder-on-one-machine reasoning above stays as
-the record of why it sat outside the look while it existed. An old `settings.json` that
+the record of why it stayed outside the look while it existed. An old `settings.json` that
 still carries `icon_pack` loads as before and drops the key on its next write, and the
 `icons/` folder under the data dir is left alone: anyone who did make a pack keeps the
 files.
 
 Migration reads every piece out of the pre-split file's flat map. Each state's fields
 kept their names through the move, so three of the four deserialize straight out of it
-with no field list to keep in sync; the look needs its own pass only because its
+with no field list to keep in sync. The look needs its own pass only because its
 appearance knobs went from flat siblings to a nested object, and the three window fields
-that were renamed have a serde alias for the name they had. The saved workspaces drain
-to their own files once, leaving alone any name that already has a file, and telling apart
-a replay from two names that fold to one filename so neither is dropped. The old file is
-copied to `settings.json.bak-presplit` on the way through, and a migrated load force-writes
-every file: the shards are all absent so they write themselves anyway, but `settings.json`
-is already on disk in the old shape and a no-op edit serializes to the same bytes either
-way, so without the force the stale flat keys would never be stripped.
+that were renamed have a serde alias for their old names. The saved workspaces drain to
+their own files once. The drain leaves alone any name that already has a file, and tells
+a replay apart from two names that fold to one filename so neither is dropped.
+
+The old file is copied to `settings.json.bak-presplit` on the way through, and a migrated
+load force-writes every file. The shards are all absent, so they'd write themselves
+anyway. `settings.json` is already on disk in the old shape, though, and a no-op edit
+serializes to the same bytes either way, so without the force the stale flat keys would
+never be stripped.
 
 There's no migration in the other direction. An older build reading the new
 `settings.json` sees defaults for everything that moved out, which reads as a fresh look
@@ -107,8 +109,8 @@ split a property of the writer rather than of the type. Keep one file and write 
 compactly, which buys bytes and none of the three properties above.
 
 Splitting the file five ways contains what a parse failure costs, and the fields inside
-each piece narrow it further still. The reason they have to is that serde is all or
-nothing by default. One preset whose layout dump went missing fails the preset list,
+each piece narrow it further still. They have to, because serde is all or nothing by
+default. One preset whose layout dump went missing fails the preset list,
 which fails the look that holds it, which resets the whole of `workspace.json` over a
 single bad entry.
 

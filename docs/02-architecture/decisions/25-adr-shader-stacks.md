@@ -23,7 +23,7 @@ Redefining `screen` to mean "whatever is underneath you" is the call that makes 
 worth building at all. Today that binding is the composed frame under the surface's rect.
 In a stack it becomes the frame with every entry below this one already drawn onto it.
 
-That one change is what makes filters compose. Tube stacked over Dither gives a dithered
+That one change makes filters compose. Tube stacked over Dither gives a dithered
 CRT, because Tube reads a frame that Dither has already processed, and neither shader
 contains a line of code about the other.
 
@@ -33,9 +33,9 @@ reading the accumulation and printing it back out *is* compositing. An entry tha
 bind `screen` has nothing underneath to print, so it draws over a transparent target and
 the composer appends a synthetic pass that blends its output over the accumulation
 instead. Which of the two an entry gets is read from `// @overlay`. That directive
-already existed to tell the picker whether a shader hides the app behind it, and this is
-the second consumer it was waiting on: the same declaration now tells the composer
-whether a blend pass has to be appended.
+already existed to tell the picker whether a shader hides the app behind it. The
+composer is its second consumer: the same declaration now tells it whether a blend pass
+has to be appended.
 
 **Signals go per entry**, and this is the one change with real teeth in the renderer.
 Today a chain shares one `ShaderParams` across all of its passes, filled once per draw,
@@ -67,15 +67,14 @@ bundle with a four-deep stack asks about the sources in it that this machine
 hasn't already approved. Hot reload likewise stays per entry, which the pool
 watch already does for named shaders and the per-surface watch does for files.
 
-The UI is the Signals page's. That page solved this exact problem
-already: a variable-length list of things with too many knobs to show at once,
-where the identity has to stay visible and the tuning folds away. Copying it means
-the shader sections stop being a wall of rows the moment a surface has more than
-one shader, and it means the two pages read as one app. The header shows what
-the entry is, its Scene or Overlay mark, and its switch, so a stack can be read
-without opening anything. Reorder controls belong in that header too, since order
-is the whole semantic, and up-down buttons are the right v1 over drag: the list
-is short, and the dock already owns every drag gesture in the app.
+The UI is the Signals page's. That page already solved this problem: a variable-length
+list of things with too many knobs to show at once, where the identity has to stay
+visible and the tuning folds away. Copying it means the shader sections stop being a
+wall of rows the moment a surface has more than one shader, and it means the two pages
+read as one app. The header shows what the entry is, its Scene or Overlay mark, and its
+switch, so a stack can be read without opening anything. Reorder controls belong in that
+header too, since order is the whole semantic, and up-down buttons are the right v1 over
+drag: the list is short, and the dock already owns every drag gesture in the app.
 
 Refused or deferred, with reasons. Blend modes past premultiplied-over (add,
 multiply, screen) were considered and left out of v1: `over` plus a shader that

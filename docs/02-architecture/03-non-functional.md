@@ -18,19 +18,19 @@ The requirement maps to specific structure:
   [research 02](../0R-research/02-library-scale.md): tens of milliseconds at 1M tracks and
   about a quarter second at 10M, which is why index builds run off the UI thread.
 - **Cold open.** First paint doesn't wait for the library at all. A view snapshot is
-  persisted at close, holding the visible slice of the last sort order already resolved to
-  display strings, a few hundred KB in total, so the window comes up showing the library
+  persisted at close: the visible slice of the last sort order, already resolved to
+  display strings, a few hundred KB in total. The window comes up showing the library
   where it was left before SQLite has been touched. The projection loads behind that and
-  swaps in when it's ready. It comes either from an on-disk snapshot of its flat arrays,
-  used when the store's generation counter says nothing has changed since, or from a
-  rebuild with one SQLite reader per core over disjoint rowid ranges, which WAL allows by
-  supporting concurrent readers. That rebuild is 1.9 s at 10M tracks.
+  swaps in when it's ready. If the store's generation counter says nothing has changed,
+  it's read from an on-disk snapshot of its flat arrays. Otherwise it's rebuilt with one
+  SQLite reader per core over disjoint rowid ranges, which WAL allows because it supports
+  concurrent readers. That rebuild is 1.9 s at 10M tracks.
 - **Scale envelope.** The resident projection is measured to 10M tracks: worst-case search
   31 ms, filters in single-digit milliseconds, about 1 GB of RAM
   ([research 02](../0R-research/02-library-scale.md)). The design ceiling is around 50M,
   where in-memory scans stop fitting in a reasonable amount of memory. Past that, search
   and sort move to disk indexes, meaning ADR 6's FTS5 or tantivy escalation and persisted
-  sort orders. Because both sit behind the same browse/search contract, that swap is
+  sort orders. Because both are behind the same browse/search contract, that swap is
   invisible to the UI.
 - **Scan.** `jwalk` walks the tree in parallel and `rayon` parses tags across cores
   through lofty. Incremental rescan uses a tiered check, with size and mtime as a cheap
@@ -38,7 +38,7 @@ The requirement maps to specific structure:
   library costs a stat per file rather than a read.
 - **Album art.** 256px thumbnails are generated once with `fast_image_resize` and stored
   in a dedicated SQLite thumbnail database, then served through a bounded worker pool
-  sitting behind a bounded texture LRU. Scrolling the grid never re-decodes full-resolution
+  behind a bounded texture LRU. Scrolling the grid never re-decodes full-resolution
   art.
 
 ## Failure and safety
@@ -48,7 +48,7 @@ The requirement maps to specific structure:
   allocation on that thread can block past the device's deadline, and a missed deadline is
   an audible glitch.
 - **Tag writes.** lofty writes in place and isn't atomic, so the metadata writer's
-  copy-verify-rename sequence is where the safety actually comes from. Panic isolation is
+  copy-verify-rename sequence provides the safety. Panic isolation is
   per file, so one malformed file that trips lofty's parser costs that file rather than
   the batch it was in.
 - **Filesystem watching.** `notify` can't be trusted as a complete record: it drops events
@@ -68,11 +68,17 @@ The requirement maps to specific structure:
   pop-out, since that leans harder on the platform layer than anything else in the app.
   Opening several top-level windows on Wayland works today, and the shell keeps a New
   Window action partly so that stays exercised. What's still exposed is the behavior
-  around pop-out rather than pop-out itself: window placement and cross-window drag, both
-  of which are areas where Wayland deliberately gives clients the least control.
-- **Vulkan is a hard requirement.** gpui renders through Vulkan on Linux and Windows, so a
-  Vulkan-capable driver isn't optional and is worth stating to users up front rather than
-  discovering at launch.
+  around pop-out rather than pop-out itself: window placement and cross-window drag.
+  Wayland gives clients the least control over both.
+- **Each platform has its own GPU floor.** gpui renders through blade on Vulkan on Linux,
+  through blade on Metal on macOS (the `macos-blade` feature, see
+  [ADR 8](decisions/08-adr-visualizer-rendering.md)), and through its own Direct3D 11
+  renderer on Windows. A Vulkan-capable driver is required on Linux, and a Direct3D 11
+  device at feature level 10.1 or above on Windows. Both are worth stating to users up
+  front rather than discovering at launch. Shader surfaces need shader model 5.0 on
+  Windows and hide themselves on a device below it. The Milkdrop panel adds an OpenGL
+  context of its own, and a machine that can't provide one gets a message in that panel
+  rather than a dead app ([ADR 28](decisions/28-adr-milkdrop.md)).
 - **gpui's pre-1.0 churn is a standing tax.** Pin the exact version, treat every upgrade
   as real work, and keep the three gpui distributions straight: upstream `gpui`, the CE
   fork, and `gpui-component`. That last point matters more than it sounds, because API
@@ -87,5 +93,5 @@ footprint is modest: tens of MB for the library projection at 100k tracks, risin
 
 The maintenance tax is the part that actually costs something. Several pre-1.0
 dependencies are load-bearing here, including gpui, gpui-component, and parts of the audio
-stack, and they break across upgrades rather than merely changing. That makes it a
-standing line item on every release cycle rather than one-time setup work.
+stack, and they break across upgrades. That makes maintenance a line item on every
+release cycle rather than one-time setup work.

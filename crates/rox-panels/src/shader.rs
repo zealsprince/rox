@@ -30,7 +30,6 @@ use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use rox_viz::AudioFeed;
 use rox_viz::signal::Route;
 
 use crate::assets::icons;
@@ -219,7 +218,6 @@ fn program_hash(source: &str, ctx: &surface::ProgramCtx, cover: u64) -> u64 {
 pub struct ShaderPanel {
     state: AppState,
     config: ShaderConfig,
-    feed: Arc<AudioFeed>,
     compiled: Arc<Mutex<Compiled>>,
     /// What the config's pool name last resolved to. A cell because every
     /// reader of the running source is a `&self` render path, and the panel
@@ -251,7 +249,6 @@ impl ShaderPanel {
     pub fn new(state: AppState, config: ShaderConfig, cx: &mut Context<Self>) -> Self {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         ShaderPanel {
-            feed: state.player.read(cx).feed(),
             state,
             config,
             compiled: Arc::new(Mutex::new(Compiled::default())),
@@ -1059,10 +1056,6 @@ impl Render for ShaderPanel {
 impl ShaderPanel {
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
         self.poll_reload(cx);
-        // Read here rather than in the paint closure, which has no cx: the
-        // hub needs it to spot a song change for the aggregates that reset
-        // on one, and a render happens every frame audio moves.
-        let track = self.state.player.read(cx).playing_entry();
         let note = self.body_note().map(|note| self.note_overlay(note, cx));
 
         // A shader that's off or still waiting to be read never gets
@@ -1088,7 +1081,6 @@ impl ShaderPanel {
         let manual = self.config.manual.clone();
         let run_when_idle = self.config.run_when_idle;
         let hub = self.state.signals.clone();
-        let feed = self.feed.clone();
         let compiled = self.compiled.clone();
         let panel = cx.entity().entity_id();
 
@@ -1110,8 +1102,6 @@ impl ShaderPanel {
                             &manual,
                             run_when_idle,
                             &hub,
-                            &feed,
-                            track,
                             &compiled,
                             panel,
                         );
@@ -1199,8 +1189,6 @@ fn paint(
     manual: &[(u8, f32)],
     run_when_idle: bool,
     hub: &Arc<rox_viz::signal::SignalHub>,
-    feed: &AudioFeed,
-    track: Option<u64>,
     compiled: &Mutex<Compiled>,
     panel: EntityId,
 ) {
@@ -1262,9 +1250,8 @@ fn paint(
 
     let mut targets = SlotTargets::default();
     surface::seed_manual(&mut targets, manual);
-    // The tick is deduped inside the hub, so several panels on the same
-    // pool cost one.
-    hub.tick(feed, track);
+    // Reading the routes advances the hub, deduped to once per frame, so
+    // several panels on the same pool cost one.
     signal_ui::apply_routes(routes, hub, &mut targets);
     let meta = surface::meta_slots(window, cx);
     // A shader that reads the pointer keeps asking for frames while the

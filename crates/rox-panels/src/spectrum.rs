@@ -27,7 +27,7 @@ use rox_panel_kit::axis::{fmt_axis_hz, fmt_hz};
 use serde::{Deserialize, Serialize};
 
 use rox_viz::AudioFeed;
-use rox_viz::analysis::{Analyzer, MAX_FFT_SIZE, MIN_FFT_SIZE, hz_ladder, log_bands};
+use rox_viz::analysis::{MAX_FFT_SIZE, MIN_FFT_SIZE, hz_ladder, log_bands};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
@@ -519,12 +519,12 @@ fn hz_to_frac(hz: f32) -> f32 {
     (hz / SLIDER_MIN_HZ).ln() / (SLIDER_MAX_HZ / SLIDER_MIN_HZ).ln()
 }
 
-/// One analysis zone: an analyzer at its own window size covering a run
-/// of the bars. Unsplit runs one over everything; split zoning runs two,
-/// each end of the range trading reactivity for resolution on its own.
+/// One analysis zone: a window size covering a run of the bars. Unsplit
+/// runs one over everything; split zoning runs two, each end of the range
+/// trading reactivity for resolution on its own. The transform itself is
+/// the feed's, shared with every other view at the same size.
 struct Zone {
-    analyzer: Analyzer,
-    mono: Vec<f32>,
+    size: usize,
     /// Half-spectrum bin range per bar in this zone.
     bands: Vec<(usize, usize)>,
 }
@@ -550,8 +550,7 @@ impl Mapping {
     /// zone at whichever size covers it.
     fn zones(&self) -> Vec<Zone> {
         let zone = |bars: usize, size: usize, lo: f32, hi: f32| Zone {
-            analyzer: Analyzer::new(size),
-            mono: vec![0.0; size],
+            size,
             bands: log_bands(bars, lo, hi, self.rate, size / 2),
         };
         if self.split_hz <= 0.0 {
@@ -682,18 +681,16 @@ impl Bars {
 
         let mut alive = false;
         let mut bar = 0;
-        for zone in &mut self.zones {
-            let Zone {
-                analyzer,
-                mono,
-                bands,
-            } = zone;
-            let mags = ((fresh || remap) && feed.latest_mono(mono) == mono.len())
-                .then(|| analyzer.magnitudes(mono));
-            for &(lo, hi) in bands.iter() {
+        for zone in &self.zones {
+            let mags = if fresh || remap {
+                feed.magnitudes(zone.size)
+            } else {
+                None
+            };
+            for &(lo, hi) in zone.bands.iter() {
                 let i = bar;
                 bar += 1;
-                if let Some(mags) = mags {
+                if let Some(mags) = &mags {
                     let mut peak = 0.0f32;
                     for &m in &mags[lo..hi] {
                         peak = peak.max(m);

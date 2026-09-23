@@ -1512,13 +1512,9 @@ impl PanelSurface {
         // one is the route's outright.
         let mut targets = SlotTargets::default();
         seed_manual(&mut targets, &self.manual);
-        let Some((hub, player)) = window_feed(window, cx) else {
+        let Some((hub, _)) = window_feed(window, cx) else {
             return (targets.slots, false);
         };
-        {
-            let player = player.read(cx);
-            hub.tick(&player.feed(), player.playing_entry());
-        }
         signal_ui::apply_routes(&self.routes, &hub, &mut targets);
         (targets.slots, hub.live() || hub.settling())
     }
@@ -1871,7 +1867,8 @@ mod tests {
     /// band. The engine's attack takes a stretch of wall clock (the tick
     /// throttles), so this drives it there rather than faking a value.
     fn loud_hub() -> (SignalHub, u64) {
-        let hub = SignalHub::new(Vec::new());
+        let feed = Arc::new(AudioFeed::new());
+        let hub = SignalHub::with_feed(Vec::new(), feed.clone());
         let (id, _) = hub.add(
             Source::Band {
                 lo: 800.0,
@@ -1879,7 +1876,6 @@ mod tests {
             },
             0.0,
         );
-        let feed = AudioFeed::new();
         // 1.17 kHz at 48 kHz, the midrange tone the engine's own tests use.
         let mut phase = 0.0f32;
         for _ in 0..60 {
@@ -1890,7 +1886,7 @@ mod tests {
                 frame[1] = frame[0];
             }
             feed.push(&samples);
-            hub.tick(&feed, None);
+            hub.tick();
             std::thread::sleep(std::time::Duration::from_millis(4));
         }
         (hub, id)

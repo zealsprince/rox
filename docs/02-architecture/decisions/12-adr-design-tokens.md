@@ -36,9 +36,9 @@ it's running on, where rox looks like itself everywhere. So we take the idea and
 the dependency.
 
 Consts rather than palette-style runtime data means no live editing of these values and
-no swapping them per platform, neither of which anything needs today. That's a
-reversible call rather than a permanent one, since if density or corner radius ever
-become real settings, the palette's setter pattern is right there to copy.
+no swapping them per platform, neither of which anything needs today. The call is
+reversible. If density or corner radius ever become real settings, the palette's setter
+pattern is there to copy.
 
 Named tokens instead of tailwind suffixes cost a little verbosity at the call site and
 buy one place to change a value. They also reach somewhere the suffix methods never

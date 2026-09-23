@@ -6,8 +6,8 @@ Decision: when the upcoming portion of the timeline runs dry, playback continues
 default instead of stopping. A single active continuation provider, a trait over the
 library and history stores, returns an ordered batch of tracks for "what plays next",
 and the player appends that batch into the running engine as context entries through the
-queue commands from [ADR 16](16-adr-play-queue.md). A provider is a selection strategy,
-continue the browse order, shuffle the library, later a pool built from history, not a
+queue commands from [ADR 16](16-adr-play-queue.md). A provider is a selection strategy
+(continue the browse order, shuffle the library, later a pool built from history), not a
 source of audio. Remote sources (a streaming service) are the extension host's question
 ([ADR 29](29-adr-source-contract.md)); if one ever exists it implements this same trait
 behind a layer that produces playable paths.
@@ -21,8 +21,8 @@ queue revision keeps one dry-out from firing twice. The engine isn't the trigger
 though it gets to the end first: its `pos` is the decode cursor and runs up to a ring
 ahead of the speakers ([ADR 16](16-adr-play-queue.md)), and triggering there would mean
 the audio thread calling into library stores, inverting the one dependency this design
-keeps clean. The engine stays a decoder walking a list; it doesn't know continuation
-exists.
+keeps clean. The engine stays a decoder stepping through a list, and it doesn't know
+continuation exists.
 
 Growth is an append into the running session, never a successor session. The gapless
 boundary ([ADR 3](03-adr-gapless.md)) holds because appending is just more entries in
@@ -36,8 +36,8 @@ ordered batch of track ids, each with an optional group id.
 
 The seed holds two things. One is the scope the context was seeded from, meaning the
 album, playlist, or library view that play started in. The other is the recent plays,
-including any tracks that were explicitly queued. Those are in there because they're what
-steers the pool: queue a run of metal on top of a country context and the continuation
+including any tracks that were explicitly queued. They're in there because they steer
+the pool: queue a run of metal on top of a country context and the continuation
 should follow the metal rather than the country.
 
 Calls are blocking store queries on the background executor, which is the execution model
@@ -48,8 +48,8 @@ panels make.
 Layer one uses almost none of this. Its provider resumes the browse order of the view
 play started in, and a library-shuffle provider is the obvious second. The
 history-driven pools, meaning genre, artist, and the rollups from
-[ADR 11](11-adr-play-history.md), come later and find their inputs already sitting in the
-contract, which is the point of specifying it fully now.
+[ADR 11](11-adr-play-history.md), come later and find their inputs already in the
+contract. That's why it's specified in full now.
 
 Exactly one provider is active at a time, and that's a real difference from ADR 14's
 fallback chain rather than a coincidence of the current roster. There, an empty result
@@ -77,20 +77,20 @@ permutes entries as today. The alternative, computing orders in the player and p
 full permutation down, reopens the dual-copy problem ADR 16 already rejected;
 grouping-as-metadata keeps the single owner and teaches the permutation one new trick.
 
-Alternatives: stop when the context ends and make continuation an opt-in mode, rejected
-as the product call, a local player that goes silent mid-flow feels broken, and what
-continuation appends is ordinary context, visible in the timeline and removable, not
-hidden state. Successor sessions, rejected above for the boundary. Triggering in the
-engine, rejected above for the dependency and the decode-ahead clock. A provider
-fallback chain like ADR 14's, rejected because continuation is one strategy at a time,
-not a lookup racing services for the best answer.
+Alternatives: stop when the context ends and make continuation an opt-in mode. That was
+rejected as the product call. A local player that goes silent mid-flow feels broken, and
+what continuation appends is ordinary context, visible in the timeline and removable.
+Successor sessions, rejected above for the boundary. Triggering in the engine, rejected
+above for the dependency and the decode-ahead clock. A provider fallback chain like ADR
+14's, rejected because continuation is one strategy at a time, not a lookup racing
+services for the best answer.
 
 Trade: the trigger races the boundary. A slow provider near the last track can miss the
-gapless window, the queue drains, and the batch arrives after playback has ended; the worst
-case is a short gap, not a wrong state, and the two-track floor makes it rare since the
-queries are local. Continuation by default means rox plays things the user didn't pick;
-the bound is the same visibility argument as above plus the strategy being the user's
-choice.
+gapless window, the queue drains, and the batch arrives after playback has ended. The
+worst case is a short gap rather than a wrong state, and the two-track floor makes it rare
+since the queries are local. Continuation by default means rox plays things the user
+didn't pick. What bounds that is the visibility argument above, plus the strategy being
+the user's choice.
 
 Resolved at implementation: a batch that arrives after the queue drained auto-resumes. It
 needed no new mechanism. From the ended state the engine holds no open source, and its

@@ -7,10 +7,8 @@
 //! like that panel's own. The routes stay where they belong: under the knobs
 //! they drive, in the panel's settings, through [`signal_ui::bindable_row`].
 //!
-//! Live meters need the hub ticked, and until now the only things ticking it
-//! were a particles panel painting and the screen shader. This window ticks
-//! it too while it's open, so the readouts move against the music with
-//! nothing else on screen.
+//! The meters read the hub, and reading it is what moves it, so the readouts
+//! follow the music with nothing else on screen.
 //!
 //! It has a spectrum and a transport for the same reason the equalizer
 //! does: a band is picked by eye against what's playing, and going back to
@@ -98,8 +96,9 @@ fn open_now(cx: &mut App) {
 }
 
 struct SignalsWindow {
-    /// The workspace that was in front when this opened, for the feed the
-    /// hub ticks off and the art tint. None when there was no workspace up.
+    /// The workspace that was in front when this opened, for its player
+    /// (the spectrum and the transport) and the art tint. None when there
+    /// was no workspace up.
     state: Option<AppState>,
     /// The hub being edited: the front workspace's, or a standalone one over
     /// the saved pool when this opened with no workspace.
@@ -270,10 +269,9 @@ impl SignalsWindow {
         )
     }
 
-    /// Advance the hub off the player's feed and report whether the meters
-    /// need another frame. The hub throttles itself, so ticking from here
-    /// costs nothing extra when a particles panel is already doing it.
-    /// While audio moves the player observe re-renders on every pump tick,
+    /// Report whether the meters need another frame. Reading the values
+    /// advances the hub, which throttles itself, so this costs nothing extra
+    /// when a particles panel is already reading it. While audio moves the player observe re-renders on every pump tick,
     /// the only rate new values arrive at, so frame polling is just for the
     /// drain after playback stops: a signal decaying to nothing is exactly
     /// the part worth watching, and it outlives [`SignalHub::live`]. Once
@@ -284,7 +282,6 @@ impl SignalsWindow {
             return false;
         };
         let player = state.player.read(cx);
-        self.hub.tick(&player.feed(), player.playing_entry());
         if player.is_playing() {
             return false;
         }

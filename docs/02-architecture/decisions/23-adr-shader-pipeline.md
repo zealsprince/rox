@@ -6,7 +6,7 @@ Decision: a rox shader stays one WGSL text, and grows the ability to describe mo
 than one pass. `// @pass name` directives split the text into an ordered chain of
 fragment stages; each pass renders to an offscreen target and later passes bind
 earlier outputs by name, alongside the existing `screen`, `prev`, and `samp`
-bindings. `// @asset name: file` directives declare image inputs, carried inside the
+bindings. `// @asset name: file` directives declare image inputs, stored inside the
 workspace bundle as encoded bytes and bound as textures under the declared name. A
 text with no directives is a one-pass chain, which is every shader that exists today,
 so nothing migrates. The chain semantics apply to all three surfaces the same way:
@@ -20,16 +20,16 @@ procedurally, but it cannot run a real sorting scan, build a blur at more than o
 scale, or stamp an image plate into a scene. All three need the same two things:
 intermediate results a later stage can read, and inputs that aren't the screen.
 
-Directives over structured pass arrays in the config is the load-bearing call. A
-`passes: Vec<String>` on the pool entry is the cleaner shape at compile time, and it
-loses everywhere else: the pool entry, the eject file, the hot-reload watch, the
+Directives over structured pass arrays in the config is the central call. A
+`passes: Vec<String>` on the pool entry is the cleaner shape at compile time, but it
+loses everywhere else. The pool entry, the eject file, the hot-reload watch, the
 approval fingerprint, and the bundle all assume one shader is one text, and a pass
 array would fork every one of those code paths plus the authoring loop into
 list-aware variants. A splitter at registration time is a few dozen lines against
 that, and the `// @slot n: name` convention already establishes that rox shaders
 declare their metadata as comment directives. The cost is that pass boundaries are
-declared in comments rather than types, caught at registration rather than
-deserialization, which is where shader errors already surface and already have a readout.
+declared in comments rather than types, and caught at registration rather than
+deserialization. That's where shader errors already surface and already have a readout.
 
 Within a chain, a pass binds the composed frame as `screen`, its own last-frame
 output as `prev` (the existing feedback contract, resize clears it), earlier passes
@@ -50,7 +50,7 @@ approved code samples can make a look render wrong, but it can't execute anythin
 adding a second dialog for it would teach people to click through the dialog that
 actually matters.
 
-Assets travel inside the bundle as encoded bytes, sitting next to the shader pool, for
+Assets travel inside the bundle as encoded bytes, next to the shader pool, for
 the same reason shader source travels inline rather than as a path: a bundle that only
 references a file on the author's disk imports as a dead look on anyone else's machine.
 Eject writes them back out as real files beside the ejected WGSL, and the watch picks up
@@ -88,8 +88,8 @@ actually needs is chains running under a fixed compositor, with an A/B blend bet
 chains as the most complex form of it, and that's reachable without user-authored
 topologies at all.
 
-Everything else on the VJ-lite path is control-plane work sitting on top of this
-contract. Hand-set slots and routes are the performance knobs. [ADR 22](22-adr-control-surface.md)'s
+Everything else on the VJ-lite path is control-plane work on top of this contract.
+Hand-set slots and routes are the performance knobs. [ADR 22](22-adr-control-surface.md)'s
 socket is where a MIDI or OSC bridge would attach. A popped-out Shader panel is the
 projector output. None of those need a graph.
 
@@ -100,11 +100,10 @@ refusal isn't a one-way door: passes with named inputs and outputs are node-shap
 whether or not there's a graph over them, so if this read is ever revisited, a chain
 lifts into a graph without breaking any bundle already written.
 
-Compute passes are the right answer for large sorts and were
-deferred on capability grounds, since the gpui patches build on blade's render
-pipelines and a compute stage is a different tier of surgery; a fragment chain covers the
-visible aesthetic, and the pass contract here is likewise the one a compute stage would
-slot into later without redesign.
+Compute passes are the right answer for large sorts and were deferred on capability
+grounds. The gpui patches build on blade's render pipelines, and a compute stage is a
+different tier of surgery. A fragment chain covers the visible aesthetic, and the pass
+contract here is the one a compute stage would slot into later without redesign.
 
 The contract for the implementing layer: the gpui patch surface grows texture
 registration for caller-provided images and chain registration in place of

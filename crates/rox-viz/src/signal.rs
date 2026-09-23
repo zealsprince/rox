@@ -6,20 +6,20 @@
 //! host-defined parameter with an output span. The pool
 //! is held in a [`SignalHub`] evaluated once per frame off the shared
 //! [`crate::AudioFeed`], so ten panels bound to the same kick read the same
-//! value from one FFT. What a target id means, and how a span fraction
+//! value from one FFT, and reading it is what moves it. What a target id means, and how a span fraction
 //! maps into a parameter's native units, stays with the host.
 //!
 //! Everything degrades quietly: a route whose signal is gone contributes
 //! nothing, and a signal nobody routes just idles.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 use crate::AudioFeed;
-use crate::analysis::{Analyzer, log_bands};
+use crate::analysis::log_bands;
 
 /// dB window signals normalize into, on magnitudes where a full-scale sine
 /// reads 0 dB. The same window the spectrum's bars draw against, so a
@@ -42,9 +42,9 @@ const HUB_FFT: usize = 2048;
 /// displays.
 const SILENT_AFTER: f32 = 0.15;
 
-/// Two hub ticks closer together than this are one frame asking twice:
-/// several panels step the hub from their own paint, and only the first
-/// per frame should advance the clock.
+/// Two hub advances closer together than this are one frame asking twice:
+/// several panels read the hub from their own paint, and only the first
+/// read per frame should move the clock.
 const TICK_MIN: f32 = 0.003;
 
 /// What a signal listens to.
@@ -521,20 +521,25 @@ impl Default for Signals {
     }
 }
 
-/// The app-wide pool and its engine behind one lock: panels tick it from
-/// their paint (the first call per frame does the work, the rest read),
-/// edit it from their settings surfaces, and the app persists whatever
-/// [`SignalHub::pool`] returns. Shared by `Arc` in the app state, so a
-/// tray adoption keeps it the way it keeps the player.
+/// The app-wide pool and its engine behind one lock: panels read it from
+/// their paint, edit it from their settings surfaces, and the app persists
+/// whatever [`SignalHub::pool`] returns. Shared by `Arc` in the app state, so
+/// a tray adoption keeps it the way it keeps the player.
+///
+/// A hub bound to a feed ([`SignalHub::with_feed`]) moves itself. Every read
+/// that reports a value first advances the engine off the feed, deduped to
+/// once per frame by [`TICK_MIN`], so whatever reads the hub is also what
+/// keeps its clock running and a new consumer can't forget to. A hub built
+/// with [`SignalHub::new`] has no feed and only ever holds what it was given,
+/// which is what a test stepping the engine by hand wants.
 pub struct SignalHub {
     inner: Mutex<Hub>,
+    feed: Option<Arc<AudioFeed>>,
 }
 
 struct Hub {
     pool: Vec<Signal>,
     engine: Signals,
-    analyzer: Option<Analyzer>,
-    mono: Vec<f32>,
     last_written: u64,
     last_fresh: Option<Instant>,
     last_tick: Option<Instant>,
@@ -546,48 +551,71 @@ struct Hub {
 }
 
 impl SignalHub {
+    /// A hub with no feed: it holds the pool and whatever the engine was
+    /// last stepped to, and never moves on its own.
     pub fn new(pool: Vec<Signal>) -> Self {
         SignalHub {
             inner: Mutex::new(Hub {
                 pool,
                 engine: Signals::new(),
-                analyzer: None,
-                mono: Vec::new(),
                 last_written: 0,
                 last_fresh: None,
                 last_tick: None,
                 last_track: None,
             }),
+            feed: None,
         }
     }
 
-    /// Advance the engine one frame off the feed. Cheap to call from every
-    /// consumer: calls arriving within the same frame window return
-    /// immediately, so the clock only moves once however many panels ask.
-    ///
-    /// `track` is the id of what's playing, so the hub can see a song change
-    /// for the aggregates that reset on one. Every ticker passes it rather than
-    /// one privileged caller owning the edge: whichever surface happens to
-    /// be painting has to be the one that notices.
-    pub fn tick(&self, feed: &AudioFeed, track: Option<u64>) {
+    /// A hub that follows `feed`: every read advances it, see the type docs.
+    /// The app builds one per player, off that player's feed.
+    pub fn with_feed(pool: Vec<Signal>, feed: Arc<AudioFeed>) -> Self {
+        SignalHub {
+            feed: Some(feed),
+            ..SignalHub::new(pool)
+        }
+    }
+
+    /// Move the clock without reading anything. Reads already do this, so
+    /// nothing in the app needs it; it's here for a caller that pushes audio
+    /// by hand and wants the engine to have seen it.
+    pub fn tick(&self) {
+        drop(self.advanced());
+    }
+
+    /// The lock, with the engine advanced first when the hub has a feed.
+    fn advanced(&self) -> MutexGuard<'_, Hub> {
         let mut hub = self.inner.lock().unwrap();
-        // Ahead of the throttle below, so a change never depends on which
-        // caller won the frame.
-        if let Some(track) = track
-            && hub.last_track.replace(track) != Some(track)
+        if let Some(feed) = &self.feed {
+            hub.advance(feed);
+        }
+        hub
+    }
+}
+
+impl Hub {
+    /// Advance the engine one frame off the feed. Calls arriving within the
+    /// same frame window return immediately, so the clock only moves once
+    /// however many panels read it.
+    fn advance(&mut self, feed: &AudioFeed) {
+        // The song-change edge for the aggregates that reset on one, ahead of
+        // the throttle below so a change never waits on the frame window. The
+        // player's pump stamps the feed with what's audible.
+        if let Some(track) = feed.track()
+            && self.last_track.replace(track) != Some(track)
         {
-            let ids: Vec<u64> = hub
+            let ids: Vec<u64> = self
                 .pool
                 .iter()
                 .filter(|s| s.reset_on_track && s.aggregate().is_some())
                 .map(|s| s.id)
                 .collect();
             for id in ids {
-                hub.engine.flush(id);
+                self.engine.flush(id);
             }
         }
         let now = Instant::now();
-        let dt = match hub.last_tick {
+        let dt = match self.last_tick {
             Some(t) => {
                 let dt = (now - t).as_secs_f32();
                 if dt < TICK_MIN {
@@ -597,44 +625,37 @@ impl SignalHub {
             }
             None => 1.0 / 60.0,
         };
-        hub.last_tick = Some(now);
+        self.last_tick = Some(now);
 
         let written = feed.written();
-        let fresh = written != hub.last_written;
-        hub.last_written = written;
+        let fresh = written != self.last_written;
+        self.last_written = written;
         if fresh {
-            hub.last_fresh = Some(now);
+            self.last_fresh = Some(now);
         }
-        let stopped = hub
+        let stopped = self
             .last_fresh
             .is_none_or(|t| (now - t).as_secs_f32() > SILENT_AFTER);
 
-        if hub.analyzer.is_none() {
-            hub.analyzer = Some(Analyzer::new(HUB_FFT));
-            hub.mono = vec![0.0; HUB_FFT];
-        }
+        // The feed's shared spectrum, so a spectrum panel at the same window
+        // size and the hub pay for one transform between them.
         let rate = feed.sample_rate();
-        let Hub {
-            pool,
-            engine,
-            analyzer,
-            mono,
-            ..
-        } = &mut *hub;
-        let analyzer = analyzer.as_mut().expect("analyzer built above");
-        let mags: Option<&[f32]> = if fresh && feed.latest_mono(mono) == mono.len() {
-            Some(analyzer.magnitudes(mono))
+        let mags = if fresh {
+            feed.magnitudes(HUB_FFT)
         } else {
             None
         };
-        engine.step(mags, rate, stopped, dt, pool);
+        self.engine
+            .step(mags.as_deref(), rate, stopped, dt, &self.pool);
     }
+}
 
+impl SignalHub {
     /// The signal's current value with its gate applied, `None` for an id
     /// the pool doesn't have. Everything bound to a signal reads it through
     /// here, so the gate applies to routes, meters and the shader alike.
     pub fn value(&self, id: u64) -> Option<f32> {
-        self.inner.lock().unwrap().engine.output(id)
+        self.advanced().engine.output(id)
     }
 
     /// The value before the gate, for the meter that draws the threshold as
@@ -642,7 +663,7 @@ impl SignalHub {
     /// would show nothing under the mark, the one place the gate is worth
     /// watching.
     pub fn raw_value(&self, id: u64) -> Option<f32> {
-        self.inner.lock().unwrap().engine.value(id)
+        self.advanced().engine.value(id)
     }
 
     /// Send one aggregate back to zero by hand, the debugging way out of
@@ -659,16 +680,14 @@ impl SignalHub {
     /// releasing, so anything that stops drawing on `!live` freezes the
     /// fade partway down instead of playing it out.
     pub fn settling(&self) -> bool {
-        let hub = self.inner.lock().unwrap();
+        let hub = self.advanced();
         hub.engine.settling(&hub.pool)
     }
 
     /// Whether audio has moved recently enough that meters reading the hub
     /// should keep asking for frames.
     pub fn live(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap()
+        self.advanced()
             .last_fresh
             .is_some_and(|t| t.elapsed().as_secs_f32() < 0.3)
     }
@@ -1170,5 +1189,87 @@ mod tests {
         // label.
         let named = hub.edit(|pool| pool[0].name = "Mix swell".to_string());
         assert_eq!(named[0].label(), "Mix swell");
+    }
+
+    /// Stereo frames of a full-scale 1 kHz tone at 48 kHz.
+    fn tone(frames: usize) -> Vec<f32> {
+        (0..frames)
+            .flat_map(|i| {
+                let s = (std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin();
+                [s, s]
+            })
+            .collect()
+    }
+
+    /// Push a frame's worth of tone and read `id`, waiting out the frame
+    /// window between reads so each one gets to advance.
+    fn play(feed: &AudioFeed, hub: &SignalHub, id: u64, frames: usize) -> Option<f32> {
+        let mut value = None;
+        for _ in 0..frames {
+            feed.push(&tone(1024));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            value = hub.value(id);
+        }
+        value
+    }
+
+    #[test]
+    fn a_bound_hub_moves_when_read_and_a_bare_one_never_does() {
+        let level = Signal {
+            id: 1,
+            source: Source::Level,
+            smooth: 0.0,
+            ..Signal::default()
+        };
+
+        // Nothing ticks it: reading the value is the whole of what moves it.
+        let feed = Arc::new(AudioFeed::new());
+        let hub = SignalHub::with_feed(vec![level.clone()], feed.clone());
+        let heard = play(&feed, &hub, 1, 10).expect("the signal has a slot once read");
+        assert!(
+            heard > 0.5,
+            "a full-scale tone should read loud, got {heard}"
+        );
+
+        // The same pool with no feed holds what it was given, which is
+        // nothing: no step has ever run, so there's no slot to read.
+        let bare = SignalHub::new(vec![level]);
+        assert_eq!(play(&feed, &bare, 1, 3), None);
+    }
+
+    #[test]
+    fn a_track_change_on_the_feed_resets_the_aggregates_that_ask() {
+        let level = Signal {
+            id: 1,
+            source: Source::Level,
+            smooth: 0.0,
+            ..Signal::default()
+        };
+        let total = Signal {
+            id: 2,
+            source: Source::Aggregate { of: 1, rate: 1.0 },
+            smooth: 0.0,
+            reset_on_track: true,
+            ..Signal::default()
+        };
+        let feed = Arc::new(AudioFeed::new());
+        let hub = SignalHub::with_feed(vec![level, total], feed.clone());
+
+        let draining = |hub: &SignalHub| hub.inner.lock().unwrap().engine.slots[&2].draining;
+
+        feed.set_track(Some(0));
+        let before = play(&feed, &hub, 2, 20).expect("the total has a slot");
+        assert!(
+            before > FLUSH_DONE,
+            "a loud input should have run the total up"
+        );
+        assert!(!draining(&hub), "the first track is where it started");
+
+        // The pump stamps a new entry, and the next read of anything sees
+        // the edge. A flush drains rather than snaps, so what shows is the
+        // slot starting its way down.
+        feed.set_track(Some(1));
+        hub.raw_value(1);
+        assert!(draining(&hub), "the song change should start the drain");
     }
 }

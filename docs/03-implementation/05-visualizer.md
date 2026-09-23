@@ -3,11 +3,13 @@
 How the spectrum analyzer and the waveform seekbar are wired: the PCM tap the engine
 feeds, the analysis feed the UI drains into, the FFT, the per-track peaks cache format,
 and the pacing between the feed and the paint callback. This makes the visualizer
-contract from
-[components](../02-architecture/02-components.md#visualizer-subsystem) concrete, within
-the call made in [ADR 8](../02-architecture/decisions/08-adr-visualizer-rendering.md)
-(spectrum and waveform draw with gpui primitives; the generative visual waits on a real
-GPU shader), plus the one panel that takes the other side of that trade: Milkdrop, under
+contract from [components](../02-architecture/02-components.md#visualizer-subsystem)
+concrete, within the call made in
+[ADR 8](../02-architecture/decisions/08-adr-visualizer-rendering.md) (spectrum and
+waveform draw with gpui primitives; generative visuals run as GPU shaders through the
+vendored gpui, per its amendment and
+[ADR 23](../02-architecture/decisions/23-adr-shader-pipeline.md)), plus the one panel
+that takes the other side of that trade: Milkdrop, under
 [ADR 28](../02-architecture/decisions/28-adr-milkdrop.md). Version-sensitive: the tap
 ring is rtrb, the FFT is hand-rolled, the paint path is gpui's `canvas()`, and the
 Milkdrop engine is libprojectM pinned to master commit `88f23c76` (CMake version 4.2.0;
@@ -36,18 +38,35 @@ the producer side.
 ```
 
 The consumer side is one drain on the UI pump. `Player::drain_tap` (in
-`crates/rox-services/src/player.rs`) runs on the pump timer, `PUMP_INTERVAL` = 16 ms so about
-60 Hz, reads every available slot in one `read_chunk`, and pushes the two ring slices
-into the `AudioFeed`. Nothing here is real-time; the RT boundary is the tap ring itself.
+`crates/rox-services/src/player.rs`) runs on the pump timer, `PUMP_INTERVAL` = 16 ms so
+about 60 Hz, reads every available slot in one `read_chunk`, and pushes the two ring
+slices into the `AudioFeed`. Nothing here is real-time; the RT boundary is the tap ring
+itself.
 
 `AudioFeed` (`crates/rox-viz/src/feed.rs`) is the seam. A `Mutex<VecDeque<f32>>` of
 interleaved stereo, newest at the back, capped at `KEEP_SAMPLES` = `MAX_FFT_SIZE * 2 * 2`
 = 65,536 samples (the largest window with slack), older samples dropped off the front on
-every push. The feed also holds two atomics: `sample_rate` (`AtomicU32`, set per session,
-48,000 default) and `written` (`AtomicU64`, total samples ever pushed), which lets a
-view tell silence, nothing new, from a repeat of the same window. `latest_mono(out)`
-copies the newest `out.len()` frames folded to mono ((L+R)/2), newest last, and returns
-how many it copied; short means not enough buffered yet.
+every push. The feed also holds three atomics: `sample_rate` (`AtomicU32`, set per
+session, 48,000 default), `written` (`AtomicU64`, total samples ever pushed), which lets
+a view tell silence, nothing new, from a repeat of the same window, and `track`, the
+queue entry that's audible, which the pump stamps on the tick it drains the tap.
+`latest_mono(out)` copies the newest `out.len()` frames folded to mono ((L+R)/2),
+newest last, and returns how many it copied; short means not enough buffered yet.
+
+`magnitudes(size)` is the spectrum every view shares. The feed keeps one `Analyzer`
+per window size it has been asked for, and the spectrum it last produced alongside the
+`written` count that window ended at. The first view to ask after a push runs the
+transform, and every other view asking for the same size gets the same
+`Arc<[f32]>` back until the feed moves again. `None` means the feed doesn't hold a full
+window yet, or the size isn't one the analyzer takes, which answers `None` rather than
+panicking with the lock held.
+
+The signal hub (`crates/rox-viz/src/signal.rs`) is built bound to its player's feed
+(`SignalHub::with_feed`). Every read that reports a value (`value`, `raw_value`,
+`live`, `settling`) advances the engine first, deduped to once per frame by
+`TICK_MIN`, and takes its song-change edge off the feed's `track`. Nothing ticks the
+hub from outside, so a new consumer only has to read it. `SignalHub::new` builds a
+hub with no feed, which holds what it's given and never moves on its own.
 
 ## FFT
 
@@ -85,10 +104,10 @@ its own.
 1. Derive the bar count from the width, `(width / (bar_w + bar_gap))` clamped to
    `MIN_BARS` = 16, `MAX_BARS` = 512.
 2. If the mapping changed (bar count, rate, range, fft sizes, split), rebuild the zones
-   and reset the level vectors. Each `Zone` has its own `Analyzer`, a mono scratch
-   buffer, and its slice of band bin-ranges.
-3. If there's new audio since last tick (`written` moved), pull `latest_mono` per zone,
-   run the analyzer, and set each bar's target from the band's peak magnitude in dB:
+   and reset the level vectors. Each `Zone` is a window size and its slice of band
+   bin-ranges.
+3. If there's new audio since last tick (`written` moved), take the feed's `magnitudes`
+   at each zone's size and set each bar's target from the band's peak magnitude in dB:
    `20 log10(peak)`, normalized from `FLOOR_DB` = -66 to `MAX_DB` = -12 and clamped to
    0..1. With no new audio the targets hold until the feed has been idle past
    `SILENT_AFTER` = 0.15 s, then the bars fall to silence.
@@ -99,10 +118,10 @@ its own.
 `paint` draws the frame with gpui quads in a `canvas()` callback: dB gridlines, then per
 bar a filled bar (flat accent, or a loudness gradient when `gradient` is on) or a hollow
 outline, plus a peak-hold cap when `caps` is on. Both `step` and `paint` run inside the
-paint callback on the UI thread. This is where implementation and the components boundary
-part: the contract reads "analysis runs off the UI thread," but the spectrum FFT is cheap
-enough per frame that it runs inline in paint. Only the offline decodes below, the
-waveform precompute among them, leave the UI thread.
+paint callback on the UI thread, which is the
+[components](../02-architecture/02-components.md#visualizer-subsystem) boundary for
+windowed analysis: its cost is one window per frame however long the track runs. Only
+the whole-file decodes below, the waveform precompute among them, leave the UI thread.
 
 ## Frame pacing
 
@@ -143,9 +162,9 @@ the same scale and curve so it never leaves the envelope. The waveform panel ask
 `PEAK_BINS` = 2048 bins and resamples that down to the drawn bar count at paint time.
 
 The cache is one small binary file per track under `waveforms/` in the app's data dir
-(`crates/rox-library/src/peaks.rs`). The entry name is `{fnv1a(path):016x}.peaks`, an FNV-1a
-hash of the path; the path stored inside disambiguates a hash collision. The layout,
-little-endian throughout:
+(`crates/rox-library/src/peaks.rs`). The entry name is `{fnv1a(path):016x}.peaks`, an
+FNV-1a hash of the path; the path stored inside disambiguates a hash collision. The
+layout, little-endian throughout:
 
 ```
 offset  bytes  field
@@ -175,7 +194,7 @@ the track already changed.
 A MilkDrop preset is a program, not a shader: a per-frame equation block, a warp mesh,
 custom waves and shapes, and hand-written GLSL for the composite. Twenty years of them
 exist and nothing but libprojectM runs them, so rox links libprojectM in and gives it
-the three things it asks for: a current OpenGL context, a framebuffer, and audio. None
+the three things it needs: a current OpenGL context, a framebuffer, and audio. None
 of rox's renderers (blade on Vulkan and Metal, Direct3D 11 on Windows) will let a
 second renderer into their swapchain, which is why the engine runs on a thread with a
 context of its own and the frame comes back over the CPU. That readback is the cost
@@ -224,18 +243,18 @@ and `GL_VERSION` beside the projectM version.
 libprojectM's own log goes through `projectm_set_log_callback`, set once per process
 before the first engine and forwarded to `log` under a `projectm:` prefix, error and
 fatal as `error`, warn as `warn`, info as `info`. Without the callback every `LOG_*` in
-the library is a no-op, and the GL probe's summary line, shader compile errors and
-texture loads that failed went nowhere; a Windows release build has no stderr to catch
-them either.
+the library is a no-op, so the GL probe's summary line, shader compile errors, and
+failed texture loads go nowhere. A Windows release build has no stderr to catch them
+either.
 
-The panel says something in two states that are not failures but look like one from
+The panel shows a message in two states that aren't failures but look like one from
 the chair. A worker still `Starting` past `STALL_GRACE` (five seconds, counted from
 the spawn or the latest resume) gets "still starting" over the body; a `Running`
 worker that has never put a frame up as a texture gets "no frame has arrived" with the
 renderer and GL version named. Both keep the transport controls, since pressing Next
 and watching a preset name land is how a reader tells a live worker from a dead one.
 Until this, both states were a black panel with no word, which on the machine it
-happens on looks exactly like the feature working with the lights off.
+happens on looks like the feature working with the lights off.
 
 The context ask is 3.3 core first, then, off macOS, the driver's default (no version,
 compatibility profile). The retry exists because of one Windows report: an Intel
@@ -247,9 +266,9 @@ itself, so a driver that can only do 3.1 is refused there, with the version in t
 Everything the panel paints over the frame (the preset banner, the transport strip, the
 failure and stall overlays) is a deferred draw. The frame is a shader region, and the
 DirectX renderer runs regions once at the deferred-draw boundary, after every ordinary
-primitive, so text painted in tree order sat under the opaque frame. That is why the
+primitive, so text painted in tree order sat under the opaque frame. That's why the
 same Windows report showed a black panel and not the failure message the panel had
-been drawing all along. Blade runs regions in paint order and is indifferent.
+been drawing all along. Blade runs regions in paint order and isn't affected.
 
 The GL the crate calls for itself (framebuffer, texture storage, the PBOs, `glGetString`
 for the log) is twenty-eight `extern "system"` pointers in `gl.rs`, resolved by name off
@@ -258,13 +277,13 @@ the same load proc. No `gl` or `glow` crate for twenty-eight functions.
 Preset switches are the one reentrant path: projectM's callbacks fire from inside its
 own render call, so they only record what happened and the actual load runs on the
 next loop iteration. The switch-requested callback picks the next preset from the
-library's rotation (random unless locked), the failed callback queues an
+library's rotation (random unless locked); the failed callback queues an
 `Event::PresetFailed` the panel drains each frame.
 
 **Frames are shared, not copied.** `frame_after` used to clone the buffer out of the
 slot, and the texture upload copied it again; at a 776x1049 panel that measured 2.6 ms
 of UI thread per frame, almost all of it two three-megabyte allocations faulting in a
-page at a time. The pixels now live behind an `Arc`, the panel hands the same handle to
+page at a time. The pixels are now behind an `Arc`, the panel hands the same handle to
 the upload, and the worker takes the buffer back once the last handle drops, so the
 steady state allocates nothing on either side.
 
@@ -314,7 +333,7 @@ Play sends `Resume`. Under hold, the `run_focused` switch, off by default, lets 
 panel's own focus keep the worker running so presets can be browsed in silence. It's
 opt-in because focus is sticky (the dock focuses the active tab, any click on the panel
 takes it), and a paused track with the visual still cycling under it reads as the pause
-not having taken. The backdrop carries the same hold-or-fade switch on the Appearance
+not having taken. The backdrop has the same hold-or-fade switch on the Appearance
 page, fade by default, and parks on whether any window's player is playing rather than on
 focus, which it hasn't got.
 
@@ -325,12 +344,12 @@ worth having. `PresetLibrary::scan` walks the roots for `*.milk` case-insensitiv
 sorts them, reading nothing inside the files: only libprojectM's parser can tell a
 broken preset from a working one, and that answer arrives as `PresetFailed`. The same
 walk collects every `textures/` directory it passes, and the worker hands projectM the
-app's own `textures/` folder first and then those, because libprojectM searches only
-the paths it's given and never beside the preset file, and the big packs ship their
-images inside the pack. The directory layout is the one structure it keeps, since the
-packs organise themselves by category folder, and a `Rotation` narrows what Next,
-Previous and the timed switch walk to one folder or to the favourites list. With no
-presets found projectM's built-in idle preset renders, so the panel is never blank.
+app's own `textures/` folder first and then those, because libprojectM searches only the
+paths it's given and never beside the preset file, and the big packs ship their images
+inside the pack. The directory layout is the one structure it keeps, since the packs
+organise themselves by category folder, and a `Rotation` narrows what Next, Previous and
+the timed switch step through to one folder or to the favourites list. With no presets
+found projectM's built-in idle preset renders, so the panel is never blank.
 
 **Driving it from the socket.** `debug.milkdrop` (ADR 22's debug scope, `roxctl
 milkdrop` from a shell) reaches the first Milkdrop panel in the front workspace by verb
@@ -339,8 +358,8 @@ count, the rotation, the engine state, and projectM's message for the last prese
 refused; `load <file>` puts a preset up from any path, scanned or not, and re-reads the
 file on a repeat call; `lock`, `rescan`, `next`, and `prev` do what the context menu
 does. `frame <out.png>` hands back the worker's newest readback as PNG. That's engine
-output, the frame before the panel's tint, grade, and flips, not a capture of the
-window, which is what keeps it on the data side of the ADR's "pixels stay a screenshot
+output (the frame before the panel's tint, grade, and flips) rather than a capture of
+the window, which keeps it on the data side of the ADR's "pixels stay a screenshot
 job" line. Together they make the preset-authoring loop a script: write the file, load
 it, read the snapshot for a compile failure, dump a frame.
 
@@ -354,13 +373,15 @@ cold on a 32-thread machine and cached after that.
 ## Reference
 
 The shared analysis is in `crates/rox-viz`: `feed.rs` (`AudioFeed`, the tap-to-view
-seam), `analysis.rs` (`Analyzer`, the Hann-windowed FFT and `log_bands`), `lib.rs`
-(exports). The panels and the on-disk pieces sit across three crates:
+seam and the shared spectrum), `analysis.rs` (`Analyzer`, the Hann-windowed FFT and
+`log_bands`), `signal.rs` (the signal hub), `lib.rs`
+(exports). The panels and the on-disk pieces are spread across three crates:
 `crates/rox-panels/src/spectrum.rs` (`SpectrumPanel`, `SpectrumConfig`, the `Bars` state
 machine), `crates/rox-panels/src/waveform.rs` (`WaveformPanel`, the peaks load and the
 morphing strip), `crates/rox-library/src/peaks.rs` (the cache format), and
-`crates/rox-services/src/player.rs` (`drain_tap`, `prime_feed`). The tap producer and the offline decoders
-(`decode_peaks`, `decode_window`) are in `crates/rox-playback`: `output.rs`, `engine.rs`.
+`crates/rox-services/src/player.rs` (`drain_tap`, `prime_feed`). The tap producer and
+the offline decoders (`decode_peaks`, `decode_window`) are in `crates/rox-playback`:
+`output.rs`, `engine.rs`.
 Milkdrop is three crates: `crates/rox-milkdrop-sys` (`build.rs` runs cmake on
 `vendor/projectm`, `src/lib.rs` is the FFI surface), `crates/rox-milkdrop` (`lib.rs` for
 `Engine`, `Frame`, `Command`, `Status`; `worker.rs` the render thread; `context.rs` the

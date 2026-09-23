@@ -4,7 +4,7 @@
 
 Proposal: rox grows a Script panel. A script is one Rhai text held in a named workspace
 pool that matches the shader pool field for field. The inline source is canonical and the
-path is only a local bookmark, entries travel inside bundles, eject writes a working file
+path is only a local bookmark. Entries travel inside bundles, eject writes a working file
 that the watch reads edits back from, and nothing runs until its fingerprint is in the
 same machine-local approval list shaders already use.
 
@@ -25,8 +25,8 @@ pixels. A script panel keeps that shape. What a script can do is bounded by what
 snapshot and the node schema expose, so the worst outcome is a panel that draws wrongly,
 plus whatever transport verbs the command table hands it.
 
-The refusal in the scope doc is a product call, so it's accepting this ADR that narrows
-it, and the scope edit follows from that rather than preceding it. The standing rule that
+The refusal in the scope doc is a product call. Accepting this ADR narrows it, and the
+scope edit follows from that rather than preceding it. The standing rule that
 extensions add sources holds either way, for anything with real reach.
 
 **Why Rhai.** mlua is the one with an existing audience, since the foobar and Rainmeter
@@ -36,7 +36,7 @@ that the scope doc calls first-class. And the sandbox has to be built by hand, b
 Lua ships `io`, `os`, and `load` and you remove them yourself, which makes safety a
 checklist rather than a default.
 
-Rune is pure Rust with good ergonomics, and it has the smallest ecosystem and least
+Rune is pure Rust with good ergonomics, but it has the smallest ecosystem and least
 stable API of the three, which is a lot of risk for a surface other people's bundles
 depend on.
 
@@ -58,21 +58,21 @@ The node-tree contract is language-agnostic, so this isn't a permanent commitmen
 Lua's familiarity ever turns out to be decisive, a second frontend can target the same
 schema alongside the first.
 
-A node tree rather than a canvas is the other load-bearing call. Returning
+A node tree rather than a canvas is the other central call. Returning
 structure gets palette scoping, the text system, the panel kit's widgets, and hit
 testing for free, and it keeps the two user-code surfaces complementary: shaders
 own pixels, scripts own structure, text, and interaction, and a script panel gets
 a surface shader through the same chrome every panel has. There's no per-pixel
 API and no framebuffer in the schema. The schema itself stays an internal contract,
 designed beside the arrange-items and status-item vocabulary the panels already
-serialize rather than invented fresh; it goes public the day a second frontend or
-an external tool needs it, and versions then.
+serialize rather than invented fresh. It goes public the day a second frontend or an
+external tool needs it, and gets versioned then.
 
 Execution is event-driven, never per frame. Docked panels render cached, and a
 script that ran on the frame loop would be the fragility the refusal was about,
 rebuilt. A script runs when the discrete player state turns over, when selection
 or library events arrive, and on an optional low-capped tick. Each run has an
-operation budget and a wall-clock abort; a script that trips either goes quiet,
+operation budget and a wall-clock abort. A script that trips either goes quiet,
 the last good tree stays on screen, and the message goes to the same readouts a
 broken shader uses. Reads come from pre-baked snapshot tables (now playing,
 signals, selection, stats, a queue summary); commands go through a whitelisted

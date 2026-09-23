@@ -5,11 +5,12 @@ left open: does a curl-noise flow field driven by spectrum bands hold a frame bu
 with CPU-side rendering, and does it draw better as gpui polylines or as a per-frame
 image blit?
 
-The prototype was in `crates/rox-prototype-viz` (git history, commit bd22dc1). It ran the sim on a worker thread the
-way the real visualizer will: particles advected by the curl of 3D Perlin noise,
-driven by a synthetic 16-band spectrum (a kick on the lows, shimmer on the highs)
-standing in for the FFT of the PCM tap. Frames reach the UI through a latest-wins
-slot, so a slow UI sees fewer frames instead of back-pressuring the sim.
+The prototype was in `crates/rox-prototype-viz` (git history, commit bd22dc1). It ran
+the sim on a worker thread the way the real visualizer will: particles advected by the
+curl of 3D Perlin noise, driven by a synthetic 16-band spectrum (a kick on the lows,
+shimmer on the highs) standing in for the FFT of the PCM tap. Frames reach the UI
+through a latest-wins slot, so a slow UI sees fewer frames instead of back-pressuring
+the sim.
 
 ```sh
 cargo run -p rox-prototype-viz --release
@@ -55,8 +56,8 @@ it, and drops the previous one from the sprite atlas. The fade gives the smoke-l
 trails of the reference look for free, where the polylines read more like a vector
 field diagram.
 
-Image blit for the generative visual. Polylines stay the right tool for the spectrum
-analyzer and waveform, where the geometry is a handful of shapes.
+The image blit wins for the generative visual. Polylines stay the right tool for the
+spectrum analyzer and waveform, where the geometry is a handful of shapes.
 
 ## What this doesn't settle
 

@@ -1886,3 +1886,103 @@ fn card_readout_line(label: impl Into<SharedString>, value: String) -> Div {
         )
         .child(div().flex_1().min_w_0().child(SharedString::from(value)))
 }
+
+/// How far a layout tree row steps in per depth.
+fn indent(depth: usize) -> Pixels {
+    px(14. * depth as f32)
+}
+
+/// A layout tree node's position among its siblings, for the reorder
+/// arrows: inside a split, inside a tab group, or nowhere movable (the
+/// dock root, and a composite's hosted children, which the composite
+/// orders itself).
+#[derive(Clone)]
+enum TreeSlot {
+    Root,
+    Stack {
+        stack: Entity<StackPanel>,
+        ix: usize,
+        len: usize,
+    },
+    Tabs {
+        tabs: Entity<TabPanel>,
+        ix: usize,
+        len: usize,
+    },
+    Hosted,
+}
+
+/// A structure line of the layout tree: a split or tab group, muted so
+/// the panel rows lead the page, with the move controls on the right
+/// edge when the node can move. Padded to the icon buttons' height so
+/// the tree keeps one rhythm with and without controls.
+fn chrome_row(
+    ix: usize,
+    depth: usize,
+    label: &'static str,
+    controls: Option<AnyElement>,
+) -> AnyElement {
+    div()
+        // The tree's rows all carry the same arrows, so each is named
+        // after its place in the tree to keep them apart for the
+        // keyboard. See `rox_panel_kit::ui::control_focus`.
+        .id(ElementId::NamedInteger("tree-row".into(), ix as u64))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(tokens::SPACE_MD)
+        .py(tokens::SPACE_XS)
+        .pl(indent(depth))
+        .group(TREE_ROW_GROUP)
+        .text_xs()
+        .text_color(palette::text_muted())
+        .child(label)
+        .when_some(controls, |d, controls| d.child(controls))
+        .into_any_element()
+}
+
+/// The badge a shipped layout or workspace gets in its list row, telling
+/// the app's own read-only entries from the user's saved ones.
+fn shipped_tag() -> Div {
+    div()
+        .flex_none()
+        .px(tokens::SPACE_SM)
+        .py(px(2.))
+        .text_xs()
+        .rounded(tokens::RADIUS)
+        .bg(palette::bg_control())
+        .text_color(palette::text_muted())
+        .child(rox_i18n::t!("settings-common-built-in"))
+}
+
+/// A role badge on a preset row: lit like a filled control when the preset
+/// holds the role, a plain chip otherwise. Clicking toggles the role.
+fn role_chip(
+    label: &'static str,
+    active: bool,
+    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .flex_none()
+        .items_center()
+        .px(tokens::SPACE_SM)
+        .py(px(2.))
+        .text_xs()
+        .rounded(tokens::RADIUS)
+        .cursor_pointer()
+        .map(|d| {
+            if active {
+                d.bg(palette::accent())
+                    .text_color(palette::text_on_accent())
+            } else {
+                d.bg(palette::bg_control())
+                    .text_color(palette::text_muted())
+                    .hover(|d| d.bg(palette::bg_control_hover()))
+            }
+        })
+        .on_mouse_down(MouseButton::Left, on_click)
+        .child(label)
+}

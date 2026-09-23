@@ -6,15 +6,16 @@ against 50-100k tracks, so does SQLite plus a full in-memory projection with sub
 search still deliver sub-second search, instant filtering, and smooth navigation at 10
 million tracks, and where does the work have to split across cores to get there?
 
-The prototype lived in `crates/rox-prototype-library` (git history, commit bd22dc1). No real files are involved: a
-deterministic generator writes a synthetic catalog into SQLite with realistic
-cardinalities (10M tracks lands at 272k artists and 433k distinct album names), and the
-projection loads from there exactly as the real library service would. The projection is
-columnar the way the [non-functional model](../02-architecture/03-non-functional.md)
-prescribes, with the parts that only matter past a million tracks made concrete:
+The prototype was in `crates/rox-prototype-library` (git history, commit bd22dc1). No
+real files are involved: a deterministic generator writes a synthetic catalog into
+SQLite with realistic cardinalities (10M tracks comes out at 272k artists and 433k
+distinct album names), and the projection loads from there exactly as the real library
+service would. The projection is columnar the way the
+[non-functional model](../02-architecture/03-non-functional.md) prescribes, with the parts that only
+matter past a million tracks made concrete:
 
-- Artist, album, and genre intern to `u32` symbols; titles live in one contiguous byte
-  arena with an offset table, never ten million heap `String`s.
+- Artist, album, and genre intern to `u32` symbols; titles are stored in one contiguous
+  byte arena with an offset table, never ten million heap `String`s.
 - Search scans the interned tables whole (they're a hundredth the row count), so only
   titles need the full-row pass, and that pass splits across cores in fixed chunks.
 - Sort comparisons run on precomputed integer ranks per symbol.
@@ -64,21 +65,21 @@ the search budget. Worst-case search, a single character matching 9.7 million ro
 flat across scale, because resolving visible rows is O(visible), not O(library). The
 numbers scale linearly from 1M to 10M with no cliff.
 
-The splits are what buy it:
+Three splits make that possible:
 
-- The interned tables carry the search. A query hits artists, albums, and genres by
-  scanning ~700k short strings, and the only per-row work is a memmem over the title
-  arena, parallel in chunks. The SQLite `LIKE` contrast is the same question pushed to
-  the durable store: 1.7 s, over budget on its own.
+- The interned tables do most of the search work. A query hits artists, albums, and
+  genres by scanning ~700k short strings, and the only per-row work is a memmem over the
+  title arena, parallel in chunks. The SQLite `LIKE` contrast is the same question
+  pushed to the durable store: 1.7 s, over budget on its own.
 - Cold open is the one place the serial shape breaks the experience: 7.1 s to first
-  paint at 10M. Sharded readers over rowid ranges bring it to 1.9 s. The speedup is
-  ~4x, not 32x, because per-row rusqlite extraction and the merge dominate. A
-  projection snapshot on disk (the columns are flat arrays and serialize as-is) would
-  cut the per-row work entirely, and a view snapshot persisted at close can paint the
-  last visible rows in milliseconds while the projection loads behind it.
+  paint at 10M. Sharded readers over rowid ranges bring it to 1.9 s. The speedup is ~4x,
+  not 32x, because per-row rusqlite extraction and the merge dominate. A projection
+  snapshot on disk (the columns are flat arrays and serialize as-is) would cut the
+  per-row work entirely, and a view snapshot persisted at close can paint the last
+  visible rows in milliseconds while the projection loads behind it.
 - Sort-by-title is the only near-second click at 10M (843 ms), because it compares
-  strings. The canonical artist/album/track order runs on integer ranks in 250 ms.
-  Title ranks could be precomputed the same way if that click ever feels slow, and the
+  strings. The canonical artist/album/track order runs on integer ranks in 250 ms. Title
+  ranks could be precomputed the same way if that click ever feels slow, and the
   standard orders can be built once at open, off the UI thread.
 
 ADR 5's "tens of MB even at 100k" extrapolates to ~1 GB of projection at 10M, and
@@ -93,7 +94,7 @@ projection is ~7 GB and worst-case search ~300 ms; at 1B it's ~70 GB and ~3 s, p
 the budget. Somewhere around 50M the resident-scan design stops fitting, and search
 and sort have to move from scans to disk indexes (ADR 6's FTS5 and tantivy escalation,
 persisted sort orders) behind the same library service contract. No local library
-gets there; it matters because the browse/search boundary lets that backend
+gets there. The ceiling matters because the browse/search boundary lets that backend
 swap in without the UI noticing.
 
 ## What this doesn't settle
@@ -116,7 +117,7 @@ swap in without the UI noticing.
 ## Benchmarks
 
 The prototype crate that produced the table above is gone, so the harness that
-reproduces it lives in `rox-library` now: `examples/genlib.rs` writes a
+reproduces it is in `rox-library` now: `examples/genlib.rs` writes a
 synthetic library at these cardinalities straight through `store::insert_batch`,
 `benches/scale.rs` measures the read path over it, and `examples/scanprobe.rs`
 prints the resident high water mark of the four structures `scanner::scan`
@@ -132,5 +133,5 @@ The generator is deterministic from `--seed`, so a before and an after at the
 same track count run against the same rows. Row counts, interner
 cardinalities, projection heap and search hit counts print to stderr beside the
 timings, since criterion has no way to report a size. With `ROX_BENCH_DB` unset
-the bench registers nothing and says why, so a machine that has never generated
+the bench registers nothing and prints why, so a machine that has never generated
 a database still passes `cargo bench` and `cargo test`.

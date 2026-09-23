@@ -24,7 +24,7 @@ rasterizing a framebuffer and copying it across for every single frame the panel
 visible. That's a permanent background cost, paid whenever the panel is open, for
 something that's decoration. The second is how it looks. The output is a fixed-resolution
 buffer that the GPU scales up to whatever size the panel is, so it goes soft at large
-sizes on a hidpi display, which is exactly the setup someone who wants a visualizer is
+sizes on a hidpi display, which is the setup someone who wants a visualizer is
 likely to have.
 
 A shader gets the same look, sharp at any size, for almost no cost. So shipping the CPU
@@ -32,7 +32,7 @@ version would mean carrying the worse form of the feature as permanent maintenan
 the better form stayed available, which is a bad trade even though the code works.
 
 None of this touches the spectrum and waveform. Those draw a handful of shapes per frame,
-which is precisely the workload gpui's primitives exist for. The remaining escape hatch,
+which is the workload gpui's primitives exist for. The remaining escape hatch,
 compositing a separate wgpu surface into the window, still has no clean embedding API and
 stays a last resort.
 

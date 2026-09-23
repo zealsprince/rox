@@ -1,7 +1,8 @@
 //! Audio analysis behind the app's audio views. The app drains the playback
-//! engine's PCM tap into an [`AudioFeed`]; the spectrum panel reads the
-//! newest window back out, runs one FFT per frame through
-//! [`analysis::Analyzer`], and pools the magnitudes into bars. The
+//! engine's PCM tap into an [`AudioFeed`]; the spectrum panel asks it for the
+//! newest window's spectrum ([`AudioFeed::magnitudes`], one
+//! [`analysis::Analyzer`] per window size shared by every view) and pools the
+//! magnitudes into bars. The
 //! [`signal`] module turns the same spectrum into modulation sources a
 //! panel can bind its parameters to. Rendering is with the panels in
 //! the app crate; this crate is the DSP, plus serde so the binding configs

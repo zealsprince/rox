@@ -5,8 +5,8 @@
 Decision: the tag editor opens on a selection as one shared form covering the whole run.
 A field that reads identically across every selected file shows that value. A field whose
 values differ shows empty under a "multiple values" placeholder, so an empty box means
-"these disagree" rather than "these are blank". Only fields the user actually moves write
-anything, which is what keeps opening the editor and closing it again harmless.
+"these disagree" rather than "these are blank". Only fields the user actually changes write
+anything, so opening the editor and closing it again is harmless.
 
 Per-track fields, meaning title, track number, and disc number, lock while a batch is
 selected. They have to, because a single form value written across the run would stamp

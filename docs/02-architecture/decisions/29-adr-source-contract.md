@@ -1,57 +1,76 @@
-# ADR 29: Sources behind one trait, in-process first, host deferred
+# ADR 29: Sources as rows under a source id, in-process first, host deferred
 
-**Status:** Proposed
+**Status:** Decided
 
-Proposal: a source is a library provider plus a playback provider, the pair the
-[scope doc](../../01-product/03-scope.md) already names. The library provider hands over
-rows: tracks with their tags, artwork references, playlists, everything browse and search
-need to work the way they do for local files. The playback provider answers one question,
-where a track's bytes come from, and it answers with a playable reference: a URL, the
-headers that authorize it, and a container hint, since a URL carries no extension to
-probe off. Transport and decode stay in core. A source never opens an audio device,
-never touches the ring, and never runs on the decode thread.
+Decision: a source is a catalog that becomes library rows plus a way to play them, the
+pair the [scope doc](../../01-product/03-scope.md) names as a library provider and a
+playback provider. Both halves are written in-process. The trait that would put them
+behind one interface waits for a second implementor, and so does the extension host.
+
+The library half is a source client in `rox-net` that speaks one server's API, blocks
+like everything else in that crate, and returns plain data: `SourceTrack`,
+`SourcePlaylist`, `SourceStation`. It never writes a file, never touches SQLite, and
+never knows what a library row looks like. The service layer
+(`rox-services/src/sources.rs`) maps that data onto rows filed under the source's own
+id. A sync is a reconcile rather than an import: every track the server lists upserts
+under the source id, and any row still filed under that id that the server no longer
+lists is pruned. Both halves are scoped to the source string, so a sync can't reach a
+local row whatever the server sends back.
+
+The playback half is a playable reference stored on the row. A remote row keeps its
+stream URL in `remote_url` and whether the stream ever ends in `remote_live`, and
+`store::locators_for` hands the engine a `Locator::Remote` with that bare URL instead of
+a path. Credentials are never stored with it. The request is finished per call through
+an authorize table (`rox-services/src/sources_registry.rs`) that the binary fills at
+startup, the same shape as `rox-panel-api`'s `openers`: the live source adds whatever
+the request needs from settings, a fresh salt and token in Subsonic's case, headers for
+a source that authorizes that way. Transport and decode stay in core. A source never
+opens an audio device, never touches the ring, and never runs on the decode thread.
 
 A PCM contract exists on paper for the case a reference can't express. librespot
 decrypts and decodes Spotify's stream inside the extension, so what comes back is
 samples plus a format description rather than a container rox can hand to symphonia.
 Designing that half now means designing against one imagined implementor, so it waits
-until a source forces it. When it lands it has to meet the single-stream engine from
-[ADR 3](03-adr-gapless.md) rather than sit beside it as a second playback path.
+until a source forces it. When it arrives it has to plug into the single-stream engine
+from [ADR 3](03-adr-gapless.md) rather than run beside it as a second playback path.
 
-**Sources start in-process.** The first two are Rust implementations of the trait
-compiled into the binary, the way the enrichment providers already work.
-[ADR 14](14-adr-online-providers.md) made this argument for its own domain and it
-transfers whole: "First-party HTTP fetchers written by us don't need a sandbox, so making
-them wait on one would be paying for isolation nobody asked for. If providers do
-eventually ship as extensions, the per-domain trait is the surface the host would expose
-anyway, so nothing here is wasted." The trait gets written either way. Writing it against
-two implementations that run is how it comes out the right shape, and it's the only way
-to find out which calls actually cross it.
+**Sources start in-process.** [ADR 14](14-adr-online-providers.md) made this argument
+for its own domain and it transfers whole: "First-party HTTP fetchers written by us
+don't need a sandbox, so making them wait on one would be paying for isolation nobody
+asked for."
 
-**Identity is source-qualified in memory as well as on disk.** Half of that already
-exists. The `tracks` table has a `source` column defaulting to `'local'`, the unique key
-is `(source, path, sub)` after the subsong migration, and every local write path in
+**The trait waits for its second implementor.** The proposal had both halves behind one
+trait, written against the first two sources. Only one of them turned out to need a
+client. Subsonic is a source client. Radio isn't: a station is an ordinary row under
+`source = 'radio'` with the stream URL as its path, added by hand, found through the
+radio-browser directory, or listed by a Subsonic server, and the queue, playlists,
+history, search, and every panel handle it with no new code. With one client, a trait
+would be a guess about what the second one needs. The client's types are the contract
+until then, and they become the trait when a second client lands.
+
+**Identity is source-qualified in memory as well as on disk.** The unique key is
+`(source, path, sub)`. Local files are `local`, stations are `radio`, and each Subsonic
+server digests to its own `subsonic:<digest>`, so two servers' catalogs never share a
+row. The projection loads `source` as an interned column, and `TrackKey` is
+`{ source, path, sub }`, so the currency the player and panels trade in stays
+unambiguous when two sources hold rows with the same path. Every local write path in
 `rox-library/src/store.rs` scopes itself with `source = 'local'` rather than assuming
-it. The other half doesn't. The projection loader, `scan_range`, selects every column
-but that one, so the in-memory catalog the entire UI reads off can't tell two sources
-apart. And `TrackKey` in `rox-library/src/cue.rs` is `{ path, sub }`, with nowhere to
-put a source, so the currency the player and panels trade in is ambiguous the moment a
-second source has a row whose path collides.
+it.
 
-Closing that gap is the part of this decision that gets expensive if it slips. Adding
-the column to the projection and the field to `TrackKey` touches browse views and queue
-entries once, mechanically, while every row in every library is local. Doing it after a
-source ships turns it into a data migration plus an audit of every call site that
-quietly assumed a path was unique, which is the retrofit the scope doc's "don't paint
-sources into a corner" constraint was written to avoid.
+This is the part of the decision that gets expensive if it slips. With every row in
+every library local, adding the column to the projection and the field to `TrackKey`
+touches browse views and queue entries once, mechanically. Doing it after a source ships
+turns it into a data migration plus an audit of every call site that quietly assumed a
+path was unique, which is the retrofit the scope doc's "don't paint sources into a
+corner" constraint was written to avoid.
 
 **Two first sources: Subsonic, then radio.** Subsonic and its OpenSubsonic extensions
 are the library-provider case. A real catalog with browse, search, artwork and
-playlists, over a documented API, against a server the user runs. That last part is what
-earns it the first slot: when it breaks, it broke because our client is wrong, not
-because a company changed something overnight. The fragility that put Spotify and
-YouTube behind extensions in the first place doesn't apply to a server the user
-administers.
+playlists, over a documented API, against a server the user runs. That last part earns
+it the first slot: when it breaks, it broke because our client is wrong, not because a
+company changed something overnight. The fragility that put Spotify and YouTube behind
+extensions in the first place doesn't apply to a server the user administers. Several
+servers can be configured at once, each an account with its own switch.
 
 Web radio is the transport case. No catalog, an unbounded stream, metadata in band.
 Between them the two exercise both halves of the contract, which one source alone can't.
@@ -62,29 +81,31 @@ boundary with no implementor is wrong in ways nobody finds out about until somet
 to live inside it. Radio first looks cheap because it's small. It's also the least
 representative part of the surface: an unbounded stream with in-band metadata is the
 hardest case in the transport half, and it proves nothing at all about browse, search,
-or identity, which is where the retrofit cost actually sits.
+or identity, which is where the retrofit cost is.
 
-**The host mechanism stays open.** It gets its own ADR, decided on what these two
-sources show: which calls crossed the trait and how often, how big the payloads were,
-whether anything needed audio bytes rather than a reference to them.
+**The host mechanism stays open.** It gets its own ADR, decided on what a second source
+client needs beyond the first one's types, how big the payloads are, and whether
+anything needs audio bytes rather than a reference to them.
 [ADR 24](24-adr-script-panels.md) says "WASM stays the right answer for the source and
 playback extension host, which is a different problem with different constraints". This
 narrows that line rather than contradicting it. WASM stays the likely answer for the
 host once there is a host. What's added here is that the host is not what ships first,
-and the trait it would expose gets written and used before the mechanism is chosen.
+and the contract it would expose gets written and used before the mechanism is chosen.
 
-**The HTTP transport lives in `rox-playback`, as a stated exception.** The layering says
-all wire calls go in `rox-net`, blocking, on the background executor, and `rox-playback`
-has no HTTP client today. This puts one there: a `MediaSource` over HTTP that turns a
-seek into a ranged GET, plus the ICY metadata stripper radio needs to keep in-band
-titles out of the decoder.
+**The HTTP transport is in `rox-playback`, as a stated exception.** The layering says
+all wire calls go in `rox-net`, blocking, on the background executor.
+`rox-playback/src/http.rs` is the exception: an `HttpSource` that turns a seek into a
+ranged GET for a remote file, and a `LiveSource` reading a station off a tape that a
+feed thread keeps filling. `icy.rs` beside it strips the in-band station titles out of
+the byte stream before the decoder sees them. It uses ureq, the same client `rox-net`
+uses, so the workspace carries one HTTP stack.
 
 It goes there because it isn't a wire call in the sense that rule is about. It's a byte
 transport the decode loop pulls from synchronously, so it can't run on the background
 executor at all, and pretending otherwise would put a channel hop in the middle of the
 decode path. `rox-net` also can't host it as things stand. Doing so means either a
-dependency on `rox-playback`, when today it depends on `rox-core` alone, or re-exporting
-a symphonia trait it has no other reason to know about.
+dependency on `rox-playback`, when `rox-net` depends on `rox-core` alone, or taking on a
+symphonia trait it has no other reason to know about.
 
 The alternative, written down so flipping it stays cheap: the reader moves to a
 `rox-net::stream` module, `rox-playback` gains a dependency on `rox-net`, and only the

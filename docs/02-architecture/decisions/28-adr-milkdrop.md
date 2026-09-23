@@ -14,21 +14,21 @@ already is.
 
 The alternatives were porting MilkDrop to WGSL on top of ADR 23's chains, and shipping
 no preset support at all. The port is the one that looks tempting from inside the
-existing renderer and doesn't survive contact: a preset isn't a fragment shader, it's
+existing renderer and doesn't survive contact. A preset isn't a fragment shader. It's
 a per-frame equation script plus warp and composite stages plus custom waves and
 shapes, and the twenty-year preset corpus is the entire reason anyone wants the
 feature. A partial port renders most of that corpus wrong, which is worse than not
-having it, and a complete one is a rewrite of a program that already exists, is
+having it. A complete one is a rewrite of a program that already exists, is
 maintained, and is LGPL.
 
-**This is the readback ADR 8 refused, taken deliberately.** ADR 8 killed the CPU
+**This is the readback ADR 8 refused.** ADR 8 killed the CPU
 generative visual because a worker thread rasterizing and blitting a framebuffer every
 visible frame is a standing tax, and the same look was available sharp and nearly free
 as a shader. Both halves of that reasoning invert here. The tax is the same shape, but
-what it buys isn't a decoration we'd have written ourselves; it's a format with a
+what it buys isn't a decoration we'd have written ourselves. It's a format with a
 preset library nobody can reproduce in the alternative. And there's no cheaper form
-waiting: the shader path that made ADR 8's refusal correct is exactly what can't
-express a preset. The resolution softness ADR 8 also objected to is answered by
+waiting: the shader path that made ADR 8's refusal correct is what can't express a
+preset. The resolution softness ADR 8 also objected to is answered by
 rendering at the panel's device-pixel size and reallocating on resize, so the buffer
 matches the target instead of being scaled up to it.
 
@@ -37,7 +37,7 @@ behavior, "extensions add sources, not behavior inside the UI", and a `.milk` fi
 doesn't touch that boundary: it's arithmetic in projectM's own sandboxed evaluator
 over a fixed variable set, with no filesystem, no network, and no path back into rox.
 That puts it with ADR 23's assets rather than with ADR 24's Rhai panels, so presets
-load without an approval gate. Adding a second confirm dialog here would train exactly
+load without an approval gate. Adding a second confirm dialog here would train
 the click-through the one real gate depends on not having.
 
 The pin is projectM master, not the 4.1.7 release, because 4.1.7's render path binds
@@ -52,11 +52,11 @@ AGPL-3.0-only binary whose source ships, so the relink clause is satisfied by th
 source we publish anyway.
 
 Zero-copy is the follow-up, not part of this. The frame could stay on the GPU through
-blade's `ExternalMemorySource` on Linux and D3D11 interop on Windows, and that's real
-work in the vendored renderer on two backends, gated behind a number this design has
+blade's `ExternalMemorySource` on Linux and D3D11 interop on Windows. That's real work
+in the vendored renderer on two backends, and it's gated behind a number this design has
 to produce first: the measured cost of `glReadPixels` plus upload at a realistic panel
 size. If that number is small against the frame budget, the interop work buys latency
-and nothing else and can wait. Building the readback path first is also what makes the
+and nothing else and can wait. Building the readback path first also makes the
 comparison possible, since the texture and chain plumbing is the same either way.
 
 The new costs are a cmake build inside `cargo build` (about 18 seconds cold on a

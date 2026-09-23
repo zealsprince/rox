@@ -7,7 +7,7 @@ If Foobar2000 was made this year.
 Foobar2000's real magic wasn't playback. It was two things stacked on top of each
 other: a panel-composition UI where you build your own interface out of parts, and a
 theme community (CaTRoX, NekoRoX, Georgia, Eole) that turned that system into things
-that looked genuinely beautiful. Underneath both was fast, deep tag and library
+that looked beautiful. Underneath both was fast, deep tag and library
 management that held up on libraries with tens of thousands of tracks.
 
 That whole stack is stranded. Foobar is Windows in practice. The macOS build is a thin
@@ -52,12 +52,10 @@ tagging being good enough to trust.
 
 **The aesthete.** Wants the player to look like something they chose, not a default. A
 green NekoRoX-style build, a live visualizer on a second monitor, a layout tuned to how
-they actually listen. For this person the look and the composability are the product,
-not decoration on top of it.
+they actually listen. For this person the look and the composability are the product.
 
-These overlap heavily. The same person often is all three. I'm the first and most
-concrete of them, and building the thing I'd switch to is the sharpest test of whether
-it works.
+The same person is often all three. I'm the first and most concrete of them. Building
+the thing I'd switch to is the sharpest test of whether it works.
 
 ## What success looks like
 
@@ -67,6 +65,6 @@ window looks like something worth keeping open.
 
 Past that bar is a longer life: sources as extensions. The same panels, visualizers,
 and playback surface working against a Spotify, YouTube Music, or Tidal library view,
-each maintained by the community rather than by rox itself. That keeps rox from being
-only a tool for people with large local collections, and none of it displaces the local
-core that earns the switch. [Scope](03-scope.md) has the detail.
+each maintained by the community rather than by rox itself. That opens rox to people
+without a large local collection. None of it displaces the local core that earns the
+switch. [Scope](03-scope.md) has the detail.

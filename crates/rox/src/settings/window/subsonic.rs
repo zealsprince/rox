@@ -16,6 +16,11 @@ use super::*;
 use gpui::Focusable;
 use rox_core::settings::SubsonicAccount;
 
+/// How often the Subsonic row re-reads a running sync. Slower again than
+/// the leveling poll: the count moves once per album, and an album is a
+/// request to somebody else's server.
+const SUBSONIC_SYNC_POLL: Duration = Duration::from_millis(500);
+
 /// What the sources table answers to in the settings search on the
 /// servers' behalf: the kinds of server, and the terms a server's own
 /// settings carry. The dialog behind a row isn't searchable, so the table

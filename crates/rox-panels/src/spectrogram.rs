@@ -38,7 +38,7 @@ use rox_panel_kit::axis::{fmt_axis_hz, fmt_hz};
 use serde::{Deserialize, Serialize};
 
 use rox_viz::AudioFeed;
-use rox_viz::analysis::{Analyzer, MAX_FFT_SIZE, MIN_FFT_SIZE, hz_ladder};
+use rox_viz::analysis::{MAX_FFT_SIZE, MIN_FFT_SIZE, hz_ladder};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
@@ -534,9 +534,6 @@ struct Waterfall {
     last_fresh: Option<Instant>,
     /// What the ring was built for; a mismatch clears it.
     mapping: Option<Mapping>,
-    analyzer: Option<Analyzer>,
-    /// Sample scratch, one FFT window wide.
-    mono: Vec<f32>,
     /// The newest column, held between pump ticks so a frame that brought no
     /// audio scrolls what's in hand instead of re-running the FFT.
     rows: Vec<f32>,
@@ -578,8 +575,6 @@ impl Waterfall {
             last_tick: None,
             last_fresh: None,
             mapping: None,
-            analyzer: None,
-            mono: Vec::new(),
             rows: Vec::new(),
             cells: Vec::new(),
             history: 0,
@@ -597,11 +592,9 @@ impl Waterfall {
         }
     }
 
-    /// Build the analyzer and the ring for a mapping, dropping whatever was
-    /// stored under the old one.
+    /// Build the ring for a mapping, dropping whatever was stored under the
+    /// old one.
     fn reset(&mut self, mapping: &Mapping) {
-        self.analyzer = Some(Analyzer::new(mapping.fft));
-        self.mono = vec![0.0; mapping.fft];
         self.rows = vec![0.0; ROWS];
         self.cells = vec![0.0; mapping.history * ROWS];
         self.history = mapping.history;
@@ -673,19 +666,15 @@ impl Waterfall {
         self.alive = self.quiet < self.history;
     }
 
-    /// The newest window folded into the current column. The feed returns
-    /// short while it fills, and [`Analyzer::magnitudes`] wants exactly a
-    /// window, so a partial read leaves the previous column standing rather
-    /// than analyzing a buffer with a stale tail on it.
+    /// The newest window folded into the current column, off the feed's
+    /// shared spectrum. The feed has none while it fills, so a partial
+    /// buffer leaves the previous column standing rather than analyzing a
+    /// window with a stale tail on it.
     fn analyze(&mut self, feed: &AudioFeed, mapping: &Mapping) {
-        let Some(analyzer) = self.analyzer.as_mut() else {
+        let Some(mags) = feed.magnitudes(mapping.fft) else {
             return;
         };
-        if self.mono.is_empty() || feed.latest_mono(&mut self.mono) != self.mono.len() {
-            return;
-        }
-        let mags = analyzer.magnitudes(&self.mono);
-        reduce(mags, mapping, &mut self.rows);
+        reduce(&mags, mapping, &mut self.rows);
     }
 
     /// The current column into the ring, oldest one out.

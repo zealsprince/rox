@@ -17,8 +17,8 @@ usually implies, has no Rust decoder at all, so that half isn't a matter of effo
 
 The product spec never asked for exclusive output, so building it now would be guessing
 at a requirement. Keeping output behind a trait costs almost nothing today and leaves
-the door open, which is the cheap half of the work; the expensive half is the FFI, and
-it only becomes worth spending when someone actually wants what it buys. If bit-perfect
+the door open. That's the cheap half of the work. The expensive half is the FFI, and it's
+only worth spending when someone actually wants what it buys. If bit-perfect
 does become a real requirement, that's a product decision, and it pulls the FFI work
 into scope with it.
 

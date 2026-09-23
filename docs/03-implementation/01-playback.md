@@ -98,7 +98,7 @@ ran; it gets a ring to push into and a rate to resample toward.
     There's no writer thread: CoreAudio pulls, so the HAL calls an IO proc on its own
     real-time thread and that proc calls `fill`.
 
-  Anywhere else the seam returns a clear unsupported error and the settings page says
+  Anywhere else the seam returns a clear unsupported error and the settings page shows
   "not on this platform" rather than offering a toggle that always falls back.
 
 ALSA and CoreAudio have both been run on real hardware. WASAPI is written from the
@@ -106,8 +106,8 @@ platform contract and ships for testers, but no card has heard it here yet, so t
 Audio page badges exclusive mode experimental on Windows and offers a prefilled issue
 so a report arrives with the details a tester would forget.
 
-A claim that fails (busy, no such device) opens shared instead and records the reason
-in `Negotiated::fallback`, which the Audio page shows. Never an error, never silence.
+A claim that fails (busy, no such device) opens shared instead of erroring or going
+silent, and records the reason in `Negotiated::fallback`, which the Audio page shows.
 
 Exclusive follows the file's rate, which isn't known until the decode thread opens the
 file. So a session opens at the device's rate, and the player's pump compares the
@@ -160,10 +160,10 @@ that misses (odd LAME variants, other encoders) gets trimmed in the decode loop 
 
 ## Crossfade
 
-The fade is not a chain node. During a window the decode thread holds two open
-sources: the incoming one drives the loop as always, the outgoing one decodes
-alongside in `Fade` and is mixed underneath before the chain runs, so the ring keeps
-its single producer and an EQ shapes the fade like anything else. Per-frame gains come
+The fade isn't a chain node. During a window the decode thread holds two open sources:
+the incoming one drives the loop as always, and the outgoing one decodes alongside in
+`Fade` and is mixed underneath before the chain runs. The ring keeps its single
+producer, and an EQ shapes the fade like anything else. Per-frame gains come
 from `gain.rs`, the source-gain stage ADR 19 put ahead of the mix; it's also where a
 source's own constant gain applies, ReplayGain included.
 
@@ -181,13 +181,13 @@ a listener who wants every boundary soft; repeat-one stays out even then.
 A manual skip always fades. The flush protocol below still runs on a skip, so the fade
 starts at the press rather than a ring later; the outgoing source is wound back to the
 position clock, since the decode cursor had run up to a ring ahead of what was heard.
-That wind-back happens before the flush, so its seek doesn't hold the silence open,
-which leaves the clock a callback period further on than the spot it aimed at; the
-difference is decoded and dropped on the far side, so the fade still starts on the
-sample the cut landed on. Where the open source isn't the audible track (the gapless
-preroll already swapped it, or another fade is halfway through) there's nothing to wind
-back and the skip cuts. So does a skip while paused: nobody is hearing the old track,
-and its tail would arrive as a surprise on the next Play.
+That wind-back happens before the flush, so its seek doesn't hold the silence open. That
+leaves the clock a callback period past the spot it aimed at. The difference is decoded
+and dropped on the far side, so the fade still starts on the sample the cut landed on.
+Where the open source isn't the audible track (the gapless preroll already swapped it,
+or another fade is halfway through) there's nothing to wind back and the skip cuts. So
+does a skip while paused: nobody is hearing the old track, and its tail would arrive as
+a surprise on the next Play.
 
 The new track's segment registers at the fade midpoint rather than its first sample:
 `open_at_from(pos, len / 2)`. The position clock, the track-change notification, and
@@ -226,7 +226,8 @@ counts. `store::albums_missing_replaygain` hands the work back grouped by album 
 `rox/src/replaygain_job.rs` steps through it one album at a time on a background worker,
 polled for cancel every quarter second of decoded audio. An album is metered as one
 program: the per-track histories merge before the gate runs, so the record's quiet
-interlude drops out of the album figure the same way a quiet passage drops out of a track's.
+interlude drops out of the album figure the same way a quiet passage drops out of a
+track's.
 Measuring only part of an album gets track values only, since a gain gated over half a
 record is a number for a record that doesn't exist, and the tracks that already have
 tags bring their own album figures.
@@ -246,14 +247,14 @@ falling back to the other where a file has only one), a preamp added to every
 tagged gain, and a separate number for files with no tags at all. The tagged peak
 clamps the result, so a boost never pushes a track past full scale, and a cut is left
 alone. Off returns exactly 1.0 rather than a rounded one, so `gain::apply`
-short-circuits and the samples reach the ring the bits the decoder produced.
+short-circuits and the samples reach the ring as the bits the decoder produced.
 
 The rule is sent over the command channel rather than shared as an atomic, so the engine
 reads it when a source opens instead of per sample. A change relevels every source in
 hand, both sides of a fade included, so switching mode is heard on the track playing
 rather than the one after it, behind the same ring depth as every other parameter change.
 
-The Audio page states what the library actually has
+The Audio page shows what the library actually has
 (`store::replaygain_breakdown`), split into tagged, measured, and missing, counted on
 library events rather than per frame. The missing count is the measurement pass's work
 list, and the button beside it starts the pass and turns into its progress.
@@ -311,8 +312,8 @@ Parameter latency falls out of that placement: a knob change is audible only onc
 samples already in the ring drain past it, so the fill is gated (`latency.rs`). An open
 chain editor takes a process-global hold, refcounted so a second editor can hold it
 alongside the first, and while one is out the push loop stops at 120 ms of buffered
-audio instead of the ring's full 500 ms. Nothing is resized or reallocated:
-the excess drains once when the hold is taken, the depth comes back when the last one
+audio instead of the ring's full 500 ms. Nothing is resized or reallocated: the excess
+drains once when the hold is taken, the depth comes back when the last one
 drops, and the underrun cushion is thinner only for as long as someone is turning a
 knob. The EQ window holds it for its lifetime, so the OS close button releases it the
 same as the menu item does.
@@ -331,7 +332,7 @@ queue; it never touches the ring, so it can't disturb what's already playing.
 ## Device loss and rebuild
 
 When the device drops out or the backend faults, cpal calls the stream's error
-function, which logs and sets `device_lost` on the shared state; every exclusive backend
+function, which logs and sets `device_lost` on the shared state. Every exclusive backend
 sets the same flag its own way: the ALSA and WASAPI writers on a write they can't
 recover, the CoreAudio side from a device-is-alive listener. Nothing else recovers on
 the audio side, since neither the callback nor the writer runs again.
@@ -343,11 +344,10 @@ current output settings, whose default device is the reconnected or newly defaul
 An output mode or device switch runs through the same rebuild, so both apply without a
 restart. Everything denominated in the old device rate goes with it: the sample ring,
 the resampler, the consumed clock, and the segment list. A disconnect mid-playback
-resumes; a restore-shaped
-start would otherwise come up paused. Album groups aren't persisted with the queue
-because `start_session` re-derives them from the library on every start, restores
-included. If no queue can be resolved the session is dropped and the transport falls
-back to idle with an error, never a frozen "playing".
+resumes; a restore-shaped start would otherwise come up paused. Album groups aren't
+persisted with the queue because `start_session` re-derives them from the library on
+every start, restores included. If no queue can be resolved the session is dropped and
+the transport falls back to idle with an error, never a frozen "playing".
 
 ## Reference
 

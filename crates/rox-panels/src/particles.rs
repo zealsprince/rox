@@ -25,7 +25,6 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use rox_viz::AudioFeed;
 use rox_viz::signal::{Route, SignalHub};
 
 use crate::assets::icons;
@@ -682,21 +681,11 @@ impl Sim {
         }
     }
 
-    /// One tick: advance the shared hub, resolve the routes into this
-    /// frame's emitters and field, fire what they call for, and move what
+    /// One tick: resolve the routes into this frame's emitters and field
+    /// (reading them advances the shared hub), fire what they call for, and move what
     /// is already in the air. `hold` is the freeze-on-pause option, which
     /// parks the field where it stands.
-    #[allow(clippy::too_many_arguments)]
-    fn step(
-        &mut self,
-        feed: &AudioFeed,
-        hub: &SignalHub,
-        track: Option<u64>,
-        w: f32,
-        h: f32,
-        config: &ParticlesConfig,
-        hold: bool,
-    ) {
+    fn step(&mut self, hub: &SignalHub, w: f32, h: f32, config: &ParticlesConfig, hold: bool) {
         let now = Instant::now();
         let dt = self
             .last_tick
@@ -711,7 +700,6 @@ impl Sim {
         }
         self.clock += dt;
 
-        hub.tick(feed, track);
         let (emitters, scene, forces) = modulated(config, hub);
         self.carry.resize(emitters.len(), 0.0);
         self.armed.resize(emitters.len(), true);
@@ -1016,7 +1004,6 @@ type ConfigToggle = (
 pub struct ParticlesPanel {
     state: AppState,
     config: ParticlesConfig,
-    feed: Arc<AudioFeed>,
     sim: Arc<Mutex<Sim>>,
     /// Per-emitter slider state, kept the same length as the list.
     emitter_scrubs: Vec<EmitterScrubs>,
@@ -1060,7 +1047,6 @@ impl ParticlesPanel {
         assign_emitter_ids(&mut config.emitters);
         ParticlesPanel {
             config,
-            feed: state.player.read(cx).feed(),
             state,
             sim: Arc::new(Mutex::new(Sim::new())),
             emitter_scrubs: Vec::new(),
@@ -2091,10 +2077,6 @@ impl ParticlesPanel {
         let player = self.state.player.read(cx);
         let session = player.now_playing().is_some();
         let playing = player.is_playing();
-        // Read here rather than in the paint closure, which has no cx: the
-        // hub needs it to spot a song change for the aggregates that reset
-        // on one, and a render happens every frame audio moves.
-        let track = player.playing_entry();
         // Freeze on pause holds the standing field: paused mid-session, not
         // a played-out queue.
         let hold = self.config.scene.freeze && session && !playing && !player.queue_ended();
@@ -2104,7 +2086,6 @@ impl ParticlesPanel {
 
         let config = self.config.clone();
         let sim = self.sim.clone();
-        let feed = self.feed.clone();
         let hub = self.state.signals.clone();
         let edit = self.edit;
         let drag = self.drag;
@@ -2121,7 +2102,7 @@ impl ParticlesPanel {
                         return;
                     }
                     let mut sim = sim.lock().unwrap();
-                    sim.step(&feed, &hub, track, w, h, &config, hold);
+                    sim.step(&hub, w, h, &config, hold);
                     sim.paint(bounds, window, &config.scene);
                     if edit {
                         paint_markers(&config, drag, bounds, window);

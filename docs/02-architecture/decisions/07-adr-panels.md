@@ -16,7 +16,7 @@ that first. Rolling the whole system on raw primitives is the other end: total c
 and every widget from scratch, including the virtualized table that the library view
 lives or dies on.
 
-`gpui-component` is permissively licensed, actively maintained, and built for exactly
+`gpui-component` is permissively licensed, actively maintained, and built for
 this kind of app, so it removes most of the widget work in one step. Two things come
 with it. It's a second pre-1.0 dependency, and it tracks gpui's churn, so it inherits
 the pinning discipline ADR 1 already imposes. And its dock only manages panels inside
@@ -39,5 +39,5 @@ widgets and theme included, still comes from the published crate at the pinned v
 
 The alternative was forking the whole crate through `[patch.crates-io]`. Vendoring one
 leaf module instead keeps custody scoped to the code we actually change, so the rest
-keeps updating normally. The new cost lands at gpui-component bumps, where `rox-dock`
+keeps updating normally. The new cost comes at gpui-component bumps, where `rox-dock`
 has to be re-diffed against upstream's `src/dock` as part of that budgeted task.

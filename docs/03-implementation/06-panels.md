@@ -125,15 +125,16 @@ library folders in `settings.json`, the look in `workspace.json`, window shapes 
 
 A per-panel customize window edits that one panel's config: `panel_settings::open`
 (`crates/rox/src/panel_settings.rs`) opens an OS window keyed to the panel's entity id,
-reusing the existing one if already open, sized around 640x480. It shows the panel's own pages (from `PanelSettings::pages`) then a shared
-Appearance page editing the chrome's palette and frame override. Edits apply live to the
+reusing the existing one if already open, sized around 640x480. It shows the panel's own
+pages (from `PanelSettings::pages`) then a shared Appearance page editing the chrome's
+palette and frame override. Edits apply live to the
 panel and are written into its next layout dump.
 
 ## Pop-out and entity sharing
 
 A panel pops out into its own OS window without duplicating any state. `pop_out`
-(`crates/rox-panel-api/src/panel.rs`) detaches the panel from its tab group, then `pop_out_view`
-opens a new window, around 900x600, hosting a `PopoutHost`:
+(`crates/rox-panel-api/src/panel.rs`) detaches the panel from its tab group, then
+`pop_out_view` opens a new window, around 900x600, hosting a `PopoutHost`:
 
 ```rust
 struct PopoutHost {
@@ -162,8 +163,8 @@ sends a panel dragged out of the window straight into `pop_out_view`.
 
 A layout is one arrangement of panels and their configs. A workspace is the wider
 shareable unit: a `WorkspaceBundle` (`crates/rox-core/src/settings.rs`) holding a set of
-named layout presets with their mini-player roles, plus the palette and appearance that
-dress them.
+named layout presets with their mini-player roles, plus the palette and appearance applied
+over them.
 
 ```rust
 pub struct WorkspaceBundle {
@@ -213,11 +214,11 @@ is applied rather than every time a menu draws.
 
 ## Reference
 
-The dock is the vendored `crates/rox-dock`: `panel.rs` (the `Panel` / `PanelView` traits,
-the registry), `state.rs` (`DockAreaState`, `PanelState`, `PanelInfo`). The app wires it
-in `crates/rox/src/workspace.rs` (the layout tree, persist and restore),
-`crates/rox-panel-api/src/panel.rs` (`PanelChrome`, `AppState`, `pop_out`, `PopoutHost`),
-`crates/rox/src/panel_settings.rs` (the customize windows), `crates/rox-core/src/settings.rs`
-(`NamedLayout`, `WorkspaceBundle`), `crates/rox-design/src/palette.rs` (`PanelTheme`), and
-`crates/rox/src/workspaces.rs` (apply). Each panel's config is defined beside it under
-`crates/rox-panels/src/`.
+The dock is the vendored `crates/rox-dock`: `panel.rs` (the `Panel` / `PanelView`
+traits, the registry), `state.rs` (`DockAreaState`, `PanelState`, `PanelInfo`). The app
+wires it in `crates/rox/src/workspace.rs` (the layout tree, persist and restore),
+`crates/rox-panel-api/src/panel.rs` (`PanelChrome`, `AppState`, `pop_out`,
+`PopoutHost`), `crates/rox/src/panel_settings.rs` (the customize windows),
+`crates/rox-core/src/settings.rs` (`NamedLayout`, `WorkspaceBundle`),
+`crates/rox-design/src/palette.rs` (`PanelTheme`), and `crates/rox/src/workspaces.rs`
+(apply). Each panel's config is defined beside it under `crates/rox-panels/src/`.

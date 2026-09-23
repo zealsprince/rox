@@ -25,7 +25,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use rox_panel_kit::axis::fmt_axis_hz;
 use rox_playback::eq::{BANDS, FREQ_MAX, FREQ_MIN, GAIN_MAX_DB, Q_MAX, Q_MIN};
 use rox_playback::latency::{self, LatencyHold};
-use rox_viz::analysis::{self, Analyzer};
+use rox_viz::analysis;
 
 use rox_core::settings::{AnalyzerStyle, LayoutSize, Settings};
 use rox_design::assets::icons;
@@ -244,11 +244,9 @@ struct EqWindow {
     /// be typed into.
     selected: usize,
     /// The analyzer behind the curve, and what it needs to keep going: the
-    /// FFT, a mono window to fill from the feed, the folded bar levels, and
-    /// the bin ranges those bars gather. The mapping is rebuilt whenever the
-    /// device rate changes under it.
-    analyzer: Analyzer,
-    mono: Vec<f32>,
+    /// folded bar levels and the bin ranges those bars gather out of the
+    /// feed's shared spectrum. The mapping is rebuilt whenever the device
+    /// rate changes under it.
     bars: Vec<f32>,
     bins: Vec<(usize, usize)>,
     /// The rate `bins` was mapped for, so a device switch remaps instead of
@@ -343,8 +341,6 @@ impl EqWindow {
             grabbed: None,
             grab_offset: point(px(0.), px(0.)),
             selected: 0,
-            analyzer: Analyzer::new(fft),
-            mono: vec![0.0; fft],
             bars: vec![0.0; SPECTRUM_BARS],
             bins: Vec::new(),
             bin_rate: 0,
@@ -363,17 +359,15 @@ impl EqWindow {
         }
     }
 
-    /// Retune the analyzer to a different window size: a new FFT, a window
-    /// to fill it, and the band mapping dropped so the next frame remaps it
-    /// against the new bin count rather than reading the old one short.
+    /// Retune the analyzer to a different window size, dropping the band
+    /// mapping so the next frame remaps it against the new bin count rather
+    /// than reading the old one short.
     fn set_fft(&mut self, size: usize, cx: &mut Context<Self>) {
         let size = fft_size(size);
         if size == self.fft {
             return;
         }
         self.fft = size;
-        self.analyzer = Analyzer::new(size);
-        self.mono = vec![0.0; size];
         self.bins.clear();
         Settings::update(move |s| s.eq.fft_size = size);
         cx.notify();
@@ -400,13 +394,7 @@ impl EqWindow {
             return false;
         }
         if self.bin_rate != rate || self.bins.len() != SPECTRUM_BARS {
-            self.bins = analysis::log_bands(
-                SPECTRUM_BARS,
-                FREQ_MIN,
-                FREQ_MAX,
-                rate,
-                self.analyzer.size() / 2,
-            );
+            self.bins = analysis::log_bands(SPECTRUM_BARS, FREQ_MIN, FREQ_MAX, rate, self.fft / 2);
             self.bin_rate = rate;
         }
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
@@ -424,8 +412,7 @@ impl EqWindow {
         }
         // Only analyze on new audio. Between pump ticks the last frame still
         // stands, and the decay below keeps it from looking frozen.
-        if fresh && feed.latest_mono(&mut self.mono) == self.mono.len() {
-            let mags = self.analyzer.magnitudes(&self.mono);
+        if let Some(mags) = fresh.then(|| feed.magnitudes(self.fft)).flatten() {
             for (bar, &(lo, hi)) in self.bins.iter().enumerate() {
                 let peak = mags[lo..hi].iter().copied().fold(0.0f32, f32::max);
                 let db = 20.0 * (peak + 1e-9).log10();

@@ -29,11 +29,10 @@ here or the rest doesn't matter to this user.
 **It knows what you actually listen to.** Every real listen is written to disk: play
 counts, first and last played, rolled up by artist, album, and genre. A skip ten seconds
 in doesn't count; an album on repeat all week does. A history panel reads it: most
-played, never played, what you haven't touched in a year. A stats view makes the
-history something to look at, rolled up and charted over a range you pick. The record is yours and
-local: fix a genre tag and your history re-buckets with it, and scrobbling becomes a
-copy sent out, not the only record you have.
+played, never played, what you haven't touched in a year. A stats view charts it over a
+range you pick. The record is yours and local. Fix a genre tag and your history
+re-buckets with it. Scrobbling becomes a copy sent out, not the only record you have.
 
 **It feels alive.** Spectrum analyzer, waveform seekbar, and a generative visualizer in
-the vein of the hivecom.net green shot. Not a gimmick tab, part of the surface you
-actually look at while listening.
+the vein of the hivecom.net green shot. They're panels in the layout you look at while
+listening, not a gimmick tab.

@@ -56,11 +56,11 @@ Two real candidates, checked July 2026.
 [ksni](https://docs.rs/ksni/latest/ksni/) 0.3.6, Linux only. A pure-Rust
 implementation of the freedesktop StatusNotifierItem spec over D-Bus via zbus.
 No GTK anywhere. The `blocking` feature runs the tray on its own thread, or it
-rides an async runtime. The MPRIS plan (issue #25) already brings zbus into
+runs on an async runtime. The MPRIS plan (issue #25) already brings zbus into
 the tree, so this is the same stack twice rather than a new one. The known
 caveat: GNOME Shell doesn't render SNI items without the AppIndicator
 extension. KDE and most other environments handle it natively. That caveat is
-acceptable; it's the same one every SNI app carries.
+acceptable; it's the same one every SNI app has.
 
 [tray-icon](https://docs.rs/tray-icon/latest/tray_icon/) 0.24.1, the Tauri
 project's cross-platform crate. On Linux it wants a GTK event loop running on
@@ -75,7 +75,7 @@ Lean: ksni for Linux, AppKit defaults for macOS, revisit Windows when it
 becomes a daily driver (an `NSStatusItem`-style story exists there through
 either crate).
 
-Either way the tray's callbacks land on the tray's own thread. Getting them
+Either way the tray's callbacks run on the tray's own thread. Getting them
 into gpui means a channel drained by a task on the foreground executor, the
 same marshalling MPRIS will need.
 
@@ -106,16 +106,16 @@ framing above ("the process already survives with zero windows") only held
 because a secondary window was still open. Upstream has already fixed this
 properly: zed PR #42391 (merged 2025-11-10, three weeks after 0.2.2's
 publish) moved the decision to an app-level policy,
-`Application::with_quit_mode`, where `QuitMode::Explicit` is exactly what
+`Application::with_quit_mode`, where `QuitMode::Explicit` is what
 rox wants since the workspace already counts windows and quits itself. No
 crates.io release carried it at the time, leaving two routes: wait for a gpui
 bump, or patch the backend check out, two lines per backend. The prototype's
-windowless runs used exactly that patch against the 0.2.2 source and nothing
+windowless runs used that patch against the 0.2.2 source and nothing
 else.
 
 With the patch in, every question came back yes:
 
-- The round trip holds. Menu click lands on ksni's service thread, the
+- The round trip holds. Menu click arrives on ksni's service thread, the
   activate closure does a non-blocking `try_send`, the drain loop flips app
   state and pushes it back with `Handle::update`, and the menu label reads
   Pause or Play to match. `Handle::update` blocks its caller until the
@@ -174,7 +174,7 @@ That's the ksni architecture again, a tray thread doing non-blocking sends into
 a channel drained on the foreground executor, so the marshalling layer from
 the prototype carries over unchanged. Hand-rolling over the `windows` crate
 gpui already pulls in stays the fallback if tray-icon's menu stack
-(muda) fights the win32 loop. souvlaki's SMTC also wants the window handle
+(muda) fights the win32 loop. souvlaki's SMTC also needs the window handle
 wired up (`media_controls.rs` notes it) before the media widget works there;
 that stays a separate ticket either way.
 

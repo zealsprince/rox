@@ -15,7 +15,8 @@ meant the last build to connect owned the file, and every other one sent a
 perfectly well-formed call that Last.fm answered with error 9, forever, because
 nothing about a rejected session gets better by waiting.
 
-Filed by key, moving between installs costs one connect each and nothing after.
+With sessions filed by key, moving between installs costs one connect each and nothing
+after.
 The pair the user types into the settings page falls out of the same rule: it's a
 different identity, so it gets its own session instead of silently invalidating
 the built-in one.
@@ -28,16 +29,16 @@ for the life of the install.
 
 The upgrade brings one session with no record of who minted it, so it goes into an
 unattributed slot that any key may use. The first call that succeeds claims it, which
-is the only proof of ownership available without asking the service; the first
-call that comes back with error 9 files that key's refusal and leaves the session
+is the only proof of ownership available without asking the service. The first call
+that comes back with error 9 files that key's refusal and leaves the session
 for whichever build it belongs to. Someone running two installs keeps the one they
 authorized and connects the other once.
 
 A refusal is also the app's to notice rather than the log's. `track.scrobble` and
 `track.updateNowPlaying` are fire and forget (a track that failed to
 send is gone, and retrying a scrobble against the wrong clock is worse than
-dropping it), but error 9 says something about the connection rather than the
-track, so the result comes back far enough to drop the session and move the
+dropping it). Error 9 says something about the connection rather than the track,
+though, so the result comes back far enough to drop the session and move the
 settings page to Rejected. Before this, a dead session read as "Connected as
 <name>" with a scrobble marker on the seek bar and nothing actually sent.
 

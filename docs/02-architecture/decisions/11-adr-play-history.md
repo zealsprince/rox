@@ -35,6 +35,6 @@ across a rescan and its events stay attached to it.
 
 Stats stay out of the in-memory projection. The projection exists to answer per-keystroke
 browse, where a query runs on every character typed. Stats are read when a panel opens
-and when a listen is appended, which is thousands of times less often, so SQL over an
-indexed events table is quick enough and the projection's sync machinery, already the
-main library risk, is left alone.
+and when a listen is appended, thousands of times less often. SQL over an indexed events
+table is quick enough at that rate, and the projection's sync machinery, already the main
+library risk, is left alone.

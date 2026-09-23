@@ -7,7 +7,7 @@ Decision: interface strings live in Fluent (`.ftl`) files, one per locale under
 `t!` macro that returns a `SharedString`.
 
 **en-CA is the source locale.** Every key exists there before it exists anywhere else,
-which is also what makes the parity test possible. The app's existing spelling was
+which also makes the parity test possible. The app's existing spelling was
 already Canadian ("favourites"), so nothing had to be respelled to adopt it. And every
 resolution chain terminates there, so a key a translation hasn't covered yet falls
 through to English rather than showing the reader a raw key name.
@@ -23,7 +23,7 @@ using compiled data, so adding a locale is adding data rather than adding code. 
 reached two ways: explicit helpers like `format::format_int` and `format_date` for
 call sites that format directly, and a formatter hook installed on every bundle so a
 `{ $count }` placeable inside a message gets locale-correct grouping without the message
-author doing anything. The hook is careful about ordering: plural selection still sees
+author doing anything. Ordering matters in the hook: plural selection still sees
 the raw numeric value, since it has to choose a plural form before anything is
 stringified.
 
@@ -48,10 +48,10 @@ runtime-loaded files.
 
 Trade: Fluent costs more ceremony than rust-i18n's flat key-value would, and for a
 Latin-only set that ceremony would buy nothing. What it buys is CLDR plural rules and
-selectors, and those are what decide whether a language like zh or ja is translation work
-or engineering work. Both have a single bare "other" plural form and a different date
-order from English, so a flat key-value scheme would need per-language special cases in
-the code, where Fluent puts them in the message file where translators can reach them.
+selectors, and those decide whether a language like zh or ja is translation work or
+engineering work. Both have a single bare "other" plural form and a different date order
+from English. A flat key-value scheme would need per-language special cases in the code.
+Fluent puts them in the message file, where translators can reach them.
 
 Hand-writing the bundle loading instead of taking fluent-templates costs about a page of
 code and buys control over three things we actually set: the memoizer, the isolation

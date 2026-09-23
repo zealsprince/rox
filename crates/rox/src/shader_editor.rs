@@ -198,7 +198,6 @@ const TEXTURES: &[Uniform] = &[
 ];
 
 struct ShaderEditor {
-    state: AppState,
     target: ShaderEditTarget,
     input: Entity<InputState>,
     /// The text the surface holds, what Revert goes back to and what a
@@ -265,7 +264,6 @@ impl ShaderEditor {
         let now_art = state.now_art.clone();
         let applied = target.source.clone();
         let mut this = ShaderEditor {
-            state,
             target,
             input,
             applied,
@@ -733,13 +731,6 @@ impl ShaderEditor {
 
 impl Render for ShaderEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The meters read the hub at paint, and the hub only moves when
-        // something ticks it; with no visualizer open this window is that
-        // something, the way the signals window is.
-        {
-            let player = self.state.player.read(cx);
-            self.hub.tick(&player.feed(), player.playing_entry());
-        }
         let dirty = self.dirty(cx);
         div()
             .size_full()

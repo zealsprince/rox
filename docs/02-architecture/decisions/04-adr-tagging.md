@@ -19,14 +19,14 @@ What we take on in exchange is a real data-loss exposure. lofty rewrites tags in
 rather than through a temporary file, and it isn't crash-atomic; the maintainer has
 confirmed that a failure partway through a write can leave a file unrecoverable. One
 file lost that way is bad. Bulk editing is the feature this component exists for, so the
-realistic case is a batch of several thousand files, and a crash in the middle of that
-takes whichever file was open at the time.
+realistic case is a batch of several thousand files. A crash in the middle of that takes
+whichever file was open at the time.
 
 That's why the safety layer is part of this component's definition rather than something
-bolted on later. A write goes to a copy, the copy is verified on both the metadata and a
-hash of its audio stream so a mangled write can't pass, the copy is renamed over the
-original in one atomic operation, and a failure anywhere in that sequence unlinks the
-copy and leaves the original untouched. Reads are isolated per file for the same
+bolted on later. A write goes to a copy. The copy is verified on both the metadata and a
+hash of its audio stream, so a mangled write can't pass. It's then renamed over the
+original in one atomic operation. A failure anywhere in that sequence unlinks the copy
+and leaves the original untouched. Reads are isolated per file for the same
 reason at a smaller scale: a malformed file that panics lofty's parser takes down one
 worker rather than the batch around it. We keep `id3` in reserve for ID3 edge cases
 lofty handles poorly.

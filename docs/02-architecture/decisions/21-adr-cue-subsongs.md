@@ -19,21 +19,21 @@ paths (`album.flac#3` as the stored path) keep the row shape untouched but move 
 burden onto every consumer that opens the file, where a missed fragment strip is a
 silent bug that reads tag bytes out of nothing.
 
-The `sub` column is on `tracks` itself because identity can't be stored in a side table: the
-rescan upsert needs a conflict target, and a unique constraint doesn't span tables. A
+The `sub` column is on `tracks` itself because identity can't be stored in a side table:
+the rescan upsert needs a conflict target, and a unique constraint doesn't span tables. A
 nullable span column in the key fails quietly instead, since SQLite treats NULLs as
 distinct in unique indexes, so every plain file would stop conflicting with itself and
 rescans would duplicate the whole library. An integer defaulting to 0 keeps the upsert
-honest and costs one header byte per row in SQLite's record format.
+correct and costs one header byte per row in SQLite's record format.
 
 Everything bulky stays out of the main table. The projection is the read path at the 10
 million track scale ADR 5 was validated at, and dense span columns there would be about
-160MB of RAM paid by every library that owns no cue sheets. Sparse is the rule: a map
-keyed by row, populated only for cue rows, which nothing on the hot paths reads. Search
-and sort never touch spans; the player resolves one per track at insert time, beside the
-album group and ReplayGain it already looks up.
+160MB of RAM paid by every library that owns no cue sheets. Spans are stored sparse
+instead: a map keyed by row, populated only for cue rows, which nothing on the hot paths
+reads. Search and sort never touch spans; the player resolves one per track at insert
+time, beside the album group and ReplayGain it already looks up.
 
-The engine takes the span as the track's whole world: an accurate seek to the start at
+The engine treats the span as the whole track: an accurate seek to the start at
 open, a sample-accurate trim at both edges, and the end boundary taking the natural EOF
 path so gapless, crossfade, stop-after, and loop semantics hold without knowing spans
 exist. The head trim matters because an accurate seek lands on a packet boundary, and
@@ -42,15 +42,14 @@ the tail of the one before it. Consecutive cue tracks of one image share an albu
 which keeps the crossfade rule from fading over a rip's gapless splices.
 
 Scan-side, the sheet claims its image: the image file gets no row of its own while a cue
-lists it, and rows key their freshness off the later of the sheet's and the image's
+lists it. Rows key their freshness off the later of the sheet's and the image's
 mtime, so editing either re-cuts. Deleting the sheet returns the image to one plain row
 on the next scan. Metadata prefers the sheet and falls back to the image's tags, except
 ReplayGain, where only the album pair is carried, since a whole-disc image's track tags
 describe the disc rather than any one span.
 
 Ratings and tag edits for a cue row never write to the file. The image is shared by
-every track of the disc, so a per-track write would stamp them all; the writer skips
+every track of the disc, so a per-track write would stamp them all. The writer skips
 the file half and the database keeps the value. Cue sheet editing, per-span waveform
 peaks, per-span ReplayGain measurement, and embedded cuesheets (the FLAC CUESHEET block)
-are all out of scope: each is additive on top of this identity and none of them
-bends it.
+are out of scope. Each is additive on top of this identity, and none of them changes it.

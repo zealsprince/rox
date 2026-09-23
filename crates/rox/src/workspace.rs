@@ -3379,6 +3379,7 @@ impl Workspace {
         };
         let state = adopt.unwrap_or_else(|| {
             let player = cx.new(Player::new);
+            let feed = player.read(cx).feed();
             let library = cx.new(Library::new);
             // The catalog says when a scan starts and when a watch sync has
             // settled; what happens next is the app's, not the service's.
@@ -3424,8 +3425,11 @@ impl Workspace {
                 cues: cx.new(|_| Cues::default()),
                 query: cx.new(|_| SharedQuery::default()),
                 tab_hosts: cx.new(|_| TabHosts::default()),
-                signals: Arc::new(rox_viz::signal::SignalHub::new(
+                // Bound to this window's player, so whatever reads a signal
+                // also keeps the hub moving and nothing has to tick it.
+                signals: Arc::new(rox_viz::signal::SignalHub::with_feed(
                     Settings::load().look.bundle.signals,
+                    feed,
                 )),
             }
         });
@@ -4004,15 +4008,8 @@ impl Workspace {
             .as_ref()
             .is_some_and(|driver| driver.run_when_idle);
         let hub = self.state.signals.clone();
-        // Tick before the live check. Live only goes true once a tick has
-        // seen the feed move, and on a workspace without a particles panel
-        // or the signals window this loop is the hub's only ticker, so
-        // checking first parked the shader for good: no signals, frozen
-        // clock. The tick itself is cheap and TICK_MIN-deduped.
-        {
-            let player = self.state.player.read(cx);
-            hub.tick(&player.feed(), player.playing_entry());
-        }
+        // The live check advances the hub itself, so this loop keeps the
+        // clock moving on a workspace where nothing else reads a signal.
         let live = hub.live();
         // The release tail. Live goes false the moment the audio stops, but
         // a smoothed signal is still falling for a second or two after
@@ -6820,7 +6817,7 @@ mod shader_feed_tests {
     /// slots, and a route reads its Quiet end at silence, which makes the
     /// two paths tell themselves apart with no audio at all.
     fn silent_hub() -> (SignalHub, u64) {
-        let hub = SignalHub::new(Vec::new());
+        let hub = SignalHub::with_feed(Vec::new(), Arc::new(AudioFeed::new()));
         let (id, _) = hub.add(
             Source::Band {
                 lo: 30.0,
@@ -6828,7 +6825,7 @@ mod shader_feed_tests {
             },
             0.0,
         );
-        hub.tick(&AudioFeed::new(), None);
+        hub.tick();
         (hub, id)
     }
 

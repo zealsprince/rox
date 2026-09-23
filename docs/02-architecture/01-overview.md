@@ -68,8 +68,8 @@ The four domains:
   state.
 - **Library** owns the catalog: the SQLite store on disk, an in-memory projection for
   instant browse, the filesystem scanner, and search. It answers queries and emits change
-  events. The play history record is stored in the same SQLite database, appended from playback state
-  and queried for stats ([components](02-components.md#play-history)).
+  events. The play history record is stored in the same SQLite database, appended from
+  playback state and queried for stats ([components](02-components.md#play-history)).
 - **Support services** (metadata writer, artwork, visualizer analysis) are narrower and
   attach to the two big domains.
 
@@ -85,9 +85,8 @@ above already has the seams that matter, so honoring the constraint costs two ca
 not a redesign:
 
 - **Track identity is source-qualified.** The library keys tracks by (source, path, sub),
-  and local files are the first source. This is the part that's cheap in the initial
-  schema and a painful migration to retrofit, and it keeps a unified multi-source library
-  possible.
+  and local files are the first source. This is cheap in the initial schema and a painful
+  migration to retrofit. It also keeps a unified multi-source library possible.
 - **Playback is already a contract.** Commands in, state out, PCM tap out. A source
   that can provide rox decodable audio (Tidal streams, yt-dlp, librespot's decoded
   samples) feeds the existing engine and gets everything: gapless, ReplayGain,
@@ -96,10 +95,11 @@ not a redesign:
   visualizer subsystem drains the same ring either way.
 
 What a source is, and how the first ones arrive, is
-[ADR 29](decisions/29-adr-source-contract.md): a library provider plus a playback provider
-behind one trait, with the first two written in-process. The extension host mechanism (WASM
-in the style of Zed, or a subprocess model) is still open, and gets decided later on what
-those two sources show about the trait.
+[ADR 29](decisions/29-adr-source-contract.md): a catalog synced into library rows under
+the source's own id, plus a playable reference on each row that core's transport opens.
+The first two, Subsonic and web radio, are written in-process. The shared trait waits
+for a second source client, and the extension host mechanism (WASM in the style of Zed,
+or a subprocess model) is still open.
 
 ## Decisions (ADRs)
 
@@ -115,7 +115,7 @@ Each ADR records the call, the alternatives weighed, and what it costs. They're 
 | [5 - Library store](decisions/05-adr-library-store.md) | SQLite source of truth plus in-memory projection | Decided |
 | [6 - Search](decisions/06-adr-search.md) | In-memory substring first, FTS5 next, tantivy only if needed | Decided |
 | [7 - Panels](decisions/07-adr-panels.md) | gpui primitives with gpui-component as the widget baseline | Decided |
-| [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | Spectrum and waveform on gpui primitives, no generative visual | Decided |
+| [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | Spectrum and waveform on gpui primitives, generative visuals only as GPU shaders | Decided; shader API added by its amendment, chains by 23 |
 | [9 - Audio output](decisions/09-adr-audio-output.md) | Output layer swappable, bit-perfect deferred | Decided; deferral ended by 19 |
 | [10 - Theming](decisions/10-adr-theming.md) | Palette as data behind one setter, CPU-baked backdrop | Decided |
 | [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided |
@@ -136,4 +136,4 @@ Each ADR records the call, the alternatives weighed, and what it costs. They're 
 | [26 - Last.fm sessions](decisions/26-adr-lastfm-sessions.md) | One session per api key, so builds stop invalidating each other | Decided |
 | [27 - i18n](decisions/27-adr-i18n.md) | Fluent messages and ICU4X formatting behind one locale static, en-CA as source | Decided |
 | [28 - Milkdrop](decisions/28-adr-milkdrop.md) | MilkDrop presets through libprojectM, rendered off-thread and read back | Decided |
-| [29 - Source contract](decisions/29-adr-source-contract.md) | In-process sources behind one trait, host deferred | Proposed |
+| [29 - Source contract](decisions/29-adr-source-contract.md) | Sources as rows under a source id, in-process, trait and host deferred | Decided |

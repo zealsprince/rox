@@ -196,6 +196,31 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Ask whether the library's CJK text will draw through the slow font
+    /// fallback, for the warning under the font row. Off the UI thread:
+    /// it walks the library and reads every installed font's header.
+    pub(super) fn check_cjk_fonts(library: &Entity<Library>, cx: &mut Context<Self>) {
+        let Some(projection) = library.read(cx).projection().cloned() else {
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let missing = cx
+                .background_executor()
+                .spawn(async move {
+                    let scripts = crate::cjk_fonts::library_scripts(&projection);
+                    crate::cjk_fonts::fallback_missing(scripts)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.cjk_fonts_missing = missing;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The app font size: the strip fraction mapped onto whole px across
     /// the shared range, through the palette pipe so every window's rem
     /// follows the scrub live.
@@ -808,6 +833,24 @@ impl SettingsWindow {
                             cx,
                         ),
                     )
+                    // Under the font row because that's where somebody
+                    // looks when text draws wrong, though no pick here
+                    // fixes it: the answer is a font package.
+                    .when(self.cjk_fonts_missing, |rows| {
+                        rows.custom(
+                            &[
+                                "cjk", "japanese", "chinese", "korean", "noto", "slow", "scroll",
+                            ],
+                            || {
+                                panel::banner(
+                                    panel::Tone::Warn,
+                                    rox_i18n::t!("settings-appearance-cjk-fonts-title"),
+                                    vec![rox_i18n::t!("settings-appearance-cjk-fonts-note")],
+                                )
+                                .into_any_element()
+                            },
+                        )
+                    })
                     .keyed(
                         "settings-appearance-font-size",
                         &["text size", "scale", "zoom"],

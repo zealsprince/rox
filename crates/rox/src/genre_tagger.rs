@@ -459,14 +459,10 @@ impl GenreTagger {
         self.seat(window, cx);
     }
 
-    /// Play the subject from partway in. The seek rides the same command
-    /// channel the session start queues on, so it lands ahead of the
-    /// engine's first decode rather than racing it from a later frame.
-    ///
-    /// The player exposes no "play from here": its one start-position
-    /// parameter comes up paused (it exists for the launch restore), and
-    /// unpausing that would be the same two commands with an extra stop in
-    /// the middle.
+    /// Play the subject from partway in, spliced in after the playing track
+    /// the way Play Now does, so a tagging pass doesn't eat the queue (ADR
+    /// 16). The offset rides the insert command itself, so the track's head
+    /// is never heard.
     fn play(&mut self, cx: &mut Context<Self>) {
         let (Some(key), Some(item)) = (self.key.clone(), self.subject) else {
             return;
@@ -478,10 +474,7 @@ impl GenreTagger {
             .map(|ms| (ms / START_DIVISOR).min(START_CAP_MS))
             .unwrap_or(0);
         self.state.player.update(cx, |player, cx| {
-            player.play_explicit(vec![key], cx);
-            if start > 0 {
-                player.seek_to(start as f64 / 1000.0);
-            }
+            player.play_now_at(key, start as f64 / 1000.0, cx);
         });
     }
 

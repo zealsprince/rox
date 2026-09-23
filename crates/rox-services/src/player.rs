@@ -1502,16 +1502,6 @@ impl Player {
         }
     }
 
-    /// Replace whatever is playing with a fresh queue whose entries are all
-    /// explicit, playing from the first. Unlike [`play`] and [`play_at`],
-    /// which seed a context (an album or library run that plays on unlisted),
-    /// these entries are the up-next queue, so the queue panel lists them.
-    /// The genre tagger's preview uses it.
-    pub fn play_explicit(&mut self, queue: Vec<TrackKey>, cx: &mut Context<Self>) {
-        let explicit = vec![true; queue.len()];
-        self.start_session(queue, 0, None, explicit, false, cx);
-    }
-
     /// The launch restore for an old settings file that saved only a single
     /// track: load it paused at a position, ready on the seek strip but silent
     /// until asked to play. Files written since store the whole queue and come

@@ -157,6 +157,54 @@ pub fn has_kana(text: &str) -> bool {
     text.chars().any(kana::is_kana)
 }
 
+/// Which of the three CJK scripts some text carries, for a caller that
+/// cares what a value is written in rather than how it reads. The fonts
+/// check behind the Appearance page is the one: each script falls back to
+/// its own font family, so it needs to know which of them the library
+/// actually holds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CjkScripts {
+    pub kana: bool,
+    pub hangul: bool,
+    pub han: bool,
+}
+
+impl CjkScripts {
+    /// The scripts in one string.
+    pub fn of(text: &str) -> Self {
+        let mut scripts = Self::default();
+        scripts.add(text);
+        scripts
+    }
+
+    /// Fold another string's scripts in. Plain ASCII is most of any
+    /// library and has none of them, so it skips the char walk.
+    pub fn add(&mut self, text: &str) {
+        if text.is_ascii() {
+            return;
+        }
+
+        for c in text.chars() {
+            match class(c) {
+                Class::Kana => self.kana = true,
+                Class::Hangul => self.hangul = true,
+                Class::Han => self.han = true,
+                Class::Keep | Class::Unreadable => {}
+            }
+        }
+    }
+
+    pub fn any(&self) -> bool {
+        self.kana || self.hangul || self.han
+    }
+
+    /// Whether there's nothing left to find, so a walk over a library can
+    /// stop early.
+    pub fn all(&self) -> bool {
+        self.kana && self.hangul && self.han
+    }
+}
+
 /// Whether romanizing this text would need the downloaded dictionary: it
 /// carries Han that routes to the Japanese reader. The pass asks this
 /// before it starts, so it can refuse with a reason instead of grinding
@@ -424,6 +472,19 @@ mod tests {
         assert!(has_kana("レモン"));
         assert!(!has_kana("東京"));
         assert!(!has_kana("Lemon"));
+    }
+
+    #[test]
+    fn scripts_name_each_family_a_value_falls_back_to() {
+        let mixed = CjkScripts::of("ドリームCastle 東京");
+        assert!(mixed.kana && mixed.han && !mixed.hangul);
+
+        let mut library = CjkScripts::of("Beyoncé");
+        assert!(!library.any());
+
+        library.add("서울");
+        library.add("黄昏ホリック");
+        assert!(library.all());
     }
 
     /// The shared dictionary answers the same thing every time it's

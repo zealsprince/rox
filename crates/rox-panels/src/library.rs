@@ -3507,27 +3507,19 @@ impl LibraryPanel {
             play_window(&view, ix, QUEUE_CAP)
         };
         let Some((rows, start)) = window else { return };
-        self.play_rows_at(rows, start, false, cx);
+        self.play_rows_at(rows, start, cx);
     }
 
-    /// Resolve view rows to paths and play them as the up-next queue, from
-    /// the first. The explicit-selection play: an album or a hand-picked set
-    /// shows in the queue panel, unlike a library run, which stays context.
+    /// Resolve view rows to paths and play them from the first: an album or
+    /// a hand-picked set. Context like a library run, so the queue keeps what
+    /// was hand-picked (ADR 16).
     fn play_rows(&mut self, rows: Vec<usize>, cx: &mut Context<Self>) {
-        self.play_rows_at(rows, 0, true, cx);
+        self.play_rows_at(rows, 0, cx);
     }
 
-    /// Resolve view rows to paths and queue them on the shared player with
-    /// the cursor at `start`. `explicit` marks them the up-next queue so the
-    /// queue panel lists them (an album, a selection); a context run (a
-    /// library run, a shuffle) passes false and starts at `start`.
-    fn play_rows_at(
-        &mut self,
-        rows: Vec<usize>,
-        start: usize,
-        explicit: bool,
-        cx: &mut Context<Self>,
-    ) {
+    /// Resolve view rows to paths and play them on the shared player as the
+    /// new context, with the cursor at `start`.
+    fn play_rows_at(&mut self, rows: Vec<usize>, start: usize, cx: &mut Context<Self>) {
         let (result, scope) = {
             let delegate = self.table.read(cx).delegate();
             let view = delegate.view.clone();
@@ -3560,11 +3552,7 @@ impl LibraryPanel {
         };
         match result {
             Ok(keys) => self.state.player.update(cx, |player, cx| {
-                if explicit {
-                    player.play_explicit(keys, cx);
-                } else {
-                    player.play_at(keys, start, cx);
-                }
+                player.play_at(keys, start, cx);
                 // After the play, never before: starting a session clears
                 // the scope back to the library at large.
                 player.set_scope(scope);
@@ -3611,7 +3599,7 @@ impl LibraryPanel {
         self.state
             .player
             .update(cx, |player, _| player.set_shuffle(true));
-        self.play_rows_at(rows, 0, false, cx);
+        self.play_rows_at(rows, 0, cx);
     }
 
     /// Play the view shuffled with `ix` first: the clicked row heads the

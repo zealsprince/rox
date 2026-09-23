@@ -16,6 +16,7 @@ mod backdrop_visual;
 mod bake;
 mod bake_dialog;
 mod bookmark_dialog;
+mod cjk_fonts;
 mod composite;
 mod console_window;
 mod convert;

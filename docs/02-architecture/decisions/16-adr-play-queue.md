@@ -60,12 +60,15 @@ the decode cursor.
   through real history for free.
 - Clear Queue drops the explicit entries only. The playing track and the context around
   it stay.
-- Starting playback from a track list (the library, the folder tree, history, a
-  playlist, the art grid) replaces the context and keeps the queue. The new session's
-  entries are all context, and the explicit entries that were still upcoming are
-  spliced back in right after the track that starts. They go in after the session
-  opens rather than as part of it, because a fresh context takes the shuffle mode and
-  the queue would otherwise be scattered through the tail with it.
+- Starting playback from a track list (a library run, an album or a selection in the
+  library, the folder tree, history, a playlist, the album, artist, genre and art grids)
+  replaces the context and keeps the queue. The new session's entries are all context,
+  and the explicit entries that were still upcoming are spliced back in right after the
+  track that starts. They go in after the session opens rather than as part of it,
+  because a fresh context takes the shuffle mode and the queue would otherwise be
+  scattered through the tail with it.
+- The genre tagger's preview plays the way Play Now does, spliced in after the playing
+  track at an offset, so a tagging pass leaves the queue alone.
 
 Shuffle is in the engine, which owns `order`. The engine reshuffles only the upcoming
 portion, `order[pos + 1..]`, leaving history and the playing entry in place and composing
@@ -119,7 +122,8 @@ panel existed: playing from the library seeded the view into the timeline, and s
 that timeline was the queue, the panel showed the whole library. The context/explicit
 split fixed that and retired the album-scoping stopgap layer one had used.
 
-The split first shipped with a new context still replacing the queue, and with an album
-clicked in the art grid played as queued entries rather than as context. Both cut
+The split first shipped with a new context still replacing the queue, and with the
+grids, the library's album and selection plays, and the genre tagger's preview all
+starting sessions of queued entries rather than context. Both cut
 against the split's own premise that the queue is what you hand-picked, and both were
 changed to the rule above.

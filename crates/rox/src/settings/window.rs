@@ -535,6 +535,10 @@ struct SettingsWindow {
     /// binary returned, or why it didn't. An edit to the path clears
     /// it, so the callout never describes a binary the input has moved past.
     ffmpeg_test: Option<Result<String, String>>,
+    /// Whether the library has CJK text this machine's fonts can only
+    /// draw through the slow fallback walk (see [`crate::cjk_fonts`]).
+    /// Checked once at open, off the UI thread; false until it answers.
+    cjk_fonts_missing: bool,
     threshold_scrub: ScrubState,
     /// The storage page's numbers; None until the first walk finishes.
     storage: Option<StorageInfo>,
@@ -855,6 +859,7 @@ impl SettingsWindow {
         // when the measure comes back.
         let root_stats = seed_root_stats(&library, cx);
         Self::measure_root_stats(&library, cx);
+        Self::check_cjk_fonts(&library, cx);
         let rg_coverage = library.read(cx).replaygain_breakdown();
         // A pass started from an earlier settings window may still be
         // running; pick it up rather than showing the button as idle.
@@ -1376,6 +1381,7 @@ impl SettingsWindow {
             station_probing: false,
             ffmpeg_path,
             ffmpeg_test: None,
+            cjk_fonts_missing: false,
             threshold_scrub: ScrubState::default(),
             storage: None,
             storage_measuring: false,

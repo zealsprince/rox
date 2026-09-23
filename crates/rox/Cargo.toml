@@ -161,6 +161,11 @@ tar = "0.4"
 # ksni and souvlaki already ride, on async-io rather than tokio so no second
 # runtime comes along with it.
 zbus = { version = "5", default-features = false, features = ["async-io"] }
+# The CJK fonts check (cjk_fonts.rs) reads the font database and locale the
+# way gpui's cosmic-text does, to predict its fallback. Both are already in
+# the tree under cosmic-text at these versions, so they match what it sees.
+fontdb = "0.16.2"
+sys-locale = "0.3.2"
 
 # Shaders ride blade's render pipelines, so on Mac they need blade to be the
 # renderer rather than the hand-written Metal one. Features unify across the

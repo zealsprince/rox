@@ -172,6 +172,10 @@ offers them once you turn on Include Release Candidates under Settings > Applica
 - **Windows** - Run the setup, and rox lands in your Start menu. Prefer portable? Unzip
   the zip anywhere and run `rox.exe`. If SmartScreen objects, More info > Run anyway.
 
+On Linux, Japanese, Chinese and Korean text needs the static Noto Sans CJK fonts to draw
+quickly. NixOS and Fedora install the variable ones by default, which rox can't use as a
+fallback, so add `noto-fonts-cjk-sans-static` or `google-noto-sans-cjk-fonts`.
+
 ## Command line
 
 - `rox <files or folders>` - play them now, replacing what's loaded. Folders expand to
